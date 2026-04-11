@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Amazon Tracker — Login</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f0f2f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    .card {
+      background: #fff;
+      border-radius: 10px;
+      padding: 36px 40px;
+      box-shadow: 0 2px 12px rgba(0,0,0,.1);
+      width: 100%;
+      max-width: 360px;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 28px;
+    }
+    .logo-icon {
+      width: 38px; height: 38px;
+      background: #232f3e;
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px;
+    }
+    .logo h1 { font-size: 17px; font-weight: 700; color: #1a1a1a; }
+    .logo p  { font-size: 12px; color: #888; margin-top: 1px; }
+    label { display: block; font-size: 12px; font-weight: 600; color: #555;
+            text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; }
+    input[type=password] {
+      width: 100%; padding: 10px 12px;
+      border: 1px solid #d5d9e0; border-radius: 6px;
+      font-size: 14px; outline: none;
+      transition: border-color .2s;
+    }
+    input[type=password]:focus { border-color: #f90; }
+    button {
+      width: 100%; margin-top: 16px;
+      padding: 11px; background: #f90; color: #111;
+      border: none; border-radius: 6px;
+      font-size: 14px; font-weight: 700; cursor: pointer;
+      transition: background .15s;
+    }
+    button:hover { background: #e68900; }
+    .error {
+      margin-top: 14px; padding: 9px 12px;
+      background: #fff2f2; border: 1px solid #fcc; border-radius: 6px;
+      color: #c62828; font-size: 13px; text-align: center;
+    }
+    .footer { margin-top: 24px; font-size: 11px; color: #aaa; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">
+      <div class="logo-icon">📦</div>
+      <div>
+        <h1>Amazon Tracker</h1>
+        <p>Private — sign in to continue</p>
+      </div>
+    </div>
+
+    <form method="POST">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password"
+             placeholder="Enter your password" autofocus autocomplete="current-password" />
+      <button type="submit">Sign In</button>
+    </form>
+
+    {% if error %}
+    <div class="error">{{ error }}</div>
+    {% endif %}
+  </div>
+  <div class="footer">Amazon Product Tracker &nbsp;·&nbsp; Private Access</div>
+</body>
+</html>

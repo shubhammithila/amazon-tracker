@@ -1,0 +1,8 @@
+flask
+playwright
+playwright-stealth==1.0.6
+pandas
+openpyxl
+gunicorn
+sqlalchemy
+psycopg2-binary

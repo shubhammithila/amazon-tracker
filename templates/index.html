@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Amazon Tracker</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f0f2f5; color: #1a1a1a; min-height: 100vh; }
+
+    header { background: #232f3e; color: #fff; padding: 14px 28px; display: flex; align-items: center; gap: 12px; }
+    header h1 { font-size: 18px; font-weight: 600; }
+
+    main { max-width: 1500px; margin: 24px auto; padding: 0 16px; }
+
+    .card { background: #fff; border-radius: 8px; padding: 20px 22px; margin-bottom: 18px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    .card h2 { font-size: 13px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: .6px; margin-bottom: 14px; }
+
+    /* Upload */
+    .upload-row { display: flex; gap: 12px; align-items: flex-start; }
+    .drop-zone { flex: 1; border: 2px dashed #c8d0da; border-radius: 6px; padding: 20px; text-align: center; cursor: pointer; color: #777; font-size: 13px; line-height: 1.7; transition: border-color .2s, background .2s; }
+    .drop-zone:hover, .drop-zone.active { border-color: #f90; background: #fffbf0; }
+    .drop-zone input { display: none; }
+    .drop-zone strong { display: block; font-size: 14px; color: #333; margin-bottom: 4px; }
+    .sep { display: flex; align-items: center; gap: 8px; color: #aaa; font-size: 12px; }
+    .sep::before, .sep::after { content: ""; flex: 1; height: 1px; background: #e0e0e0; }
+    textarea#asin-input { flex: 1; height: 100px; border: 1px solid #d5d9e0; border-radius: 6px; padding: 10px 12px; font-size: 13px; font-family: monospace; resize: vertical; outline: none; }
+    textarea#asin-input:focus { border-color: #f90; }
+
+    #asin-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+    .chip { background: #f1f3f6; border-radius: 4px; padding: 2px 8px; font-size: 11px; font-family: monospace; }
+    .chip a { color: #c45500; text-decoration: none; }
+    .chip a:hover { text-decoration: underline; }
+
+    /* Buttons */
+    .btn-row { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+    button { padding: 8px 20px; border: none; border-radius: 5px; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity .15s, background .15s; }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+    #btn-scrape { background: #f90; color: #111; }
+    #btn-scrape:hover:not(:disabled) { background: #e68900; }
+    #btn-download { background: #232f3e; color: #fff; display: none; }
+    #btn-download:hover { background: #131a22; }
+    #btn-download-filtered { background: #0f6e40; color: #fff; display: none; }
+    #btn-download-filtered:hover { background: #0a5030; }
+    #btn-clear { background: #eee; color: #555; }
+    #btn-clear:hover { background: #ddd; }
+
+    /* Progress */
+    #progress-wrap { display: none; margin-top: 14px; }
+    .progress-bar-bg { height: 6px; background: #eee; border-radius: 99px; overflow: hidden; margin-bottom: 6px; }
+    .progress-bar-fill { height: 100%; background: #f90; border-radius: 99px; width: 0%; transition: width .4s; }
+    #progress-label { font-size: 12px; color: #666; }
+
+    /* Filter bar */
+    #filter-bar { display: none; background: #f8f9fb; border: 1px solid #e8eaed; border-radius: 6px; padding: 14px 16px; margin-bottom: 14px; }
+    .filter-row { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-end; }
+    .filter-group { display: flex; flex-direction: column; gap: 4px; }
+    .filter-group > label { font-size: 11px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: .4px; }
+    .filter-pair { display: flex; gap: 6px; align-items: center; }
+    .filter-pair span { font-size: 11px; color: #888; }
+    .filter-pair input[type=number] { width: 80px; padding: 5px 8px; border: 1px solid #d5d9e0; border-radius: 4px; font-size: 13px; outline: none; }
+    .filter-pair input[type=number]:focus { border-color: #f90; }
+    input[type=date] { padding: 5px 8px; border: 1px solid #d5d9e0; border-radius: 4px; font-size: 13px; outline: none; }
+    input[type=date]:focus { border-color: #f90; }
+    .filter-group.checkbox { flex-direction: row; align-items: center; gap: 7px; padding-bottom: 2px; }
+    .filter-group.checkbox > label { font-size: 13px; text-transform: none; letter-spacing: 0; font-weight: 500; color: #333; cursor: pointer; }
+    .filter-group.checkbox input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; }
+    .filter-actions { display: flex; gap: 8px; align-items: flex-end; margin-left: auto; }
+    .btn-sm { padding: 6px 16px; font-size: 12px; }
+
+    /* Results */
+    #results-section { display: none; }
+    .results-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+    .count-badge { display: inline-block; background: #f90; color: #111; border-radius: 99px; padding: 1px 9px; font-size: 12px; font-weight: 700; }
+    .filtered-badge { display: none; background: #0f6e40; color: #fff; border-radius: 99px; padding: 1px 9px; font-size: 12px; font-weight: 700; }
+
+    /* Legend */
+    .expiry-legend { display: flex; gap: 14px; font-size: 11px; color: #666; margin-left: auto; align-items: center; }
+    .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
+    .legend-dot.red { background: #f8d0d0; border: 1px solid #e57373; }
+    .legend-dot.orange { background: #ffe4b8; border: 1px solid #ffb74d; }
+
+    .table-scroll { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    thead th {
+      background: #232f3e; color: #fff; padding: 9px 10px; text-align: left;
+      white-space: nowrap; font-weight: 600; position: sticky; top: 0;
+      cursor: pointer; user-select: none;
+    }
+    thead th:hover { background: #37475a; }
+    thead th .sort-icon { opacity: .45; margin-left: 4px; font-size: 10px; }
+    thead th.sort-asc .sort-icon::after { content: "▲"; opacity: 1; }
+    thead th.sort-desc .sort-icon::after { content: "▼"; opacity: 1; }
+    thead th:not(.sort-asc):not(.sort-desc) .sort-icon::after { content: "⇅"; }
+
+    tbody tr:nth-child(even) { background: #f8f9fb; }
+    tbody tr:hover { background: #fff8e8 !important; }
+
+    /* Expiry row highlights */
+    tbody tr.expiry-red { background: #fde8e8 !important; }
+    tbody tr.expiry-red:nth-child(even) { background: #fad5d5 !important; }
+    tbody tr.expiry-orange { background: #fff3e0 !important; }
+    tbody tr.expiry-orange:nth-child(even) { background: #ffe9c4 !important; }
+
+    td { padding: 8px 10px; border-bottom: 1px solid #eee; vertical-align: top; }
+    td.mono { font-family: monospace; font-size: 11px; }
+    td.title-cell { max-width: 220px; }
+    .title-short { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; display: block; }
+    td.status-ok { color: #2e7d32; font-weight: 600; }
+    td.status-err { color: #c62828; font-weight: 600; }
+    td.deal-yes { color: #c45500; font-weight: 700; }
+    td.bsr-cell { font-size: 11px; color: #333; max-width: 160px; }
+    td.fba { color: #007185; font-weight: 600; }
+    td.easyship { color: #c45500; font-weight: 600; }
+    td.fbm { color: #888; }
+    a.asin-link { color: #c45500; font-family: monospace; font-size: 11px; }
+
+    #error-msg { color: #c62828; font-size: 13px; margin-top: 10px; display: none; }
+  </style>
+</head>
+<body>
+
+<header>
+  <span>📦</span>
+  <h1>Amazon Product Tracker</h1>
+  <span id="last-fetched" style="margin-left:auto;font-size:11px;opacity:.65;"></span>
+  <a href="/logout" style="margin-left:16px;font-size:12px;color:#f90;text-decoration:none;font-weight:600;">Logout</a>
+</header>
+
+<main>
+  <!-- Upload card -->
+  <div class="card">
+    <h2>Load ASINs</h2>
+    <div class="upload-row">
+      <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+        <input type="file" id="file-input" accept=".csv,.txt" />
+        <strong>Drop CSV / TXT here</strong>
+        or click to browse<br/>
+        <small>One ASIN per line or comma-separated</small>
+      </div>
+      <div class="sep">or</div>
+      <textarea id="asin-input" placeholder="Paste ASINs here&#10;B08N5WRWNW&#10;B07XJ8C8F5&#10;..."></textarea>
+    </div>
+    <!-- Google Sheet loader -->
+    <div style="margin-top:14px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <span style="font-size:12px;color:#555;font-weight:600;white-space:nowrap;">📊 Google Sheet:</span>
+      <input type="text" id="sheet-url" placeholder="Paste Google Sheet URL..."
+        style="flex:1;min-width:280px;padding:6px 10px;border:1px solid #d5d9e0;border-radius:5px;font-size:13px;outline:none;">
+      <button id="btn-fetch-sheet" style="background:#1a73e8;color:#fff;padding:6px 16px;font-size:13px;">Load ASINs</button>
+      <span id="sheet-status" style="font-size:12px;color:#2e7d32;"></span>
+    </div>
+
+    <div id="asin-chips"></div>
+    <div id="error-msg"></div>
+    <div class="btn-row">
+      <button id="btn-scrape" disabled>Fetch Data</button>
+      <button id="btn-download">⬇ Download All</button>
+      <button id="btn-download-filtered">⬇ Download Filtered</button>
+      <button id="btn-clear">Clear</button>
+    </div>
+    <div id="progress-wrap">
+      <div class="progress-bar-bg"><div class="progress-bar-fill" id="progress-fill"></div></div>
+      <div id="progress-label">Preparing...</div>
+    </div>
+  </div>
+
+  <!-- Results card -->
+  <div class="card" id="results-section">
+    <div class="results-header">
+      <h2 style="margin-bottom:0">Results</h2>
+      <span class="count-badge" id="result-count">0</span>
+      <span class="filtered-badge" id="filtered-count"></span>
+      <button class="btn-sm" id="btn-toggle-filters" style="background:#eee;color:#555;margin-left:4px">Filters ▾</button>
+      <div class="expiry-legend">
+        <span><span class="legend-dot red"></span>Expiring ≤ 30 days</span>
+        <span><span class="legend-dot orange"></span>Expiring ≤ 60 days</span>
+      </div>
+    </div>
+
+    <!-- Filter bar -->
+    <div id="filter-bar">
+      <div class="filter-row">
+
+        <div class="filter-group">
+          <label>Rating</label>
+          <div class="filter-pair">
+            <input type="number" id="f-rating-min" min="0" max="5" step="0.1" placeholder="Min">
+            <span>–</span>
+            <input type="number" id="f-rating-max" min="0" max="5" step="0.1" placeholder="Max">
+          </div>
+        </div>
+
+        <div class="filter-group">
+          <label>No. of Ratings</label>
+          <div class="filter-pair">
+            <input type="number" id="f-count-min" min="0" placeholder="Min">
+            <span>–</span>
+            <input type="number" id="f-count-max" min="0" placeholder="Max">
+          </div>
+        </div>
+
+        <div class="filter-group">
+          <label>Use By — expiring before</label>
+          <input type="date" id="f-use-by">
+        </div>
+
+        <div class="filter-group checkbox">
+          <input type="checkbox" id="f-deal">
+          <label for="f-deal">Limited Deal Only</label>
+        </div>
+
+        <div class="filter-actions">
+          <button class="btn-sm" id="btn-apply" style="background:#f90;color:#111">Apply</button>
+          <button class="btn-sm" id="btn-reset-filter" style="background:#eee;color:#555">Reset</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="table-scroll">
+      <table id="result-table">
+        <thead>
+          <tr>
+            <th data-col="#"># <span class="sort-icon"></span></th>
+            <th data-col="ASIN">ASIN <span class="sort-icon"></span></th>
+            <th data-col="Title">Title <span class="sort-icon"></span></th>
+            <th data-col="Rating">Rating <span class="sort-icon"></span></th>
+            <th data-col="No. of Ratings">Ratings <span class="sort-icon"></span></th>
+            <th data-col="BSR">BSR <span class="sort-icon"></span></th>
+            <th data-col="Buybox Price">Price <span class="sort-icon"></span></th>
+            <th data-col="Buybox Seller">Buybox Seller <span class="sort-icon"></span></th>
+            <th data-col="Buybox Fulfillment">Fulfillment <span class="sort-icon"></span></th>
+            <th data-col="Other Sellers">Other Sellers <span class="sort-icon"></span></th>
+            <th data-col="Limited Time Deal">Deal <span class="sort-icon"></span></th>
+            <th data-col="Use By Date">Use By <span class="sort-icon"></span></th>
+            <th data-col="Status">Status <span class="sort-icon"></span></th>
+          </tr>
+        </thead>
+        <tbody id="result-body"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
+  let asins = [];
+  let allResults = [];
+  let filteredResults = [];
+  let sortCol = null;
+  let sortDir = 1;
+  let pollTimer = null;
+
+  const TODAY = new Date();
+
+  // ── On load: restore last DB results immediately ───────────────────────────
+  (async () => {
+    try {
+      const d = await (await fetch("/progress")).json();
+      if (d.last_scraped_at) {
+        document.getElementById("last-fetched").textContent =
+          "Last fetched: " + d.last_scraped_at + " UTC";
+      }
+      const r = await (await fetch("/results")).json();
+      if (r && r.length) {
+        allResults = r; filteredResults = [...r];
+        document.getElementById("result-count").textContent = r.length;
+        document.getElementById("btn-download").style.display = "inline-block";
+        document.getElementById("results-section").style.display = "block";
+        renderTable(filteredResults);
+      }
+    } catch(e) {}
+  })();
+  TODAY.setHours(0, 0, 0, 0);
+
+  // ── ASIN helpers ──────────────────────────────────────────────────────────
+  function parseAsins(text) {
+    return text.split(/[\n,;\t]+/).map(s => s.trim().toUpperCase()).filter(s => /^[A-Z0-9]{10}$/.test(s));
+  }
+
+  function renderChips() {
+    const c = document.getElementById("asin-chips");
+    c.innerHTML = "";
+    asins.forEach(a => {
+      const d = document.createElement("div");
+      d.className = "chip";
+      d.innerHTML = `<a href="https://www.amazon.in/dp/${a}" target="_blank">${a}</a>`;
+      c.appendChild(d);
+    });
+    document.getElementById("btn-scrape").disabled = asins.length === 0;
+  }
+
+  // ── File upload ───────────────────────────────────────────────────────────
+  const dropZone = document.getElementById("drop-zone");
+  const fileInput = document.getElementById("file-input");
+  dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("active"); });
+  dropZone.addEventListener("dragleave", () => dropZone.classList.remove("active"));
+  dropZone.addEventListener("drop", e => { e.preventDefault(); dropZone.classList.remove("active"); if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]); });
+  fileInput.addEventListener("change", () => { if (fileInput.files[0]) readFile(fileInput.files[0]); });
+
+  function readFile(file) {
+    const r = new FileReader();
+    r.onload = e => { asins = [...new Set([...asins, ...parseAsins(e.target.result)])]; renderChips(); };
+    r.readAsText(file);
+  }
+
+  document.getElementById("asin-input").addEventListener("input", function () {
+    asins = [...new Set(parseAsins(this.value))];
+    renderChips();
+  });
+
+  // ── Clear ─────────────────────────────────────────────────────────────────
+  document.getElementById("btn-clear").addEventListener("click", () => {
+    asins = []; allResults = []; filteredResults = [];
+    document.getElementById("asin-input").value = "";
+    document.getElementById("asin-chips").innerHTML = "";
+    document.getElementById("btn-scrape").disabled = true;
+    document.getElementById("btn-download").style.display = "none";
+    document.getElementById("btn-download-filtered").style.display = "none";
+    document.getElementById("results-section").style.display = "none";
+    document.getElementById("result-body").innerHTML = "";
+    hideError();
+  });
+
+  // ── Scrape ────────────────────────────────────────────────────────────────
+  document.getElementById("btn-scrape").addEventListener("click", async () => {
+    hideError();
+    const res = await fetch("/scrape", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ asins }),
+    });
+    const data = await res.json();
+    if (!res.ok) { showError(data.error); return; }
+    document.getElementById("btn-scrape").disabled = true;
+    document.getElementById("btn-download").style.display = "none";
+    document.getElementById("btn-download-filtered").style.display = "none";
+    document.getElementById("progress-wrap").style.display = "block";
+    startPolling();
+  });
+
+  // ── Progress polling ──────────────────────────────────────────────────────
+  function startPolling() {
+    pollTimer = setInterval(async () => {
+      const d = await (await fetch("/progress")).json();
+      const pct = d.total > 0 ? Math.round((d.progress / d.total) * 100) : 0;
+      document.getElementById("progress-fill").style.width = pct + "%";
+      document.getElementById("progress-label").textContent = d.running
+        ? `Fetching ${d.progress} / ${d.total}  —  current: ${d.current_asin}  (3 parallel)`
+        : `Done — ${d.progress} / ${d.total} fetched`;
+      if (d.error) showError(d.error);
+      if (!d.running) {
+        clearInterval(pollTimer);
+        document.getElementById("btn-scrape").disabled = false;
+        if (d.last_scraped_at) document.getElementById("last-fetched").textContent = "Last fetched: " + d.last_scraped_at + " UTC";
+        await loadResults();
+      }
+    }, 2000);
+  }
+
+  // ── Load & render ─────────────────────────────────────────────────────────
+  async function loadResults() {
+    allResults = await (await fetch("/results")).json();
+    if (!allResults.length) return;
+    filteredResults = [...allResults];
+    document.getElementById("result-count").textContent = allResults.length;
+    document.getElementById("btn-download").style.display = "inline-block";
+    document.getElementById("results-section").style.display = "block";
+    renderTable(filteredResults);
+    document.getElementById("results-section").scrollIntoView({ behavior: "smooth" });
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  function parseRatingCount(str) {
+    if (!str) return 0;
+    const m = str.match(/[\d,]+/);
+    return m ? parseInt(m[0].replace(/,/g, "")) : 0;
+  }
+
+  function parseUseByDate(str) {
+    if (!str) return null;
+    const MONTHS = { JAN:0,FEB:1,MAR:2,APR:3,MAY:4,JUN:5,JUL:6,AUG:7,SEP:8,OCT:9,NOV:10,DEC:11 };
+    // "16 MAR 2026"
+    let m = str.toUpperCase().match(/(\d{1,2})\s+([A-Z]{3})\s+(\d{4})/);
+    if (m) return new Date(+m[3], MONTHS[m[2]] ?? 0, +m[1]);
+    // ISO "2026-03-16"
+    m = str.match(/(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return new Date(+m[1], +m[2]-1, +m[3]);
+    return null;
+  }
+
+  function expiryClass(useby) {
+    const d = parseUseByDate(useby);
+    if (!d) return "";
+    const days = (d - TODAY) / 86400000;
+    if (days <= 30) return "expiry-red";
+    if (days <= 60) return "expiry-orange";
+    return "";
+  }
+
+  function val(str) { return str || ""; }
+
+  // ── Filtering ─────────────────────────────────────────────────────────────
+  function applyFilters() {
+    const rMin    = document.getElementById("f-rating-min").value;
+    const rMax    = document.getElementById("f-rating-max").value;
+    const cMin    = document.getElementById("f-count-min").value;
+    const cMax    = document.getElementById("f-count-max").value;
+    const useByStr = document.getElementById("f-use-by").value;
+    const dealOnly = document.getElementById("f-deal").checked;
+
+    // Build use-by date as LOCAL date (avoids UTC offset issue)
+    let useByDate = null;
+    if (useByStr) {
+      const [y, mo, d] = useByStr.split("-").map(Number);
+      useByDate = new Date(y, mo - 1, d);
+    }
+
+    filteredResults = allResults.filter(r => {
+      const rating = parseFloat(r["Rating"]) || 0;
+      const count  = parseRatingCount(r["No. of Ratings"]);
+
+      if (rMin !== "" && rating < parseFloat(rMin)) return false;
+      if (rMax !== "" && rating > parseFloat(rMax)) return false;
+      if (cMin !== "" && count  < parseInt(cMin))   return false;
+      if (cMax !== "" && count  > parseInt(cMax))   return false;
+      if (dealOnly && r["Limited Time Deal"] !== "Yes") return false;
+      if (useByDate) {
+        const d = parseUseByDate(r["Use By Date"]);
+        // Show only items that expire BEFORE the chosen date (or have no date — excluded)
+        if (!d || d > useByDate) return false;
+      }
+      return true;
+    });
+
+    const badge = document.getElementById("filtered-count");
+    const isFiltered = filteredResults.length < allResults.length;
+    badge.textContent = isFiltered ? `${filteredResults.length} shown` : "";
+    badge.style.display = isFiltered ? "inline-block" : "none";
+    document.getElementById("btn-download-filtered").style.display = isFiltered ? "inline-block" : "none";
+    renderTable(filteredResults);
+  }
+
+  document.getElementById("btn-apply").addEventListener("click", applyFilters);
+
+  document.getElementById("btn-reset-filter").addEventListener("click", () => {
+    ["f-rating-min","f-rating-max","f-count-min","f-count-max","f-use-by"].forEach(id => {
+      document.getElementById(id).value = "";
+    });
+    document.getElementById("f-deal").checked = false;
+    filteredResults = [...allResults];
+    document.getElementById("filtered-count").style.display = "none";
+    document.getElementById("btn-download-filtered").style.display = "none";
+    renderTable(filteredResults);
+  });
+
+  document.getElementById("btn-toggle-filters").addEventListener("click", () => {
+    const bar = document.getElementById("filter-bar");
+    const open = bar.style.display === "block";
+    bar.style.display = open ? "none" : "block";
+    document.getElementById("btn-toggle-filters").textContent = open ? "Filters ▾" : "Filters ▴";
+  });
+
+  // ── Sorting ───────────────────────────────────────────────────────────────
+  document.querySelectorAll("thead th[data-col]").forEach(th => {
+    th.addEventListener("click", () => {
+      const col = th.dataset.col;
+      if (col === "#") return;
+      sortDir = sortCol === col ? sortDir * -1 : 1;
+      sortCol = col;
+      document.querySelectorAll("thead th").forEach(t => t.classList.remove("sort-asc", "sort-desc"));
+      th.classList.add(sortDir === 1 ? "sort-asc" : "sort-desc");
+      renderTable(filteredResults);
+    });
+  });
+
+  function sortValue(r, col) {
+    const v = r[col] ?? "";
+    if (col === "Rating")          return parseFloat(v) || 0;
+    if (col === "No. of Ratings")  return parseRatingCount(v);
+    if (col === "Buybox Price")    return parseFloat(v.replace(/[^\d.]/g, "")) || 0;
+    if (col === "Use By Date")     return parseUseByDate(v)?.getTime() || 0;
+    if (col === "BSR")             { const m = v.match(/[\d,]+/); return m ? parseInt(m[0].replace(/,/g,"")) : 999999; }
+    return v.toString().toLowerCase();
+  }
+
+  // ── Render table ──────────────────────────────────────────────────────────
+  function shortTitle(t) {
+    if (!t) return "—";
+    const words = t.trim().split(/\s+/).slice(0, 10).join(" ");
+    return t.trim().split(/\s+/).length > 10 ? words + "…" : words;
+  }
+
+  function renderTable(rows) {
+    let sorted = [...rows];
+    if (sortCol) {
+      sorted.sort((a, b) => {
+        const va = sortValue(a, sortCol), vb = sortValue(b, sortCol);
+        return va < vb ? -sortDir : va > vb ? sortDir : 0;
+      });
+    }
+
+    const tbody = document.getElementById("result-body");
+    tbody.innerHTML = "";
+    sorted.forEach((r, i) => {
+      const tr = document.createElement("tr");
+      const ec = expiryClass(r["Use By Date"]);
+      if (ec) tr.classList.add(ec);
+
+      tr.innerHTML = `
+        <td>${i + 1}</td>
+        <td class="mono"><a class="asin-link" href="${r.URL}" target="_blank">${r.ASIN}</a></td>
+        <td class="title-cell" title="${(r.Title||"").replace(/"/g,"&quot;")}"><span class="title-short">${shortTitle(r.Title)}</span></td>
+        <td>${val(r["Rating"]) || "—"}</td>
+        <td>${val(r["No. of Ratings"]) || "—"}</td>
+        <td class="bsr-cell">${val(r["BSR"]) || "—"}</td>
+        <td>${val(r["Buybox Price"]) || "—"}</td>
+        <td>${val(r["Buybox Seller"]) || "—"}</td>
+        <td class="${r['Buybox Fulfillment'] === 'FBA' ? 'fba' : r['Buybox Fulfillment'] === 'Easy Ship' ? 'easyship' : r['Buybox Fulfillment'] ? 'fbm' : ''}">${val(r["Buybox Fulfillment"]) || "—"}</td>
+        <td>${val(r["Other Sellers"]) || "—"}</td>
+        <td class="${r["Limited Time Deal"] === "Yes" ? "deal-yes" : ""}">${r["Limited Time Deal"]}</td>
+        <td>${val(r["Use By Date"]) || "—"}</td>
+        <td class="${r.Status === "OK" ? "status-ok" : "status-err"}">${r.Status}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  // ── Downloads ─────────────────────────────────────────────────────────────
+  document.getElementById("btn-download").addEventListener("click", () => {
+    window.location.href = "/download";
+  });
+
+  document.getElementById("btn-download-filtered").addEventListener("click", async () => {
+    const res = await fetch("/download-filtered", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows: filteredResults }),
+    });
+    if (!res.ok) { showError("Download failed"); return; }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "amazon_tracker_filtered.xlsx"; a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  // ── Google Sheet loader ───────────────────────────────────────────────────
+  document.getElementById("btn-fetch-sheet").addEventListener("click", async () => {
+    const url = document.getElementById("sheet-url").value.trim();
+    if (!url) { showError("Please enter a Google Sheet URL"); return; }
+    hideError();
+
+    const btn = document.getElementById("btn-fetch-sheet");
+    const status = document.getElementById("sheet-status");
+    btn.disabled = true;
+    btn.textContent = "Fetching...";
+    status.textContent = "";
+
+    try {
+      const res = await fetch("/fetch-sheet", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const data = await res.json();
+      if (!res.ok) { showError(data.error); return; }
+
+      const newAsins = data.asins;
+      asins = [...new Set([...asins, ...newAsins])];
+      renderChips();
+      status.textContent = `✓ Loaded ${newAsins.length} ASINs from sheet`;
+    } catch (e) {
+      showError("Failed to fetch sheet: " + e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Load ASINs";
+    }
+  });
+
+  // Pre-fill the sheet URL
+  document.getElementById("sheet-url").value =
+    "https://docs.google.com/spreadsheets/d/11dBw92P7Bg0oFyfqramGqdAlLTGhcb2ScjmR_1wtiTM/edit?gid=0#gid=0";
+
+  function showError(msg) { const e = document.getElementById("error-msg"); e.textContent = "Error: " + msg; e.style.display = "block"; }
+  function hideError() { document.getElementById("error-msg").style.display = "none"; }
+</script>
+</body>
+</html>
