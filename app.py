@@ -74,6 +74,8 @@ state = {
     "error":          None,
 }
 
+_scrape_stop = threading.Event()   # set this to abort an in-progress scrape
+
 # Pre-load last fetch from DB so results survive restarts
 state["results"], state["last_scraped_at"] = load_snapshot()
 
@@ -137,12 +139,14 @@ def run_scrape_thread(asins):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        results = loop.run_until_complete(scrape_all(asins, progress_callback))
-        state["results"] = results
-        state["progress"] = state["total"]
-        # Persist to DB so results survive restarts
-        save_snapshot(results)
-        state["last_scraped_at"] = datetime.utcnow().strftime("%d %b %Y, %I:%M %p")
+        results = loop.run_until_complete(
+            scrape_all(asins, progress_callback, _scrape_stop)
+        )
+        if not _scrape_stop.is_set() and results:
+            state["results"] = results
+            state["progress"] = state["total"]
+            save_snapshot(results)
+            state["last_scraped_at"] = datetime.utcnow().strftime("%d %b %Y, %I:%M %p")
     except Exception as e:
         state["error"] = str(e)
     finally:
@@ -166,10 +170,26 @@ def scrape():
     asins = [a.strip() for a in data.get("asins", []) if a.strip()]
     if not asins:
         return jsonify({"error": "No ASINs provided"}), 400
+    _scrape_stop.clear()   # make sure stop flag is off before starting
     state.update(running=True, progress=0, total=len(asins),
                  current_asin="", results=[], error=None)
     threading.Thread(target=run_scrape_thread, args=(asins,), daemon=True).start()
     return jsonify({"status": "started", "total": len(asins)})
+
+
+@app.route("/reset", methods=["POST"])
+@login_required
+def reset_scrape():
+    """Stop any running scrape and restore last saved results from DB."""
+    _scrape_stop.set()   # signal all workers to stop
+    last_results, last_ts = load_snapshot()
+    state.update(
+        running=False, progress=0, total=0,
+        current_asin="", error=None,
+        results=last_results,
+        last_scraped_at=last_ts,
+    )
+    return jsonify({"status": "reset", "restored": len(last_results)})
 
 
 @app.route("/progress")

@@ -9,14 +9,27 @@ except ImportError:
     async def stealth_async(page): pass
 
 USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 ]
 
-CONCURRENCY = 3
+VIEWPORTS = [
+    {"width": 1366, "height": 768},
+    {"width": 1440, "height": 900},
+    {"width": 1536, "height": 864},
+    {"width": 1920, "height": 1080},
+    {"width": 1280, "height": 800},
+]
+
+CONCURRENCY = 10   # 10 parallel — each gets its own context + user-agent
 PINCODE = "400076"
 
 
@@ -354,11 +367,14 @@ async def scrape_asin(page, asin):
     return result
 
 
-async def scrape_all(asins, progress_callback=None):
+async def scrape_all(asins, progress_callback=None, stop_event=None):
     asins = [a.strip() for a in asins if a.strip()]
     results = [None] * len(asins)
     completed_count = [0]
     semaphore = asyncio.Semaphore(CONCURRENCY)
+
+    def is_stopped():
+        return stop_event is not None and stop_event.is_set()
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -368,27 +384,41 @@ async def scrape_all(asins, progress_callback=None):
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
+                "--ipc=host",   # prevents Chromium OOM under high concurrency
             ],
         )
 
         async def worker(idx, asin):
+            # Check stop before even queuing
+            if is_stopped():
+                return
+
             async with semaphore:
-                await asyncio.sleep(random.uniform(0, 3))
+                if is_stopped():
+                    return
+
+                # Stagger so 10 workers don't all hit Amazon at the exact same ms
+                await asyncio.sleep(random.uniform(0, 5))
+
                 context = await browser.new_context(
                     user_agent=random.choice(USER_AGENTS),
-                    viewport={"width": 1366, "height": 768},
+                    viewport=random.choice(VIEWPORTS),
                     locale="en-IN",
                     timezone_id="Asia/Kolkata",
                     extra_http_headers={
                         "Accept-Language": "en-IN,en;q=0.9",
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                        "Sec-Fetch-Site": "none",
+                        "Sec-Fetch-Mode": "navigate",
                     },
                 )
                 page = await context.new_page()
-                await configure_page(page)   # stealth + block heavy resources
-                await set_pincode(page)      # set Mumbai 400076 before product page
+                await configure_page(page)
+                await set_pincode(page)
 
                 try:
+                    if is_stopped():
+                        return
                     result = await scrape_asin(page, asin)
                     results[idx] = result
                 except Exception as e:
@@ -404,7 +434,9 @@ async def scrape_all(asins, progress_callback=None):
                     if progress_callback:
                         progress_callback(completed_count[0], len(asins), asin)
                     await context.close()
-                    await asyncio.sleep(random.uniform(3, 6))
+                    # Brief cooldown — keeps total concurrent load manageable
+                    if not is_stopped():
+                        await asyncio.sleep(random.uniform(3, 5))
 
         tasks = [worker(i, asin) for i, asin in enumerate(asins)]
         await asyncio.gather(*tasks)
