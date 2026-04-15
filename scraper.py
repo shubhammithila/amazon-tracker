@@ -34,17 +34,32 @@ PINCODE = "400076"
 
 
 async def safe_text(element):
+    """Read text from an element using JS evaluate — bypasses Playwright's
+    30-second actionability wait that causes the Timeout errors."""
     try:
-        return (await element.inner_text()).strip()
-    except:
+        text = await element.evaluate("el => el.innerText || ''")
+        return text.strip()
+    except Exception:
         return ""
 
 
 async def safe_attr(element, attr):
     try:
         return (await element.get_attribute(attr) or "").strip()
-    except:
+    except Exception:
         return ""
+
+
+async def page_eval(page, selector, default=""):
+    """Get innerText of the first matching element via JS — no locator wait."""
+    try:
+        result = await page.evaluate(
+            f"(() => {{ const el = document.querySelector({repr(selector)}); "
+            f"return el ? el.innerText : ''; }})()"
+        )
+        return (result or "").strip()
+    except Exception:
+        return default
 
 
 async def configure_page(page):
@@ -142,8 +157,14 @@ async def scrape_asin(page, asin):
 
         await asyncio.sleep(random.uniform(1, 2))
 
-        # Check for captcha
-        body_text = await page.inner_text("body")
+        # Check for captcha — use evaluate() to avoid 30s actionability wait
+        try:
+            body_text = await asyncio.wait_for(
+                page.evaluate("document.body ? document.body.innerText : ''"),
+                timeout=8
+            )
+        except Exception:
+            body_text = ""
         if "Enter the characters you see below" in body_text or "Type the characters" in body_text:
             result["Status"] = "Blocked (CAPTCHA)"
             return result
@@ -298,16 +319,15 @@ async def scrape_asin(page, asin):
 
         # ── Use By Date ───────────────────────────────────────────────────────
         try:
-            center_el = await page.query_selector("#centerCol, #ppd")
-            if center_el:
-                center_text = await safe_text(center_el)
+            center_text = await page_eval(page, "#centerCol") or await page_eval(page, "#ppd")
+            if center_text:
                 m = re.search(
                     r'(?:Use by|Best before|Best By|Expiry date|Expiry|Expires)[:\s]+([^\n]{4,25})',
                     center_text, re.IGNORECASE
                 )
                 if m:
                     result["Use By Date"] = m.group(1).strip()
-        except:
+        except Exception:
             pass
 
         # ── Other sellers (AOD panel) ─────────────────────────────────────────
