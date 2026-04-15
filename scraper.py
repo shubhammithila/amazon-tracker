@@ -367,11 +367,30 @@ async def scrape_asin(page, asin):
     return result
 
 
+def _blank_result(asin, status):
+    return {
+        "ASIN": asin, "URL": f"https://www.amazon.in/dp/{asin}",
+        "Title": "", "Rating": "", "No. of Ratings": "", "BSR": "",
+        "Buybox Price": "", "Buybox Seller": "", "Buybox Fulfillment": "",
+        "Other Sellers": "", "Limited Time Deal": "No",
+        "Use By Date": "", "Status": status,
+    }
+
+
 async def scrape_all(asins, progress_callback=None, stop_event=None):
+    """
+    Queue-based scraper: CONCURRENCY persistent browser contexts, each
+    pops ASINs from a shared queue until empty.  Pincode is set ONCE per
+    context (not once per ASIN), saving ~12 s of overhead per ASIN.
+    """
     asins = [a.strip() for a in asins if a.strip()]
-    results = [None] * len(asins)
-    completed_count = [0]
-    semaphore = asyncio.Semaphore(CONCURRENCY)
+    total = len(asins)
+    results = [None] * total
+    completed = [0]
+
+    queue: asyncio.Queue = asyncio.Queue()
+    for i, asin in enumerate(asins):
+        await queue.put((i, asin))
 
     def is_stopped():
         return stop_event is not None and stop_event.is_set()
@@ -384,75 +403,101 @@ async def scrape_all(asins, progress_callback=None, stop_event=None):
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
-                "--ipc=host",   # prevents Chromium OOM under high concurrency
+                "--disable-gpu",
+                "--no-zygote",
+                "--ipc=host",
             ],
         )
 
-        async def worker(idx, asin):
-            if is_stopped():
-                return
+        async def run_slot(slot_id: int):
+            # Stagger slot startup: slot 0 starts immediately, others wait
+            await asyncio.sleep(slot_id * 3)
 
-            # ── Stagger OUTSIDE semaphore — don't hold a slot while waiting ──
-            await asyncio.sleep(idx * 0.8 + random.uniform(0, 1))
-
-            async with semaphore:
-                if is_stopped():
-                    return
-
-                # Heartbeat: tell UI we started this ASIN immediately
-                if progress_callback:
-                    progress_callback(completed_count[0], len(asins), asin)
-
+            # ── Create ONE context per slot ───────────────────────────────────
+            try:
                 context = await browser.new_context(
-                    user_agent=random.choice(USER_AGENTS),
-                    viewport=random.choice(VIEWPORTS),
+                    user_agent=USER_AGENTS[slot_id % len(USER_AGENTS)],
+                    viewport=VIEWPORTS[slot_id % len(VIEWPORTS)],
                     locale="en-IN",
                     timezone_id="Asia/Kolkata",
                     extra_http_headers={
                         "Accept-Language": "en-IN,en;q=0.9",
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                        "Sec-Fetch-Site": "none",
-                        "Sec-Fetch-Mode": "navigate",
                     },
                 )
                 page = await context.new_page()
                 await configure_page(page)
-                await set_pincode(page)
+                await set_pincode(page)   # ← done ONCE per slot, not per ASIN
+            except Exception as e:
+                # Context failed to start — drain our share of the queue
+                while True:
+                    try:
+                        idx, asin = queue.get_nowait()
+                        results[idx] = _blank_result(asin, f"Slot init error: {str(e)[:60]}")
+                        completed[0] += 1
+                        if progress_callback:
+                            progress_callback(completed[0], total, asin)
+                    except asyncio.QueueEmpty:
+                        break
+                return
+
+            # ── Process ASINs from shared queue ───────────────────────────────
+            while not is_stopped():
+                try:
+                    idx, asin = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
+                # Heartbeat — show current ASIN in UI immediately
+                if progress_callback:
+                    progress_callback(completed[0], total, asin)
 
                 try:
-                    if is_stopped():
-                        return
-                    # Hard 90-second ceiling per ASIN so no worker hangs forever
                     result = await asyncio.wait_for(
-                        scrape_asin(page, asin), timeout=90
+                        scrape_asin(page, asin), timeout=60
                     )
                     results[idx] = result
-                except asyncio.TimeoutError:
-                    results[idx] = {
-                        "ASIN": asin, "URL": f"https://www.amazon.in/dp/{asin}",
-                        "Title": "", "Rating": "", "No. of Ratings": "", "BSR": "",
-                        "Buybox Price": "", "Buybox Seller": "", "Buybox Fulfillment": "",
-                        "Other Sellers": "", "Limited Time Deal": "No",
-                        "Use By Date": "", "Status": "Timeout (90s)",
-                    }
-                except Exception as e:
-                    results[idx] = {
-                        "ASIN": asin, "URL": f"https://www.amazon.in/dp/{asin}",
-                        "Title": "", "Rating": "", "No. of Ratings": "", "BSR": "",
-                        "Buybox Price": "", "Buybox Seller": "", "Buybox Fulfillment": "",
-                        "Other Sellers": "", "Limited Time Deal": "No",
-                        "Use By Date": "", "Status": f"Error: {str(e)[:80]}",
-                    }
-                finally:
-                    completed_count[0] += 1
-                    if progress_callback:
-                        progress_callback(completed_count[0], len(asins), asin)
-                    await context.close()
-                    if not is_stopped():
-                        await asyncio.sleep(random.uniform(3, 5))
 
-        tasks = [worker(i, asin) for i, asin in enumerate(asins)]
-        await asyncio.gather(*tasks)
+                except asyncio.TimeoutError:
+                    results[idx] = _blank_result(asin, "Timeout (60s)")
+                    # Reset page state after timeout
+                    try:
+                        await page.goto("about:blank", timeout=5000)
+                    except Exception:
+                        pass
+
+                except Exception as e:
+                    err = str(e)
+                    results[idx] = _blank_result(asin, f"Error: {err[:60]}")
+
+                    # Page/target crashed → recreate page within same context
+                    if any(k in err for k in ("Target closed", "Target crashed",
+                                              "Session closed", "Connection closed")):
+                        try:
+                            await page.close()
+                        except Exception:
+                            pass
+                        try:
+                            page = await context.new_page()
+                            await configure_page(page)
+                        except Exception:
+                            break   # context itself is dead, abandon slot
+
+                finally:
+                    completed[0] += 1
+                    if progress_callback:
+                        progress_callback(completed[0], total, asin)
+
+                # Short delay between ASINs — looks human, avoids rate-limit
+                if not is_stopped():
+                    await asyncio.sleep(random.uniform(2, 4))
+
+            try:
+                await context.close()
+            except Exception:
+                pass
+
+        await asyncio.gather(*[run_slot(i) for i in range(CONCURRENCY)])
         await browser.close()
 
     return [r for r in results if r is not None]
