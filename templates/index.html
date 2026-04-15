@@ -371,7 +371,7 @@
       const pct = d.total > 0 ? Math.round((d.progress / d.total) * 100) : 0;
       document.getElementById("progress-fill").style.width = pct + "%";
       document.getElementById("progress-label").textContent = d.running
-        ? `Fetching ${d.progress} / ${d.total}  —  current: ${d.current_asin}  (3 parallel)`
+        ? `Fetching ${d.progress} / ${d.total}  —  now: ${d.current_asin}  (5 parallel, first result ~30s)`
         : `Done — ${d.progress} / ${d.total} fetched`;
       if (d.error) showError(d.error);
       if (!d.running) {

@@ -29,7 +29,7 @@ VIEWPORTS = [
     {"width": 1280, "height": 800},
 ]
 
-CONCURRENCY = 10   # 10 parallel — each gets its own context + user-agent
+CONCURRENCY = 5    # 5 parallel — safe memory ceiling on Railway (~2.5 GB peak)
 PINCODE = "400076"
 
 
@@ -68,7 +68,7 @@ async def set_pincode(page):
     Must be called once per page/context before scraping product pages.
     """
     try:
-        await page.goto("https://www.amazon.in", wait_until="domcontentloaded", timeout=20000)
+        await page.goto("https://www.amazon.in", wait_until="domcontentloaded", timeout=12000)
         await asyncio.sleep(random.uniform(1, 2))
 
         # Click the "Deliver to" location widget
@@ -389,16 +389,19 @@ async def scrape_all(asins, progress_callback=None, stop_event=None):
         )
 
         async def worker(idx, asin):
-            # Check stop before even queuing
             if is_stopped():
                 return
+
+            # ── Stagger OUTSIDE semaphore — don't hold a slot while waiting ──
+            await asyncio.sleep(idx * 0.8 + random.uniform(0, 1))
 
             async with semaphore:
                 if is_stopped():
                     return
 
-                # Stagger so 10 workers don't all hit Amazon at the exact same ms
-                await asyncio.sleep(random.uniform(0, 5))
+                # Heartbeat: tell UI we started this ASIN immediately
+                if progress_callback:
+                    progress_callback(completed_count[0], len(asins), asin)
 
                 context = await browser.new_context(
                     user_agent=random.choice(USER_AGENTS),
@@ -419,8 +422,19 @@ async def scrape_all(asins, progress_callback=None, stop_event=None):
                 try:
                     if is_stopped():
                         return
-                    result = await scrape_asin(page, asin)
+                    # Hard 90-second ceiling per ASIN so no worker hangs forever
+                    result = await asyncio.wait_for(
+                        scrape_asin(page, asin), timeout=90
+                    )
                     results[idx] = result
+                except asyncio.TimeoutError:
+                    results[idx] = {
+                        "ASIN": asin, "URL": f"https://www.amazon.in/dp/{asin}",
+                        "Title": "", "Rating": "", "No. of Ratings": "", "BSR": "",
+                        "Buybox Price": "", "Buybox Seller": "", "Buybox Fulfillment": "",
+                        "Other Sellers": "", "Limited Time Deal": "No",
+                        "Use By Date": "", "Status": "Timeout (90s)",
+                    }
                 except Exception as e:
                     results[idx] = {
                         "ASIN": asin, "URL": f"https://www.amazon.in/dp/{asin}",
@@ -434,7 +448,6 @@ async def scrape_all(asins, progress_callback=None, stop_event=None):
                     if progress_callback:
                         progress_callback(completed_count[0], len(asins), asin)
                     await context.close()
-                    # Brief cooldown — keeps total concurrent load manageable
                     if not is_stopped():
                         await asyncio.sleep(random.uniform(3, 5))
 
