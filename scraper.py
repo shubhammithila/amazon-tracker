@@ -63,8 +63,15 @@ async def page_eval(page, selector, default=""):
 
 
 async def configure_page(page):
-    """Apply stealth and block images/fonts/media so pages load faster."""
+    """Apply stealth, set global 10s timeout, and block heavy resources."""
     await stealth_async(page)
+
+    # ── KEY FIX: override Playwright's default 30s timeout globally ──────────
+    # Every operation (evaluate, inner_text, wait_for_selector …) now fails
+    # fast at 10s instead of hanging for 30s.
+    page.set_default_timeout(10000)
+    page.set_default_navigation_timeout(20000)   # navigations get 20s
+
     # Abort heavy resources — product data is in HTML/JS, not images or fonts
     await page.route(
         re.compile(r'\.(png|jpe?g|gif|webp|svg|ico|woff2?|ttf|eot|mp4|mp3|pdf)(\?.*)?$', re.IGNORECASE),
@@ -139,19 +146,18 @@ async def scrape_asin(page, asin):
         # ── Navigate with retry on ERR_ABORTED ───────────────────────────────
         for attempt in range(3):
             try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=40000)
+                await page.goto(url, wait_until="domcontentloaded", timeout=18000)
                 break  # success — continue to scraping
             except Exception as nav_err:
                 if attempt == 2:
                     result["Status"] = f"Error: {str(nav_err)[:80]}"
                     return result
-                # ERR_ABORTED / network errors — back off and re-warm session
-                backoff = 10 + attempt * 10   # 10 s, then 20 s
-                await asyncio.sleep(backoff)
+                # Back off then re-warm session before retry
+                await asyncio.sleep(8 + attempt * 8)
                 try:
                     await page.goto("https://www.amazon.in",
-                                    wait_until="domcontentloaded", timeout=20000)
-                    await asyncio.sleep(random.uniform(2, 3))
+                                    wait_until="domcontentloaded", timeout=12000)
+                    await asyncio.sleep(random.uniform(1, 2))
                 except Exception:
                     pass
 
