@@ -29,7 +29,7 @@ VIEWPORTS = [
     {"width": 1280, "height": 800},
 ]
 
-CONCURRENCY = 5    # 5 persistent contexts — safe on Railway 512 MB (~100 MB each)
+CONCURRENCY = 3    # 3 contexts — Railway 512 MB: browser ~60 MB + 3×~100 MB = ~360 MB safe
 PINCODE = "400076"
 
 
@@ -428,12 +428,39 @@ async def scrape_all(asins, progress_callback=None, stop_event=None, result_call
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
+                "--disable-dev-shm-usage",   # use malloc instead of /dev/shm (only 64 MB in containers)
                 "--disable-gpu",
                 "--no-zygote",
                 "--ipc=host",
+                # Memory-saving flags for constrained containers
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-default-apps",
+                "--disable-sync",
+                "--disable-translate",
+                "--disable-web-resources",
+                "--no-first-run",
+                "--mute-audio",
+                "--hide-scrollbars",
+                "--js-flags=--max-old-space-size=128",  # cap JS heap per renderer
             ],
         )
+
+        async def new_context_and_page(slot_id: int):
+            """Create a fresh browser context + configured page for the given slot."""
+            ctx = await browser.new_context(
+                user_agent=USER_AGENTS[slot_id % len(USER_AGENTS)],
+                viewport=VIEWPORTS[slot_id % len(VIEWPORTS)],
+                locale="en-IN",
+                timezone_id="Asia/Kolkata",
+                extra_http_headers={
+                    "Accept-Language": "en-IN,en;q=0.9",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                },
+            )
+            pg = await ctx.new_page()
+            await configure_page(pg)
+            return ctx, pg
 
         async def run_slot(slot_id: int):
             # Stagger slot startup: slot 0 starts immediately, others wait
@@ -441,18 +468,7 @@ async def scrape_all(asins, progress_callback=None, stop_event=None, result_call
 
             # ── Create ONE context per slot ───────────────────────────────────
             try:
-                context = await browser.new_context(
-                    user_agent=USER_AGENTS[slot_id % len(USER_AGENTS)],
-                    viewport=VIEWPORTS[slot_id % len(VIEWPORTS)],
-                    locale="en-IN",
-                    timezone_id="Asia/Kolkata",
-                    extra_http_headers={
-                        "Accept-Language": "en-IN,en;q=0.9",
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                    },
-                )
-                page = await context.new_page()
-                await configure_page(page)
+                context, page = await new_context_and_page(slot_id)
                 await set_pincode(page)   # ← done ONCE per slot, not per ASIN
             except Exception as e:
                 # Context failed to start — drain our share of the queue
@@ -469,6 +485,7 @@ async def scrape_all(asins, progress_callback=None, stop_event=None, result_call
 
             # ── Process ASINs from shared queue ───────────────────────────────
             consecutive_failures = 0
+            asins_this_context = 0
 
             while not is_stopped():
                 try:
@@ -480,28 +497,49 @@ async def scrape_all(asins, progress_callback=None, stop_event=None, result_call
                 if progress_callback:
                     progress_callback(completed[0], total, asin)
 
+                # Recycle context every 15 ASINs to prevent memory build-up
+                if asins_this_context > 0 and asins_this_context % 15 == 0:
+                    try:
+                        await page.close()
+                        await context.close()
+                    except Exception:
+                        pass
+                    try:
+                        context, page = await new_context_and_page(slot_id)
+                        await set_pincode(page)
+                    except Exception:
+                        break   # can't recover — abandon slot
+
                 try:
                     result = await asyncio.wait_for(
                         scrape_asin(page, asin), timeout=75
                     )
                     results[idx] = result
-                    consecutive_failures = 0   # reset on success
+                    consecutive_failures = 0
+                    asins_this_context += 1
+
+                    # Flush page DOM after each success to free renderer memory
+                    try:
+                        await page.goto("about:blank", timeout=4000)
+                    except Exception:
+                        pass
 
                 except asyncio.TimeoutError:
                     results[idx] = _blank_result(asin, "Timeout (75s)")
                     consecutive_failures += 1
-                    # After 3 consecutive timeouts, the context is probably stuck —
-                    # recreate the page (and context if needed) before continuing
+                    asins_this_context += 1
+                    # After 3 consecutive timeouts, context is stuck — rebuild it
                     if consecutive_failures >= 3:
                         try:
                             await page.close()
+                            await context.close()
                         except Exception:
                             pass
                         try:
-                            page = await context.new_page()
-                            await configure_page(page)
+                            context, page = await new_context_and_page(slot_id)
                             await set_pincode(page)
                             consecutive_failures = 0
+                            asins_this_context = 0
                         except Exception:
                             break   # context dead — abandon slot
 
@@ -509,9 +547,11 @@ async def scrape_all(asins, progress_callback=None, stop_event=None, result_call
                     err = str(e)
                     results[idx] = _blank_result(asin, f"Error: {err[:60]}")
                     consecutive_failures += 1
+                    asins_this_context += 1
 
                     # Page/target crashed → recreate page within same context
                     if any(k in err for k in ("Target closed", "Target crashed",
+                                              "Page crashed",
                                               "Session closed", "Connection closed")):
                         try:
                             await page.close()
@@ -522,7 +562,17 @@ async def scrape_all(asins, progress_callback=None, stop_event=None, result_call
                             await configure_page(page)
                             consecutive_failures = 0
                         except Exception:
-                            break   # context itself is dead, abandon slot
+                            # Context itself is dead — recreate it
+                            try:
+                                await context.close()
+                            except Exception:
+                                pass
+                            try:
+                                context, page = await new_context_and_page(slot_id)
+                                await set_pincode(page)
+                                asins_this_context = 0
+                            except Exception:
+                                break   # completely unrecoverable — abandon slot
 
                 finally:
                     completed[0] += 1
