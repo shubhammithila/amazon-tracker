@@ -72,6 +72,9 @@ state = {
     "results":        [],
     "last_scraped_at": "",
     "error":          None,
+    "round":          1,
+    "round_total":    1,
+    "error_count":    0,
 }
 
 _scrape_stop = threading.Event()   # set this to abort an in-progress scrape
@@ -130,27 +133,95 @@ def make_excel(rows):
     return out
 
 
+MAX_RETRY_ROUNDS = 3
+
+
+def _needs_retry(result):
+    """Return True if this result should be re-scraped."""
+    if not result:
+        return True
+    if result.get("Status", "") != "OK":
+        return True
+    if not result.get("Title"):
+        return True
+    return False
+
+
 def run_scrape_thread(asins):
-    def progress_callback(done, total, asin):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    all_results = [None] * len(asins)
+    save_counter = [0]
+
+    def make_result_callback(orig_indices):
+        """Map result_callback(round_idx, result) → updates all_results[orig_idx]."""
+        def cb(round_idx, result):
+            orig_idx = orig_indices[round_idx]
+            all_results[orig_idx] = result
+            # Live state update — frontend polls /results every 2 s during scrape
+            state["results"] = [r for r in all_results if r is not None]
+            # Periodic DB save: every 10 completions so nothing is lost on crash
+            save_counter[0] += 1
+            if save_counter[0] % 10 == 0:
+                partial = [r for r in all_results if r is not None]
+                if partial:
+                    try:
+                        save_snapshot(partial)
+                    except Exception:
+                        pass
+        return cb
+
+    def progress_cb(done, total, asin):
         state["progress"] = done
         state["total"]    = total
         state["current_asin"] = asin
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     try:
-        results = loop.run_until_complete(
-            scrape_all(asins, progress_callback, _scrape_stop)
-        )
-        if not _scrape_stop.is_set() and results:
-            state["results"] = results
-            state["progress"] = state["total"]
-            save_snapshot(results)
-            state["last_scraped_at"] = datetime.utcnow().strftime("%d %b %Y, %I:%M %p")
+        for round_num in range(1, MAX_RETRY_ROUNDS + 1):
+            if _scrape_stop.is_set():
+                break
+
+            if round_num == 1:
+                error_indices = list(range(len(asins)))
+            else:
+                error_indices = [i for i, r in enumerate(all_results) if _needs_retry(r)]
+                if not error_indices:
+                    break   # all results are clean — done
+
+            state["round"]       = round_num
+            state["round_total"] = MAX_RETRY_ROUNDS
+            state["error_count"] = len(error_indices) if round_num > 1 else 0
+            state["progress"]    = 0
+            state["total"]       = len(error_indices)
+
+            round_asins = [asins[i] for i in error_indices]
+
+            loop.run_until_complete(
+                scrape_all(round_asins, progress_cb, _scrape_stop,
+                           make_result_callback(error_indices))
+            )
+
+            # Save to DB after each round
+            completed = [r for r in all_results if r is not None]
+            if completed:
+                save_snapshot(completed)
+                state["results"]        = completed
+                state["last_scraped_at"] = datetime.utcnow().strftime("%d %b %Y, %I:%M %p")
+
     except Exception as e:
         state["error"] = str(e)
     finally:
         state["running"] = False
+        # Final authoritative save
+        final = [r for r in all_results if r is not None]
+        if final:
+            try:
+                save_snapshot(final)
+                state["results"]        = final
+                state["last_scraped_at"] = datetime.utcnow().strftime("%d %b %Y, %I:%M %p")
+            except Exception:
+                pass
         loop.close()
 
 
@@ -172,7 +243,8 @@ def scrape():
         return jsonify({"error": "No ASINs provided"}), 400
     _scrape_stop.clear()   # make sure stop flag is off before starting
     state.update(running=True, progress=0, total=len(asins),
-                 current_asin="", results=[], error=None)
+                 current_asin="", results=[], error=None,
+                 round=1, round_total=MAX_RETRY_ROUNDS, error_count=0)
     threading.Thread(target=run_scrape_thread, args=(asins,), daemon=True).start()
     return jsonify({"status": "started", "total": len(asins)})
 
@@ -197,7 +269,8 @@ def reset_scrape():
 def progress():
     return jsonify({k: state[k] for k in
                     ("running", "progress", "total", "current_asin",
-                     "error", "last_scraped_at")})
+                     "error", "last_scraped_at",
+                     "round", "round_total", "error_count")})
 
 
 @app.route("/results")

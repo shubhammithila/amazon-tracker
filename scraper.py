@@ -29,7 +29,7 @@ VIEWPORTS = [
     {"width": 1280, "height": 800},
 ]
 
-CONCURRENCY = 5    # 5 parallel — safe memory ceiling on Railway (~2.5 GB peak)
+CONCURRENCY = 8    # 8 parallel — faster throughput; Railway ~512 MB plan handles this
 PINCODE = "400076"
 
 
@@ -403,7 +403,7 @@ def _blank_result(asin, status):
     }
 
 
-async def scrape_all(asins, progress_callback=None, stop_event=None):
+async def scrape_all(asins, progress_callback=None, stop_event=None, result_callback=None):
     """
     Queue-based scraper: CONCURRENCY persistent browser contexts, each
     pops ASINs from a shared queue until empty.  Pincode is set ONCE per
@@ -437,7 +437,7 @@ async def scrape_all(asins, progress_callback=None, stop_event=None):
 
         async def run_slot(slot_id: int):
             # Stagger slot startup: slot 0 starts immediately, others wait
-            await asyncio.sleep(slot_id * 3)
+            await asyncio.sleep(slot_id * 2)
 
             # ── Create ONE context per slot ───────────────────────────────────
             try:
@@ -511,12 +511,14 @@ async def scrape_all(asins, progress_callback=None, stop_event=None):
 
                 finally:
                     completed[0] += 1
+                    if result_callback:
+                        result_callback(idx, results[idx])
                     if progress_callback:
                         progress_callback(completed[0], total, asin)
 
                 # Short delay between ASINs — looks human, avoids rate-limit
                 if not is_stopped():
-                    await asyncio.sleep(random.uniform(2, 4))
+                    await asyncio.sleep(random.uniform(1, 2))
 
             try:
                 await context.close()

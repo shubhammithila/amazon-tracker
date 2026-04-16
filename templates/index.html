@@ -370,11 +370,26 @@
       const d = await (await fetch("/progress")).json();
       const pct = d.total > 0 ? Math.round((d.progress / d.total) * 100) : 0;
       document.getElementById("progress-fill").style.width = pct + "%";
-      document.getElementById("progress-label").textContent = d.running
-        ? `Fetching ${d.progress} / ${d.total}  —  now: ${d.current_asin}  (5 parallel, first result ~30s)`
-        : `Done — ${d.progress} / ${d.total} fetched`;
+
+      let label = "";
+      if (d.running) {
+        if (d.round > 1) {
+          label = `Round ${d.round} of ${d.round_total} — Re-scraping ${d.error_count} errors — ${d.progress} / ${d.total} done`;
+        } else {
+          label = `Fetching ${d.progress} / ${d.total}  —  now: ${d.current_asin}`;
+        }
+        label += "  ☁ Runs on server — safe to close tab";
+      } else {
+        label = `Done — ${d.progress} / ${d.total} fetched`;
+      }
+      document.getElementById("progress-label").textContent = label;
+
       if (d.error) showError(d.error);
-      if (!d.running) {
+
+      // Live result updates: refresh table as ASINs complete
+      if (d.running) {
+        await loadResults(/* silent */ true);
+      } else {
         clearInterval(pollTimer);
         document.getElementById("btn-scrape").disabled = false;
         document.getElementById("btn-reset").style.display = "none";
@@ -385,15 +400,18 @@
   }
 
   // ── Load & render ─────────────────────────────────────────────────────────
-  async function loadResults() {
-    allResults = await (await fetch("/results")).json();
-    if (!allResults.length) return;
+  async function loadResults(silent = false) {
+    const fresh = await (await fetch("/results")).json();
+    if (!fresh.length) return;
+    allResults = fresh;
     filteredResults = [...allResults];
     document.getElementById("result-count").textContent = allResults.length;
     document.getElementById("btn-download").style.display = "inline-block";
     document.getElementById("results-section").style.display = "block";
     renderTable(filteredResults);
-    document.getElementById("results-section").scrollIntoView({ behavior: "smooth" });
+    if (!silent) {
+      document.getElementById("results-section").scrollIntoView({ behavior: "smooth" });
+    }
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
