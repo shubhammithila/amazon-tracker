@@ -29,7 +29,7 @@ VIEWPORTS = [
     {"width": 1280, "height": 800},
 ]
 
-CONCURRENCY = 8    # 8 parallel — faster throughput; Railway ~512 MB plan handles this
+CONCURRENCY = 5    # 5 persistent contexts — safe on Railway 512 MB (~100 MB each)
 PINCODE = "400076"
 
 
@@ -146,18 +146,18 @@ async def scrape_asin(page, asin):
         # ── Navigate with retry on ERR_ABORTED ───────────────────────────────
         for attempt in range(3):
             try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=18000)
+                await page.goto(url, wait_until="domcontentloaded", timeout=15000)
                 break  # success — continue to scraping
             except Exception as nav_err:
                 if attempt == 2:
                     result["Status"] = f"Error: {str(nav_err)[:80]}"
                     return result
-                # Back off then re-warm session before retry
-                await asyncio.sleep(8 + attempt * 8)
+                # Short back-off then re-warm session before retry
+                await asyncio.sleep(3 + attempt * 3)   # 3 s, then 6 s (was 8 s, 16 s)
                 try:
                     await page.goto("https://www.amazon.in",
-                                    wait_until="domcontentloaded", timeout=12000)
-                    await asyncio.sleep(random.uniform(1, 2))
+                                    wait_until="domcontentloaded", timeout=10000)
+                    await asyncio.sleep(random.uniform(0.5, 1))
                 except Exception:
                     pass
 
@@ -468,6 +468,8 @@ async def scrape_all(asins, progress_callback=None, stop_event=None, result_call
                 return
 
             # ── Process ASINs from shared queue ───────────────────────────────
+            consecutive_failures = 0
+
             while not is_stopped():
                 try:
                     idx, asin = queue.get_nowait()
@@ -480,21 +482,33 @@ async def scrape_all(asins, progress_callback=None, stop_event=None, result_call
 
                 try:
                     result = await asyncio.wait_for(
-                        scrape_asin(page, asin), timeout=60
+                        scrape_asin(page, asin), timeout=75
                     )
                     results[idx] = result
+                    consecutive_failures = 0   # reset on success
 
                 except asyncio.TimeoutError:
-                    results[idx] = _blank_result(asin, "Timeout (60s)")
-                    # Reset page state after timeout
-                    try:
-                        await page.goto("about:blank", timeout=5000)
-                    except Exception:
-                        pass
+                    results[idx] = _blank_result(asin, "Timeout (75s)")
+                    consecutive_failures += 1
+                    # After 3 consecutive timeouts, the context is probably stuck —
+                    # recreate the page (and context if needed) before continuing
+                    if consecutive_failures >= 3:
+                        try:
+                            await page.close()
+                        except Exception:
+                            pass
+                        try:
+                            page = await context.new_page()
+                            await configure_page(page)
+                            await set_pincode(page)
+                            consecutive_failures = 0
+                        except Exception:
+                            break   # context dead — abandon slot
 
                 except Exception as e:
                     err = str(e)
                     results[idx] = _blank_result(asin, f"Error: {err[:60]}")
+                    consecutive_failures += 1
 
                     # Page/target crashed → recreate page within same context
                     if any(k in err for k in ("Target closed", "Target crashed",
@@ -506,6 +520,7 @@ async def scrape_all(asins, progress_callback=None, stop_event=None, result_call
                         try:
                             page = await context.new_page()
                             await configure_page(page)
+                            consecutive_failures = 0
                         except Exception:
                             break   # context itself is dead, abandon slot
 
