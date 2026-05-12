@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Amazon Tracker v2 — Keywords</title>
+  <script src="/static/chart.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --bg: #0f172a; --surface: #1e293b; --surface2: #334155; --text: #e2e8f0; --text-muted: #94a3b8; --text-dim: #64748b; --accent: #3b82f6; --accent-hover: #2563eb; --border: #334155; --success: #22c55e; --danger: #ef4444; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    header { background: var(--surface); padding: 14px 28px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--border); }
+    header h1 { font-size: 18px; font-weight: 600; }
+    .nav-links { display: flex; gap: 16px; margin-left: 32px; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 13px; font-weight: 500; padding: 4px 0; border-bottom: 2px solid transparent; transition: all .2s; }
+    .nav-links a:hover, .nav-links a.active { color: var(--text); border-color: var(--accent); }
+    .header-right { margin-left: auto; }
+    .header-right a { color: var(--accent); text-decoration: none; font-size: 12px; font-weight: 600; }
+    main { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
+    .card { background: var(--surface); border-radius: 10px; padding: 20px 22px; margin-bottom: 18px; border: 1px solid var(--border); }
+    .card h2 { font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 14px; }
+    .add-row { display: flex; gap: 10px; margin-bottom: 16px; }
+    .add-row input { flex: 1; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 14px; outline: none; }
+    .add-row input:focus { border-color: var(--accent); }
+    .add-row button { padding: 8px 20px; background: var(--accent); color: #fff; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
+    .keyword-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+    .keyword-chip { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; font-size: 13px; display: flex; align-items: center; gap: 8px; cursor: pointer; transition: border-color .2s; }
+    .keyword-chip:hover { border-color: var(--accent); }
+    .keyword-chip.selected { border-color: var(--accent); background: rgba(59,130,246,0.1); }
+    .keyword-chip .remove { color: var(--danger); font-size: 16px; cursor: pointer; line-height: 1; }
+    .btn-track { padding: 8px 20px; background: var(--success); color: #fff; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; margin-bottom: 16px; }
+    .btn-track:disabled { opacity: .5; cursor: not-allowed; }
+    #track-status { font-size: 12px; color: var(--text-muted); margin-left: 10px; }
+    .chart-container { position: relative; height: 350px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 16px; }
+    thead th { background: var(--surface2); color: var(--text); padding: 8px 10px; text-align: left; font-weight: 600; }
+    tbody td { padding: 8px 10px; border-bottom: 1px solid rgba(51,65,85,0.5); }
+    tbody tr:hover { background: rgba(59,130,246,0.05); }
+    .sponsored { color: var(--text-dim); font-style: italic; font-size: 11px; }
+    .no-data { text-align: center; padding: 30px; color: var(--text-dim); font-size: 14px; }
+  </style>
+</head>
+<body>
+<header>
+  <span>📦</span>
+  <h1>Amazon Tracker v2</h1>
+  <nav class="nav-links">
+    <a href="/">Dashboard</a>
+    <a href="/history-page">History</a>
+    <a href="/keywords-page" class="active">Keywords</a>
+  </nav>
+  <div class="header-right"><a href="/logout">Logout</a></div>
+</header>
+<main>
+  <div class="card">
+    <h2>Keyword Rank Tracking</h2>
+    <div class="add-row">
+      <input type="text" id="keyword-input" placeholder="Enter keyword to track (e.g. 'organic green tea')">
+      <button id="btn-add-keyword">Add Keyword</button>
+    </div>
+    <div class="keyword-list" id="keyword-list"></div>
+    <button class="btn-track" id="btn-track-now">Track All Keywords Now</button>
+    <span id="track-status"></span>
+  </div>
+
+  <div class="card" id="rankings-card" style="display:none;">
+    <h2>Rankings: <span id="selected-keyword-label"></span></h2>
+    <div class="chart-container"><canvas id="rank-chart"></canvas></div>
+    <table id="rankings-table">
+      <thead><tr><th>Date</th><th>ASIN</th><th>Position</th><th>Page</th><th>Type</th></tr></thead>
+      <tbody id="rankings-body"></tbody>
+    </table>
+  </div>
+
+  <div class="no-data" id="no-data">Add keywords above and click "Track All Keywords Now" to start tracking rank positions.</div>
+</main>
+<script>
+  let keywords = [];
+  let selectedKeyword = null;
+  let rankChart = null;
+
+  async function loadKeywords() {
+    const res = await fetch("/keywords");
+    keywords = await res.json();
+    renderKeywords();
+  }
+
+  function renderKeywords() {
+    const list = document.getElementById("keyword-list");
+    list.innerHTML = "";
+    keywords.forEach(kw => {
+      const chip = document.createElement("div");
+      chip.className = "keyword-chip" + (selectedKeyword === kw.id ? " selected" : "");
+      chip.innerHTML = `<span>${kw.keyword}</span><span class="remove" data-id="${kw.id}">&times;</span>`;
+      chip.addEventListener("click", (e) => {
+        if (e.target.classList.contains("remove")) return;
+        selectedKeyword = kw.id;
+        renderKeywords();
+        loadRankings(kw.id);
+      });
+      chip.querySelector(".remove").addEventListener("click", async () => {
+        await fetch(`/keywords/${kw.id}`, { method: "DELETE" });
+        await loadKeywords();
+      });
+      list.appendChild(chip);
+    });
+  }
+
+  document.getElementById("btn-add-keyword").addEventListener("click", async () => {
+    const input = document.getElementById("keyword-input");
+    const keyword = input.value.trim();
+    if (!keyword) return;
+    await fetch("/keywords", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keyword }) });
+    input.value = "";
+    await loadKeywords();
+  });
+
+  document.getElementById("keyword-input").addEventListener("keypress", (e) => {
+    if (e.key === "Enter") document.getElementById("btn-add-keyword").click();
+  });
+
+  document.getElementById("btn-track-now").addEventListener("click", async () => {
+    const btn = document.getElementById("btn-track-now");
+    const status = document.getElementById("track-status");
+    btn.disabled = true;
+    status.textContent = "Tracking... this may take a minute.";
+    try {
+      const res = await fetch("/keywords/track", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) { status.textContent = data.error; return; }
+      status.textContent = data.message;
+      if (selectedKeyword) loadRankings(selectedKeyword);
+    } catch (e) { status.textContent = "Error: " + e.message; }
+    finally { btn.disabled = false; }
+  });
+
+  async function loadRankings(keywordId) {
+    const res = await fetch(`/keywords/${keywordId}/rankings?days=30`);
+    if (!res.ok) return;
+    const data = await res.json();
+
+    document.getElementById("no-data").style.display = "none";
+    document.getElementById("rankings-card").style.display = "block";
+    document.getElementById("selected-keyword-label").textContent = data.keyword;
+
+    // Table
+    const tbody = document.getElementById("rankings-body");
+    tbody.innerHTML = "";
+    data.rankings.forEach(r => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${r.date.slice(0, 10)}</td><td>${r.asin}</td><td>#${r.position}</td><td>${r.page}</td><td>${r.sponsored ? '<span class="sponsored">Sponsored</span>' : "Organic"}</td>`;
+      tbody.appendChild(tr);
+    });
+
+    // Chart: group by ASIN, plot position over time
+    const asinMap = {};
+    data.rankings.forEach(r => {
+      if (!asinMap[r.asin]) asinMap[r.asin] = [];
+      asinMap[r.asin].push({ date: r.date.slice(0, 10), position: r.position });
+    });
+
+    const colors = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4", "#ec4899"];
+    const datasets = Object.entries(asinMap).map(([asin, points], i) => ({
+      label: asin,
+      data: points.map(p => ({ x: p.date, y: p.position })),
+      borderColor: colors[i % colors.length],
+      tension: 0.3,
+      pointRadius: 3,
+    }));
+
+    if (rankChart) rankChart.destroy();
+    rankChart = new Chart(document.getElementById("rank-chart").getContext("2d"), {
+      type: "line",
+      data: { datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+          x: { type: "category", labels: [...new Set(data.rankings.map(r => r.date.slice(0, 10)))], ticks: { color: "#94a3b8" }, grid: { color: "rgba(51,65,85,0.5)" } },
+          y: { reverse: true, title: { display: true, text: "Rank Position", color: "#94a3b8" }, ticks: { color: "#94a3b8" }, grid: { color: "rgba(51,65,85,0.5)" } }
+        },
+        plugins: { legend: { labels: { color: "#e2e8f0" } } }
+      }
+    });
+  }
+
+  loadKeywords();
+</script>
+</body>
+</html>

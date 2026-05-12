@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Amazon Tracker v2 — History</title>
+  <script src="/static/chart.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --bg: #0f172a; --surface: #1e293b; --surface2: #334155; --text: #e2e8f0; --text-muted: #94a3b8; --text-dim: #64748b; --accent: #3b82f6; --accent-hover: #2563eb; --border: #334155; --success: #22c55e; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    header { background: var(--surface); padding: 14px 28px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--border); }
+    header h1 { font-size: 18px; font-weight: 600; }
+    .nav-links { display: flex; gap: 16px; margin-left: 32px; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 13px; font-weight: 500; padding: 4px 0; border-bottom: 2px solid transparent; transition: all .2s; }
+    .nav-links a:hover, .nav-links a.active { color: var(--text); border-color: var(--accent); }
+    .header-right { margin-left: auto; }
+    .header-right a { color: var(--accent); text-decoration: none; font-size: 12px; font-weight: 600; }
+    main { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
+    .card { background: var(--surface); border-radius: 10px; padding: 20px 22px; margin-bottom: 18px; border: 1px solid var(--border); }
+    .card h2 { font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 14px; }
+    .search-row { display: flex; gap: 10px; align-items: center; margin-bottom: 20px; }
+    .search-row input { flex: 1; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 14px; outline: none; }
+    .search-row input:focus { border-color: var(--accent); }
+    .search-row button { padding: 8px 20px; background: var(--accent); color: #fff; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
+    .search-row select { padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface2); color: var(--text); font-size: 13px; outline: none; }
+    .chart-container { position: relative; height: 300px; margin-bottom: 20px; }
+    .product-info { margin-bottom: 16px; padding: 12px; background: var(--bg); border-radius: 8px; }
+    .product-info h3 { font-size: 15px; margin-bottom: 4px; }
+    .product-info p { font-size: 12px; color: var(--text-muted); }
+    .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    @media (max-width: 900px) { .charts-grid { grid-template-columns: 1fr; } }
+    .no-data { text-align: center; padding: 40px; color: var(--text-dim); font-size: 14px; }
+  </style>
+</head>
+<body>
+<header>
+  <span>📦</span>
+  <h1>Amazon Tracker v2</h1>
+  <nav class="nav-links">
+    <a href="/">Dashboard</a>
+    <a href="/history-page" class="active">History</a>
+    <a href="/keywords-page">Keywords</a>
+  </nav>
+  <div class="header-right"><a href="/logout">Logout</a></div>
+</header>
+<main>
+  <div class="card">
+    <h2>Product History</h2>
+    <div class="search-row">
+      <input type="text" id="asin-search" placeholder="Enter ASIN (e.g. B08N5WRWNW)">
+      <select id="days-select">
+        <option value="7">7 days</option>
+        <option value="30" selected>30 days</option>
+        <option value="90">90 days</option>
+      </select>
+      <button id="btn-load-history">Load History</button>
+    </div>
+
+    <div id="product-info" class="product-info" style="display:none;">
+      <h3 id="product-title"></h3>
+      <p id="product-asin"></p>
+    </div>
+
+    <div id="no-data" class="no-data">Enter an ASIN above to view price, BSR, and rating history</div>
+
+    <div id="charts-area" style="display:none;">
+      <div class="charts-grid">
+        <div class="card" style="margin:0;">
+          <h2>Price History</h2>
+          <div class="chart-container"><canvas id="price-chart"></canvas></div>
+        </div>
+        <div class="card" style="margin:0;">
+          <h2>BSR History</h2>
+          <div class="chart-container"><canvas id="bsr-chart"></canvas></div>
+        </div>
+        <div class="card" style="margin:0;">
+          <h2>Rating History</h2>
+          <div class="chart-container"><canvas id="rating-chart"></canvas></div>
+        </div>
+        <div class="card" style="margin:0;">
+          <h2>Rating Count History</h2>
+          <div class="chart-container"><canvas id="count-chart"></canvas></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+<script>
+  let priceChart, bsrChart, ratingChart, countChart;
+
+  document.getElementById("btn-load-history").addEventListener("click", loadHistory);
+  document.getElementById("asin-search").addEventListener("keypress", (e) => { if (e.key === "Enter") loadHistory(); });
+
+  async function loadHistory() {
+    const asin = document.getElementById("asin-search").value.trim().toUpperCase();
+    const days = document.getElementById("days-select").value;
+    if (!asin || !/^[A-Z0-9]{10}$/.test(asin)) { alert("Enter a valid 10-character ASIN"); return; }
+
+    const res = await fetch(`/products/${asin}/history?days=${days}`);
+    if (!res.ok) {
+      const err = await res.json();
+      alert(err.error || "Failed to load history");
+      return;
+    }
+    const data = await res.json();
+
+    document.getElementById("no-data").style.display = "none";
+    document.getElementById("charts-area").style.display = "block";
+    document.getElementById("product-info").style.display = "block";
+    document.getElementById("product-title").textContent = data.title || "Unknown Product";
+    document.getElementById("product-asin").textContent = `ASIN: ${data.asin}`;
+
+    renderCharts(data);
+  }
+
+  function renderCharts(data) {
+    const chartOpts = (label, color, yReverse) => ({
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: "#94a3b8", font: { size: 10 } }, grid: { color: "rgba(51,65,85,0.5)" } },
+        y: { reverse: !!yReverse, ticks: { color: "#94a3b8", font: { size: 10 } }, grid: { color: "rgba(51,65,85,0.5)" } }
+      }
+    });
+
+    // Price
+    if (priceChart) priceChart.destroy();
+    const priceCtx = document.getElementById("price-chart").getContext("2d");
+    priceChart = new Chart(priceCtx, {
+      type: "line",
+      data: {
+        labels: data.prices.map(p => p.date.slice(0, 10)),
+        datasets: [{ label: "Price (INR)", data: data.prices.map(p => p.price), borderColor: "#3b82f6", backgroundColor: "rgba(59,130,246,0.1)", fill: true, tension: 0.3, pointRadius: 2 }]
+      },
+      options: chartOpts("Price", "#3b82f6", false)
+    });
+
+    // BSR
+    if (bsrChart) bsrChart.destroy();
+    const bsrCtx = document.getElementById("bsr-chart").getContext("2d");
+    bsrChart = new Chart(bsrCtx, {
+      type: "line",
+      data: {
+        labels: data.bsr.map(b => b.date.slice(0, 10)),
+        datasets: [{ label: "BSR", data: data.bsr.map(b => b.rank), borderColor: "#f59e0b", backgroundColor: "rgba(245,158,11,0.1)", fill: true, tension: 0.3, pointRadius: 2 }]
+      },
+      options: chartOpts("BSR", "#f59e0b", true)
+    });
+
+    // Rating
+    if (ratingChart) ratingChart.destroy();
+    const ratingCtx = document.getElementById("rating-chart").getContext("2d");
+    ratingChart = new Chart(ratingCtx, {
+      type: "line",
+      data: {
+        labels: data.ratings.map(r => r.date.slice(0, 10)),
+        datasets: [{ label: "Rating", data: data.ratings.map(r => r.rating), borderColor: "#22c55e", backgroundColor: "rgba(34,197,94,0.1)", fill: true, tension: 0.3, pointRadius: 2 }]
+      },
+      options: chartOpts("Rating", "#22c55e", false)
+    });
+
+    // Rating count
+    if (countChart) countChart.destroy();
+    const countCtx = document.getElementById("count-chart").getContext("2d");
+    countChart = new Chart(countCtx, {
+      type: "line",
+      data: {
+        labels: data.ratings.map(r => r.date.slice(0, 10)),
+        datasets: [{ label: "Rating Count", data: data.ratings.map(r => r.count), borderColor: "#8b5cf6", backgroundColor: "rgba(139,92,246,0.1)", fill: true, tension: 0.3, pointRadius: 2 }]
+      },
+      options: chartOpts("Count", "#8b5cf6", false)
+    });
+  }
+</script>
+</body>
+</html>

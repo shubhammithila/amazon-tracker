@@ -5,3 +5,11 @@ __pycache__/
 *.db
 *.sqlite
 *.sqlite3
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+alembic/versions/*.py
+!alembic/versions/__init__.py
+tracker.db
