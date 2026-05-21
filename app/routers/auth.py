@@ -37,7 +37,7 @@ class RedirectException(Exception):
 
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request, "error": None})
+    return templates.TemplateResponse(request, "login.html", {"error": None})
 
 
 @router.post("/login")
@@ -50,7 +50,7 @@ async def login(request: Request, password: str = Form(...)):
         )
         return response
     return templates.TemplateResponse(
-        "login.html", {"request": request, "error": "Invalid password"}
+        request, "login.html", {"error": "Invalid password"}
     )
 
 

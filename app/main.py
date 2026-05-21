@@ -50,28 +50,28 @@ async def auth_redirect_handler(request: Request, exc: RedirectException):
 async def index(request: Request):
     if not get_current_user(request):
         return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html")
 
 
 @app.get("/history-page", response_class=HTMLResponse)
 async def history_page(request: Request):
     if not get_current_user(request):
         return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse("history.html", {"request": request})
+    return templates.TemplateResponse(request, "history.html")
 
 
 @app.get("/keywords-page", response_class=HTMLResponse)
 async def keywords_page(request: Request):
     if not get_current_user(request):
         return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse("keywords.html", {"request": request})
+    return templates.TemplateResponse(request, "keywords.html")
 
 
 @app.get("/invoice-page", response_class=HTMLResponse)
 async def invoice_page(request: Request):
     if not get_current_user(request):
         return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse("invoice.html", {"request": request})
+    return templates.TemplateResponse(request, "invoice.html")
 
 
 @app.get("/health")
