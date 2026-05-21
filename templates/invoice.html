@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Amazon Tracker v2 — FBA Invoice</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --bg: #0f172a; --surface: #1e293b; --surface2: #334155; --text: #e2e8f0; --text-muted: #94a3b8; --text-dim: #64748b; --accent: #3b82f6; --accent-hover: #2563eb; --border: #334155; --success: #22c55e; --danger: #ef4444; --warning: #f59e0b; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    header { background: var(--surface); padding: 14px 28px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--border); }
+    header h1 { font-size: 18px; font-weight: 600; }
+    .nav-links { display: flex; gap: 16px; margin-left: 32px; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 13px; font-weight: 500; padding: 4px 0; border-bottom: 2px solid transparent; transition: all .2s; }
+    .nav-links a:hover, .nav-links a.active { color: var(--text); border-color: var(--accent); }
+    .header-right { margin-left: auto; }
+    .header-right a { color: var(--accent); text-decoration: none; font-size: 12px; font-weight: 600; }
+    main { max-width: 1400px; margin: 24px auto; padding: 0 16px; }
+    .card { background: var(--surface); border-radius: 10px; padding: 20px 22px; margin-bottom: 18px; border: 1px solid var(--border); }
+    .card h2 { font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 14px; }
+    button { padding: 8px 20px; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all .15s; }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .btn-success { background: var(--success); color: #fff; }
+    .btn-success:hover { background: #16a34a; }
+    .btn-warning { background: var(--warning); color: #000; }
+    .btn-warning:hover { background: #d97706; }
+
+    .upload-area { border: 2px dashed var(--border); border-radius: 8px; padding: 30px; text-align: center; cursor: pointer; transition: all .2s; }
+    .upload-area:hover { border-color: var(--accent); background: rgba(59,130,246,0.05); }
+    .upload-area input { display: none; }
+    .upload-area p { color: var(--text-muted); font-size: 14px; margin-top: 8px; }
+
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+    .form-group { display: flex; flex-direction: column; gap: 4px; }
+    .form-group label { font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .4px; }
+    .form-group input, .form-group select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 13px; outline: none; }
+    .form-group input:focus { border-color: var(--accent); }
+
+    .items-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 12px; }
+    .items-table thead th { background: var(--surface2); color: var(--text); padding: 8px 6px; text-align: center; font-weight: 600; font-size: 11px; white-space: nowrap; }
+    .items-table tbody td { padding: 6px; border-bottom: 1px solid rgba(51,65,85,0.5); text-align: center; vertical-align: middle; }
+    .items-table tbody td input { width: 100%; padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); font-size: 12px; text-align: center; outline: none; }
+    .items-table tbody td input:focus { border-color: var(--accent); }
+    .items-table tbody td.title-col { text-align: left; max-width: 200px; font-size: 11px; }
+    .items-table tfoot td { padding: 8px 6px; font-weight: 700; border-top: 2px solid var(--accent); }
+
+    .actions { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; align-items: center; }
+    .step-indicator { display: flex; gap: 24px; margin-bottom: 20px; }
+    .step { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 13px; }
+    .step.active { color: var(--accent); }
+    .step.done { color: var(--success); }
+    .step-num { width: 24px; height: 24px; border-radius: 50%; background: var(--surface2); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; }
+    .step.active .step-num { background: var(--accent); color: #fff; }
+    .step.done .step-num { background: var(--success); color: #fff; }
+
+    #step2, #step3 { display: none; }
+    .status-msg { font-size: 12px; color: var(--success); margin-left: 10px; }
+  </style>
+</head>
+<body>
+<header>
+  <span>📦</span>
+  <h1>Amazon Tracker v2</h1>
+  <nav class="nav-links">
+    <a href="/">Dashboard</a>
+    <a href="/history-page">History</a>
+    <a href="/keywords-page">Keywords</a>
+    <a href="/invoice-page" class="active">Invoice</a>
+  </nav>
+  <div class="header-right"><a href="/logout">Logout</a></div>
+</header>
+<main>
+  <div class="step-indicator">
+    <div class="step active" id="s1"><span class="step-num">1</span> Upload Shipment</div>
+    <div class="step" id="s2"><span class="step-num">2</span> Review & Fill Details</div>
+    <div class="step" id="s3"><span class="step-num">3</span> Download Invoice</div>
+  </div>
+
+  <!-- Step 1: Upload -->
+  <div class="card" id="step1">
+    <h2>Upload Amazon FBA Shipment File</h2>
+    <div class="upload-area" id="upload-area" onclick="document.getElementById('tsv-file').click()">
+      <input type="file" id="tsv-file" accept=".tsv,.txt,.csv" />
+      <strong style="font-size:16px;">Drop shipment .tsv file here</strong>
+      <p>or click to browse — download from Amazon Seller Central > Shipments</p>
+    </div>
+    <span id="upload-status" class="status-msg"></span>
+  </div>
+
+  <!-- Step 2: Review & edit -->
+  <div class="card" id="step2">
+    <h2>Invoice Details</h2>
+    <div class="form-grid">
+      <div class="form-group">
+        <label>Supplier Name</label>
+        <input type="text" id="f-supplier-name" value="F2D TECH PRIVATE LIMITED">
+      </div>
+      <div class="form-group">
+        <label>Supplier Address</label>
+        <input type="text" id="f-supplier-address" value="C/O Dinesh Prasad Sah, New Babu Para, Dumka, Jharkhand 814101">
+      </div>
+      <div class="form-group">
+        <label>Supplier GSTIN</label>
+        <input type="text" id="f-supplier-gstin" value="20AAFCF9848M1Z7">
+      </div>
+      <div class="form-group">
+        <label>Recipient GSTIN (auto from state)</label>
+        <input type="text" id="f-recipient-gstin" value="">
+      </div>
+      <div class="form-group">
+        <label>Invoice Number (auto / editable)</label>
+        <input type="text" id="f-invoice-no" value="" style="color:var(--success);font-weight:bold;">
+      </div>
+      <div class="form-group">
+        <label>Date</label>
+        <input type="date" id="f-date">
+      </div>
+      <div class="form-group">
+        <label>Shipment ID</label>
+        <input type="text" id="f-shipment-id" readonly>
+      </div>
+      <div class="form-group">
+        <label>Place of Supply</label>
+        <input type="text" id="f-place-supply" readonly>
+      </div>
+      <div class="form-group">
+        <label>Name of Transporter</label>
+        <select id="f-transporter">
+          <option value="">-- None (skip) --</option>
+          <option value="All Cargo Logistics">All Cargo Logistics</option>
+          <option value="VRL Logistics">VRL Logistics</option>
+          <option value="__custom__">+ Add New...</option>
+        </select>
+        <input type="text" id="f-transporter-custom" placeholder="Enter transporter name" style="display:none;margin-top:4px;">
+      </div>
+      <div class="form-group">
+        <label>E-Way Bill No.</label>
+        <input type="text" id="f-eway" placeholder="(optional)">
+      </div>
+      <div class="form-group">
+        <label>No. of Boxes/Cartons</label>
+        <input type="number" id="f-boxes" placeholder="e.g. 50">
+      </div>
+      <div class="form-group">
+        <label>Shipment Weight (Kg)</label>
+        <input type="text" id="f-weight" placeholder="e.g. 630 Kg">
+      </div>
+    </div>
+
+    <h2 style="margin-top:20px;">Line Items — Fill Rate (Price per unit)</h2>
+    <div style="overflow-x:auto;">
+      <table class="items-table" id="items-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>SKU</th>
+            <th>Title</th>
+            <th>HSN</th>
+            <th>GST%</th>
+            <th>ASIN</th>
+            <th>FNSKU</th>
+            <th>Rate (₹)</th>
+            <th>Qty</th>
+            <th>Taxable</th>
+            <th>IGST</th>
+            <th>Total</th>
+          </tr>
+        </thead>
+        <tbody id="items-body"></tbody>
+        <tfoot>
+          <tr>
+            <td colspan="8" style="text-align:right;">Totals:</td>
+            <td id="total-qty">0</td>
+            <td id="total-taxable">0</td>
+            <td id="total-igst">0</td>
+            <td id="total-total">0</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    <div class="actions">
+      <button class="btn-primary" id="btn-finalize">Finalize Invoice</button>
+      <span style="font-size:12px;color:var(--text-dim);">Fill rates for all items, then click finalize. Leave transporter blank to skip.</span>
+    </div>
+  </div>
+
+  <!-- Step 3: Download -->
+  <div class="card" id="step3">
+    <h2>Download Invoice</h2>
+    <p style="margin-bottom:16px;color:var(--text-muted);font-size:13px;">Your invoice is ready. Download in your preferred format:</p>
+    <div class="actions">
+      <button class="btn-success" id="btn-dl-excel">Download Excel (.xlsx)</button>
+      <button class="btn-warning" id="btn-dl-pdf">Download PDF</button>
+      <button class="btn-primary" id="btn-restart" style="margin-left:auto;">Create Another Invoice</button>
+    </div>
+  </div>
+</main>
+
+<script>
+  let parsedData = null;
+  let finalInvoiceData = null;
+
+  // Set today's date
+  document.getElementById("f-date").value = new Date().toISOString().split("T")[0];
+
+  // Auto-load next invoice number
+  (async () => {
+    try {
+      const res = await fetch("/invoice/next-number");
+      const data = await res.json();
+      document.getElementById("f-invoice-no").value = data.next_number;
+    } catch(e) {}
+  })();
+
+  // Transporter dropdown: show custom input when "Add New" selected
+  document.getElementById("f-transporter").addEventListener("change", function() {
+    const custom = document.getElementById("f-transporter-custom");
+    if (this.value === "__custom__") {
+      custom.style.display = "block";
+      custom.focus();
+    } else {
+      custom.style.display = "none";
+    }
+  });
+
+  // Upload handling
+  const uploadArea = document.getElementById("upload-area");
+  const fileInput = document.getElementById("tsv-file");
+
+  uploadArea.addEventListener("dragover", e => { e.preventDefault(); uploadArea.style.borderColor = "var(--accent)"; });
+  uploadArea.addEventListener("dragleave", () => { uploadArea.style.borderColor = ""; });
+  uploadArea.addEventListener("drop", e => { e.preventDefault(); uploadArea.style.borderColor = ""; if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]); });
+  fileInput.addEventListener("change", () => { if (fileInput.files[0]) uploadFile(fileInput.files[0]); });
+
+  async function uploadFile(file) {
+    const status = document.getElementById("upload-status");
+    status.textContent = "Parsing...";
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const res = await fetch("/invoice/parse-shipment", { method: "POST", body: formData });
+    const data = await res.json();
+    if (!res.ok) { status.textContent = "Error: " + (data.error || "Parse failed"); status.style.color = "var(--danger)"; return; }
+
+    parsedData = data;
+    status.textContent = `Parsed ${data.items.length} items from ${data.metadata.shipment_id}`;
+    status.style.color = "var(--success)";
+
+    // Fill form fields from parsed data
+    document.getElementById("f-shipment-id").value = data.metadata.shipment_id;
+    const wh = data.metadata.warehouse;
+    // Place of supply = just the state name
+    document.getElementById("f-place-supply").value = wh.state || data.metadata.ship_to;
+
+    // Auto-fill recipient GSTIN based on FC state
+    if (data.metadata.recipient_gstin) {
+      document.getElementById("f-recipient-gstin").value = data.metadata.recipient_gstin;
+    }
+
+    // Populate items table (rates are auto-filled from master pricing)
+    populateItems(data.items);
+    recalculate();  // Calculate totals immediately since rates are pre-filled
+    showStep(2);
+  }
+
+  function populateItems(items) {
+    const tbody = document.getElementById("items-body");
+    tbody.innerHTML = "";
+    items.forEach((item, i) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${i+1}</td>
+        <td style="font-size:10px;white-space:nowrap;">${item.sku}</td>
+        <td class="title-col" title="${item.title}">${item.short_title}</td>
+        <td><input type="text" value="${item.hsn_code}" data-field="hsn" data-idx="${i}" style="width:55px;"></td>
+        <td><input type="number" value="${item.gst_rate}" data-field="gst" data-idx="${i}" style="width:45px;" step="1"></td>
+        <td style="font-size:10px;">${item.asin}</td>
+        <td style="font-size:10px;">${item.fnsku}</td>
+        <td><input type="number" value="${item.rate || ''}" data-field="rate" data-idx="${i}" style="width:65px;" step="1" placeholder="₹"></td>
+        <td>${item.quantity}</td>
+        <td class="calc-taxable" data-idx="${i}">0</td>
+        <td class="calc-igst" data-idx="${i}">0</td>
+        <td class="calc-total" data-idx="${i}">0</td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    // Recalculate on rate/gst change
+    tbody.addEventListener("input", recalculate);
+  }
+
+  function recalculate() {
+    let tQty = 0, tTaxable = 0, tIgst = 0, tTotal = 0;
+    parsedData.items.forEach((item, i) => {
+      const rateInput = document.querySelector(`input[data-field="rate"][data-idx="${i}"]`);
+      const gstInput = document.querySelector(`input[data-field="gst"][data-idx="${i}"]`);
+      const hsnInput = document.querySelector(`input[data-field="hsn"][data-idx="${i}"]`);
+
+      const rate = parseFloat(rateInput?.value) || 0;
+      const gst = parseFloat(gstInput?.value) || 5;
+      item.rate = rate;
+      item.gst_rate = gst;
+      item.hsn_code = hsnInput?.value || item.hsn_code;
+
+      const taxable = Math.round(item.quantity * rate * 100) / 100;
+      const igst = Math.round(taxable * gst / 100 * 100) / 100;
+      const total = Math.round((taxable + igst) * 100) / 100;
+
+      document.querySelector(`.calc-taxable[data-idx="${i}"]`).textContent = taxable;
+      document.querySelector(`.calc-igst[data-idx="${i}"]`).textContent = igst;
+      document.querySelector(`.calc-total[data-idx="${i}"]`).textContent = total;
+
+      tQty += item.quantity;
+      tTaxable += taxable;
+      tIgst += igst;
+      tTotal += total;
+    });
+    document.getElementById("total-qty").textContent = tQty;
+    document.getElementById("total-taxable").textContent = Math.round(tTaxable * 100) / 100;
+    document.getElementById("total-igst").textContent = Math.round(tIgst * 100) / 100;
+    document.getElementById("total-total").textContent = Math.round(tTotal * 100) / 100;
+  }
+
+  // Finalize
+  document.getElementById("btn-finalize").addEventListener("click", async () => {
+    // Check if all rates are filled
+    const missingRates = parsedData.items.filter(item => !item.rate || item.rate <= 0);
+    if (missingRates.length > 0) {
+      if (!confirm(`${missingRates.length} item(s) have no rate (₹0). Continue anyway?`)) return;
+    }
+
+    // Get transporter value (from dropdown or custom input)
+    let transporterSel = document.getElementById("f-transporter").value;
+    if (transporterSel === "__custom__") {
+      transporterSel = document.getElementById("f-transporter-custom").value.trim();
+    }
+    const transporter = transporterSel === "__custom__" ? "" : transporterSel;
+    const eway = document.getElementById("f-eway").value.trim();
+
+    if (!transporter && !eway) {
+      if (!confirm("Transporter and E-Way Bill are empty. Download without these details?")) return;
+    }
+
+    // Build final invoice data
+    const wh = parsedData.metadata.warehouse;
+    finalInvoiceData = {
+      supplier: {
+        name: document.getElementById("f-supplier-name").value,
+        address: document.getElementById("f-supplier-address").value,
+        gstin: document.getElementById("f-supplier-gstin").value,
+      },
+      recipient: {
+        name: "Amazon FC " + (parsedData.metadata.ship_to || ""),
+        address: wh.full_address || (wh.city + ", " + wh.state + " " + wh.pincode),
+        gstin: document.getElementById("f-recipient-gstin").value,
+      },
+      details: {
+        invoice_no: document.getElementById("f-invoice-no").value,
+        date: document.getElementById("f-date").value,
+        shipment_id: document.getElementById("f-shipment-id").value,
+        place_of_supply: document.getElementById("f-place-supply").value,
+        fc_code: parsedData.metadata.ship_to,
+        transporter: transporter,
+        eway_bill: eway,
+        boxes: document.getElementById("f-boxes").value,
+        weight: document.getElementById("f-weight").value,
+      },
+      items: parsedData.items.map(item => ({
+        ...item,
+        rate: item.rate || 0,
+        gst_rate: item.gst_rate || 5,
+      })),
+    };
+
+    // Save invoice to database
+    try {
+      const saveRes = await fetch("/invoice/save", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(finalInvoiceData),
+      });
+      const saveData = await saveRes.json();
+      if (saveRes.ok) {
+        finalInvoiceData.details.invoice_no = saveData.invoice_no;
+        document.getElementById("f-invoice-no").value = saveData.invoice_no;
+      }
+    } catch(e) { console.error("Save failed:", e); }
+
+    showStep(3);
+  });
+
+  // Downloads
+  document.getElementById("btn-dl-excel").addEventListener("click", async () => {
+    const res = await fetch("/invoice/generate-excel", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(finalInvoiceData),
+    });
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `FBA_Invoice_${finalInvoiceData.details.shipment_id}.xlsx`;
+    a.click();
+  });
+
+  document.getElementById("btn-dl-pdf").addEventListener("click", async () => {
+    const res = await fetch("/invoice/generate-pdf", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(finalInvoiceData),
+    });
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `FBA_Invoice_${finalInvoiceData.details.shipment_id}.pdf`;
+    a.click();
+  });
+
+  document.getElementById("btn-restart").addEventListener("click", () => {
+    parsedData = null; finalInvoiceData = null;
+    document.getElementById("items-body").innerHTML = "";
+    document.getElementById("upload-status").textContent = "";
+    fileInput.value = "";
+    showStep(1);
+  });
+
+  function showStep(n) {
+    document.getElementById("step1").style.display = n === 1 ? "block" : "none";
+    document.getElementById("step2").style.display = n === 2 ? "block" : "none";
+    document.getElementById("step3").style.display = n === 3 ? "block" : "none";
+    document.getElementById("s1").className = "step " + (n === 1 ? "active" : n > 1 ? "done" : "");
+    document.getElementById("s2").className = "step " + (n === 2 ? "active" : n > 2 ? "done" : "");
+    document.getElementById("s3").className = "step " + (n === 3 ? "active" : "");
+  }
+</script>
+</body>
+</html>

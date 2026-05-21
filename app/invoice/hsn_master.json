@@ -1,0 +1,62 @@
+{
+  "0.25 fc ch FBA": {
+    "hsn_code": "1106",
+    "gst_rate": 5
+  },
+  "0.25 fc cm FBA": {
+    "hsn_code": "1106",
+    "gst_rate": 5
+  },
+  "0.25 fc hj FBA": {
+    "hsn_code": "1106",
+    "gst_rate": 5
+  },
+  "0.25 fc pp FBA": {
+    "hsn_code": "1106",
+    "gst_rate": 5
+  },
+  "1kg cs FBA": {
+    "hsn_code": "1106",
+    "gst_rate": 5
+  },
+  "1kg gb FBA": {
+    "hsn_code": "1106",
+    "gst_rate": 5
+  },
+  "2kg gb FBA": {
+    "hsn_code": "1106",
+    "gst_rate": 5
+  },
+  "5 arwa FBA": {
+    "hsn_code": "1106",
+    "gst_rate": 5
+  },
+  "5kg gb FBA": {
+    "hsn_code": "1106",
+    "gst_rate": 5
+  },
+  "5kg uc FBA": {
+    "hsn_code": "1106",
+    "gst_rate": 5
+  },
+  "HF_gbrice_1kg_FBA": {
+    "hsn_code": "1106",
+    "gst_rate": 5
+  },
+  "HF_gbrice_2kg_FBA": {
+    "hsn_code": "1106",
+    "gst_rate": 5
+  },
+  "coco thekua 350g FBA": {
+    "hsn_code": "1106",
+    "gst_rate": 5
+  },
+  "kuDa 1kg FBA": {
+    "hsn_code": "1106",
+    "gst_rate": 5
+  },
+  "kuDa 500g FBA": {
+    "hsn_code": "1106",
+    "gst_rate": 5
+  }
+}

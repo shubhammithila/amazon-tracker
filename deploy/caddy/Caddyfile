@@ -1,12 +1,11 @@
-# Replace with your actual domain
-# If using just an IP (no domain), use: :80 { ... }
-tracker.yourdomain.com {
+# IP-only access (no domain, no HTTPS)
+:80 {
     reverse_proxy localhost:8000
     encode gzip
 }
 
-# For IP-only access (no HTTPS), uncomment below and comment above:
-# :80 {
+# If you add a domain later, replace the above with:
+# tracker.yourdomain.com {
 #     reverse_proxy localhost:8000
 #     encode gzip
 # }

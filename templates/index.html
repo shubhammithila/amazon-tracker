@@ -144,6 +144,7 @@
     <a href="/" class="active">Dashboard</a>
     <a href="/history-page">History</a>
     <a href="/keywords-page">Keywords</a>
+    <a href="/invoice-page">Invoice</a>
   </nav>
   <div class="header-right">
     <span id="last-fetched"></span>
@@ -348,7 +349,7 @@
 
   // ASIN helpers
   function parseAsins(text) {
-    return text.split(/[\n,;\t\s]+/).map(s => s.trim().toUpperCase()).filter(s => /^[A-Z0-9]{10}$/.test(s));
+    return text.split(/[\n,;\t\s]+/).map(s => s.trim().toUpperCase()).filter(s => /^B0[A-Z0-9]{8}$/.test(s));
   }
 
   function renderChips() {

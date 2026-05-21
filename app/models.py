@@ -131,3 +131,24 @@ class ScrapeJob(Base):
     started_at = Column(DateTime)
     finished_at = Column(DateTime)
     error_log = Column(Text)
+
+
+class Invoice(Base):
+    __tablename__ = "invoices"
+
+    id = Column(Integer, primary_key=True)
+    invoice_no = Column(String(30), unique=True, nullable=False)
+    invoice_number = Column(Integer, nullable=False)  # Sequential number (27, 28, 29...)
+    shipment_id = Column(String(50))
+    date = Column(String(20))
+    supplier_gstin = Column(String(20))
+    recipient_gstin = Column(String(20))
+    recipient_state = Column(String(50))
+    fc_code = Column(String(10))
+    transporter = Column(String(100))
+    total_qty = Column(Integer)
+    total_taxable = Column(Numeric(12, 2))
+    total_igst = Column(Numeric(12, 2))
+    total_amount = Column(Numeric(12, 2))
+    invoice_data = Column(Text)  # Full JSON of the invoice
+    created_at = Column(DateTime, default=datetime.utcnow)

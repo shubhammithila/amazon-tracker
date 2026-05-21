@@ -122,7 +122,7 @@ async def start_scrape(request: Request, _=Depends(require_auth)):
     else:
         asins = [a.strip() for a in asins_raw if a.strip()]
 
-    asins = list(dict.fromkeys(a.upper() for a in asins if re.match(r"^[A-Z0-9]{10}$", a.upper())))
+    asins = list(dict.fromkeys(a.upper() for a in asins if re.match(r"^B0[A-Z0-9]{8}$", a.upper())))
 
     if not asins:
         return JSONResponse({"error": "No valid ASINs provided"}, status_code=400)
@@ -184,7 +184,7 @@ async def fetch_sheet(request: Request, _=Depends(require_auth)):
         cols = line.split(",")
         for col in cols:
             col = col.strip().strip('"').strip()
-            if re.match(r"^[A-Z0-9]{10}$", col.upper()):
+            if re.match(r"^B0[A-Z0-9]{8}$", col.upper()):
                 asins.add(col.upper())
 
     return JSONResponse({"asins": sorted(asins), "count": len(asins)})

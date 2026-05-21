@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import get_settings
 from app.database import engine, Base
-from app.routers import auth, scrape, products, keywords, ws
+from app.routers import auth, scrape, products, keywords, ws, invoice
 from app.routers.auth import get_current_user, RedirectException
 from app.scheduler import setup_scheduler
 
@@ -38,6 +38,7 @@ app.include_router(scrape.router)
 app.include_router(products.router)
 app.include_router(keywords.router)
 app.include_router(ws.router)
+app.include_router(invoice.router)
 
 
 @app.exception_handler(RedirectException)
@@ -64,6 +65,13 @@ async def keywords_page(request: Request):
     if not get_current_user(request):
         return RedirectResponse(url="/login", status_code=303)
     return templates.TemplateResponse("keywords.html", {"request": request})
+
+
+@app.get("/invoice-page", response_class=HTMLResponse)
+async def invoice_page(request: Request):
+    if not get_current_user(request):
+        return RedirectResponse(url="/login", status_code=303)
+    return templates.TemplateResponse("invoice.html", {"request": request})
 
 
 @app.get("/health")

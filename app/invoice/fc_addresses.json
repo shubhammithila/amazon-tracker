@@ -1,0 +1,746 @@
+{
+  "GAX1": {
+    "state": "Assam",
+    "building": "Nitesh Ventures",
+    "road": "Village: Uparhali (Bijoynagar), P.O. Uparhali",
+    "city": "Kochpara",
+    "district": "Kamrup",
+    "pincode": "781122"
+  },
+  "SGAC": {
+    "state": "Assam",
+    "building": "PS Kamalpur, Village Madanpur P.O Deuduar",
+    "road": "Pamohi Deochatal Garchuk",
+    "city": "P.S. Changsari",
+    "district": "Kamrup",
+    "pincode": "781101"
+  },
+  "SPAB": {
+    "state": "Bihar",
+    "building": "Pristine Magadh Infrastructure Pvt.Ltd",
+    "road": "Old Sugar Mill Campus.,Near Bihta Railway Station",
+    "city": "Bihta",
+    "district": "Patna",
+    "pincode": "801103"
+  },
+  "DEX3": {
+    "state": "Delhi",
+    "building": "Plot No A 28 Lower Ground floor",
+    "road": "Mohan Co-operative Industrial Estate",
+    "city": "Mathura road",
+    "district": "New Delhi",
+    "pincode": "110044"
+  },
+  "PNQ2": {
+    "state": "Delhi",
+    "building": "\u200bNo A-33",
+    "road": "Mohan Co-operative Industrial Estate",
+    "city": "Mathura road",
+    "district": "New Delhi",
+    "pincode": "110044"
+  },
+  "DEX8": {
+    "state": "Delhi",
+    "building": "A-29",
+    "road": "Mohan Co-operative Industrial Estate",
+    "city": "Mathura Road",
+    "district": "New Delhi",
+    "pincode": "110044"
+  },
+  "AMD2": {
+    "state": "Gujarat",
+    "building": "Plot no. 120 X and part portion of plot no. 119 W2",
+    "road": "Gallops Industrial Park 1",
+    "city": "Village Rajoda, Taluka Bavla",
+    "district": "Ahmedabad",
+    "pincode": "382220"
+  },
+  "SAME": {
+    "state": "Gujarat",
+    "building": "Indraprashtha  Industrial  and  logistics  hub",
+    "road": "Vadala Patia  Road,  Near  Bharat  gas  filling  plant",
+    "city": "Village  Hariyala,  Kheda",
+    "district": "Ahmedabad",
+    "pincode": "387570"
+  },
+  "DEL2": {
+    "state": "Haryana",
+    "building": "Unit No.1, Khewat/Khata No. 373/400",
+    "road": "Mustatil No. 31, Kila No 14/2",
+    "city": "Village Tauru",
+    "district": "Mewat",
+    "pincode": "122105"
+  },
+  "DEL4": {
+    "state": "Haryana",
+    "building": "KH No 18//21,19//25,34//5,6,7/1 min,14/2/2 min,15/1 min",
+    "road": "27,35//1,7,8,9/1,9/2,10/1,10/2,11 min",
+    "city": "12,13,14 of village Jamalpur",
+    "district": "Gurgaon",
+    "pincode": "122503"
+  },
+  "DEL5": {
+    "state": "Haryana",
+    "building": "Rect/Killa Nos. 38//8/2 min, 192//22/1,196//2/1/1, 37//15/1",
+    "road": "15/2,Adjacent to Starex School, Village - Binol",
+    "city": "National Highway -8, Tehsil \u2013 Manesar",
+    "district": "Gurgaon",
+    "pincode": "122413"
+  },
+  "DED3": {
+    "state": "Haryana",
+    "building": "Block J2",
+    "road": "Farukhnagar Logistics Parks, LLP",
+    "city": "Farrukhanagar",
+    "district": "Gurgaon",
+    "pincode": "122506"
+  },
+  "DED5": {
+    "state": "Haryana",
+    "building": "Emporium Industrial Parks India Pvt Ltd ESR Sohna Logistics Park",
+    "road": "Sohna-Ballabgarh",
+    "city": "Village Rahaka, Tehsil \u2013 Sohna",
+    "district": "Gurugram",
+    "pincode": "122103"
+  },
+  "SDEG": {
+    "state": "Haryana",
+    "building": "M/s. ERPL Warehousing Park Pvt. Ltd B 300 Khewat 2/2 Rectangle no. 34",
+    "road": "Sehsola",
+    "city": "Tehsil Taoru",
+    "district": "Mewat",
+    "pincode": "122105"
+  },
+  "SDEB": {
+    "state": "Haryana",
+    "building": "Block B & C",
+    "road": "LOGOS Luhari Logistics Estate",
+    "city": "Village Luhari",
+    "district": "Luhari",
+    "pincode": "124108"
+  },
+  "XNRW": {
+    "state": "Haryana",
+    "building": "Block B & C",
+    "road": "LOGOS Luhari Logistics Estate",
+    "city": "Village Luhari",
+    "district": "Luhari",
+    "pincode": "124108"
+  },
+  "BLR4": {
+    "state": "Karnataka",
+    "building": "Plot no. 12/P2 (IT Sector)",
+    "road": "Hitech Defence and Aerospace Park",
+    "city": "Devanahalli",
+    "district": "Devanahalli",
+    "pincode": "562149"
+  },
+  "BLR5": {
+    "state": "Karnataka",
+    "building": "SURVEY NO. 38/2, 39 AND 40",
+    "road": "JADIGENAHALLI HOBLI, KACHARAKANAHALLI VILLAGE",
+    "city": "HOSAKOTE TALUK",
+    "district": "Bengaluru (Bangalore) Urban",
+    "pincode": "562114"
+  },
+  "BLR7": {
+    "state": "Karnataka",
+    "building": "\u200bM/s R.K.V DEVELOPERS, \u00a0SY no 524/2, 525/3, 526/3",
+    "road": "Madivala & Thattanahalli Village, Anekal Taluk",
+    "city": "Attibele sub division of Chandapura Division",
+    "district": "Bangalore",
+    "pincode": "562107"
+  },
+  "BLR8": {
+    "state": "Karnataka",
+    "building": "Building 2 Wh 2. Plot no. 12/P2 IT Sector",
+    "road": "Hitech Defence and Aerospace Park",
+    "city": "Devanahalli",
+    "district": "Devanahalli",
+    "pincode": "562149"
+  },
+  "BLX1": {
+    "state": "Karnataka",
+    "building": "Sr No..43,44,45,46 Madanahatti,Venkatapura",
+    "road": "Marasandra Malur",
+    "city": "Kolar",
+    "district": "Malur ",
+    "pincode": "563160"
+  },
+  "XSAJ": {
+    "state": "Karnataka",
+    "building": "Sy nos. 70/1, 70/2 & 70/3 at Minnapura Village",
+    "road": "Thyamagondlu Hobli",
+    "city": "Nelamangala Taluk",
+    "district": "Bangalore Rural",
+    "pincode": "562132"
+  },
+  "BOM5": {
+    "state": "Maharashtra",
+    "building": "Building No.WE-I, Renaissance Industrial Smart City",
+    "road": "Village Vashere",
+    "city": "Post Amane, Taluka Bhiwandi",
+    "district": "Thane",
+    "pincode": "421302"
+  },
+  "BOM7": {
+    "state": "Maharashtra",
+    "building": "Building # 5, BGR Warehousing Complex",
+    "road": "Near Shiv Sagar Hotel",
+    "city": "Village Vahuli, Bhiwandi",
+    "district": "Thane",
+    "pincode": "421302"
+  },
+  "ISK3": {
+    "state": "Maharashtra",
+    "building": "Royal Warehousing and Logistics LLP, Survey No 45, Hissa No 4A",
+    "road": "Village Aamne Post, Taluka Bhiwandi",
+    "city": "Savad-Pise Road",
+    "district": "Thane",
+    "pincode": "421302"
+  },
+  "PNQ3": {
+    "state": "Maharashtra",
+    "building": "Building No. B01",
+    "road": "ESR Pune Estates Pvt Ltd",
+    "city": "Village Ambethan",
+    "district": "Tal - Khed",
+    "pincode": "410501"
+  },
+  "SBOB": {
+    "state": "Maharashtra",
+    "building": "F-2,Survey No. 122/7c,122/2,122/1,118/1,118/7,131",
+    "road": "Ayushi Spaces LLP,NH-3",
+    "city": "Village Dohole, Taluka, Bhiwandi",
+    "district": "Thane",
+    "pincode": "421101"
+  },
+  "XWAA": {
+    "state": "Maharashtra",
+    "building": "Building no. B-2,Antariksh Logidrome",
+    "road": "Sape-Aamme",
+    "city": "Padgha \u2013 Kalyan Road",
+    "district": "Bhiwandi",
+    "pincode": "421302"
+  },
+  "SBHF": {
+    "state": "Madhya Pradesh",
+    "building": "Asianaco Logistic (OPC) Pvt Ltd",
+    "road": "New Bypass Road",
+    "city": "Dobra ",
+    "district": "Bhopal ",
+    "pincode": "462030"
+  },
+  "SIDA": {
+    "state": "Madhya Pradesh",
+    "building": "Survey Number 2/4/1, 2/2/2, 2/2/2, 2/1/2, 2/2/3, 2/3/2",
+    "road": "Village Pipliya Kumhar, MR-11",
+    "city": "Behind METRO Cash n Carry Store",
+    "district": "Indore",
+    "pincode": "453771"
+  },
+  "ATX1": {
+    "state": "Punjab",
+    "building": "Khewat No. 79/80, 39/59,\u00a0Khasra No. 306,348/305, 48, 56",
+    "road": "M/s Nahar Logistics Park Pvt. Ltd",
+    "city": "Near Katana Sahib Gurudwara",
+    "district": "Ludhiana",
+    "pincode": "141113"
+  },
+  "SATB": {
+    "state": "Punjab",
+    "building": "Ludhiana Logistics Park, Vill Katani Kalan",
+    "road": "Neelon to Doraha NH4 Highway, Hadbast No 212",
+    "city": "Khewat No 748/840",
+    "district": "Ludhiana",
+    "pincode": "141113"
+  },
+  "JPX1": {
+    "state": "Rajasthan",
+    "building": "\u200bPlot No. 128",
+    "road": "Jhotwara Industrial Area",
+    "city": "Jaipur",
+    "district": "Jaipur",
+    "pincode": "302016"
+  },
+  "JPX2": {
+    "state": "Rajasthan",
+    "building": "Kh No 554 to 558,560 to 583,600 to 606",
+    "road": "Bagru Rawan,N.H.8",
+    "city": "Tehsil Sanganer",
+    "district": "Bagru",
+    "pincode": "303007"
+  },
+  "HYD8_HYD3": {
+    "state": "Telangana",
+    "building": "Survey no.99/1",
+    "road": "Mamidipally Village",
+    "city": "Shamshabad",
+    "district": "Hyderabad",
+    "pincode": "500108"
+  },
+  "SHYH": {
+    "state": "Telangana",
+    "building": "ESR GMR logistics park \u2013 Shed no 3 RGIA",
+    "road": "Rangareddy",
+    "city": "Shamshabad ",
+    "district": "Telangana",
+    "pincode": "500108"
+  },
+  "SHYB": {
+    "state": "Telangana",
+    "building": "Aruna Warehousing Company",
+    "road": "Banda Mylaram Village",
+    "city": "Hyderabad",
+    "district": "Siddipet",
+    "pincode": "502279"
+  },
+  "XSAD": {
+    "state": "Telangana",
+    "building": "Aruna Warehousing Company",
+    "road": "Banda Mylaram Village",
+    "city": "Hyderabad",
+    "district": "Siddipet",
+    "pincode": "502279"
+  },
+  "XSIP": {
+    "state": "Telangana",
+    "building": "Aruna Warehousing Company",
+    "road": "Banda Mylaram Village",
+    "city": "Hyderabad",
+    "district": "Siddipet",
+    "pincode": "502279"
+  },
+  "MAA4": {
+    "state": "Tamil Nadu",
+    "building": "\u200bSurvey No.139-157/2,\u00a0Durainallur Village",
+    "road": "Puduvoyal Post",
+    "city": "Ponneri Taluk",
+    "district": "Thiruvallur",
+    "pincode": "601206"
+  },
+  "CJB1": {
+    "state": "Tamil Nadu",
+    "building": "Survey No.153-1 153-2226-2,229-2,230-2",
+    "road": "Chettipalayam, Oratakuppai Village",
+    "city": "Palladam Main Road",
+    "district": "Coimbatore",
+    "pincode": "641201"
+  },
+  "SMAB": {
+    "state": "Tamil Nadu",
+    "building": "77/2A3, Siruvapuri Murugan Industrial and Logistics Private Limited",
+    "road": "Thamaraipakkam",
+    "city": "Agaram, Setupakkam Village",
+    "district": "Tiruvallur",
+    "pincode": "601103"
+  },
+  "SCJF": {
+    "state": "Tamil Nadu",
+    "building": "VSMC Logistics Park Pvt Ltd 432/433 Pappampatty",
+    "road": "Appanaichenpatti Road",
+    "city": "Sulur",
+    "district": "Coimbatore",
+    "pincode": "641402"
+  },
+  "XSIR": {
+    "state": "Tamil Nadu",
+    "building": "77/2A3, Siruvapuri Murugan Industrial and Logistics Private Limited",
+    "road": "Thamaraipakkam",
+    "city": "Agaram, Setupakkam Village",
+    "district": "Tiruvallur",
+    "pincode": "601103"
+  },
+  "LKO1": {
+    "state": "Uttar Pradesh",
+    "building": "Khasra No 472 and others",
+    "road": "Village Bhukapur",
+    "city": "Tehsil-Sarojini Nagar",
+    "district": "Lucknow",
+    "pincode": "226401"
+  },
+  "SLKD": {
+    "state": "Uttar Pradesh",
+    "building": "Khasra No 518-20,522,524,528 & 575",
+    "road": "Village- Kishanpur Kodia",
+    "city": "Pargana-Bijnour",
+    "district": "Lucknow",
+    "pincode": "226401"
+  },
+  "CCX1": {
+    "state": "West Bengal",
+    "building": "NDR Vanshil, warehouse Park LL",
+    "road": "Raghudevpur, Panchla",
+    "city": "Panchla",
+    "district": "Howrah",
+    "pincode": "711322"
+  },
+  "CCX2": {
+    "state": "West Bengal",
+    "building": "SpaceArth Warehousing GC Two LLP Prop  Arun Kumar Dwivedi",
+    "road": "Ganesh Complex  2 Mallick Bagan",
+    "city": "Panchla",
+    "district": "Natibpur",
+    "pincode": "711302"
+  },
+  "SCCE": {
+    "state": "West Bengal",
+    "building": "Amta Industrial Park",
+    "road": "Amta, Mouza: Majukhetra",
+    "city": "Panchayat \u2013 Majukhetra",
+    "district": "Howrah",
+    "pincode": "711313"
+  },
+  "XECP": {
+    "state": "West Bengal",
+    "building": "Amta Industrial Park-2",
+    "road": "Amta-Ranihati Road",
+    "city": "Islampur",
+    "district": "Uttar Dinajpur",
+    "pincode": "711401"
+  },
+  "PAX1": {
+    "state": "Bihar",
+    "building": "M S Trilokeshwar Estates Private Limited",
+    "road": "Mauza Simli Murarpur Near Toll Plaza AND Maurya Motor NH-30",
+    "city": "Patna",
+    "district": "Patna",
+    "pincode": "800009"
+  },
+  "FBLJ": {
+    "state": "Karnataka",
+    "building": "No. 36/2C",
+    "road": "Pattanagere Main Road",
+    "city": "Bangalore",
+    "district": "RajaRajeshwarinagar",
+    "pincode": "560059"
+  },
+  "FBLF": {
+    "state": "Karnataka",
+    "building": "Municipal No. 42/2-1",
+    "road": "Industrial Suburb, 1st Stage, Rajajinagar, Ward No 10",
+    "city": "Bangalore",
+    "district": "Rajajinagar",
+    "pincode": "560022"
+  },
+  "FBLL": {
+    "state": "Karnataka",
+    "building": "No. 38B and 38B1",
+    "road": "Doddanekundi 1st Phase, Industrial Area",
+    "city": "Bangalore",
+    "district": "KR Puram",
+    "pincode": "560048"
+  },
+  "FMAB": {
+    "state": "Tamil Nadu",
+    "building": "Plot # 37 & 38, Bearing Corporation Door # 12/1",
+    "road": "Professor Colony, 1st Main",
+    "city": "Chennai",
+    "district": "East Tambaram",
+    "pincode": "600059"
+  },
+  "FMAC": {
+    "state": "Tamil Nadu",
+    "building": "Godown No. 1, New No.105, Old No.1, Central Warehouse",
+    "road": "Arcot Road, Virugambakkam",
+    "city": "Chennai",
+    "district": "Chennai",
+    "pincode": "600092"
+  },
+  "YNGD": {
+    "state": "Delhi",
+    "building": "Ground Floor, Pulbangas metro station",
+    "road": "Roshnara road",
+    "city": "Delhi",
+    "district": "North Delhi",
+    "pincode": "110007"
+  },
+  "FDLB": {
+    "state": "Haryana",
+    "building": "HAFED Warehousing Complex",
+    "road": "New Anaj Mandi",
+    "city": "Gurugram",
+    "district": "Gurgaon",
+    "pincode": "122001"
+  },
+  "FDLA": {
+    "state": "Delhi",
+    "building": "HAFED Warehousing Complex, B Block",
+    "road": "Inner Ring Road, Wazirpur",
+    "city": "Delhi",
+    "district": "North West Delhi",
+    "pincode": "110034"
+  },
+  "FDLC": {
+    "state": "Haryana",
+    "building": "94",
+    "road": "Udyog Vihar Phase 1",
+    "city": "Gurugram",
+    "district": "Gurugram",
+    "pincode": "122016"
+  },
+  "FJAA": {
+    "state": "Rajasthan",
+    "building": "United felts and carpets private ltd, 128",
+    "road": "Niwaru Rd, Jhotwara Industrial Area",
+    "city": "Jaipur",
+    "district": "Jhotwara",
+    "pincode": "302012"
+  },
+  "FCCB": {
+    "state": "West Bengal",
+    "building": "Ajay Bharat Private Limited, A5-6",
+    "road": "New B.B.T Road",
+    "city": "Kolkata",
+    "district": "Maheshtala",
+    "pincode": "700143"
+  },
+  "FBOB": {
+    "state": "Maharashtra",
+    "building": "113 CD",
+    "road": "Govt Industrial estate, Charkop",
+    "city": "Mumbai",
+    "district": "Kandivali West",
+    "pincode": "400067"
+  },
+  "FBOC": {
+    "state": "Maharashtra",
+    "building": "Universal Dyeing and Printing Works, Unit No N-7411(1)",
+    "road": "Narayan nagar, LBS Marg",
+    "city": "Mumbai",
+    "district": "Ghatkopar West",
+    "pincode": "400086"
+  },
+  "FBOI": {
+    "state": "Maharashtra",
+    "building": "Plot No.327, Ratan Motors Building",
+    "road": "Near Lakme Compound",
+    "city": "Mumbai",
+    "district": "Govandi East",
+    "pincode": "400088"
+  },
+  "FBOD": {
+    "state": "Maharashtra",
+    "building": "No D -394",
+    "road": "TTC Industrial Area, MIDC",
+    "city": "Mumbai",
+    "district": "Kukshet",
+    "pincode": "400705"
+  },
+  "FBOF": {
+    "state": "Maharashtra",
+    "building": "Kanjur Marg Village",
+    "road": "Karve Nagar, Nehru Nagar",
+    "city": "Mumbai",
+    "district": "Kanjurmarg East",
+    "pincode": "400042"
+  },
+  "FBOA": {
+    "state": "Maharashtra",
+    "building": "Western Extrusion Industries",
+    "road": "Survey Nos. 136/6/B(p), 137/1/6(p), 137/2/3(p), 137/3/B(p), 137/5(p) and 353(p) of Village Majiwada",
+    "city": "Mumbai",
+    "district": "Thane West",
+    "pincode": "400610"
+  },
+  "FAMA": {
+    "state": "Gujarat",
+    "building": "Angan Banquet hall, Ground floor",
+    "road": "Nr. Nandanvan IV, Satellite",
+    "city": "Ahmedabad",
+    "district": "Ahmedabad",
+    "pincode": "380015"
+  },
+  "FPNA": {
+    "state": "Maharashtra",
+    "building": "Jagtap Lawns",
+    "road": "Devkar Park, Survey No.15, Seasons Rd",
+    "city": "Pune",
+    "district": "Pimple Gurav",
+    "pincode": "411061"
+  },
+  "FPNB": {
+    "state": "Maharashtra",
+    "building": "United Metachem pvt ltd., 72/76",
+    "road": "near Bharat forge, Mundhwa",
+    "city": "Pune",
+    "district": "Ghorpadi",
+    "pincode": "411036"
+  },
+  "FHYE": {
+    "state": "Telangana",
+    "building": "Sy. No. 44, 45/1, and 45/2, D.NO. 3-4-98",
+    "road": "Ramanthpur",
+    "city": "Hyderabad",
+    "district": "Hyderabad",
+    "pincode": "500013"
+  },
+  "FSTA": {
+    "state": "Gujarat",
+    "building": "49",
+    "road": "Mahadev Nagar, Vadodgam",
+    "city": "Surat",
+    "district": "Bamroli",
+    "pincode": "394221"
+  },
+  "FCJD": {
+    "state": "Kerala",
+    "building": "Tkm towers",
+    "road": "Chulliyod Road",
+    "city": "Kozhikode",
+    "district": "Kozhikode",
+    "pincode": "673017"
+  },
+  "FIDA": {
+    "state": "Madhya Pradesh",
+    "building": "370/2/1",
+    "road": "Nemwar Road, Udyog Nagar",
+    "city": "Indore",
+    "district": "Palda",
+    "pincode": "452001"
+  },
+  "FMYA": {
+    "state": "Karnataka",
+    "building": "Bearing No.8, N Block 8",
+    "road": "Adichunchnagiri Road",
+    "city": "Mysore",
+    "district": "Mysore",
+    "pincode": "570023"
+  },
+  "FIXI": {
+    "state": "Tamil Nadu",
+    "building": "NTEX Transportation Services",
+    "road": "Central Warehouse Bypass Road",
+    "city": "Madurai",
+    "district": "Ellis Nagar",
+    "pincode": "625010"
+  },
+  "FBHB": {
+    "state": "Madhya Pradesh",
+    "building": "Agya enterprises 48-49 A",
+    "road": "sector industrial area",
+    "city": "Bhopal",
+    "district": "Govindpura",
+    "pincode": "462023"
+  },
+  "FISA": {
+    "state": "Maharashtra",
+    "building": "Plot No. 18/P/03",
+    "road": "Trimbak road, MIDC",
+    "city": "Nashik",
+    "district": "Satpur Colony",
+    "pincode": "422007"
+  },
+  "FIXF": {
+    "state": "Karnataka",
+    "building": "Door no10 - 24 - 1045",
+    "road": "Dr Ansari road",
+    "city": "Mangalore",
+    "district": "Dakshina Kannada",
+    "pincode": "575001"
+  },
+  "FCOA": {
+    "state": "Kerala",
+    "building": "Kunhalus Estate, Adarsha Nagar Road",
+    "road": "CSEZ PO Kakkanad",
+    "city": "Kochi",
+    "district": "Ernakulam",
+    "pincode": "682037"
+  },
+  "FTRA": {
+    "state": "Kerala",
+    "building": "City Plaza Building",
+    "road": "Chenthi, Pongumoodu",
+    "city": "Thiruvananthapuram",
+    "district": "Thiruvananthapuram",
+    "pincode": "695011"
+  },
+  "FMZA": {
+    "state": "Bihar",
+    "building": "Central Warehouse corporation",
+    "road": "APMC yard",
+    "city": "Patna",
+    "district": "Musallapur",
+    "pincode": "800006"
+  },
+  "FNAA": {
+    "state": "Maharashtra",
+    "building": "Swami Darshan Apartments",
+    "road": "Sadashiv Nagar",
+    "city": "Nagpur",
+    "district": "Wathoda",
+    "pincode": "440017"
+  },
+  "FCJA": {
+    "state": "Tamil Nadu",
+    "building": "Stanes Motors Limited, 1600",
+    "road": "Trichy Road",
+    "city": "Coimbatore",
+    "district": "Coimbatore",
+    "pincode": "641018"
+  },
+  "FVTG": {
+    "state": "Andhra Pradesh",
+    "building": "Shed Nos. C7 & C8, Sy No.39",
+    "road": "Industrial Area",
+    "city": "Visakhapatnam",
+    "district": "Kapparada Village",
+    "pincode": "530007"
+  },
+  "FVTH": {
+    "state": "Andhra Pradesh",
+    "building": "02-22(New),8-22-7 (old)",
+    "road": "NH16, Guntur-Vijayawada Express Highway",
+    "city": "Guntur",
+    "district": "Bonthapadu",
+    "pincode": "522017"
+  },
+  "FLKA": {
+    "state": "Uttar Pradesh",
+    "building": "352/2 Tulsidas Marg",
+    "road": "Ranjit Singh Building Campus",
+    "city": "Lucknow",
+    "district": "Rajajipuram",
+    "pincode": "226017"
+  },
+  "FBBA": {
+    "state": "Odisha",
+    "building": "Plot No:6C &6D, Sector \u2013A,Zone B",
+    "road": "Mancheshar Industrial Estate, Udyan Marg",
+    "city": "Bhubaneshwar",
+    "district": "Dolakasati",
+    "pincode": "751010"
+  },
+  "FKNB": {
+    "state": "Gujarat",
+    "building": "F-31",
+    "road": "BIDC Gowra Industrial Estate",
+    "city": "Vadodara",
+    "district": "Vadodara",
+    "pincode": "390016"
+  },
+  "YNGG": {
+    "state": "Uttar Pradesh",
+    "building": "Plot No. 10 Block B",
+    "road": "Sector 67 Phase 3",
+    "city": "Noida",
+    "district": "Gautam Budh Nagar",
+    "pincode": "201301"
+  },
+  "SBLY": {
+    "state": "Karnataka",
+    "building": "17/2-17",
+    "road": "Nagwara Main Road",
+    "city": "Bangalore",
+    "district": "Nagawara",
+    "pincode": "560077"
+  },
+  "SBLZ": {
+    "state": "Karnataka",
+    "building": "Plot No.32, Ward No.9, Bommasandra Industrial Area",
+    "road": "Bommasandra, Attibele hobli",
+    "city": "Bangalore",
+    "district": "Anekal",
+    "pincode": "560099"
+  }
+}

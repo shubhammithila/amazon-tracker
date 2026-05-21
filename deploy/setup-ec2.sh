@@ -1,65 +1,128 @@
 #!/bin/bash
 set -e
 
-echo "=== Amazon Tracker v2 — EC2 Setup ==="
-echo "Run this on a fresh Ubuntu 22.04 LTS EC2 instance (t2.micro)"
+echo "=============================================="
+echo "  Amazon Tracker v2 — EC2 Deployment Script"
+echo "  Ubuntu 22.04 LTS | t2.micro | SQLite"
+echo "=============================================="
 echo ""
 
-# System packages
+# ─── System Packages ───────────────────────────────────────
+echo ">>> Installing system packages..."
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y python3.11 python3.11-venv python3-pip git
+sudo apt install -y python3.11 python3.11-venv python3-pip git curl
 
-# Create app directory
+# ─── App Directory ─────────────────────────────────────────
+echo ">>> Setting up app directory..."
 sudo mkdir -p /opt/amazon-tracker
 sudo chown ubuntu:ubuntu /opt/amazon-tracker
+
+# ─── Clone Repo ────────────────────────────────────────────
+echo ">>> Cloning repository..."
 cd /opt/amazon-tracker
 
-# Clone or copy your code here
-echo ">>> Copy your project files to /opt/amazon-tracker/"
-echo ">>> e.g.: git clone <your-repo> . OR scp -r local-files ec2:~/amazon-tracker/"
-echo ""
+if [ -d ".git" ]; then
+    echo "    Repository already exists, pulling latest..."
+    git pull
+else
+    echo "    Enter your GitHub repo URL (or press Enter to skip and upload manually):"
+    read -r REPO_URL
+    if [ -n "$REPO_URL" ]; then
+        git clone "$REPO_URL" .
+    else
+        echo "    Skipping clone. Upload files manually with:"
+        echo "    scp -i your-key.pem -r ./* ubuntu@YOUR_EC2_IP:/opt/amazon-tracker/"
+    fi
+fi
 
-# Python virtual environment
+# ─── Python Virtual Environment ───────────────────────────
+echo ">>> Setting up Python environment..."
 python3.11 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Create .env file
+# ─── Environment File ─────────────────────────────────────
 if [ ! -f .env ]; then
-cat > .env <<'ENVEOF'
-DATABASE_URL=postgresql+asyncpg://tracker_user:YOUR_RDS_PASSWORD@YOUR_RDS_ENDPOINT:5432/tracker
-APP_PASSWORD=your-secure-password-here
-SECRET_KEY=generate-with-python-c-import-secrets-secrets.token_hex-32
+    echo ">>> Creating .env file..."
+    # Generate a random secret key
+    SECRET=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+    cat > .env <<ENVEOF
+# Amazon Tracker v2 Configuration
+DATABASE_URL=sqlite+aiosqlite:///./tracker.db
+APP_PASSWORD=admin123
+SECRET_KEY=${SECRET}
 SCHEDULER_ENABLED=true
 DAILY_SCRAPE_HOUR=6
 DAILY_SCRAPE_MINUTE=0
 ENVEOF
-echo ">>> Edit .env with your actual RDS credentials and password"
+    echo "    .env created with default settings"
+    echo "    >>> IMPORTANT: Change APP_PASSWORD in /opt/amazon-tracker/.env"
+else
+    echo "    .env already exists, skipping..."
 fi
 
-# Install Caddy (reverse proxy with auto-HTTPS)
-sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
-sudo apt update
-sudo apt install -y caddy
+# ─── Create data directory for SQLite ─────────────────────
+mkdir -p /opt/amazon-tracker/data
 
-# Copy Caddy config
+# ─── Install Caddy (reverse proxy) ────────────────────────
+echo ">>> Installing Caddy web server..."
+if ! command -v caddy &> /dev/null; then
+    sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+    sudo apt update
+    sudo apt install -y caddy
+else
+    echo "    Caddy already installed"
+fi
+
+# ─── Configure Caddy (IP-only, port 80) ──────────────────
+echo ">>> Configuring Caddy for IP access..."
 sudo cp deploy/caddy/Caddyfile /etc/caddy/Caddyfile
-echo ">>> Edit /etc/caddy/Caddyfile with your domain name"
-sudo systemctl reload caddy
+sudo systemctl restart caddy
+sudo systemctl enable caddy
 
-# Setup systemd service
+# ─── Setup Systemd Service ────────────────────────────────
+echo ">>> Setting up systemd service..."
 sudo cp deploy/systemd/tracker.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable tracker
 sudo systemctl start tracker
 
+# ─── Open Firewall (if ufw is active) ────────────────────
+if command -v ufw &> /dev/null && sudo ufw status | grep -q "active"; then
+    echo ">>> Configuring firewall..."
+    sudo ufw allow 80/tcp
+    sudo ufw allow 22/tcp
+    sudo ufw reload
+fi
+
+# ─── Verify ──────────────────────────────────────────────
 echo ""
-echo "=== Setup Complete ==="
-echo "1. Edit /opt/amazon-tracker/.env with your RDS credentials"
-echo "2. Edit /etc/caddy/Caddyfile with your domain"
-echo "3. Run: sudo systemctl restart tracker"
-echo "4. Run: sudo systemctl restart caddy"
-echo "5. Access at https://your-domain.com"
+echo ">>> Waiting for app to start..."
+sleep 3
+
+if curl -s http://localhost:8000 > /dev/null 2>&1; then
+    echo ""
+    echo "=============================================="
+    echo "  DEPLOYMENT SUCCESSFUL!"
+    echo "=============================================="
+    echo ""
+    # Get public IP
+    PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo "YOUR_EC2_IP")
+    echo "  Access your app at: http://${PUBLIC_IP}"
+    echo "  Password: admin123 (change in .env!)"
+    echo ""
+    echo "  Useful commands:"
+    echo "    sudo systemctl status tracker   # Check status"
+    echo "    sudo journalctl -u tracker -f   # View logs"
+    echo "    sudo systemctl restart tracker  # Restart app"
+    echo "    cd /opt/amazon-tracker && git pull && sudo systemctl restart tracker  # Update"
+    echo ""
+else
+    echo ""
+    echo "  App may still be starting. Check with:"
+    echo "    sudo systemctl status tracker"
+    echo "    sudo journalctl -u tracker -f"
+fi
