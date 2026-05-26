@@ -185,6 +185,34 @@ def extract_deal(tree: html.HtmlElement) -> str:
 
 
 def extract_use_by(tree: html.HtmlElement) -> Optional[str]:
+    # Primary: Check expiryDate_feature_div (Amazon's dedicated expiry widget)
+    expiry_div = tree.xpath('//*[@id="expiryDate_feature_div"]//text()')
+    if expiry_div:
+        expiry_text = " ".join(t.strip() for t in expiry_div if t.strip())
+        # Extract date after "Use by:" or similar label
+        match = re.search(
+            r"(?:use\s*by|best\s*before|expiry|expiration)[:\s]*(\d{1,2}\s*\w{3,9}\s*\d{2,4})",
+            expiry_text, re.IGNORECASE
+        )
+        if match:
+            return match.group(1).strip()
+        # If no label prefix, just grab any date-like pattern
+        match = re.search(r"(\d{1,2}\s+[A-Z]{3}\s+\d{4})", expiry_text)
+        if match:
+            return match.group(1).strip()
+
+    # Secondary: Check freshShelfLifeMessage div
+    shelf_div = tree.xpath('//*[contains(@id,"freshShelfLife")]//text()')
+    if shelf_div:
+        shelf_text = " ".join(t.strip() for t in shelf_div if t.strip())
+        match = re.search(
+            r"(?:use\s*by|best\s*before|expiry)[:\s]*(\d{1,2}[\s/-]\w{3,9}[\s/-]\d{2,4})",
+            shelf_text, re.IGNORECASE
+        )
+        if match:
+            return match.group(1).strip()
+
+    # Fallback: Check product detail tables
     detail_texts = tree.xpath(
         '//table[contains(@id,"productDetails")]//text() | '
         '//*[@id="detailBulletsWrapper_feature_div"]//text() | '
