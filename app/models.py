@@ -134,6 +134,48 @@ class ScrapeJob(Base):
     error_log = Column(Text)
 
 
+class ChurnReport(Base):
+    __tablename__ = "churn_reports"
+
+    id = Column(Integer, primary_key=True)
+    report_date = Column(DateTime, default=datetime.utcnow)
+    period_label = Column(String(50))   # e.g. "May 2026"
+    total_asins = Column(Integer)
+    keep_count = Column(Integer, default=0)
+    monitor_count = Column(Integer, default=0)
+    churn_count = Column(Integer, default=0)
+    no_data_count = Column(Integer, default=0)
+
+    scores = relationship("ChurnScore", back_populates="report", lazy="selectin")
+
+
+class ChurnScore(Base):
+    __tablename__ = "churn_scores"
+    __table_args__ = (
+        Index("idx_churn_scores_report_asin", "report_id", "asin"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    report_id = Column(Integer, ForeignKey("churn_reports.id"), nullable=False)
+    asin = Column(String(10), nullable=False, index=True)
+    title = Column(Text)
+    score = Column(Integer)                   # 0–100
+    status = Column(String(10))               # keep / monitor / churn / no_data
+    units_ordered = Column(Integer)
+    revenue = Column(Numeric(12, 2))
+    conversion_rate = Column(Numeric(5, 2))
+    sessions = Column(Integer)
+    buy_box_pct = Column(Numeric(5, 2))
+    rating = Column(Numeric(3, 1))
+    review_count = Column(Integer)
+    bsr_current = Column(Integer)
+    bsr_trend = Column(String(20))            # improving / declining / stable / unknown
+    listing_age_days = Column(Integer)
+    reason = Column(Text)                     # human-readable explanation
+
+    report = relationship("ChurnReport", back_populates="scores")
+
+
 class Invoice(Base):
     __tablename__ = "invoices"
 

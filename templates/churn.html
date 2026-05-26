@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Churn Analysis — Amazon Tracker</title>
+  <style>
+    :root {
+      --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
+      --text: #e2e8f0; --text-muted: #64748b; --accent: #6366f1;
+      --green: #22c55e; --green-bg: #052e16; --green-border: #166534;
+      --yellow: #eab308; --yellow-bg: #1c1c05; --yellow-border: #713f12;
+      --red: #ef4444; --red-bg: #1f0505; --red-border: #7f1d1d;
+      --gray: #94a3b8; --gray-bg: #1e2130; --gray-border: #334155;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; }
+    header { display: flex; align-items: center; gap: 12px; padding: 12px 24px; border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 100; }
+    header h1 { font-size: 16px; font-weight: 600; }
+    .nav-links { display: flex; gap: 16px; margin-left: 32px; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 13px; font-weight: 500; padding: 4px 0; border-bottom: 2px solid transparent; transition: all .2s; }
+    .nav-links a:hover, .nav-links a.active { color: var(--text); border-color: var(--accent); }
+    .header-right { margin-left: auto; display: flex; gap: 16px; align-items: center; }
+    .header-right a { color: var(--text-muted); font-size: 13px; text-decoration: none; }
+
+    main { max-width: 1400px; margin: 0 auto; padding: 24px; }
+    h2 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+    .subtitle { color: var(--text-muted); font-size: 13px; margin-bottom: 24px; }
+
+    /* Upload zone */
+    .upload-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      padding: 24px; margin-bottom: 24px;
+    }
+    .upload-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+    .upload-card p { color: var(--text-muted); font-size: 13px; margin-bottom: 16px; }
+    .drop-zone {
+      border: 2px dashed var(--border); border-radius: 8px; padding: 32px;
+      text-align: center; cursor: pointer; transition: border-color .2s;
+    }
+    .drop-zone:hover, .drop-zone.dragover { border-color: var(--accent); }
+    .drop-zone input { display: none; }
+    .drop-zone .icon { font-size: 32px; margin-bottom: 8px; }
+    .drop-zone .hint { color: var(--text-muted); font-size: 12px; margin-top: 8px; }
+    .file-name { margin-top: 12px; font-size: 13px; color: var(--accent); display: none; }
+    .upload-row { display: flex; gap: 12px; align-items: center; margin-top: 16px; }
+    .period-input {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); padding: 8px 12px; font-size: 13px; width: 180px;
+    }
+    .period-input:focus { outline: none; border-color: var(--accent); }
+    .btn {
+      background: var(--accent); color: #fff; border: none; border-radius: 6px;
+      padding: 8px 18px; font-size: 13px; font-weight: 500; cursor: pointer;
+    }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-outline {
+      background: transparent; color: var(--text-muted); border: 1px solid var(--border);
+      border-radius: 6px; padding: 8px 14px; font-size: 13px; cursor: pointer;
+    }
+    .btn-outline:hover { border-color: var(--accent); color: var(--text); }
+    .btn-sm { padding: 5px 12px; font-size: 12px; }
+
+    /* Past reports */
+    .past-reports { margin-bottom: 24px; }
+    .past-reports h3 { font-size: 14px; font-weight: 600; color: var(--text-muted); margin-bottom: 10px; text-transform: uppercase; letter-spacing: .05em; }
+    .report-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+    .report-chip {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 20px;
+      padding: 5px 14px; font-size: 12px; cursor: pointer; transition: all .2s;
+      display: flex; gap: 8px; align-items: center;
+    }
+    .report-chip:hover, .report-chip.active { border-color: var(--accent); color: var(--accent); }
+    .chip-keep { color: var(--green); } .chip-churn { color: var(--red); }
+
+    /* Summary cards */
+    .summary-cards { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 24px; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+      padding: 16px; text-align: center;
+    }
+    .card .num { font-size: 32px; font-weight: 700; line-height: 1; }
+    .card .lbl { font-size: 12px; color: var(--text-muted); margin-top: 6px; text-transform: uppercase; letter-spacing: .05em; }
+    .card.green { border-color: var(--green-border); background: var(--green-bg); }
+    .card.yellow { border-color: var(--yellow-border); background: var(--yellow-bg); }
+    .card.red { border-color: var(--red-border); background: var(--red-bg); }
+    .card.gray { border-color: var(--gray-border); background: var(--gray-bg); }
+    .card.green .num { color: var(--green); }
+    .card.yellow .num { color: var(--yellow); }
+    .card.red .num { color: var(--red); }
+    .card.gray .num { color: var(--gray); }
+
+    /* Table controls */
+    .table-controls { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+    .filter-btn {
+      padding: 5px 14px; border-radius: 20px; border: 1px solid var(--border);
+      background: transparent; color: var(--text-muted); font-size: 12px; cursor: pointer;
+    }
+    .filter-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .filter-btn.f-keep.active { background: var(--green); border-color: var(--green); }
+    .filter-btn.f-monitor.active { background: var(--yellow); color: #000; border-color: var(--yellow); }
+    .filter-btn.f-churn.active { background: var(--red); border-color: var(--red); }
+    .filter-btn.f-no_data.active { background: var(--gray); border-color: var(--gray); color: #000; }
+    .search-box {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); padding: 6px 12px; font-size: 13px; width: 220px; margin-left: auto;
+    }
+    .search-box:focus { outline: none; border-color: var(--accent); }
+
+    /* Table */
+    .table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid var(--border); }
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      background: var(--surface); padding: 10px 12px; text-align: left;
+      font-size: 11px; font-weight: 600; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: .05em; white-space: nowrap;
+      cursor: pointer; user-select: none; border-bottom: 1px solid var(--border);
+    }
+    thead th:hover { color: var(--text); }
+    thead th.sorted { color: var(--accent); }
+    tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
+    tbody tr:hover { background: var(--surface); }
+    tbody tr:last-child { border-bottom: none; }
+    td { padding: 9px 12px; font-size: 13px; vertical-align: middle; }
+
+    /* Status badge */
+    .badge {
+      display: inline-block; padding: 2px 10px; border-radius: 12px;
+      font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+    }
+    .badge-keep { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+    .badge-monitor { background: var(--yellow-bg); color: var(--yellow); border: 1px solid var(--yellow-border); }
+    .badge-churn { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
+    .badge-no_data { background: var(--gray-bg); color: var(--gray); border: 1px solid var(--gray-border); }
+
+    /* Score bar */
+    .score-bar { width: 60px; height: 6px; background: var(--border); border-radius: 3px; display: inline-block; vertical-align: middle; margin-right: 6px; overflow: hidden; }
+    .score-fill { height: 100%; border-radius: 3px; }
+    .score-num { font-size: 12px; color: var(--text-muted); }
+
+    /* BSR trend */
+    .trend-up { color: var(--red); } .trend-down { color: var(--green); } .trend-stable { color: var(--text-muted); }
+
+    /* Reason text */
+    .reason { font-size: 12px; color: var(--text-muted); max-width: 280px; }
+
+    /* Empty / loading */
+    .empty { text-align: center; padding: 60px; color: var(--text-muted); }
+    .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Compare panel */
+    .compare-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-top: 24px; display: none; }
+    .compare-panel h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+    .compare-row { display: flex; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+    .compare-row:last-child { border-bottom: none; }
+    .arrow { color: var(--text-muted); }
+
+    /* Toast */
+    #toast {
+      position: fixed; bottom: 24px; right: 24px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 8px; padding: 12px 20px;
+      font-size: 13px; display: none; z-index: 1000; max-width: 320px;
+    }
+    #toast.error { border-color: var(--red); color: var(--red); }
+    #toast.success { border-color: var(--green); color: var(--green); }
+  </style>
+</head>
+<body>
+<header>
+  <span>📦</span>
+  <h1>Amazon Tracker v2</h1>
+  <nav class="nav-links">
+    <a href="/">Dashboard</a>
+    <a href="/history-page">History</a>
+    <a href="/keywords-page">Keywords</a>
+    <a href="/invoice-page">Invoice</a>
+    <a href="/churn-page" class="active">Churn</a>
+  </nav>
+  <div class="header-right"><a href="/logout">Logout</a></div>
+</header>
+
+<main>
+  <h2>🔁 Product Churn Analysis</h2>
+  <p class="subtitle">Upload your Amazon Business Report to score every ASIN. Identifies which products to keep, monitor, or remove.</p>
+
+  <!-- Upload Card -->
+  <div class="upload-card">
+    <h3>Upload Business Report CSV</h3>
+    <p>Download from Seller Central → Reports → Business Reports → By Child ASIN (select last 30 days)</p>
+    <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+      <input type="file" id="file-input" accept=".csv" />
+      <div class="icon">📂</div>
+      <div>Drop CSV here or <strong>click to browse</strong></div>
+      <div class="hint">Amazon Business Report CSV (By Child ASIN)</div>
+    </div>
+    <div class="file-name" id="file-name">📄 <span id="file-name-text"></span></div>
+    <div class="upload-row">
+      <input type="text" class="period-input" id="period-input" placeholder="Period label (e.g. May 2026)" />
+      <button class="btn" id="analyse-btn" disabled onclick="runAnalysis()">Analyse Products</button>
+      <span id="upload-spinner" style="display:none"><span class="spinner"></span> Analysing...</span>
+    </div>
+  </div>
+
+  <!-- Past Reports -->
+  <div class="past-reports" id="past-reports-section" style="display:none">
+    <h3>Past Reports</h3>
+    <div class="report-chips" id="report-chips"></div>
+  </div>
+
+  <!-- Summary Cards -->
+  <div class="summary-cards" id="summary-cards" style="display:none">
+    <div class="card" style="border-color:var(--border)">
+      <div class="num" id="sum-total">0</div>
+      <div class="lbl">Total ASINs</div>
+    </div>
+    <div class="card green">
+      <div class="num" id="sum-keep">0</div>
+      <div class="lbl">🟢 Keep &amp; Invest</div>
+    </div>
+    <div class="card yellow">
+      <div class="num" id="sum-monitor">0</div>
+      <div class="lbl">🟡 Monitor</div>
+    </div>
+    <div class="card red">
+      <div class="num" id="sum-churn">0</div>
+      <div class="lbl">🔴 Churn Candidate</div>
+    </div>
+    <div class="card gray">
+      <div class="num" id="sum-nodata">0</div>
+      <div class="lbl">⚫ No Sales Data</div>
+    </div>
+  </div>
+
+  <!-- Table Controls -->
+  <div class="table-controls" id="table-controls" style="display:none">
+    <button class="filter-btn active" data-filter="all" onclick="setFilter('all', this)">All</button>
+    <button class="filter-btn f-keep" data-filter="keep" onclick="setFilter('keep', this)">🟢 Keep</button>
+    <button class="filter-btn f-monitor" data-filter="monitor" onclick="setFilter('monitor', this)">🟡 Monitor</button>
+    <button class="filter-btn f-churn" data-filter="churn" onclick="setFilter('churn', this)">🔴 Churn</button>
+    <button class="filter-btn f-no_data" data-filter="no_data" onclick="setFilter('no_data', this)">⚫ No Data</button>
+    <button class="btn-outline btn-sm" id="download-btn" onclick="downloadReport()" style="margin-left:8px">⬇ Download Excel</button>
+    <input type="text" class="search-box" id="search-box" placeholder="Search ASIN or title..." oninput="renderTable()" />
+  </div>
+
+  <!-- Results Table -->
+  <div class="table-wrap" id="table-wrap" style="display:none">
+    <table>
+      <thead>
+        <tr>
+          <th onclick="sortBy('status')">Status</th>
+          <th onclick="sortBy('score')">Score ▾</th>
+          <th>ASIN</th>
+          <th>Title</th>
+          <th onclick="sortBy('units_ordered')">Units (30d)</th>
+          <th onclick="sortBy('revenue')">Revenue</th>
+          <th onclick="sortBy('conversion_rate')">Conv %</th>
+          <th onclick="sortBy('rating')">Rating</th>
+          <th onclick="sortBy('review_count')">Reviews</th>
+          <th onclick="sortBy('bsr_current')">BSR</th>
+          <th>BSR Trend</th>
+          <th>Age (days)</th>
+          <th>Reason</th>
+        </tr>
+      </thead>
+      <tbody id="table-body"></tbody>
+    </table>
+    <div class="empty" id="empty-msg" style="display:none">No products match the current filter.</div>
+  </div>
+
+  <!-- Compare Panel -->
+  <div class="compare-panel" id="compare-panel">
+    <h3>📊 Changes vs Previous Report</h3>
+    <div id="compare-body"></div>
+  </div>
+</main>
+
+<div id="toast"></div>
+
+<script>
+let allScores = [];
+let currentFilter = "all";
+let sortCol = "score";
+let sortDir = 1;  // 1 = asc, -1 = desc
+let currentReportId = null;
+let selectedFile = null;
+
+// ── File Upload ─────────────────────────────────────────────────────────────
+
+const dropZone = document.getElementById("drop-zone");
+const fileInput = document.getElementById("file-input");
+const fileNameEl = document.getElementById("file-name");
+const fileNameText = document.getElementById("file-name-text");
+const analyseBtn = document.getElementById("analyse-btn");
+
+dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("dragover"); });
+dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
+dropZone.addEventListener("drop", e => {
+  e.preventDefault(); dropZone.classList.remove("dragover");
+  if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener("change", () => { if (fileInput.files[0]) setFile(fileInput.files[0]); });
+
+function setFile(f) {
+  selectedFile = f;
+  fileNameText.textContent = f.name;
+  fileNameEl.style.display = "block";
+  analyseBtn.disabled = false;
+  // Auto-fill period from filename: BusinessReport-26-05-26.csv
+  const m = f.name.match(/BusinessReport-(\d{2})-(\d{2})-(\d{2})/);
+  if (m) {
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const mon = months[parseInt(m[2]) - 1];
+    const yr = "20" + m[3];
+    document.getElementById("period-input").value = `${mon} ${yr}`;
+  }
+}
+
+// ── Run Analysis ────────────────────────────────────────────────────────────
+
+async function runAnalysis() {
+  if (!selectedFile) return;
+  analyseBtn.disabled = true;
+  document.getElementById("upload-spinner").style.display = "inline-flex";
+
+  const period = document.getElementById("period-input").value.trim() || selectedFile.name;
+  const fd = new FormData();
+  fd.append("file", selectedFile);
+  fd.append("period_label", period);
+
+  try {
+    const r = await fetch("/churn/upload", { method: "POST", body: fd });
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+
+    currentReportId = data.report_id;
+    allScores = data.scores;
+    updateSummary(data);
+    renderTable();
+    showResults();
+    toast("Analysis complete — " + data.total + " ASINs scored", "success");
+    loadPastReports();
+  } catch (e) {
+    toast(e.message || "Upload failed", "error");
+  } finally {
+    analyseBtn.disabled = false;
+    document.getElementById("upload-spinner").style.display = "none";
+  }
+}
+
+// ── Load Report ──────────────────────────────────────────────────────────────
+
+async function loadReport(reportId) {
+  const r = await fetch(`/churn/reports/${reportId}`);
+  const data = await r.json();
+  if (data.error) return toast(data.error, "error");
+
+  currentReportId = reportId;
+  allScores = data.scores;
+  updateSummary(data);
+  renderTable();
+  showResults();
+
+  // Highlight active chip
+  document.querySelectorAll(".report-chip").forEach(c => {
+    c.classList.toggle("active", parseInt(c.dataset.id) === reportId);
+  });
+}
+
+async function loadPastReports() {
+  const r = await fetch("/churn/reports");
+  const reports = await r.json();
+  if (!reports.length) return;
+
+  const sec = document.getElementById("past-reports-section");
+  const chips = document.getElementById("report-chips");
+  sec.style.display = "block";
+  chips.innerHTML = "";
+
+  reports.forEach(rep => {
+    const d = new Date(rep.report_date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+    const chip = document.createElement("button");
+    chip.className = "report-chip" + (rep.id === currentReportId ? " active" : "");
+    chip.dataset.id = rep.id;
+    chip.innerHTML = `<strong>${rep.period_label || d}</strong> <span class="chip-keep">+${rep.keep}</span> <span class="chip-churn">-${rep.churn}</span>`;
+    chip.onclick = () => loadReport(rep.id);
+    chips.appendChild(chip);
+  });
+}
+
+// ── Summary Cards ────────────────────────────────────────────────────────────
+
+function updateSummary(data) {
+  document.getElementById("sum-total").textContent = data.total;
+  document.getElementById("sum-keep").textContent = data.keep;
+  document.getElementById("sum-monitor").textContent = data.monitor;
+  document.getElementById("sum-churn").textContent = data.churn;
+  document.getElementById("sum-nodata").textContent = data.no_data;
+}
+
+// ── Table ────────────────────────────────────────────────────────────────────
+
+function setFilter(f, el) {
+  currentFilter = f;
+  document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
+  el.classList.add("active");
+  renderTable();
+}
+
+function sortBy(col) {
+  if (sortCol === col) sortDir = -sortDir;
+  else { sortCol = col; sortDir = 1; }
+  document.querySelectorAll("thead th").forEach(th => th.classList.remove("sorted"));
+  event.target.classList.add("sorted");
+  renderTable();
+}
+
+function renderTable() {
+  const search = (document.getElementById("search-box").value || "").toLowerCase();
+  let rows = allScores.filter(s => {
+    if (currentFilter !== "all" && s.status !== currentFilter) return false;
+    if (search && !s.asin.toLowerCase().includes(search) && !(s.title||"").toLowerCase().includes(search)) return false;
+    return true;
+  });
+
+  rows.sort((a, b) => {
+    let av = a[sortCol] ?? -Infinity;
+    let bv = b[sortCol] ?? -Infinity;
+    return (av < bv ? -1 : av > bv ? 1 : 0) * sortDir;
+  });
+
+  const tbody = document.getElementById("table-body");
+  tbody.innerHTML = "";
+
+  if (!rows.length) {
+    document.getElementById("empty-msg").style.display = "block";
+    return;
+  }
+  document.getElementById("empty-msg").style.display = "none";
+
+  const fmt = n => n != null ? "₹" + Number(n).toLocaleString("en-IN", { maximumFractionDigits: 0 }) : "—";
+  const fmtN = n => n != null ? Number(n).toLocaleString("en-IN") : "—";
+
+  rows.forEach(s => {
+    const tr = document.createElement("tr");
+
+    const scoreColor = s.score >= 70 ? "#22c55e" : s.score >= 40 ? "#eab308" : "#ef4444";
+    const trendIcon = s.bsr_trend === "improving" ? '<span class="trend-down">↓ Improving</span>'
+      : s.bsr_trend === "declining" ? '<span class="trend-up">↑ Declining</span>'
+      : '<span class="trend-stable">→ Stable</span>';
+
+    tr.innerHTML = `
+      <td><span class="badge badge-${s.status}">${s.status.replace("_"," ")}</span></td>
+      <td>
+        <span class="score-bar"><span class="score-fill" style="width:${s.score}%;background:${scoreColor}"></span></span>
+        <span class="score-num">${s.score}</span>
+      </td>
+      <td><a href="https://www.amazon.in/dp/${s.asin}" target="_blank" style="color:var(--accent);text-decoration:none">${s.asin}</a></td>
+      <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(s.title||"").replace(/"/g,"'")}">
+        ${(s.title||"—").substring(0, 55)}${(s.title||"").length > 55 ? "…" : ""}
+      </td>
+      <td>${fmtN(s.units_ordered)}</td>
+      <td>${s.revenue > 0 ? fmt(s.revenue) : "—"}</td>
+      <td>${s.conversion_rate > 0 ? s.conversion_rate.toFixed(1) + "%" : "—"}</td>
+      <td>${s.rating != null ? s.rating.toFixed(1) + " ★" : "—"}</td>
+      <td>${s.review_count != null ? fmtN(s.review_count) : "—"}</td>
+      <td>${s.bsr_current != null ? "#" + fmtN(s.bsr_current) : "—"}</td>
+      <td>${trendIcon}</td>
+      <td>${s.listing_age_days != null ? s.listing_age_days : "—"}</td>
+      <td class="reason">${s.reason || "—"}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+// ── Download ─────────────────────────────────────────────────────────────────
+
+function downloadReport() {
+  if (!currentReportId) return;
+  window.location.href = `/churn/reports/${currentReportId}/download`;
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function showResults() {
+  document.getElementById("summary-cards").style.display = "grid";
+  document.getElementById("table-controls").style.display = "flex";
+  document.getElementById("table-wrap").style.display = "block";
+}
+
+function toast(msg, type = "") {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.className = type;
+  el.style.display = "block";
+  setTimeout(() => el.style.display = "none", 4000);
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+
+(async () => {
+  await loadPastReports();
+  // Auto-load the most recent report if one exists
+  const chips = document.querySelectorAll(".report-chip");
+  if (chips.length) {
+    const latestId = parseInt(chips[0].dataset.id);
+    await loadReport(latestId);
+  }
+})();
+</script>
+</body>
+</html>
