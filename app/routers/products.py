@@ -180,6 +180,7 @@ async def download_excel(
             "BSR": f"#{latest_bsr.bsr_rank} in {latest_bsr.bsr_category}" if latest_bsr else "",
             "Rating": str(latest_rating.rating) if latest_rating and latest_rating.rating else "",
             "Ratings Count": str(latest_rating.rating_count) if latest_rating and latest_rating.rating_count else "",
+            "Use By": p.use_by or "",
             "Last Scraped": p.last_scraped.strftime("%Y-%m-%d %H:%M") if p.last_scraped else "",
         })
 

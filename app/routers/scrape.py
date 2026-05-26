@@ -32,11 +32,12 @@ async def save_results_to_db(results: list[dict], db: AsyncSession):
         )).scalar_one_or_none()
 
         if not product:
-            product = Product(asin=asin, title=r.get("title"), first_seen=now)
+            product = Product(asin=asin, title=r.get("title"), use_by=r.get("use_by"), first_seen=now)
             db.add(product)
             await db.flush()
         else:
             product.title = r.get("title") or product.title
+            product.use_by = r.get("use_by") or product.use_by
             product.last_scraped = now
 
         price_val = None

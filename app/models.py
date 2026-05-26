@@ -13,6 +13,7 @@ class Product(Base):
     asin = Column(String(10), unique=True, nullable=False, index=True)
     title = Column(Text)
     category = Column(Text)
+    use_by = Column(String(50))
     first_seen = Column(DateTime, default=datetime.utcnow)
     last_scraped = Column(DateTime)
     is_active = Column(Boolean, default=True)
