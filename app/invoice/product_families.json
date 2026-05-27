@@ -1,0 +1,1007 @@
+{
+  "B0CWGXYLT6": {
+    "parent_product": "sattu",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0DK1LJ3N3": {
+    "parent_product": "sattu",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0CWGY2LCP": {
+    "parent_product": "sattu",
+    "brand": "Mithila Foods",
+    "weight": 1.5
+  },
+  "B0DK1H56P3": {
+    "parent_product": "sattu",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0DYVJ8PGL": {
+    "parent_product": "sattu",
+    "brand": "Mithila Foods",
+    "weight": 3.0
+  },
+  "B0DYP6CLL7": {
+    "parent_product": "Jeera Sattu",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0DYP5QTS1": {
+    "parent_product": "Jeera Sattu",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0DYP4DLNB": {
+    "parent_product": "Jeera Sattu",
+    "brand": "Mithila Foods",
+    "weight": 1.5
+  },
+  "B0DYP5QVW8": {
+    "parent_product": "Jeera Sattu",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0FCZK156M": {
+    "parent_product": "Jau Sattu",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0FD1BPYT3": {
+    "parent_product": "Jau Sattu",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0FCZS5F82": {
+    "parent_product": "Jau Sattu",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0D11KTZ1X": {
+    "parent_product": "Govind Bhog Rice",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0DDJJ8TYJ": {
+    "parent_product": "Govind Bhog Rice",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0DDJHN6PD": {
+    "parent_product": "Govind Bhog Rice",
+    "brand": "Mithila Foods",
+    "weight": 4.0
+  },
+  "B0D11K2CVX": {
+    "parent_product": "Govind Bhog Rice",
+    "brand": "Mithila Foods",
+    "weight": 5.0
+  },
+  "B0DF5PHH3K": {
+    "parent_product": "Usna Chawal",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0DF5Q9VBV": {
+    "parent_product": "Usna Chawal",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0DF5LY1W7": {
+    "parent_product": "Usna Chawal",
+    "brand": "Mithila Foods",
+    "weight": 3.0
+  },
+  "B0DF5PYWJ9": {
+    "parent_product": "Usna Chawal",
+    "brand": "Mithila Foods",
+    "weight": 4.0
+  },
+  "B0DF5MNP4Q": {
+    "parent_product": "Usna Chawal",
+    "brand": "Mithila Foods",
+    "weight": 5.0
+  },
+  "B0DXQBYB35": {
+    "parent_product": "Katarni rice",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0DXQC2349": {
+    "parent_product": "Katarni rice",
+    "brand": "Mithila Foods",
+    "weight": 3.0
+  },
+  "B0DXQBD78C": {
+    "parent_product": "Katarni rice",
+    "brand": "Mithila Foods",
+    "weight": 4.0
+  },
+  "B0DXQCPD4R": {
+    "parent_product": "Katarni rice",
+    "brand": "Mithila Foods",
+    "weight": 5.0
+  },
+  "B0F9YR7SQT": {
+    "parent_product": "Arwa Chawal",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0F9YPQCR8": {
+    "parent_product": "Arwa Chawal",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0F9YR81BZ": {
+    "parent_product": "Arwa Chawal",
+    "brand": "Mithila Foods",
+    "weight": 5.0
+  },
+  "B0DDJJCRP8": {
+    "parent_product": "katarni chuda",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0DCCL1531": {
+    "parent_product": "katarni chuda",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0DDJH9MX5": {
+    "parent_product": "katarni chuda",
+    "brand": "Mithila Foods",
+    "weight": 4.0
+  },
+  "B0D1VPNHZL": {
+    "parent_product": "katarni chuda",
+    "brand": "Mithila Foods",
+    "weight": 5.0
+  },
+  "B0D8157HND": {
+    "parent_product": "Moori",
+    "brand": "Mithila Foods",
+    "weight": 0.25
+  },
+  "B0D817HX57": {
+    "parent_product": "Moori",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0D8153SJN": {
+    "parent_product": "Moori",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0DYVHTS3T": {
+    "parent_product": "Moori",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0DDTYNC85": {
+    "parent_product": "Makhana",
+    "brand": "Mithila Foods",
+    "weight": 0.1
+  },
+  "B0DDTWVB98": {
+    "parent_product": "Makhana",
+    "brand": "Mithila Foods",
+    "weight": 0.2
+  },
+  "B0DDTWSHXP": {
+    "parent_product": "Makhana",
+    "brand": "Mithila Foods",
+    "weight": 0.4
+  },
+  "B0DDJK1VW4": {
+    "parent_product": "Roasted Chana",
+    "brand": "Mithila Foods",
+    "weight": 0.2
+  },
+  "B0CY88658Y": {
+    "parent_product": "Roasted Chana",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0CY84RYRG": {
+    "parent_product": "Roasted Chana",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0CY84YB45": {
+    "parent_product": "Roasted Chana",
+    "brand": "Mithila Foods",
+    "weight": 1.5
+  },
+  "B0CY85DH38": {
+    "parent_product": "Roasted Chana",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0DWF9CDVW": {
+    "parent_product": "Cheese & Cream Chana",
+    "brand": "Mithila Foods",
+    "weight": 0.25
+  },
+  "B0DWFBSH89": {
+    "parent_product": "Cheese & Cream Chana",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0DWF5MT34": {
+    "parent_product": "Cheese & Cream Chana",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0DWF8RCHZ": {
+    "parent_product": "Nimbu Pudina Chana",
+    "brand": "Mithila Foods",
+    "weight": 0.25
+  },
+  "B0DWF8DS3F": {
+    "parent_product": "Nimbu Pudina Chana",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0DWF9Z6F2": {
+    "parent_product": "Nimbu Pudina Chana",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0DWFGYRZ7": {
+    "parent_product": "Hing Jeera chana",
+    "brand": "Mithila Foods",
+    "weight": 0.25
+  },
+  "B0DWF8TDGV": {
+    "parent_product": "Hing Jeera chana",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0DWF7SZJN": {
+    "parent_product": "Hing Jeera chana",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0DWF8SFWY": {
+    "parent_product": "Peri Peri Chana",
+    "brand": "Mithila Foods",
+    "weight": 0.25
+  },
+  "B0DWF8D1YQ": {
+    "parent_product": "Peri Peri Chana",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0DWF9ZPQG": {
+    "parent_product": "Peri Peri Chana",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0F9YHP79C": {
+    "parent_product": "Chatpata Masala Chana",
+    "brand": "Mithila Foods",
+    "weight": 0.25
+  },
+  "B0F9YF9ZZN": {
+    "parent_product": "Chatpata Masala Chana",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0F9YGS1GY": {
+    "parent_product": "Chatpata Masala Chana",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0F8W7HLQ6": {
+    "parent_product": "Ragi Atta",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0F8W63B6C": {
+    "parent_product": "Ragi Atta",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0F8WBLBKS": {
+    "parent_product": "Ragi Atta",
+    "brand": "Mithila Foods",
+    "weight": 3.0
+  },
+  "B0FBKFHQ44": {
+    "parent_product": "Makai Atta",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0FBKDTM51": {
+    "parent_product": "Makai Atta",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0FBKDZY5F": {
+    "parent_product": "Makai Atta",
+    "brand": "Mithila Foods",
+    "weight": 3.0
+  },
+  "B0FBKCLZZS": {
+    "parent_product": "Rice Atta",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0FBKDWK6M": {
+    "parent_product": "Rice Atta",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0FBKD14MH": {
+    "parent_product": "Rice Atta",
+    "brand": "Mithila Foods",
+    "weight": 3.0
+  },
+  "B0FBHRZ1PQ": {
+    "parent_product": "Jau Atta",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0FBHSCGPD": {
+    "parent_product": "Jau Atta",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0FBJ2V43Y": {
+    "parent_product": "Jau Atta",
+    "brand": "Mithila Foods",
+    "weight": 3.0
+  },
+  "B0FL2DVST4": {
+    "parent_product": "Makhana Powder",
+    "brand": "Mithila Foods",
+    "weight": 0.1
+  },
+  "B0FL2B9Y2V": {
+    "parent_product": "Makhana Powder",
+    "brand": "Mithila Foods",
+    "weight": 0.25
+  },
+  "B0DVCV6PBP": {
+    "parent_product": "herbal gulal",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0FLWHTY4G": {
+    "parent_product": "Thekua",
+    "brand": "Mithila Foods",
+    "weight": 0.35
+  },
+  "B0FLWPZRVF": {
+    "parent_product": "Thekua",
+    "brand": "Mithila Foods",
+    "weight": 0.7
+  },
+  "B0FLWMFVDN": {
+    "parent_product": "Thekua",
+    "brand": "Mithila Foods",
+    "weight": 1.05
+  },
+  "B0FNFCJFB4": {
+    "parent_product": "Coconut Thekua",
+    "brand": "Mithila Foods",
+    "weight": 0.35
+  },
+  "B0FNFGRWSW": {
+    "parent_product": "Coconut Thekua",
+    "brand": "Mithila Foods",
+    "weight": 0.7
+  },
+  "B0FNFMLRGK": {
+    "parent_product": "Coconut Thekua",
+    "brand": "Mithila Foods",
+    "weight": 1.05
+  },
+  "B0FP9L6S2Q": {
+    "parent_product": "Ragi Thekua",
+    "brand": "Mithila Foods",
+    "weight": 0.35
+  },
+  "B0FP9L1LRD": {
+    "parent_product": "Ragi Thekua",
+    "brand": "Mithila Foods",
+    "weight": 0.7
+  },
+  "B0FP9PPWVK": {
+    "parent_product": "Ragi Thekua",
+    "brand": "Mithila Foods",
+    "weight": 1.05
+  },
+  "B0FSLDDCCD": {
+    "parent_product": "Peanut Thekua",
+    "brand": "Mithila Foods",
+    "weight": 0.35
+  },
+  "B0FSLDR8T1": {
+    "parent_product": "Peanut Thekua",
+    "brand": "Mithila Foods",
+    "weight": 0.7
+  },
+  "B0FSLJZZZ7": {
+    "parent_product": "Peanut Thekua",
+    "brand": "Mithila Foods",
+    "weight": 1.05
+  },
+  "B0FPQN59YD": {
+    "parent_product": "Flax Seed",
+    "brand": "Mithila Foods",
+    "weight": 0.2
+  },
+  "B0FPQNTKRC": {
+    "parent_product": "Flax Seed",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0FPQQKMRD": {
+    "parent_product": "Flax Seed",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0FPQN63Q7": {
+    "parent_product": "Flax Seed",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0FRVRCNZZ": {
+    "parent_product": "Makhana Bhujia",
+    "brand": "Mithila Foods",
+    "weight": 0.2
+  },
+  "B0FRV2YR4Q": {
+    "parent_product": "Makhana Bhujia",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0FRV55YVK": {
+    "parent_product": "Makhana Bhujia",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0FRY9N8FV": {
+    "parent_product": "Roasted Flax Seed",
+    "brand": "Mithila Foods",
+    "weight": 0.2
+  },
+  "B0FRYDGHG2": {
+    "parent_product": "Roasted Flax Seed",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0FRYBS5JV": {
+    "parent_product": "Roasted Flax Seed",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0FRYDSHFF": {
+    "parent_product": "Roasted Flax Seed",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0FV2NCLLY": {
+    "parent_product": "Champaran Mutton Masala",
+    "brand": "Mithila Foods",
+    "weight": 0.15
+  },
+  "B0FV2MYP53": {
+    "parent_product": "Champaran Mutton Masala",
+    "brand": "Mithila Foods",
+    "weight": 0.25
+  },
+  "B0FV2P2JT9": {
+    "parent_product": "Champaran Mutton Masala",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0FVM6LPMF": {
+    "parent_product": "Whole Ragi",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0FVM5C1QF": {
+    "parent_product": "Whole Ragi",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0FVM3C5X8": {
+    "parent_product": "Whole Ragi",
+    "brand": "Mithila Foods",
+    "weight": 3.0
+  },
+  "B0G2C6SRP7": {
+    "parent_product": "white sesame seeds",
+    "brand": "Mithila Foods",
+    "weight": 0.2
+  },
+  "B0G2C4JKX4": {
+    "parent_product": "white sesame seeds",
+    "brand": "Mithila Foods",
+    "weight": 0.4
+  },
+  "B0G2C4MN6Z": {
+    "parent_product": "white sesame seeds",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0G2C6BSN8": {
+    "parent_product": "black sesame seeds",
+    "brand": "Mithila Foods",
+    "weight": 0.2
+  },
+  "B0G2C5FF4Q": {
+    "parent_product": "black sesame seeds",
+    "brand": "Mithila Foods",
+    "weight": 0.4
+  },
+  "B0G2C5956X": {
+    "parent_product": "black sesame seeds",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0G2MLP7KZ": {
+    "parent_product": "Roasted white sesame seeds",
+    "brand": "Mithila Foods",
+    "weight": 0.2
+  },
+  "B0G2MMTL6X": {
+    "parent_product": "Roasted white sesame seeds",
+    "brand": "Mithila Foods",
+    "weight": 0.4
+  },
+  "B0G2MN4RGN": {
+    "parent_product": "Roasted white sesame seeds",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0G2MK9XC4": {
+    "parent_product": "Roasted black sesame seeds",
+    "brand": "Mithila Foods",
+    "weight": 0.2
+  },
+  "B0G2MLC82B": {
+    "parent_product": "Roasted black sesame seeds",
+    "brand": "Mithila Foods",
+    "weight": 0.4
+  },
+  "B0G2MKVVB8": {
+    "parent_product": "Roasted black sesame seeds",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0G7LPSTGM": {
+    "parent_product": "Black Sesame Laddoo - Jaggery",
+    "brand": "Mithila Foods",
+    "weight": 0.25
+  },
+  "B0G7LRYPMR": {
+    "parent_product": "Black Sesame Laddoo - Jaggery",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0G7M6T5M4": {
+    "parent_product": "Black Sesame Laddoo - Jaggery",
+    "brand": "Mithila Foods",
+    "weight": 0.75
+  },
+  "B0G7LMT7JT": {
+    "parent_product": "White Sesame Laddoo – Jaggery",
+    "brand": "Mithila Foods",
+    "weight": 0.25
+  },
+  "B0G7LN9RCF": {
+    "parent_product": "White Sesame Laddoo – Jaggery",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0G7LGDN1G": {
+    "parent_product": "White Sesame Laddoo – Jaggery",
+    "brand": "Mithila Foods",
+    "weight": 0.75
+  },
+  "B0G7LX6D2Z": {
+    "parent_product": "Black & White Sesame Laddoo - Jaggery",
+    "brand": "Mithila Foods",
+    "weight": 0.25
+  },
+  "B0G7LP6JM9": {
+    "parent_product": "Black & White Sesame Laddoo - Jaggery",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0G7LX7V95": {
+    "parent_product": "Black & White Sesame Laddoo - Jaggery",
+    "brand": "Mithila Foods",
+    "weight": 0.75
+  },
+  "B0G8M2FH73": {
+    "parent_product": "Desi Tilkut",
+    "brand": "Mithila Foods",
+    "weight": 0.35
+  },
+  "B0G8KV1P2F": {
+    "parent_product": "Desi Tilkut",
+    "brand": "Mithila Foods",
+    "weight": 0.7
+  },
+  "B0G8LXH5KL": {
+    "parent_product": "Desi Tilkut",
+    "brand": "Mithila Foods",
+    "weight": 1.05
+  },
+  "B0G8LF1KSY": {
+    "parent_product": "Desi Tilkut Jaggery",
+    "brand": "Mithila Foods",
+    "weight": 0.35
+  },
+  "B0G8LK2SH9": {
+    "parent_product": "Desi Tilkut Jaggery",
+    "brand": "Mithila Foods",
+    "weight": 0.7
+  },
+  "B0G8LYWXLX": {
+    "parent_product": "Desi Tilkut Jaggery",
+    "brand": "Mithila Foods",
+    "weight": 1.05
+  },
+  "B0GC81ZCT8": {
+    "parent_product": "kulthi Dal",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0GC7FL2BZ": {
+    "parent_product": "kulthi Dal",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0GCGBHSY8": {
+    "parent_product": "Moori Lai",
+    "brand": "Mithila Foods",
+    "weight": 0.3
+  },
+  "B0GCG8DP14": {
+    "parent_product": "Moori Lai",
+    "brand": "Mithila Foods",
+    "weight": 0.6
+  },
+  "B0GCFPKZST": {
+    "parent_product": "Moori Lai",
+    "brand": "Mithila Foods",
+    "weight": 0.9
+  },
+  "B0GDVSD2K4": {
+    "parent_product": "White Desi Til Revdi – Jaggery",
+    "brand": "Mithila Foods",
+    "weight": 0.35
+  },
+  "B0GDVHVG18": {
+    "parent_product": "White Desi Til Revdi – Jaggery",
+    "brand": "Mithila Foods",
+    "weight": 0.7
+  },
+  "B0GDVMJZG4": {
+    "parent_product": "White Desi Til Revdi – Jaggery",
+    "brand": "Mithila Foods",
+    "weight": 1.05
+  },
+  "B0GG4GZ8SS": {
+    "parent_product": "Malbhog Chura",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0GG4RT4LD": {
+    "parent_product": "Malbhog Chura",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0GKYSTZX7": {
+    "parent_product": "Pirukiya",
+    "brand": "Mithila Foods",
+    "weight": 0.25
+  },
+  "B0GKYH8VXK": {
+    "parent_product": "Pirukiya",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0GKY1RRBF": {
+    "parent_product": "Chawli badi",
+    "brand": "Mithila Foods",
+    "weight": 0.2
+  },
+  "B0GKY4P3P2": {
+    "parent_product": "Chawli badi",
+    "brand": "Mithila Foods",
+    "weight": 0.3
+  },
+  "B0GKYNFW5V": {
+    "parent_product": "chana dal badi",
+    "brand": "Mithila Foods",
+    "weight": 0.2
+  },
+  "B0GKYT14SV": {
+    "parent_product": "chana dal badi",
+    "brand": "Mithila Foods",
+    "weight": 0.3
+  },
+  "B0GMBP6V3W": {
+    "parent_product": "urad dal badi",
+    "brand": "Mithila Foods",
+    "weight": 0.2
+  },
+  "B0GMBVWYZ2": {
+    "parent_product": "urad dal badi",
+    "brand": "Mithila Foods",
+    "weight": 0.3
+  },
+  "B0GMBVCKJ2": {
+    "parent_product": "moong dal badi",
+    "brand": "Mithila Foods",
+    "weight": 0.2
+  },
+  "B0GMBWMKZ8": {
+    "parent_product": "moong dal badi",
+    "brand": "Mithila Foods",
+    "weight": 0.3
+  },
+  "B0GTDZNDL8": {
+    "parent_product": "Moringa Sattu",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0GTFB138H": {
+    "parent_product": "Moringa Sattu",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0GTFB5CK5": {
+    "parent_product": "Moringa Sattu",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0GV162H7X": {
+    "parent_product": "Kathal Achaar",
+    "brand": "Mithila Foods",
+    "weight": 0.25
+  },
+  "B0GV12XT1H": {
+    "parent_product": "Kathal Achaar",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0GW388QP6": {
+    "parent_product": "Beetroot Sattu",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0GW3N5TSY": {
+    "parent_product": "Beetroot Sattu",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0GW3MMJSQ": {
+    "parent_product": "Beetroot Sattu",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0GW6BDPCY": {
+    "parent_product": "Moringa Atta",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0GW5YNKCD": {
+    "parent_product": "Moringa Atta",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0GW5XZQQ8": {
+    "parent_product": "Moringa Atta",
+    "brand": "Mithila Foods",
+    "weight": 3.0
+  },
+  "B0GW6FFSLL": {
+    "parent_product": "Moringa Besan",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0GW63XV8X": {
+    "parent_product": "Moringa Besan",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0GWD2Z5XT": {
+    "parent_product": "Moringa Powder",
+    "brand": "Mithila Foods",
+    "weight": 0.2
+  },
+  "B0GWCYBW3L": {
+    "parent_product": "Moringa Powder",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0GWV9JRM5": {
+    "parent_product": "Makai Sattu",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0GWV6NTHD": {
+    "parent_product": "Makai Sattu",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0GWVFTC7C": {
+    "parent_product": "Makai Sattu",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0H1RW25BD": {
+    "parent_product": "Kulthi Sattu",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0H1S8SP64": {
+    "parent_product": "Kulthi Sattu",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0H1S5VM1R": {
+    "parent_product": "Kulthi Sattu",
+    "brand": "Mithila Foods",
+    "weight": 2.0
+  },
+  "B0GCGGRTBK": {
+    "parent_product": "gobindobhog rice",
+    "brand": "Howrah Foods",
+    "weight": 1.0
+  },
+  "B0GCHCF1X7": {
+    "parent_product": "gobindobhog rice",
+    "brand": "Howrah Foods",
+    "weight": 2.0
+  },
+  "B0GCL2FL2C": {
+    "parent_product": "banskathi rice",
+    "brand": "Howrah Foods",
+    "weight": 1.0
+  },
+  "B0GCKX1Z1N": {
+    "parent_product": "banskathi rice",
+    "brand": "Howrah Foods",
+    "weight": 2.0
+  },
+  "B0GCKT53Y7": {
+    "parent_product": "Miniket Rice",
+    "brand": "Howrah Foods",
+    "weight": 1.0
+  },
+  "B0GCKTL9V8": {
+    "parent_product": "Miniket Rice",
+    "brand": "Howrah Foods",
+    "weight": 2.0
+  },
+  "B0GFFVNWVT": {
+    "parent_product": "Bangla Moori",
+    "brand": "Howrah Foods",
+    "weight": 0.5
+  },
+  "B0GFG56F3C": {
+    "parent_product": "Bangla Moori",
+    "brand": "Howrah Foods",
+    "weight": 1.0
+  },
+  "B0GFGF7M77": {
+    "parent_product": "Bangla Chana Sattu",
+    "brand": "Howrah Foods",
+    "weight": 0.5
+  },
+  "B0GFG4YYJZ": {
+    "parent_product": "Bangla Chana Sattu",
+    "brand": "Howrah Foods",
+    "weight": 1.0
+  },
+  "B0GFGLXPFQ": {
+    "parent_product": "Chatpata bengali Roasted chana",
+    "brand": "Howrah Foods",
+    "weight": 0.25
+  },
+  "B0GFG1WGSX": {
+    "parent_product": "Chatpata bengali Roasted chana",
+    "brand": "Howrah Foods",
+    "weight": 0.5
+  },
+  "B0GFGBDXH4": {
+    "parent_product": "Bangla Roasted Chana",
+    "brand": "Howrah Foods",
+    "weight": 0.5
+  },
+  "B0GFGT73ST": {
+    "parent_product": "Bangla Roasted Chana",
+    "brand": "Howrah Foods",
+    "weight": 1.0
+  },
+  "B0GHJSP8H4": {
+    "parent_product": "Posta",
+    "brand": "Howrah Foods",
+    "weight": 0.1
+  },
+  "B0GHJZ2DS3": {
+    "parent_product": "Posta",
+    "brand": "Howrah Foods",
+    "weight": 0.2
+  },
+  "B0GHKFP8RG": {
+    "parent_product": "panchphoran",
+    "brand": "Howrah Foods",
+    "weight": 0.2
+  },
+  "B0GHL3SDFX": {
+    "parent_product": "panchphoran",
+    "brand": "Howrah Foods",
+    "weight": 0.5
+  },
+  "B0GHKH2VSF": {
+    "parent_product": "Tal Mishri",
+    "brand": "Howrah Foods",
+    "weight": 0.5
+  },
+  "B0GHL32XJT": {
+    "parent_product": "Tal Mishri",
+    "brand": "Howrah Foods",
+    "weight": 1.0
+  },
+  "B0GJ6QYXG1": {
+    "parent_product": "Chawli bori",
+    "brand": "Howrah Foods",
+    "weight": 0.2
+  },
+  "B0GJ6TTLVG": {
+    "parent_product": "Chawli bori",
+    "brand": "Howrah Foods",
+    "weight": 0.3
+  },
+  "B0GJ6Y3RDN": {
+    "parent_product": "Masoor bori",
+    "brand": "Howrah Foods",
+    "weight": 0.2
+  },
+  "B0GJ6Z2RC6": {
+    "parent_product": "Masoor bori",
+    "brand": "Howrah Foods",
+    "weight": 0.3
+  },
+  "B0GJ6T38NY": {
+    "parent_product": "chana dal bori",
+    "brand": "Howrah Foods",
+    "weight": 0.2
+  },
+  "B0GJ6QPPP8": {
+    "parent_product": "chana dal bori",
+    "brand": "Howrah Foods",
+    "weight": 0.3
+  },
+  "B0GM8RDB91": {
+    "parent_product": "urad dal bori",
+    "brand": "Howrah Foods",
+    "weight": 0.2
+  },
+  "B0GM8QNB9R": {
+    "parent_product": "urad dal bori",
+    "brand": "Howrah Foods",
+    "weight": 0.3
+  },
+  "B0GM8KP9B5": {
+    "parent_product": "moong dal bori",
+    "brand": "Howrah Foods",
+    "weight": 0.2
+  },
+  "B0GM8W1HYJ": {
+    "parent_product": "moong dal bori",
+    "brand": "Howrah Foods",
+    "weight": 0.3
+  }
+}

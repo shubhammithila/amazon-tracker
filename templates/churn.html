@@ -5,11 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Portfolio Review — Amazon Tracker</title>
   <style>
-    :root {
-      --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
-      --text: #e2e8f0; --text-muted: #64748b; --accent: #6366f1;
-      --green: #22c55e; --yellow: #eab308; --red: #ef4444; --orange: #f97316;
-    }
+    :root { --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a; --text: #e2e8f0; --text-muted: #64748b; --accent: #6366f1; --green: #22c55e; --yellow: #eab308; --red: #ef4444; --orange: #f97316; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; }
     header { display: flex; align-items: center; gap: 12px; padding: 12px 24px; border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 100; }
@@ -17,325 +13,284 @@
     .nav-links { display: flex; gap: 16px; margin-left: 32px; }
     .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 13px; font-weight: 500; padding: 4px 0; border-bottom: 2px solid transparent; transition: all .2s; }
     .nav-links a:hover, .nav-links a.active { color: var(--text); border-color: var(--accent); }
-    .header-right { margin-left: auto; }
-    .header-right a { color: var(--text-muted); font-size: 13px; text-decoration: none; }
-
-    main { max-width: 1500px; margin: 0 auto; padding: 24px; }
+    .header-right { margin-left: auto; } .header-right a { color: var(--text-muted); font-size: 13px; text-decoration: none; }
+    main { max-width: 1400px; margin: 0 auto; padding: 24px; }
     h2 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
-    .subtitle { color: var(--text-muted); font-size: 13px; margin-bottom: 24px; }
+    .subtitle { color: var(--text-muted); font-size: 13px; margin-bottom: 20px; }
 
-    /* Upload */
-    .upload-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 24px; }
-    .upload-card h3 { font-size: 15px; margin-bottom: 6px; }
-    .upload-card p { color: var(--text-muted); font-size: 13px; margin-bottom: 14px; }
-    .drop-zone { border: 2px dashed var(--border); border-radius: 8px; padding: 28px; text-align: center; cursor: pointer; transition: border-color .2s; }
+    .upload-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+    .upload-card h3 { font-size: 14px; margin-bottom: 6px; } .upload-card p { color: var(--text-muted); font-size: 12px; margin-bottom: 12px; }
+    .drop-zone { border: 2px dashed var(--border); border-radius: 8px; padding: 24px; text-align: center; cursor: pointer; transition: border-color .2s; }
     .drop-zone:hover, .drop-zone.dragover { border-color: var(--accent); }
     .drop-zone input { display: none; }
-    .file-name { margin-top: 10px; font-size: 13px; color: var(--accent); display: none; }
-    .upload-row { display: flex; gap: 12px; margin-top: 14px; align-items: center; }
-    .btn { background: var(--accent); color: #fff; border: none; border-radius: 6px; padding: 8px 18px; font-size: 13px; font-weight: 500; cursor: pointer; }
+    .file-name { margin-top: 8px; font-size: 12px; color: var(--accent); display: none; }
+    .upload-row { display: flex; gap: 12px; margin-top: 12px; align-items: center; }
+    .btn { background: var(--accent); color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer; }
     .btn:disabled { opacity: .5; cursor: not-allowed; }
-    .btn-outline { background: transparent; color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; padding: 7px 14px; font-size: 12px; cursor: pointer; }
+    .btn-outline { background: transparent; color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
     .btn-outline:hover { border-color: var(--accent); color: var(--text); }
-    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; }
+    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    .last-upload { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
 
-    /* Summary */
-    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 24px; }
-    .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; text-align: center; }
-    .stat .num { font-size: 26px; font-weight: 700; }
-    .stat .lbl { font-size: 11px; color: var(--text-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: .05em; }
+    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 20px; }
+    .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px; text-align: center; }
+    .stat .num { font-size: 24px; font-weight: 700; } .stat .lbl { font-size: 10px; color: var(--text-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: .05em; }
 
-    /* Alerts */
-    .alerts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-bottom: 28px; }
-    .alert-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
-    .alert-card h4 { font-size: 13px; font-weight: 600; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
-    .alert-card .tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 700; }
-    .tag-red { background: #3a1111; color: var(--red); }
-    .tag-orange { background: #3a2211; color: var(--orange); }
-    .tag-yellow { background: #2a2a05; color: var(--yellow); }
+    .alerts { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin-bottom: 24px; }
+    .alert-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+    .alert-card h4 { font-size: 12px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+    .tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 700; }
+    .tag-red { background: #3a1111; color: var(--red); } .tag-orange { background: #3a2211; color: var(--orange); } .tag-yellow { background: #2a2a05; color: var(--yellow); }
     .alert-list { list-style: none; font-size: 12px; }
-    .alert-list li { padding: 5px 0; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; }
+    .alert-list li { padding: 4px 0; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; }
     .alert-list li:last-child { border: none; }
-    .alert-asin { color: var(--accent); font-family: monospace; }
-    .alert-val { color: var(--text-muted); }
+    .alert-name { font-weight: 500; } .alert-val { color: var(--text-muted); white-space: nowrap; }
     .alert-empty { color: var(--text-muted); font-size: 12px; font-style: italic; }
 
-    /* Filters */
-    .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
-    .filter-chip { padding: 5px 14px; border-radius: 20px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); font-size: 12px; cursor: pointer; }
-    .filter-chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .chip { padding: 5px 12px; border-radius: 20px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); font-size: 12px; cursor: pointer; }
+    .chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
     .search-input { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 6px 12px; font-size: 13px; width: 200px; margin-left: auto; }
     .search-input:focus { outline: none; border-color: var(--accent); }
+    .count-lbl { font-size: 11px; color: var(--text-muted); margin-left: 8px; }
 
-    /* Table */
     .table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid var(--border); }
-    table { width: 100%; border-collapse: collapse; min-width: 900px; }
-    thead th { background: var(--surface); padding: 10px 12px; text-align: left; font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; cursor: pointer; user-select: none; border-bottom: 1px solid var(--border); white-space: nowrap; }
-    thead th:hover { color: var(--text); }
-    thead th.sorted { color: var(--accent); }
-    tbody tr { border-bottom: 1px solid var(--border); }
-    tbody tr:hover { background: rgba(99,102,241,.04); }
-    td { padding: 8px 12px; font-size: 13px; white-space: nowrap; }
-    td.title-cell { white-space: normal; max-width: 260px; }
-    .flag { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 8px; margin-right: 3px; margin-bottom: 2px; }
-    .flag-red { background: #3a1111; color: var(--red); }
-    .flag-orange { background: #3a2211; color: var(--orange); }
-    .flag-yellow { background: #2a2a05; color: var(--yellow); }
+    table { width: 100%; border-collapse: collapse; min-width: 850px; }
+    thead th { background: var(--surface); padding: 9px 11px; text-align: left; font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; cursor: pointer; user-select: none; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    thead th:hover { color: var(--text); } thead th.sorted { color: var(--accent); }
+    th .arrow { font-size: 10px; margin-left: 3px; }
+    tbody tr { border-bottom: 1px solid var(--border); } tbody tr:hover { background: rgba(99,102,241,.04); }
+    td { padding: 8px 11px; font-size: 13px; }
+    .flag { display: inline-block; font-size: 9px; padding: 1px 6px; border-radius: 8px; margin-right: 3px; }
+    .flag-red { background: #3a1111; color: var(--red); } .flag-orange { background: #3a2211; color: var(--orange); }
     .empty-state { text-align: center; padding: 40px; color: var(--text-muted); }
-
-    /* Toast */
-    #toast { position: fixed; bottom: 24px; right: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 20px; font-size: 13px; display: none; z-index: 1000; }
-    #toast.error { border-color: var(--red); color: var(--red); }
-    #toast.success { border-color: var(--green); color: var(--green); }
+    #toast { position: fixed; bottom: 20px; right: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 18px; font-size: 13px; display: none; z-index: 1000; }
+    #toast.error { border-color: var(--red); color: var(--red); } #toast.success { border-color: var(--green); color: var(--green); }
   </style>
 </head>
 <body>
 <header>
-  <span>📦</span>
-  <h1>Amazon Tracker v2</h1>
+  <span>📦</span><h1>Amazon Tracker v2</h1>
   <nav class="nav-links">
-    <a href="/">Dashboard</a>
-    <a href="/history-page">History</a>
-    <a href="/keywords-page">Keywords</a>
-    <a href="/invoice-page">Invoice</a>
-    <a href="/churn-page" class="active">Portfolio</a>
+    <a href="/">Dashboard</a><a href="/history-page">History</a><a href="/keywords-page">Keywords</a><a href="/invoice-page">Invoice</a><a href="/churn-page" class="active">Portfolio</a>
   </nav>
   <div class="header-right"><a href="/logout">Logout</a></div>
 </header>
-
 <main>
   <h2>📊 Portfolio Review</h2>
-  <p class="subtitle">Upload your Business Report to see aggregated parent product performance. Quickly spot underperformers to remove or fix.</p>
+  <p class="subtitle">Aggregated by parent product (e.g. "Sattu" = all weight variations combined). Upload Business Report (last 30d, By ASIN) to refresh data.</p>
 
-  <!-- Upload -->
   <div class="upload-card">
-    <h3>Upload Business Report (By ASIN, Last 30 Days)</h3>
-    <p>Seller Central → Reports → Business Reports → select "By ASIN" + last 30 days → Download</p>
-    <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
-      <input type="file" id="file-input" accept=".csv" />
-      <div style="font-size:28px;margin-bottom:6px">📂</div>
-      <div>Drop CSV here or <strong>click to browse</strong></div>
+    <h3>Upload / Refresh Data</h3>
+    <p>Seller Central → Reports → Business Reports → By ASIN (last 30 days)</p>
+    <div class="drop-zone" id="drop-zone" onclick="document.getElementById('fi').click()">
+      <input type="file" id="fi" accept=".csv" />
+      <div style="font-size:24px;margin-bottom:4px">📂</div>
+      <div>Drop CSV or <strong>click to browse</strong></div>
     </div>
-    <div class="file-name" id="file-name">📄 <span id="fname"></span></div>
+    <div class="file-name" id="fname-box">📄 <span id="fname"></span></div>
     <div class="upload-row">
-      <button class="btn" id="analyse-btn" disabled onclick="analyse()">Analyse Portfolio</button>
+      <button class="btn" id="upload-btn" disabled onclick="upload()">Upload &amp; Analyse</button>
       <span id="spin" style="display:none"><span class="spinner"></span> Processing...</span>
     </div>
+    <div class="last-upload" id="last-upload"></div>
   </div>
 
-  <!-- Results (hidden until upload) -->
   <div id="results" style="display:none">
-
-    <!-- Summary -->
     <div class="summary" id="summary"></div>
-
-    <!-- Alerts -->
     <div class="alerts" id="alerts"></div>
-
-    <!-- Controls -->
     <div class="controls">
-      <button class="filter-chip active" onclick="setBrand('all',this)">All Brands</button>
-      <button class="filter-chip" onclick="setBrand('Mithila Foods',this)">Mithila Foods</button>
-      <button class="filter-chip" onclick="setBrand('Howrah Foods',this)">Howrah Foods</button>
-      <span style="color:var(--text-muted);font-size:12px;margin-left:8px" id="count-label"></span>
-      <input type="text" class="search-input" placeholder="Search ASIN / title..." oninput="render()" id="search" />
-      <button class="btn-outline" onclick="downloadExcel()">⬇ Download Excel</button>
+      <button class="chip active" onclick="setBrand('all',this)">All</button>
+      <button class="chip" onclick="setBrand('Mithila Foods',this)">Mithila Foods</button>
+      <button class="chip" onclick="setBrand('Howrah Foods',this)">Howrah Foods</button>
+      <span class="count-lbl" id="count-lbl"></span>
+      <input type="text" class="search-input" placeholder="Search product..." oninput="render()" id="search" />
+      <button class="btn-outline" onclick="download()">⬇ Excel</button>
     </div>
-
-    <!-- Table -->
     <div class="table-wrap">
       <table>
-        <thead>
-          <tr>
-            <th onclick="sort('parent_asin')">#</th>
-            <th onclick="sort('parent_asin')">Parent ASIN</th>
-            <th onclick="sort('brand')">Brand</th>
-            <th>Title</th>
-            <th onclick="sort('sessions')">Sessions</th>
-            <th onclick="sort('units_ordered')">Units</th>
-            <th onclick="sort('revenue')">Revenue (₹)</th>
-            <th onclick="sort('conversion_rate')">Conv %</th>
-            <th onclick="sort('buy_box_pct')">Buy Box %</th>
-            <th onclick="sort('rating')">Rating</th>
-            <th onclick="sort('review_count')">Reviews</th>
-            <th>Flags</th>
-          </tr>
-        </thead>
+        <thead><tr id="thead-row"></tr></thead>
         <tbody id="tbody"></tbody>
       </table>
-      <div class="empty-state" id="empty" style="display:none">No products match the filter.</div>
+      <div class="empty-state" id="empty" style="display:none">No products match.</div>
     </div>
   </div>
 </main>
 <div id="toast"></div>
-
 <script>
 let allProducts = [];
-let currentBrand = "all";
+let brand = "all";
 let sortCol = "revenue";
 let sortDir = -1;
 let selectedFile = null;
 
-// ── File handling ────────────────────────────────
+const columns = [
+  { key: "_rank", label: "#", sortable: false },
+  { key: "parent_product", label: "Product", sortable: true },
+  { key: "brand", label: "Brand", sortable: true },
+  { key: "variations", label: "Vars", sortable: true },
+  { key: "sessions", label: "Sessions", sortable: true },
+  { key: "units_ordered", label: "Units", sortable: true },
+  { key: "revenue", label: "Revenue", sortable: true },
+  { key: "avg_conversion", label: "Conv %", sortable: true },
+  { key: "rating", label: "Rating", sortable: true },
+  { key: "review_count", label: "Reviews", sortable: true },
+  { key: "rating_decline", label: "Rating Δ", sortable: true },
+  { key: "flags", label: "Flags", sortable: false },
+];
+
+// Build thead
+const theadRow = document.getElementById("thead-row");
+columns.forEach(c => {
+  const th = document.createElement("th");
+  th.textContent = c.label;
+  if (c.sortable) {
+    th.onclick = () => doSort(c.key);
+    th.dataset.col = c.key;
+  }
+  theadRow.appendChild(th);
+});
+
+// File handling
 const dz = document.getElementById("drop-zone");
-const fi = document.getElementById("file-input");
+const fi = document.getElementById("fi");
 dz.addEventListener("dragover", e => { e.preventDefault(); dz.classList.add("dragover"); });
 dz.addEventListener("dragleave", () => dz.classList.remove("dragover"));
 dz.addEventListener("drop", e => { e.preventDefault(); dz.classList.remove("dragover"); if(e.dataTransfer.files[0]) pick(e.dataTransfer.files[0]); });
 fi.addEventListener("change", () => { if(fi.files[0]) pick(fi.files[0]); });
+function pick(f) { selectedFile = f; document.getElementById("fname").textContent = f.name; document.getElementById("fname-box").style.display = "block"; document.getElementById("upload-btn").disabled = false; }
 
-function pick(f) {
-  selectedFile = f;
-  document.getElementById("fname").textContent = f.name;
-  document.getElementById("file-name").style.display = "block";
-  document.getElementById("analyse-btn").disabled = false;
-}
-
-// ── Analyse ──────────────────────────────────────
-async function analyse() {
-  if(!selectedFile) return;
-  document.getElementById("analyse-btn").disabled = true;
+// Upload
+async function upload() {
+  if (!selectedFile) return;
+  document.getElementById("upload-btn").disabled = true;
   document.getElementById("spin").style.display = "inline-flex";
-  const fd = new FormData();
-  fd.append("file", selectedFile);
+  const fd = new FormData(); fd.append("file", selectedFile);
   try {
     const r = await fetch("/churn/upload", { method: "POST", body: fd });
     const data = await r.json();
-    if(data.error) throw new Error(data.error);
-    allProducts = data.products;
-    showSummary(data.summary, data.total_parents);
-    showAlerts(data.alerts);
-    render();
-    document.getElementById("results").style.display = "block";
-    toast(data.total_parents + " parent products analysed", "success");
+    if (data.error) throw new Error(data.error);
+    loadData(data);
+    toast(data.total_parents + " parent products loaded", "success");
   } catch(e) { toast(e.message, "error"); }
-  finally {
-    document.getElementById("analyse-btn").disabled = false;
-    document.getElementById("spin").style.display = "none";
+  finally { document.getElementById("upload-btn").disabled = false; document.getElementById("spin").style.display = "none"; }
+}
+
+// Load data into UI
+function loadData(data) {
+  allProducts = data.products || [];
+  showSummary(data.summary, data.total_parents);
+  showAlerts(data.alerts);
+  render();
+  document.getElementById("results").style.display = "block";
+  if (data.uploaded_at) {
+    const d = new Date(data.uploaded_at);
+    document.getElementById("last-upload").textContent = "Last uploaded: " + d.toLocaleString("en-IN") + (data.filename ? " (" + data.filename + ")" : "");
   }
 }
 
-// ── Summary ──────────────────────────────────────
 function showSummary(s, total) {
   const fmt = n => "₹" + Number(n).toLocaleString("en-IN", {maximumFractionDigits:0});
   document.getElementById("summary").innerHTML = `
     <div class="stat"><div class="num">${total}</div><div class="lbl">Parent Products</div></div>
-    <div class="stat"><div class="num">${s.total_units.toLocaleString("en-IN")}</div><div class="lbl">Total Units (30d)</div></div>
-    <div class="stat"><div class="num">${fmt(s.total_revenue)}</div><div class="lbl">Total Revenue (30d)</div></div>
-    <div class="stat"><div class="num">${s.avg_conversion}%</div><div class="lbl">Avg Conversion</div></div>
-    <div class="stat"><div class="num">${s.mithila_count}</div><div class="lbl">Mithila Foods</div></div>
-    <div class="stat"><div class="num">${s.howrah_count}</div><div class="lbl">Howrah Foods</div></div>
-  `;
+    <div class="stat"><div class="num">${(s.total_units||0).toLocaleString("en-IN")}</div><div class="lbl">Total Units (30d)</div></div>
+    <div class="stat"><div class="num">${fmt(s.total_revenue||0)}</div><div class="lbl">Total Revenue (30d)</div></div>
+    <div class="stat"><div class="num">${s.avg_conversion||0}%</div><div class="lbl">Avg Conversion</div></div>
+    <div class="stat"><div class="num">${s.mithila_count||0}</div><div class="lbl">Mithila Foods</div></div>
+    <div class="stat"><div class="num">${s.howrah_count||0}</div><div class="lbl">Howrah Foods</div></div>`;
 }
 
-// ── Alerts ───────────────────────────────────────
 function showAlerts(a) {
+  if (!a) return;
   const al = document.getElementById("alerts");
-  al.innerHTML = "";
-
   const cards = [
     { title: "Bottom 5% by Units", key: "bottom_5_units", tag: "tag-orange", valFn: p => p.units_ordered + " units" },
     { title: "Bottom 5% by Revenue", key: "bottom_5_revenue", tag: "tag-orange", valFn: p => "₹" + Number(p.revenue).toLocaleString("en-IN",{maximumFractionDigits:0}) },
-    { title: "Bottom 5% by Rating", key: "bottom_5_rating", tag: "tag-yellow", valFn: p => (p.rating != null ? p.rating.toFixed(1) + " ★" : "—") },
-    { title: "Rating < 3.5", key: "rating_below_3_5", tag: "tag-red", valFn: p => (p.rating != null ? p.rating.toFixed(1) + " ★" : "—") },
-    { title: "Rating Declined ≥ 0.3", key: "rating_declining", tag: "tag-red", valFn: p => (p.rating_decline != null ? "↓ " + p.rating_decline.toFixed(1) : "—") },
+    { title: "Bottom 5% by Rating", key: "bottom_5_rating", tag: "tag-yellow", valFn: p => p.rating != null ? p.rating.toFixed(1) + " ★" : "—" },
+    { title: "Rating < 3.5", key: "rating_below_3_5", tag: "tag-red", valFn: p => p.rating != null ? p.rating.toFixed(1) + " ★" : "—" },
+    { title: "Rating Declined ≥ 0.3", key: "rating_declining", tag: "tag-red", valFn: p => p.rating_decline != null ? "↓" + p.rating_decline.toFixed(1) : "—" },
   ];
-
-  cards.forEach(c => {
+  al.innerHTML = cards.map(c => {
     const items = a[c.key] || [];
-    const card = document.createElement("div");
-    card.className = "alert-card";
-    let html = `<h4><span class="tag ${c.tag}">${items.length}</span> ${c.title}</h4>`;
-    if(!items.length) { html += `<div class="alert-empty">None — all good here.</div>`; }
+    let html = `<div class="alert-card"><h4><span class="tag ${c.tag}">${items.length}</span> ${c.title}</h4>`;
+    if (!items.length) html += `<div class="alert-empty">None</div>`;
     else {
       html += `<ul class="alert-list">`;
-      items.slice(0, 8).forEach(p => {
-        const short = (p.title || "").substring(0, 40) + ((p.title||"").length > 40 ? "…" : "");
-        html += `<li><span><span class="alert-asin">${p.parent_asin}</span> ${short}</span> <span class="alert-val">${c.valFn(p)}</span></li>`;
-      });
-      if(items.length > 8) html += `<li style="color:var(--text-muted)">+ ${items.length-8} more</li>`;
+      items.slice(0, 6).forEach(p => { html += `<li><span class="alert-name">${p.parent_product}</span><span class="alert-val">${c.valFn(p)}</span></li>`; });
+      if (items.length > 6) html += `<li style="color:var(--text-muted)">+ ${items.length-6} more</li>`;
       html += `</ul>`;
     }
-    card.innerHTML = html;
-    al.appendChild(card);
-  });
+    return html + `</div>`;
+  }).join("");
 }
 
-// ── Table ────────────────────────────────────────
-function setBrand(b, el) {
-  currentBrand = b;
-  document.querySelectorAll(".filter-chip").forEach(c => c.classList.remove("active"));
-  el.classList.add("active");
-  render();
-}
-
-function sort(col) {
-  if(sortCol === col) sortDir = -sortDir;
-  else { sortCol = col; sortDir = -1; }
-  render();
-}
+// Filtering & sorting
+function setBrand(b, el) { brand = b; document.querySelectorAll(".chip").forEach(c => c.classList.remove("active")); el.classList.add("active"); render(); }
+function doSort(col) { if (sortCol === col) sortDir = -sortDir; else { sortCol = col; sortDir = -1; } render(); }
 
 function render() {
   const q = (document.getElementById("search").value || "").toLowerCase();
   let rows = allProducts.filter(p => {
-    if(currentBrand !== "all" && p.brand !== currentBrand) return false;
-    if(q && !p.parent_asin.toLowerCase().includes(q) && !(p.title||"").toLowerCase().includes(q)) return false;
+    if (brand !== "all" && p.brand !== brand) return false;
+    if (q && !p.parent_product.toLowerCase().includes(q) && !p.brand.toLowerCase().includes(q)) return false;
     return true;
   });
-  rows.sort((a,b) => {
+  rows.sort((a, b) => {
     let av = a[sortCol] ?? -Infinity, bv = b[sortCol] ?? -Infinity;
+    if (typeof av === "string") return av.localeCompare(bv) * sortDir;
     return (av < bv ? -1 : av > bv ? 1 : 0) * sortDir;
   });
+  document.getElementById("count-lbl").textContent = rows.length + " products";
 
-  document.getElementById("count-label").textContent = rows.length + " products";
+  // Update sorted th
+  document.querySelectorAll("thead th").forEach(th => {
+    th.classList.toggle("sorted", th.dataset.col === sortCol);
+  });
+
   const tbody = document.getElementById("tbody");
-  if(!rows.length) { tbody.innerHTML = ""; document.getElementById("empty").style.display="block"; return; }
+  if (!rows.length) { tbody.innerHTML = ""; document.getElementById("empty").style.display = "block"; return; }
   document.getElementById("empty").style.display = "none";
 
-  const fmt = n => "₹" + Number(n).toLocaleString("en-IN", {maximumFractionDigits:0});
+  const fmt = n => "₹" + Number(n).toLocaleString("en-IN", {maximumFractionDigits: 0});
   tbody.innerHTML = rows.map((p, i) => {
-    const flagsHtml = (p.flags||[]).map(f => {
-      const cls = f.includes("rating_below") || f.includes("declining") ? "flag-red" : f.includes("bottom") ? "flag-orange" : "flag-yellow";
+    const flagsHtml = (p.flags || []).map(f => {
+      const cls = f.includes("below") || f.includes("declining") ? "flag-red" : "flag-orange";
       const label = f.replace("bottom_5_", "B5% ").replace("rating_below_3.5", "< 3.5★").replace("rating_declining", "↓ Rating");
       return `<span class="flag ${cls}">${label}</span>`;
-    }).join("");
+    }).join("") || "—";
+    const ratingDecline = p.rating_decline != null && p.rating_decline > 0 ? `<span style="color:var(--red)">↓${p.rating_decline.toFixed(1)}</span>` : (p.rating_decline != null && p.rating_decline < 0 ? `<span style="color:var(--green)">↑${Math.abs(p.rating_decline).toFixed(1)}</span>` : "—");
     return `<tr>
-      <td style="color:var(--text-muted)">${i+1}</td>
-      <td><a href="https://www.amazon.in/dp/${p.parent_asin}" target="_blank" style="color:var(--accent);text-decoration:none">${p.parent_asin}</a></td>
-      <td style="font-size:11px">${p.brand}</td>
-      <td class="title-cell" title="${(p.title||"").replace(/"/g,"'")}">${(p.title||"").substring(0,50)}${(p.title||"").length>50?"…":""}</td>
+      <td style="color:var(--text-muted);font-size:12px">${i+1}</td>
+      <td><strong>${p.parent_product}</strong></td>
+      <td style="font-size:11px;color:var(--text-muted)">${p.brand}</td>
+      <td style="text-align:center">${p.variations}</td>
       <td>${p.sessions.toLocaleString("en-IN")}</td>
       <td><strong>${p.units_ordered.toLocaleString("en-IN")}</strong></td>
       <td><strong>${fmt(p.revenue)}</strong></td>
-      <td>${p.conversion_rate}%</td>
-      <td>${p.buy_box_pct}%</td>
+      <td>${p.avg_conversion}%</td>
       <td>${p.rating != null ? p.rating.toFixed(1) + " ★" : "—"}</td>
       <td>${p.review_count != null ? p.review_count.toLocaleString("en-IN") : "—"}</td>
-      <td>${flagsHtml || "—"}</td>
+      <td>${ratingDecline}</td>
+      <td>${flagsHtml}</td>
     </tr>`;
   }).join("");
 }
 
-// ── Download ─────────────────────────────────────
-function downloadExcel() {
-  if(!selectedFile) return;
-  const fd = new FormData();
-  fd.append("file", selectedFile);
-  fetch("/churn/download", { method: "POST", body: fd })
-    .then(r => r.blob())
-    .then(blob => {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url; a.download = "Portfolio_Review.xlsx"; a.click();
-    });
-}
+function download() { window.location.href = "/churn/download"; }
 
-// ── Toast ────────────────────────────────────────
-function toast(msg, type="") {
-  const el = document.getElementById("toast");
-  el.textContent = msg; el.className = type; el.style.display = "block";
-  setTimeout(() => el.style.display = "none", 4000);
-}
+function toast(msg, type="") { const el = document.getElementById("toast"); el.textContent = msg; el.className = type; el.style.display = "block"; setTimeout(() => el.style.display = "none", 4000); }
+
+// Auto-load last saved report on page load
+(async () => {
+  try {
+    const r = await fetch("/churn/last-report");
+    const data = await r.json();
+    if (data.products && data.products.length) {
+      loadData(data);
+    }
+  } catch(e) {}
+})();
 </script>
 </body>
 </html>
