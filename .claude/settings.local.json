@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -sL \"https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js\" -o static/chart.min.js)",
+      "Bash(python -m venv venv)",
+      "Bash(./venv/Scripts/pip install *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
+    ]
+  }
+}

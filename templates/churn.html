@@ -3,15 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Churn Analysis — Amazon Tracker</title>
+  <title>Portfolio Review — Amazon Tracker</title>
   <style>
     :root {
       --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
       --text: #e2e8f0; --text-muted: #64748b; --accent: #6366f1;
-      --green: #22c55e; --green-bg: #052e16; --green-border: #166534;
-      --yellow: #eab308; --yellow-bg: #1c1c05; --yellow-border: #713f12;
-      --red: #ef4444; --red-bg: #1f0505; --red-border: #7f1d1d;
-      --gray: #94a3b8; --gray-bg: #1e2130; --gray-border: #334155;
+      --green: #22c55e; --yellow: #eab308; --red: #ef4444; --orange: #f97316;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; }
@@ -20,148 +17,75 @@
     .nav-links { display: flex; gap: 16px; margin-left: 32px; }
     .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 13px; font-weight: 500; padding: 4px 0; border-bottom: 2px solid transparent; transition: all .2s; }
     .nav-links a:hover, .nav-links a.active { color: var(--text); border-color: var(--accent); }
-    .header-right { margin-left: auto; display: flex; gap: 16px; align-items: center; }
+    .header-right { margin-left: auto; }
     .header-right a { color: var(--text-muted); font-size: 13px; text-decoration: none; }
 
-    main { max-width: 1400px; margin: 0 auto; padding: 24px; }
+    main { max-width: 1500px; margin: 0 auto; padding: 24px; }
     h2 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
     .subtitle { color: var(--text-muted); font-size: 13px; margin-bottom: 24px; }
 
-    /* Upload zone */
-    .upload-card {
-      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-      padding: 24px; margin-bottom: 24px;
-    }
-    .upload-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
-    .upload-card p { color: var(--text-muted); font-size: 13px; margin-bottom: 16px; }
-    .drop-zone {
-      border: 2px dashed var(--border); border-radius: 8px; padding: 32px;
-      text-align: center; cursor: pointer; transition: border-color .2s;
-    }
+    /* Upload */
+    .upload-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 24px; }
+    .upload-card h3 { font-size: 15px; margin-bottom: 6px; }
+    .upload-card p { color: var(--text-muted); font-size: 13px; margin-bottom: 14px; }
+    .drop-zone { border: 2px dashed var(--border); border-radius: 8px; padding: 28px; text-align: center; cursor: pointer; transition: border-color .2s; }
     .drop-zone:hover, .drop-zone.dragover { border-color: var(--accent); }
     .drop-zone input { display: none; }
-    .drop-zone .icon { font-size: 32px; margin-bottom: 8px; }
-    .drop-zone .hint { color: var(--text-muted); font-size: 12px; margin-top: 8px; }
-    .file-name { margin-top: 12px; font-size: 13px; color: var(--accent); display: none; }
-    .upload-row { display: flex; gap: 12px; align-items: center; margin-top: 16px; }
-    .period-input {
-      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
-      color: var(--text); padding: 8px 12px; font-size: 13px; width: 180px;
-    }
-    .period-input:focus { outline: none; border-color: var(--accent); }
-    .btn {
-      background: var(--accent); color: #fff; border: none; border-radius: 6px;
-      padding: 8px 18px; font-size: 13px; font-weight: 500; cursor: pointer;
-    }
+    .file-name { margin-top: 10px; font-size: 13px; color: var(--accent); display: none; }
+    .upload-row { display: flex; gap: 12px; margin-top: 14px; align-items: center; }
+    .btn { background: var(--accent); color: #fff; border: none; border-radius: 6px; padding: 8px 18px; font-size: 13px; font-weight: 500; cursor: pointer; }
     .btn:disabled { opacity: .5; cursor: not-allowed; }
-    .btn-outline {
-      background: transparent; color: var(--text-muted); border: 1px solid var(--border);
-      border-radius: 6px; padding: 8px 14px; font-size: 13px; cursor: pointer;
-    }
+    .btn-outline { background: transparent; color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; padding: 7px 14px; font-size: 12px; cursor: pointer; }
     .btn-outline:hover { border-color: var(--accent); color: var(--text); }
-    .btn-sm { padding: 5px 12px; font-size: 12px; }
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* Past reports */
-    .past-reports { margin-bottom: 24px; }
-    .past-reports h3 { font-size: 14px; font-weight: 600; color: var(--text-muted); margin-bottom: 10px; text-transform: uppercase; letter-spacing: .05em; }
-    .report-chips { display: flex; gap: 8px; flex-wrap: wrap; }
-    .report-chip {
-      background: var(--surface); border: 1px solid var(--border); border-radius: 20px;
-      padding: 5px 14px; font-size: 12px; cursor: pointer; transition: all .2s;
-      display: flex; gap: 8px; align-items: center;
-    }
-    .report-chip:hover, .report-chip.active { border-color: var(--accent); color: var(--accent); }
-    .chip-keep { color: var(--green); } .chip-churn { color: var(--red); }
+    /* Summary */
+    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 24px; }
+    .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; text-align: center; }
+    .stat .num { font-size: 26px; font-weight: 700; }
+    .stat .lbl { font-size: 11px; color: var(--text-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: .05em; }
 
-    /* Summary cards */
-    .summary-cards { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 24px; }
-    .card {
-      background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
-      padding: 16px; text-align: center;
-    }
-    .card .num { font-size: 32px; font-weight: 700; line-height: 1; }
-    .card .lbl { font-size: 12px; color: var(--text-muted); margin-top: 6px; text-transform: uppercase; letter-spacing: .05em; }
-    .card.green { border-color: var(--green-border); background: var(--green-bg); }
-    .card.yellow { border-color: var(--yellow-border); background: var(--yellow-bg); }
-    .card.red { border-color: var(--red-border); background: var(--red-bg); }
-    .card.gray { border-color: var(--gray-border); background: var(--gray-bg); }
-    .card.green .num { color: var(--green); }
-    .card.yellow .num { color: var(--yellow); }
-    .card.red .num { color: var(--red); }
-    .card.gray .num { color: var(--gray); }
+    /* Alerts */
+    .alerts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-bottom: 28px; }
+    .alert-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+    .alert-card h4 { font-size: 13px; font-weight: 600; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+    .alert-card .tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 700; }
+    .tag-red { background: #3a1111; color: var(--red); }
+    .tag-orange { background: #3a2211; color: var(--orange); }
+    .tag-yellow { background: #2a2a05; color: var(--yellow); }
+    .alert-list { list-style: none; font-size: 12px; }
+    .alert-list li { padding: 5px 0; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; }
+    .alert-list li:last-child { border: none; }
+    .alert-asin { color: var(--accent); font-family: monospace; }
+    .alert-val { color: var(--text-muted); }
+    .alert-empty { color: var(--text-muted); font-size: 12px; font-style: italic; }
 
-    /* Table controls */
-    .table-controls { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
-    .filter-btn {
-      padding: 5px 14px; border-radius: 20px; border: 1px solid var(--border);
-      background: transparent; color: var(--text-muted); font-size: 12px; cursor: pointer;
-    }
-    .filter-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-    .filter-btn.f-keep.active { background: var(--green); border-color: var(--green); }
-    .filter-btn.f-monitor.active { background: var(--yellow); color: #000; border-color: var(--yellow); }
-    .filter-btn.f-churn.active { background: var(--red); border-color: var(--red); }
-    .filter-btn.f-no_data.active { background: var(--gray); border-color: var(--gray); color: #000; }
-    .search-box {
-      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
-      color: var(--text); padding: 6px 12px; font-size: 13px; width: 220px; margin-left: auto;
-    }
-    .search-box:focus { outline: none; border-color: var(--accent); }
+    /* Filters */
+    .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+    .filter-chip { padding: 5px 14px; border-radius: 20px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); font-size: 12px; cursor: pointer; }
+    .filter-chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .search-input { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 6px 12px; font-size: 13px; width: 200px; margin-left: auto; }
+    .search-input:focus { outline: none; border-color: var(--accent); }
 
     /* Table */
     .table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid var(--border); }
-    table { width: 100%; border-collapse: collapse; }
-    thead th {
-      background: var(--surface); padding: 10px 12px; text-align: left;
-      font-size: 11px; font-weight: 600; color: var(--text-muted);
-      text-transform: uppercase; letter-spacing: .05em; white-space: nowrap;
-      cursor: pointer; user-select: none; border-bottom: 1px solid var(--border);
-    }
+    table { width: 100%; border-collapse: collapse; min-width: 900px; }
+    thead th { background: var(--surface); padding: 10px 12px; text-align: left; font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; cursor: pointer; user-select: none; border-bottom: 1px solid var(--border); white-space: nowrap; }
     thead th:hover { color: var(--text); }
     thead th.sorted { color: var(--accent); }
-    tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
-    tbody tr:hover { background: var(--surface); }
-    tbody tr:last-child { border-bottom: none; }
-    td { padding: 9px 12px; font-size: 13px; vertical-align: middle; }
-
-    /* Status badge */
-    .badge {
-      display: inline-block; padding: 2px 10px; border-radius: 12px;
-      font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
-    }
-    .badge-keep { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
-    .badge-monitor { background: var(--yellow-bg); color: var(--yellow); border: 1px solid var(--yellow-border); }
-    .badge-churn { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
-    .badge-no_data { background: var(--gray-bg); color: var(--gray); border: 1px solid var(--gray-border); }
-
-    /* Score bar */
-    .score-bar { width: 60px; height: 6px; background: var(--border); border-radius: 3px; display: inline-block; vertical-align: middle; margin-right: 6px; overflow: hidden; }
-    .score-fill { height: 100%; border-radius: 3px; }
-    .score-num { font-size: 12px; color: var(--text-muted); }
-
-    /* BSR trend */
-    .trend-up { color: var(--red); } .trend-down { color: var(--green); } .trend-stable { color: var(--text-muted); }
-
-    /* Reason text */
-    .reason { font-size: 12px; color: var(--text-muted); max-width: 280px; }
-
-    /* Empty / loading */
-    .empty { text-align: center; padding: 60px; color: var(--text-muted); }
-    .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* Compare panel */
-    .compare-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-top: 24px; display: none; }
-    .compare-panel h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
-    .compare-row { display: flex; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
-    .compare-row:last-child { border-bottom: none; }
-    .arrow { color: var(--text-muted); }
+    tbody tr { border-bottom: 1px solid var(--border); }
+    tbody tr:hover { background: rgba(99,102,241,.04); }
+    td { padding: 8px 12px; font-size: 13px; white-space: nowrap; }
+    td.title-cell { white-space: normal; max-width: 260px; }
+    .flag { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 8px; margin-right: 3px; margin-bottom: 2px; }
+    .flag-red { background: #3a1111; color: var(--red); }
+    .flag-orange { background: #3a2211; color: var(--orange); }
+    .flag-yellow { background: #2a2a05; color: var(--yellow); }
+    .empty-state { text-align: center; padding: 40px; color: var(--text-muted); }
 
     /* Toast */
-    #toast {
-      position: fixed; bottom: 24px; right: 24px; background: var(--surface);
-      border: 1px solid var(--border); border-radius: 8px; padding: 12px 20px;
-      font-size: 13px; display: none; z-index: 1000; max-width: 320px;
-    }
+    #toast { position: fixed; bottom: 24px; right: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 20px; font-size: 13px; display: none; z-index: 1000; }
     #toast.error { border-color: var(--red); color: var(--red); }
     #toast.success { border-color: var(--green); color: var(--green); }
   </style>
@@ -175,338 +99,243 @@
     <a href="/history-page">History</a>
     <a href="/keywords-page">Keywords</a>
     <a href="/invoice-page">Invoice</a>
-    <a href="/churn-page" class="active">Churn</a>
+    <a href="/churn-page" class="active">Portfolio</a>
   </nav>
   <div class="header-right"><a href="/logout">Logout</a></div>
 </header>
 
 <main>
-  <h2>🔁 Product Churn Analysis</h2>
-  <p class="subtitle">Upload your Amazon Business Report to score every ASIN. Identifies which products to keep, monitor, or remove.</p>
+  <h2>📊 Portfolio Review</h2>
+  <p class="subtitle">Upload your Business Report to see aggregated parent product performance. Quickly spot underperformers to remove or fix.</p>
 
-  <!-- Upload Card -->
+  <!-- Upload -->
   <div class="upload-card">
-    <h3>Upload Business Report CSV</h3>
-    <p>Download from Seller Central → Reports → Business Reports → By Child ASIN (select last 30 days)</p>
+    <h3>Upload Business Report (By ASIN, Last 30 Days)</h3>
+    <p>Seller Central → Reports → Business Reports → select "By ASIN" + last 30 days → Download</p>
     <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
       <input type="file" id="file-input" accept=".csv" />
-      <div class="icon">📂</div>
+      <div style="font-size:28px;margin-bottom:6px">📂</div>
       <div>Drop CSV here or <strong>click to browse</strong></div>
-      <div class="hint">Amazon Business Report CSV (By Child ASIN)</div>
     </div>
-    <div class="file-name" id="file-name">📄 <span id="file-name-text"></span></div>
+    <div class="file-name" id="file-name">📄 <span id="fname"></span></div>
     <div class="upload-row">
-      <input type="text" class="period-input" id="period-input" placeholder="Period label (e.g. May 2026)" />
-      <button class="btn" id="analyse-btn" disabled onclick="runAnalysis()">Analyse Products</button>
-      <span id="upload-spinner" style="display:none"><span class="spinner"></span> Analysing...</span>
+      <button class="btn" id="analyse-btn" disabled onclick="analyse()">Analyse Portfolio</button>
+      <span id="spin" style="display:none"><span class="spinner"></span> Processing...</span>
     </div>
   </div>
 
-  <!-- Past Reports -->
-  <div class="past-reports" id="past-reports-section" style="display:none">
-    <h3>Past Reports</h3>
-    <div class="report-chips" id="report-chips"></div>
-  </div>
+  <!-- Results (hidden until upload) -->
+  <div id="results" style="display:none">
 
-  <!-- Summary Cards -->
-  <div class="summary-cards" id="summary-cards" style="display:none">
-    <div class="card" style="border-color:var(--border)">
-      <div class="num" id="sum-total">0</div>
-      <div class="lbl">Total ASINs</div>
-    </div>
-    <div class="card green">
-      <div class="num" id="sum-keep">0</div>
-      <div class="lbl">🟢 Keep &amp; Invest</div>
-    </div>
-    <div class="card yellow">
-      <div class="num" id="sum-monitor">0</div>
-      <div class="lbl">🟡 Monitor</div>
-    </div>
-    <div class="card red">
-      <div class="num" id="sum-churn">0</div>
-      <div class="lbl">🔴 Churn Candidate</div>
-    </div>
-    <div class="card gray">
-      <div class="num" id="sum-nodata">0</div>
-      <div class="lbl">⚫ No Sales Data</div>
-    </div>
-  </div>
+    <!-- Summary -->
+    <div class="summary" id="summary"></div>
 
-  <!-- Table Controls -->
-  <div class="table-controls" id="table-controls" style="display:none">
-    <button class="filter-btn active" data-filter="all" onclick="setFilter('all', this)">All</button>
-    <button class="filter-btn f-keep" data-filter="keep" onclick="setFilter('keep', this)">🟢 Keep</button>
-    <button class="filter-btn f-monitor" data-filter="monitor" onclick="setFilter('monitor', this)">🟡 Monitor</button>
-    <button class="filter-btn f-churn" data-filter="churn" onclick="setFilter('churn', this)">🔴 Churn</button>
-    <button class="filter-btn f-no_data" data-filter="no_data" onclick="setFilter('no_data', this)">⚫ No Data</button>
-    <button class="btn-outline btn-sm" id="download-btn" onclick="downloadReport()" style="margin-left:8px">⬇ Download Excel</button>
-    <input type="text" class="search-box" id="search-box" placeholder="Search ASIN or title..." oninput="renderTable()" />
-  </div>
+    <!-- Alerts -->
+    <div class="alerts" id="alerts"></div>
 
-  <!-- Results Table -->
-  <div class="table-wrap" id="table-wrap" style="display:none">
-    <table>
-      <thead>
-        <tr>
-          <th onclick="sortBy('status')">Status</th>
-          <th onclick="sortBy('score')">Score ▾</th>
-          <th>ASIN</th>
-          <th>Title</th>
-          <th onclick="sortBy('units_ordered')">Units (30d)</th>
-          <th onclick="sortBy('revenue')">Revenue</th>
-          <th onclick="sortBy('conversion_rate')">Conv %</th>
-          <th onclick="sortBy('rating')">Rating</th>
-          <th onclick="sortBy('review_count')">Reviews</th>
-          <th onclick="sortBy('bsr_current')">BSR</th>
-          <th>BSR Trend</th>
-          <th>Age (days)</th>
-          <th>Reason</th>
-        </tr>
-      </thead>
-      <tbody id="table-body"></tbody>
-    </table>
-    <div class="empty" id="empty-msg" style="display:none">No products match the current filter.</div>
-  </div>
+    <!-- Controls -->
+    <div class="controls">
+      <button class="filter-chip active" onclick="setBrand('all',this)">All Brands</button>
+      <button class="filter-chip" onclick="setBrand('Mithila Foods',this)">Mithila Foods</button>
+      <button class="filter-chip" onclick="setBrand('Howrah Foods',this)">Howrah Foods</button>
+      <span style="color:var(--text-muted);font-size:12px;margin-left:8px" id="count-label"></span>
+      <input type="text" class="search-input" placeholder="Search ASIN / title..." oninput="render()" id="search" />
+      <button class="btn-outline" onclick="downloadExcel()">⬇ Download Excel</button>
+    </div>
 
-  <!-- Compare Panel -->
-  <div class="compare-panel" id="compare-panel">
-    <h3>📊 Changes vs Previous Report</h3>
-    <div id="compare-body"></div>
+    <!-- Table -->
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th onclick="sort('parent_asin')">#</th>
+            <th onclick="sort('parent_asin')">Parent ASIN</th>
+            <th onclick="sort('brand')">Brand</th>
+            <th>Title</th>
+            <th onclick="sort('sessions')">Sessions</th>
+            <th onclick="sort('units_ordered')">Units</th>
+            <th onclick="sort('revenue')">Revenue (₹)</th>
+            <th onclick="sort('conversion_rate')">Conv %</th>
+            <th onclick="sort('buy_box_pct')">Buy Box %</th>
+            <th onclick="sort('rating')">Rating</th>
+            <th onclick="sort('review_count')">Reviews</th>
+            <th>Flags</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+      <div class="empty-state" id="empty" style="display:none">No products match the filter.</div>
+    </div>
   </div>
 </main>
-
 <div id="toast"></div>
 
 <script>
-let allScores = [];
-let currentFilter = "all";
-let sortCol = "score";
-let sortDir = 1;  // 1 = asc, -1 = desc
-let currentReportId = null;
+let allProducts = [];
+let currentBrand = "all";
+let sortCol = "revenue";
+let sortDir = -1;
 let selectedFile = null;
 
-// ── File Upload ─────────────────────────────────────────────────────────────
+// ── File handling ────────────────────────────────
+const dz = document.getElementById("drop-zone");
+const fi = document.getElementById("file-input");
+dz.addEventListener("dragover", e => { e.preventDefault(); dz.classList.add("dragover"); });
+dz.addEventListener("dragleave", () => dz.classList.remove("dragover"));
+dz.addEventListener("drop", e => { e.preventDefault(); dz.classList.remove("dragover"); if(e.dataTransfer.files[0]) pick(e.dataTransfer.files[0]); });
+fi.addEventListener("change", () => { if(fi.files[0]) pick(fi.files[0]); });
 
-const dropZone = document.getElementById("drop-zone");
-const fileInput = document.getElementById("file-input");
-const fileNameEl = document.getElementById("file-name");
-const fileNameText = document.getElementById("file-name-text");
-const analyseBtn = document.getElementById("analyse-btn");
-
-dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("dragover"); });
-dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
-dropZone.addEventListener("drop", e => {
-  e.preventDefault(); dropZone.classList.remove("dragover");
-  if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
-});
-fileInput.addEventListener("change", () => { if (fileInput.files[0]) setFile(fileInput.files[0]); });
-
-function setFile(f) {
+function pick(f) {
   selectedFile = f;
-  fileNameText.textContent = f.name;
-  fileNameEl.style.display = "block";
-  analyseBtn.disabled = false;
-  // Auto-fill period from filename: BusinessReport-26-05-26.csv
-  const m = f.name.match(/BusinessReport-(\d{2})-(\d{2})-(\d{2})/);
-  if (m) {
-    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-    const mon = months[parseInt(m[2]) - 1];
-    const yr = "20" + m[3];
-    document.getElementById("period-input").value = `${mon} ${yr}`;
-  }
+  document.getElementById("fname").textContent = f.name;
+  document.getElementById("file-name").style.display = "block";
+  document.getElementById("analyse-btn").disabled = false;
 }
 
-// ── Run Analysis ────────────────────────────────────────────────────────────
-
-async function runAnalysis() {
-  if (!selectedFile) return;
-  analyseBtn.disabled = true;
-  document.getElementById("upload-spinner").style.display = "inline-flex";
-
-  const period = document.getElementById("period-input").value.trim() || selectedFile.name;
+// ── Analyse ──────────────────────────────────────
+async function analyse() {
+  if(!selectedFile) return;
+  document.getElementById("analyse-btn").disabled = true;
+  document.getElementById("spin").style.display = "inline-flex";
   const fd = new FormData();
   fd.append("file", selectedFile);
-  fd.append("period_label", period);
-
   try {
     const r = await fetch("/churn/upload", { method: "POST", body: fd });
     const data = await r.json();
-    if (data.error) throw new Error(data.error);
-
-    currentReportId = data.report_id;
-    allScores = data.scores;
-    updateSummary(data);
-    renderTable();
-    showResults();
-    toast("Analysis complete — " + data.total + " ASINs scored", "success");
-    loadPastReports();
-  } catch (e) {
-    toast(e.message || "Upload failed", "error");
-  } finally {
-    analyseBtn.disabled = false;
-    document.getElementById("upload-spinner").style.display = "none";
+    if(data.error) throw new Error(data.error);
+    allProducts = data.products;
+    showSummary(data.summary, data.total_parents);
+    showAlerts(data.alerts);
+    render();
+    document.getElementById("results").style.display = "block";
+    toast(data.total_parents + " parent products analysed", "success");
+  } catch(e) { toast(e.message, "error"); }
+  finally {
+    document.getElementById("analyse-btn").disabled = false;
+    document.getElementById("spin").style.display = "none";
   }
 }
 
-// ── Load Report ──────────────────────────────────────────────────────────────
+// ── Summary ──────────────────────────────────────
+function showSummary(s, total) {
+  const fmt = n => "₹" + Number(n).toLocaleString("en-IN", {maximumFractionDigits:0});
+  document.getElementById("summary").innerHTML = `
+    <div class="stat"><div class="num">${total}</div><div class="lbl">Parent Products</div></div>
+    <div class="stat"><div class="num">${s.total_units.toLocaleString("en-IN")}</div><div class="lbl">Total Units (30d)</div></div>
+    <div class="stat"><div class="num">${fmt(s.total_revenue)}</div><div class="lbl">Total Revenue (30d)</div></div>
+    <div class="stat"><div class="num">${s.avg_conversion}%</div><div class="lbl">Avg Conversion</div></div>
+    <div class="stat"><div class="num">${s.mithila_count}</div><div class="lbl">Mithila Foods</div></div>
+    <div class="stat"><div class="num">${s.howrah_count}</div><div class="lbl">Howrah Foods</div></div>
+  `;
+}
 
-async function loadReport(reportId) {
-  const r = await fetch(`/churn/reports/${reportId}`);
-  const data = await r.json();
-  if (data.error) return toast(data.error, "error");
+// ── Alerts ───────────────────────────────────────
+function showAlerts(a) {
+  const al = document.getElementById("alerts");
+  al.innerHTML = "";
 
-  currentReportId = reportId;
-  allScores = data.scores;
-  updateSummary(data);
-  renderTable();
-  showResults();
+  const cards = [
+    { title: "Bottom 5% by Units", key: "bottom_5_units", tag: "tag-orange", valFn: p => p.units_ordered + " units" },
+    { title: "Bottom 5% by Revenue", key: "bottom_5_revenue", tag: "tag-orange", valFn: p => "₹" + Number(p.revenue).toLocaleString("en-IN",{maximumFractionDigits:0}) },
+    { title: "Bottom 5% by Rating", key: "bottom_5_rating", tag: "tag-yellow", valFn: p => (p.rating != null ? p.rating.toFixed(1) + " ★" : "—") },
+    { title: "Rating < 3.5", key: "rating_below_3_5", tag: "tag-red", valFn: p => (p.rating != null ? p.rating.toFixed(1) + " ★" : "—") },
+    { title: "Rating Declined ≥ 0.3", key: "rating_declining", tag: "tag-red", valFn: p => (p.rating_decline != null ? "↓ " + p.rating_decline.toFixed(1) : "—") },
+  ];
 
-  // Highlight active chip
-  document.querySelectorAll(".report-chip").forEach(c => {
-    c.classList.toggle("active", parseInt(c.dataset.id) === reportId);
+  cards.forEach(c => {
+    const items = a[c.key] || [];
+    const card = document.createElement("div");
+    card.className = "alert-card";
+    let html = `<h4><span class="tag ${c.tag}">${items.length}</span> ${c.title}</h4>`;
+    if(!items.length) { html += `<div class="alert-empty">None — all good here.</div>`; }
+    else {
+      html += `<ul class="alert-list">`;
+      items.slice(0, 8).forEach(p => {
+        const short = (p.title || "").substring(0, 40) + ((p.title||"").length > 40 ? "…" : "");
+        html += `<li><span><span class="alert-asin">${p.parent_asin}</span> ${short}</span> <span class="alert-val">${c.valFn(p)}</span></li>`;
+      });
+      if(items.length > 8) html += `<li style="color:var(--text-muted)">+ ${items.length-8} more</li>`;
+      html += `</ul>`;
+    }
+    card.innerHTML = html;
+    al.appendChild(card);
   });
 }
 
-async function loadPastReports() {
-  const r = await fetch("/churn/reports");
-  const reports = await r.json();
-  if (!reports.length) return;
-
-  const sec = document.getElementById("past-reports-section");
-  const chips = document.getElementById("report-chips");
-  sec.style.display = "block";
-  chips.innerHTML = "";
-
-  reports.forEach(rep => {
-    const d = new Date(rep.report_date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
-    const chip = document.createElement("button");
-    chip.className = "report-chip" + (rep.id === currentReportId ? " active" : "");
-    chip.dataset.id = rep.id;
-    chip.innerHTML = `<strong>${rep.period_label || d}</strong> <span class="chip-keep">+${rep.keep}</span> <span class="chip-churn">-${rep.churn}</span>`;
-    chip.onclick = () => loadReport(rep.id);
-    chips.appendChild(chip);
-  });
-}
-
-// ── Summary Cards ────────────────────────────────────────────────────────────
-
-function updateSummary(data) {
-  document.getElementById("sum-total").textContent = data.total;
-  document.getElementById("sum-keep").textContent = data.keep;
-  document.getElementById("sum-monitor").textContent = data.monitor;
-  document.getElementById("sum-churn").textContent = data.churn;
-  document.getElementById("sum-nodata").textContent = data.no_data;
-}
-
-// ── Table ────────────────────────────────────────────────────────────────────
-
-function setFilter(f, el) {
-  currentFilter = f;
-  document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
+// ── Table ────────────────────────────────────────
+function setBrand(b, el) {
+  currentBrand = b;
+  document.querySelectorAll(".filter-chip").forEach(c => c.classList.remove("active"));
   el.classList.add("active");
-  renderTable();
+  render();
 }
 
-function sortBy(col) {
-  if (sortCol === col) sortDir = -sortDir;
-  else { sortCol = col; sortDir = 1; }
-  document.querySelectorAll("thead th").forEach(th => th.classList.remove("sorted"));
-  event.target.classList.add("sorted");
-  renderTable();
+function sort(col) {
+  if(sortCol === col) sortDir = -sortDir;
+  else { sortCol = col; sortDir = -1; }
+  render();
 }
 
-function renderTable() {
-  const search = (document.getElementById("search-box").value || "").toLowerCase();
-  let rows = allScores.filter(s => {
-    if (currentFilter !== "all" && s.status !== currentFilter) return false;
-    if (search && !s.asin.toLowerCase().includes(search) && !(s.title||"").toLowerCase().includes(search)) return false;
+function render() {
+  const q = (document.getElementById("search").value || "").toLowerCase();
+  let rows = allProducts.filter(p => {
+    if(currentBrand !== "all" && p.brand !== currentBrand) return false;
+    if(q && !p.parent_asin.toLowerCase().includes(q) && !(p.title||"").toLowerCase().includes(q)) return false;
     return true;
   });
-
-  rows.sort((a, b) => {
-    let av = a[sortCol] ?? -Infinity;
-    let bv = b[sortCol] ?? -Infinity;
+  rows.sort((a,b) => {
+    let av = a[sortCol] ?? -Infinity, bv = b[sortCol] ?? -Infinity;
     return (av < bv ? -1 : av > bv ? 1 : 0) * sortDir;
   });
 
-  const tbody = document.getElementById("table-body");
-  tbody.innerHTML = "";
+  document.getElementById("count-label").textContent = rows.length + " products";
+  const tbody = document.getElementById("tbody");
+  if(!rows.length) { tbody.innerHTML = ""; document.getElementById("empty").style.display="block"; return; }
+  document.getElementById("empty").style.display = "none";
 
-  if (!rows.length) {
-    document.getElementById("empty-msg").style.display = "block";
-    return;
-  }
-  document.getElementById("empty-msg").style.display = "none";
-
-  const fmt = n => n != null ? "₹" + Number(n).toLocaleString("en-IN", { maximumFractionDigits: 0 }) : "—";
-  const fmtN = n => n != null ? Number(n).toLocaleString("en-IN") : "—";
-
-  rows.forEach(s => {
-    const tr = document.createElement("tr");
-
-    const scoreColor = s.score >= 70 ? "#22c55e" : s.score >= 40 ? "#eab308" : "#ef4444";
-    const trendIcon = s.bsr_trend === "improving" ? '<span class="trend-down">↓ Improving</span>'
-      : s.bsr_trend === "declining" ? '<span class="trend-up">↑ Declining</span>'
-      : '<span class="trend-stable">→ Stable</span>';
-
-    tr.innerHTML = `
-      <td><span class="badge badge-${s.status}">${s.status.replace("_"," ")}</span></td>
-      <td>
-        <span class="score-bar"><span class="score-fill" style="width:${s.score}%;background:${scoreColor}"></span></span>
-        <span class="score-num">${s.score}</span>
-      </td>
-      <td><a href="https://www.amazon.in/dp/${s.asin}" target="_blank" style="color:var(--accent);text-decoration:none">${s.asin}</a></td>
-      <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(s.title||"").replace(/"/g,"'")}">
-        ${(s.title||"—").substring(0, 55)}${(s.title||"").length > 55 ? "…" : ""}
-      </td>
-      <td>${fmtN(s.units_ordered)}</td>
-      <td>${s.revenue > 0 ? fmt(s.revenue) : "—"}</td>
-      <td>${s.conversion_rate > 0 ? s.conversion_rate.toFixed(1) + "%" : "—"}</td>
-      <td>${s.rating != null ? s.rating.toFixed(1) + " ★" : "—"}</td>
-      <td>${s.review_count != null ? fmtN(s.review_count) : "—"}</td>
-      <td>${s.bsr_current != null ? "#" + fmtN(s.bsr_current) : "—"}</td>
-      <td>${trendIcon}</td>
-      <td>${s.listing_age_days != null ? s.listing_age_days : "—"}</td>
-      <td class="reason">${s.reason || "—"}</td>
-    `;
-    tbody.appendChild(tr);
-  });
+  const fmt = n => "₹" + Number(n).toLocaleString("en-IN", {maximumFractionDigits:0});
+  tbody.innerHTML = rows.map((p, i) => {
+    const flagsHtml = (p.flags||[]).map(f => {
+      const cls = f.includes("rating_below") || f.includes("declining") ? "flag-red" : f.includes("bottom") ? "flag-orange" : "flag-yellow";
+      const label = f.replace("bottom_5_", "B5% ").replace("rating_below_3.5", "< 3.5★").replace("rating_declining", "↓ Rating");
+      return `<span class="flag ${cls}">${label}</span>`;
+    }).join("");
+    return `<tr>
+      <td style="color:var(--text-muted)">${i+1}</td>
+      <td><a href="https://www.amazon.in/dp/${p.parent_asin}" target="_blank" style="color:var(--accent);text-decoration:none">${p.parent_asin}</a></td>
+      <td style="font-size:11px">${p.brand}</td>
+      <td class="title-cell" title="${(p.title||"").replace(/"/g,"'")}">${(p.title||"").substring(0,50)}${(p.title||"").length>50?"…":""}</td>
+      <td>${p.sessions.toLocaleString("en-IN")}</td>
+      <td><strong>${p.units_ordered.toLocaleString("en-IN")}</strong></td>
+      <td><strong>${fmt(p.revenue)}</strong></td>
+      <td>${p.conversion_rate}%</td>
+      <td>${p.buy_box_pct}%</td>
+      <td>${p.rating != null ? p.rating.toFixed(1) + " ★" : "—"}</td>
+      <td>${p.review_count != null ? p.review_count.toLocaleString("en-IN") : "—"}</td>
+      <td>${flagsHtml || "—"}</td>
+    </tr>`;
+  }).join("");
 }
 
-// ── Download ─────────────────────────────────────────────────────────────────
-
-function downloadReport() {
-  if (!currentReportId) return;
-  window.location.href = `/churn/reports/${currentReportId}/download`;
+// ── Download ─────────────────────────────────────
+function downloadExcel() {
+  if(!selectedFile) return;
+  const fd = new FormData();
+  fd.append("file", selectedFile);
+  fetch("/churn/download", { method: "POST", body: fd })
+    .then(r => r.blob())
+    .then(blob => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = "Portfolio_Review.xlsx"; a.click();
+    });
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-function showResults() {
-  document.getElementById("summary-cards").style.display = "grid";
-  document.getElementById("table-controls").style.display = "flex";
-  document.getElementById("table-wrap").style.display = "block";
-}
-
-function toast(msg, type = "") {
+// ── Toast ────────────────────────────────────────
+function toast(msg, type="") {
   const el = document.getElementById("toast");
-  el.textContent = msg;
-  el.className = type;
-  el.style.display = "block";
+  el.textContent = msg; el.className = type; el.style.display = "block";
   setTimeout(() => el.style.display = "none", 4000);
 }
-
-// ── Init ─────────────────────────────────────────────────────────────────────
-
-(async () => {
-  await loadPastReports();
-  // Auto-load the most recent report if one exists
-  const chips = document.querySelectorAll(".report-chip");
-  if (chips.length) {
-    const latestId = parseInt(chips[0].dataset.id);
-    await loadReport(latestId);
-  }
-})();
 </script>
 </body>
 </html>
