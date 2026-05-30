@@ -72,6 +72,13 @@
     .flag { display: inline-block; font-size: 9px; padding: 1px 6px; border-radius: 8px; margin-right: 3px; margin-bottom: 2px; }
     .flag-red { background: #3a1111; color: var(--red); } .flag-orange { background: #3a2211; color: var(--orange); } .flag-green { background: #052e16; color: var(--green); }
     .empty-state { text-align: center; padding: 40px; color: var(--text-muted); }
+    tr.discontinued { opacity: .4; }
+    tr.discontinued td { text-decoration: line-through; text-decoration-color: var(--text-muted); }
+    tr.discontinued td:last-child, tr.discontinued td:nth-last-child(2) { text-decoration: none; }
+    .disc-btn { font-size: 10px; padding: 2px 8px; border-radius: 10px; cursor: pointer; border: 1px solid var(--border); background: transparent; color: var(--text-muted); white-space: nowrap; }
+    .disc-btn:hover { border-color: var(--red); color: var(--red); }
+    .disc-btn.is-disc { border-color: var(--green); color: var(--green); }
+    .disc-btn.is-disc:hover { border-color: var(--green); }
 
     .suggestions { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-top: 24px; }
     .suggestions h3 { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
@@ -108,6 +115,7 @@
     <div class="upload-row">
       <button class="btn" id="upload-btn" disabled onclick="doUpload()">Upload &amp; Analyse</button>
       <span id="spin" style="display:none"><span class="spinner"></span> Processing...</span>
+      <button class="btn-outline" id="refresh-btn" onclick="refreshAnalysis()" style="display:none">🔄 Refresh (recalculate)</button>
       <button class="btn-danger" id="clear-btn" onclick="clearData()" style="display:none">Clear Data</button>
     </div>
     <div class="last-upload" id="last-upload"></div>
@@ -130,9 +138,12 @@
 
     <!-- Controls -->
     <div class="controls">
-      <button class="chip active" onclick="setBrand('all',this)">All</button>
-      <button class="chip" onclick="setBrand('Mithila Foods',this)">Mithila Foods</button>
-      <button class="chip" onclick="setBrand('Howrah Foods',this)">Howrah Foods</button>
+      <button class="chip active" data-brand="all" onclick="setBrand('all',this)">All</button>
+      <button class="chip" data-brand="Mithila Foods" onclick="setBrand('Mithila Foods',this)">Mithila Foods</button>
+      <button class="chip" data-brand="Howrah Foods" onclick="setBrand('Howrah Foods',this)">Howrah Foods</button>
+      <span style="margin-left:12px;border-left:1px solid var(--border);height:20px"></span>
+      <button class="chip" data-show="active" onclick="setShowMode('active',this)">Active Only</button>
+      <button class="chip" data-show="disc" onclick="setShowMode('disc',this)">Discontinued</button>
       <span class="count-lbl" id="count-lbl"></span>
       <input type="text" class="search-input" placeholder="Search product..." oninput="render()" id="search" />
       <button class="btn-outline" onclick="download()">⬇ Excel</button>
@@ -158,6 +169,8 @@ let sortCol = "revenue";
 let sortDir = -1;
 let selectedFile = null;
 
+let showMode = "all"; // all, active, disc
+
 const columns = [
   { key: "_rank", label: "#", sortable: false },
   { key: "parent_product", label: "Product", sortable: true },
@@ -171,6 +184,7 @@ const columns = [
   { key: "review_count", label: "Reviews", sortable: true },
   { key: "rating_decline", label: "Rating Chg", sortable: true },
   { key: "flags", label: "Flags", sortable: false },
+  { key: "_action", label: "", sortable: false },
 ];
 
 // Build thead
@@ -227,6 +241,7 @@ function loadData(data) {
   render();
   document.getElementById("results").style.display = "block";
   document.getElementById("clear-btn").style.display = "inline-block";
+  document.getElementById("refresh-btn").style.display = "inline-block";
   if (data.uploaded_at) {
     const d = new Date(data.uploaded_at);
     document.getElementById("last-upload").textContent = "Last uploaded: " + d.toLocaleString("en-IN") + (data.filename ? " (" + data.filename + ")" : "");
@@ -330,13 +345,30 @@ function showSuggestions(data) {
 }
 
 // Table
-function setBrand(b, el) { currentBrand = b; document.querySelectorAll(".chip").forEach(c => c.classList.remove("active")); el.classList.add("active"); render(); }
+function setBrand(b, el) {
+  currentBrand = b;
+  document.querySelectorAll('.chip[data-brand]').forEach(c => c.classList.remove("active"));
+  el.classList.add("active");
+  render();
+}
+function setShowMode(mode, el) {
+  // Toggle: click same chip again → back to "all"
+  if (showMode === mode) { showMode = "all"; el.classList.remove("active"); }
+  else {
+    showMode = mode;
+    document.querySelectorAll('.chip[data-show]').forEach(c => c.classList.remove("active"));
+    el.classList.add("active");
+  }
+  render();
+}
 function doSort(col) { if (sortCol === col) sortDir = -sortDir; else { sortCol = col; sortDir = -1; } render(); }
 
 function render() {
   const q = (document.getElementById("search").value || "").toLowerCase();
   let rows = allProducts.filter(p => {
     if (currentBrand !== "all" && p.brand !== currentBrand) return false;
+    if (showMode === "active" && p.discontinued) return false;
+    if (showMode === "disc" && !p.discontinued) return false;
     if (q && !p.parent_product.toLowerCase().includes(q) && !p.brand.toLowerCase().includes(q)) return false;
     return true;
   });
@@ -345,7 +377,8 @@ function render() {
     if (typeof av === "string") return av.localeCompare(bv) * sortDir;
     return (av < bv ? -1 : av > bv ? 1 : 0) * sortDir;
   });
-  document.getElementById("count-lbl").textContent = rows.length + " products";
+  const discCount = allProducts.filter(p => p.discontinued).length;
+  document.getElementById("count-lbl").textContent = rows.length + " products" + (discCount ? ` (${discCount} discontinued)` : "");
   document.querySelectorAll("thead th").forEach(th => th.classList.toggle("sorted", th.dataset.col === sortCol));
 
   const tbody = document.getElementById("tbody");
@@ -364,7 +397,10 @@ function render() {
     const rDelta = p.rating_decline != null && p.rating_decline > 0
       ? `<span style="color:var(--red)">↓${p.rating_decline.toFixed(1)}</span>`
       : (p.rating_decline != null && p.rating_decline < 0 ? `<span style="color:var(--green)">↑${Math.abs(p.rating_decline).toFixed(1)}</span>` : "—");
-    return `<tr>
+    const discBtn = p.discontinued
+      ? `<button class="disc-btn is-disc" onclick="toggleDisc('${p.parent_product.replace(/'/g,"\\'")}', false)">✓ Restore</button>`
+      : `<button class="disc-btn" onclick="toggleDisc('${p.parent_product.replace(/'/g,"\\'")}', true)">Discontinue</button>`;
+    return `<tr class="${p.discontinued ? 'discontinued' : ''}">
       <td style="color:var(--text-muted);font-size:12px">${i+1}</td>
       <td><strong>${p.parent_product}</strong></td>
       <td style="font-size:11px;color:var(--text-muted)">${p.brand}</td>
@@ -377,8 +413,32 @@ function render() {
       <td>${p.review_count != null ? p.review_count.toLocaleString("en-IN") : "—"}</td>
       <td>${rDelta}</td>
       <td>${flagsHtml}</td>
+      <td>${discBtn}</td>
     </tr>`;
   }).join("");
+}
+
+async function toggleDisc(productName, add) {
+  const action = add ? "add" : "remove";
+  await fetch("/churn/discontinued", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ product: productName, action }),
+  });
+  // Update local state
+  const p = allProducts.find(x => x.parent_product === productName);
+  if (p) p.discontinued = add;
+  render();
+  toast(add ? `"${productName}" marked discontinued` : `"${productName}" restored`, "success");
+}
+
+async function refreshAnalysis() {
+  // Re-upload last file to recalculate with updated discontinued list
+  if (!selectedFile) {
+    toast("Upload a CSV first to refresh analysis", "error");
+    return;
+  }
+  await doUpload();
 }
 
 function download() { window.location.href = "/churn/download"; }

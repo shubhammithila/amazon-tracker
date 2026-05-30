@@ -22,6 +22,21 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).parent.parent
 FAMILIES_FILE = BASE_DIR / "invoice" / "product_families.json"
 LAST_REPORT_FILE = BASE_DIR.parent / "portfolio_report.json"
+DISCONTINUED_FILE = BASE_DIR.parent / "discontinued_products.json"
+
+
+def load_discontinued() -> set:
+    """Load list of discontinued parent product names."""
+    if DISCONTINUED_FILE.exists():
+        with open(DISCONTINUED_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    return set()
+
+
+def save_discontinued(items: set):
+    """Persist discontinued list."""
+    with open(DISCONTINUED_FILE, "w", encoding="utf-8") as f:
+        json.dump(sorted(items), f, ensure_ascii=False)
 
 
 def load_product_families() -> dict:
@@ -203,16 +218,24 @@ async def upload_report(
                     p["rating_decline"] = round(float(old_rating.rating) - float(latest.rating), 2)
                 break
 
+    # Mark discontinued
+    discontinued = load_discontinued()
+    for p in products:
+        p["discontinued"] = p["parent_product"] in discontinued
+
     # Sort by revenue desc
     products.sort(key=lambda x: x["revenue"], reverse=True)
 
-    # Compute top/bottom 10% alerts
-    n = len(products)
+    # Active products only (exclude discontinued from top/bottom calculations)
+    active_products = [p for p in products if not p["discontinued"]]
+
+    # Compute top/bottom 10% alerts (based on active products only)
+    n = len(active_products)
     pct_n = max(1, int(n * 0.10))
 
-    by_units = sorted(products, key=lambda x: x["units_ordered"])
-    by_revenue = sorted(products, key=lambda x: x["revenue"])
-    rated = [p for p in products if p["rating"] is not None]
+    by_units = sorted(active_products, key=lambda x: x["units_ordered"])
+    by_revenue = sorted(active_products, key=lambda x: x["revenue"])
+    rated = [p for p in active_products if p["rating"] is not None]
     by_rating = sorted(rated, key=lambda x: x["rating"])
 
     # Bottom 10%
@@ -225,9 +248,9 @@ async def upload_report(
     top_revenue = set(p["parent_product"] for p in by_revenue[-pct_n:])
     top_rating = set(p["parent_product"] for p in by_rating[-pct_n:]) if by_rating else set()
 
-    # Special flags
-    low_rating = set(p["parent_product"] for p in products if p["rating"] is not None and p["rating"] < 3.5)
-    declining_rating = set(p["parent_product"] for p in products if p["rating_decline"] is not None and p["rating_decline"] >= 0.3)
+    # Special flags (also only active)
+    low_rating = set(p["parent_product"] for p in active_products if p["rating"] is not None and p["rating"] < 3.5)
+    declining_rating = set(p["parent_product"] for p in active_products if p["rating_decline"] is not None and p["rating_decline"] >= 0.3)
 
     # Add flags
     for p in products:
@@ -256,17 +279,21 @@ async def upload_report(
         p.pop("asins", None)
 
     # Build response
+    total_all = len(products)
+    disc_count = sum(1 for p in products if p["discontinued"])
     response_data = {
         "uploaded_at": datetime.utcnow().isoformat(),
         "filename": file.filename or "",
-        "total_parents": n,
+        "total_parents": total_all,
+        "active_count": n,
+        "discontinued_count": disc_count,
         "unmapped_asins": unmapped[:20],
         "summary": {
-            "total_units": sum(p["units_ordered"] for p in products),
-            "total_revenue": round(sum(p["revenue"] for p in products), 2),
-            "avg_conversion": round(sum(p["avg_conversion"] for p in products) / n, 2) if n > 0 else 0,
-            "mithila_count": sum(1 for p in products if p["brand"] == "Mithila Foods"),
-            "howrah_count": sum(1 for p in products if p["brand"] == "Howrah Foods"),
+            "total_units": sum(p["units_ordered"] for p in active_products),
+            "total_revenue": round(sum(p["revenue"] for p in active_products), 2),
+            "avg_conversion": round(sum(p["avg_conversion"] for p in active_products) / n, 2) if n > 0 else 0,
+            "mithila_count": sum(1 for p in active_products if p["brand"] == "Mithila Foods"),
+            "howrah_count": sum(1 for p in active_products if p["brand"] == "Howrah Foods"),
         },
         "alerts": {
             "top_10_units": [p for p in products if p["parent_product"] in top_units],
@@ -308,6 +335,32 @@ async def clear_report(request: Request, _=Depends(require_auth)):
     if LAST_REPORT_FILE.exists():
         LAST_REPORT_FILE.unlink()
     return JSONResponse({"status": "cleared"})
+
+
+@router.post("/discontinued")
+async def toggle_discontinued(request: Request, _=Depends(require_auth)):
+    """Add or remove a parent product from discontinued list."""
+    body = await request.json()
+    product_name = body.get("product", "").strip()
+    action = body.get("action", "add")  # "add" or "remove"
+
+    if not product_name:
+        return JSONResponse({"error": "No product name"}, status_code=400)
+
+    disc = load_discontinued()
+    if action == "add":
+        disc.add(product_name)
+    else:
+        disc.discard(product_name)
+    save_discontinued(disc)
+
+    return JSONResponse({"discontinued": sorted(disc), "count": len(disc)})
+
+
+@router.get("/discontinued")
+async def get_discontinued(request: Request, _=Depends(require_auth)):
+    """Get list of discontinued products."""
+    return JSONResponse({"discontinued": sorted(load_discontinued())})
 
 
 @router.post("/download")
