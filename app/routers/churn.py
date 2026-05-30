@@ -206,31 +206,45 @@ async def upload_report(
     # Sort by revenue desc
     products.sort(key=lambda x: x["revenue"], reverse=True)
 
-    # Compute bottom 5% alerts
+    # Compute top/bottom 10% alerts
     n = len(products)
-    bottom_n = max(1, int(n * 0.05))
+    pct_n = max(1, int(n * 0.10))
 
     by_units = sorted(products, key=lambda x: x["units_ordered"])
     by_revenue = sorted(products, key=lambda x: x["revenue"])
     rated = [p for p in products if p["rating"] is not None]
     by_rating = sorted(rated, key=lambda x: x["rating"])
 
-    bottom_units = [p["parent_product"] for p in by_units[:bottom_n]]
-    bottom_revenue = [p["parent_product"] for p in by_revenue[:bottom_n]]
-    bottom_rating = [p["parent_product"] for p in by_rating[:bottom_n]] if by_rating else []
-    low_rating = [p["parent_product"] for p in products if p["rating"] is not None and p["rating"] < 3.5]
-    declining_rating = [p["parent_product"] for p in products if p["rating_decline"] is not None and p["rating_decline"] >= 0.3]
+    # Bottom 10%
+    bottom_units = set(p["parent_product"] for p in by_units[:pct_n])
+    bottom_revenue = set(p["parent_product"] for p in by_revenue[:pct_n])
+    bottom_rating = set(p["parent_product"] for p in by_rating[:pct_n]) if by_rating else set()
+
+    # Top 10%
+    top_units = set(p["parent_product"] for p in by_units[-pct_n:])
+    top_revenue = set(p["parent_product"] for p in by_revenue[-pct_n:])
+    top_rating = set(p["parent_product"] for p in by_rating[-pct_n:]) if by_rating else set()
+
+    # Special flags
+    low_rating = set(p["parent_product"] for p in products if p["rating"] is not None and p["rating"] < 3.5)
+    declining_rating = set(p["parent_product"] for p in products if p["rating_decline"] is not None and p["rating_decline"] >= 0.3)
 
     # Add flags
     for p in products:
         flags = []
         name = p["parent_product"]
+        if name in top_units:
+            flags.append("top_10_units")
+        if name in top_revenue:
+            flags.append("top_10_revenue")
+        if name in top_rating:
+            flags.append("top_10_rating")
         if name in bottom_units:
-            flags.append("bottom_5_units")
+            flags.append("bottom_10_units")
         if name in bottom_revenue:
-            flags.append("bottom_5_revenue")
+            flags.append("bottom_10_revenue")
         if name in bottom_rating:
-            flags.append("bottom_5_rating")
+            flags.append("bottom_10_rating")
         if name in low_rating:
             flags.append("rating_below_3.5")
         if name in declining_rating:
@@ -255,9 +269,12 @@ async def upload_report(
             "howrah_count": sum(1 for p in products if p["brand"] == "Howrah Foods"),
         },
         "alerts": {
-            "bottom_5_units": [p for p in products if p["parent_product"] in bottom_units],
-            "bottom_5_revenue": [p for p in products if p["parent_product"] in bottom_revenue],
-            "bottom_5_rating": [p for p in products if p["parent_product"] in bottom_rating],
+            "top_10_units": [p for p in products if p["parent_product"] in top_units],
+            "top_10_revenue": [p for p in products if p["parent_product"] in top_revenue],
+            "top_10_rating": [p for p in products if p["parent_product"] in top_rating],
+            "bottom_10_units": [p for p in products if p["parent_product"] in bottom_units],
+            "bottom_10_revenue": [p for p in products if p["parent_product"] in bottom_revenue],
+            "bottom_10_rating": [p for p in products if p["parent_product"] in bottom_rating],
             "rating_below_3_5": [p for p in products if p["parent_product"] in low_rating],
             "rating_declining": [p for p in products if p["parent_product"] in declining_rating],
         },
@@ -283,6 +300,14 @@ async def get_last_report(request: Request, _=Depends(require_auth)):
     with open(LAST_REPORT_FILE, "r", encoding="utf-8") as f:
         data = json.load(f)
     return JSONResponse(data)
+
+
+@router.delete("/clear")
+async def clear_report(request: Request, _=Depends(require_auth)):
+    """Delete the saved report."""
+    if LAST_REPORT_FILE.exists():
+        LAST_REPORT_FILE.unlink()
+    return JSONResponse({"status": "cleared"})
 
 
 @router.post("/download")

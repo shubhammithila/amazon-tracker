@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Portfolio Review — Amazon Tracker</title>
   <style>
-    :root { --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a; --text: #e2e8f0; --text-muted: #64748b; --accent: #6366f1; --green: #22c55e; --yellow: #eab308; --red: #ef4444; --orange: #f97316; }
+    :root { --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a; --text: #e2e8f0; --text-muted: #64748b; --accent: #6366f1; --green: #22c55e; --green-bg: #052e16; --yellow: #eab308; --red: #ef4444; --orange: #f97316; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; }
     header { display: flex; align-items: center; gap: 12px; padding: 12px 24px; border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 100; }
@@ -29,24 +29,32 @@
     .btn:disabled { opacity: .5; cursor: not-allowed; }
     .btn-outline { background: transparent; color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
     .btn-outline:hover { border-color: var(--accent); color: var(--text); }
+    .btn-danger { background: transparent; color: var(--red); border: 1px solid var(--red); border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; opacity: .7; }
+    .btn-danger:hover { opacity: 1; }
     .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .last-upload { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
 
-    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 20px; }
+    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 20px; }
     .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px; text-align: center; }
-    .stat .num { font-size: 24px; font-weight: 700; } .stat .lbl { font-size: 10px; color: var(--text-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: .05em; }
+    .stat .num { font-size: 22px; font-weight: 700; } .stat .lbl { font-size: 10px; color: var(--text-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: .05em; }
 
-    .alerts { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin-bottom: 24px; }
+    /* Alert section */
+    .alert-section { margin-bottom: 24px; }
+    .alert-section h3 { font-size: 13px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 10px; }
+    .alerts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
     .alert-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
     .alert-card h4 { font-size: 12px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
     .tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 700; }
-    .tag-red { background: #3a1111; color: var(--red); } .tag-orange { background: #3a2211; color: var(--orange); } .tag-yellow { background: #2a2a05; color: var(--yellow); }
+    .tag-red { background: #3a1111; color: var(--red); } .tag-orange { background: #3a2211; color: var(--orange); } .tag-yellow { background: #2a2a05; color: var(--yellow); } .tag-green { background: #052e16; color: var(--green); }
     .alert-list { list-style: none; font-size: 12px; }
     .alert-list li { padding: 4px 0; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; }
     .alert-list li:last-child { border: none; }
     .alert-name { font-weight: 500; } .alert-val { color: var(--text-muted); white-space: nowrap; }
     .alert-empty { color: var(--text-muted); font-size: 12px; font-style: italic; }
+    .alert-list .hidden { display: none; }
+    .expand-btn { display: block; margin-top: 6px; font-size: 11px; color: var(--accent); cursor: pointer; background: none; border: none; padding: 2px 0; }
+    .expand-btn:hover { text-decoration: underline; }
 
     .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
     .chip { padding: 5px 12px; border-radius: 20px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); font-size: 12px; cursor: pointer; }
@@ -56,15 +64,22 @@
     .count-lbl { font-size: 11px; color: var(--text-muted); margin-left: 8px; }
 
     .table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid var(--border); }
-    table { width: 100%; border-collapse: collapse; min-width: 850px; }
+    table { width: 100%; border-collapse: collapse; min-width: 900px; }
     thead th { background: var(--surface); padding: 9px 11px; text-align: left; font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; cursor: pointer; user-select: none; border-bottom: 1px solid var(--border); white-space: nowrap; }
     thead th:hover { color: var(--text); } thead th.sorted { color: var(--accent); }
-    th .arrow { font-size: 10px; margin-left: 3px; }
     tbody tr { border-bottom: 1px solid var(--border); } tbody tr:hover { background: rgba(99,102,241,.04); }
     td { padding: 8px 11px; font-size: 13px; }
-    .flag { display: inline-block; font-size: 9px; padding: 1px 6px; border-radius: 8px; margin-right: 3px; }
-    .flag-red { background: #3a1111; color: var(--red); } .flag-orange { background: #3a2211; color: var(--orange); }
+    .flag { display: inline-block; font-size: 9px; padding: 1px 6px; border-radius: 8px; margin-right: 3px; margin-bottom: 2px; }
+    .flag-red { background: #3a1111; color: var(--red); } .flag-orange { background: #3a2211; color: var(--orange); } .flag-green { background: #052e16; color: var(--green); }
     .empty-state { text-align: center; padding: 40px; color: var(--text-muted); }
+
+    .suggestions { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-top: 24px; }
+    .suggestions h3 { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+    .suggestions ul { list-style: none; font-size: 13px; color: var(--text-muted); }
+    .suggestions li { padding: 6px 0; border-bottom: 1px solid var(--border); }
+    .suggestions li:last-child { border: none; }
+    .suggestions .insight-icon { margin-right: 6px; }
+
     #toast { position: fixed; bottom: 20px; right: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 18px; font-size: 13px; display: none; z-index: 1000; }
     #toast.error { border-color: var(--red); color: var(--red); } #toast.success { border-color: var(--green); color: var(--green); }
   </style>
@@ -79,7 +94,7 @@
 </header>
 <main>
   <h2>📊 Portfolio Review</h2>
-  <p class="subtitle">Aggregated by parent product (e.g. "Sattu" = all weight variations combined). Upload Business Report (last 30d, By ASIN) to refresh data.</p>
+  <p class="subtitle">Aggregated by parent product (Sattu = all weight variations combined). Upload Business Report to refresh.</p>
 
   <div class="upload-card">
     <h3>Upload / Refresh Data</h3>
@@ -91,15 +106,29 @@
     </div>
     <div class="file-name" id="fname-box">📄 <span id="fname"></span></div>
     <div class="upload-row">
-      <button class="btn" id="upload-btn" disabled onclick="upload()">Upload &amp; Analyse</button>
+      <button class="btn" id="upload-btn" disabled onclick="doUpload()">Upload &amp; Analyse</button>
       <span id="spin" style="display:none"><span class="spinner"></span> Processing...</span>
+      <button class="btn-danger" id="clear-btn" onclick="clearData()" style="display:none">Clear Data</button>
     </div>
     <div class="last-upload" id="last-upload"></div>
   </div>
 
   <div id="results" style="display:none">
     <div class="summary" id="summary"></div>
-    <div class="alerts" id="alerts"></div>
+
+    <!-- Top 10% -->
+    <div class="alert-section">
+      <h3>🏆 Top 10% Performers</h3>
+      <div class="alerts" id="alerts-top"></div>
+    </div>
+
+    <!-- Bottom 10% & Warnings -->
+    <div class="alert-section">
+      <h3>⚠️ Bottom 10% &amp; Warnings</h3>
+      <div class="alerts" id="alerts-bottom"></div>
+    </div>
+
+    <!-- Controls -->
     <div class="controls">
       <button class="chip active" onclick="setBrand('all',this)">All</button>
       <button class="chip" onclick="setBrand('Mithila Foods',this)">Mithila Foods</button>
@@ -108,6 +137,7 @@
       <input type="text" class="search-input" placeholder="Search product..." oninput="render()" id="search" />
       <button class="btn-outline" onclick="download()">⬇ Excel</button>
     </div>
+
     <div class="table-wrap">
       <table>
         <thead><tr id="thead-row"></tr></thead>
@@ -115,12 +145,15 @@
       </table>
       <div class="empty-state" id="empty" style="display:none">No products match.</div>
     </div>
+
+    <!-- Suggestions -->
+    <div class="suggestions" id="suggestions"></div>
   </div>
 </main>
 <div id="toast"></div>
 <script>
 let allProducts = [];
-let brand = "all";
+let currentBrand = "all";
 let sortCol = "revenue";
 let sortDir = -1;
 let selectedFile = null;
@@ -136,7 +169,7 @@ const columns = [
   { key: "avg_conversion", label: "Conv %", sortable: true },
   { key: "rating", label: "Rating", sortable: true },
   { key: "review_count", label: "Reviews", sortable: true },
-  { key: "rating_decline", label: "Rating Δ", sortable: true },
+  { key: "rating_decline", label: "Rating Chg", sortable: true },
   { key: "flags", label: "Flags", sortable: false },
 ];
 
@@ -145,10 +178,7 @@ const theadRow = document.getElementById("thead-row");
 columns.forEach(c => {
   const th = document.createElement("th");
   th.textContent = c.label;
-  if (c.sortable) {
-    th.onclick = () => doSort(c.key);
-    th.dataset.col = c.key;
-  }
+  if (c.sortable) { th.onclick = () => doSort(c.key); th.dataset.col = c.key; }
   theadRow.appendChild(th);
 });
 
@@ -162,7 +192,7 @@ fi.addEventListener("change", () => { if(fi.files[0]) pick(fi.files[0]); });
 function pick(f) { selectedFile = f; document.getElementById("fname").textContent = f.name; document.getElementById("fname-box").style.display = "block"; document.getElementById("upload-btn").disabled = false; }
 
 // Upload
-async function upload() {
+async function doUpload() {
   if (!selectedFile) return;
   document.getElementById("upload-btn").disabled = true;
   document.getElementById("spin").style.display = "inline-flex";
@@ -177,13 +207,26 @@ async function upload() {
   finally { document.getElementById("upload-btn").disabled = false; document.getElementById("spin").style.display = "none"; }
 }
 
+// Clear
+async function clearData() {
+  if (!confirm("Clear all portfolio data?")) return;
+  await fetch("/churn/clear", { method: "DELETE" });
+  allProducts = [];
+  document.getElementById("results").style.display = "none";
+  document.getElementById("clear-btn").style.display = "none";
+  document.getElementById("last-upload").textContent = "";
+  toast("Data cleared", "success");
+}
+
 // Load data into UI
 function loadData(data) {
   allProducts = data.products || [];
   showSummary(data.summary, data.total_parents);
   showAlerts(data.alerts);
+  showSuggestions(data);
   render();
   document.getElementById("results").style.display = "block";
+  document.getElementById("clear-btn").style.display = "inline-block";
   if (data.uploaded_at) {
     const d = new Date(data.uploaded_at);
     document.getElementById("last-upload").textContent = "Last uploaded: " + d.toLocaleString("en-IN") + (data.filename ? " (" + data.filename + ")" : "");
@@ -191,6 +234,7 @@ function loadData(data) {
 }
 
 function showSummary(s, total) {
+  if (!s) return;
   const fmt = n => "₹" + Number(n).toLocaleString("en-IN", {maximumFractionDigits:0});
   document.getElementById("summary").innerHTML = `
     <div class="stat"><div class="num">${total}</div><div class="lbl">Parent Products</div></div>
@@ -201,38 +245,98 @@ function showSummary(s, total) {
     <div class="stat"><div class="num">${s.howrah_count||0}</div><div class="lbl">Howrah Foods</div></div>`;
 }
 
-function showAlerts(a) {
-  if (!a) return;
-  const al = document.getElementById("alerts");
-  const cards = [
-    { title: "Bottom 5% by Units", key: "bottom_5_units", tag: "tag-orange", valFn: p => p.units_ordered + " units" },
-    { title: "Bottom 5% by Revenue", key: "bottom_5_revenue", tag: "tag-orange", valFn: p => "₹" + Number(p.revenue).toLocaleString("en-IN",{maximumFractionDigits:0}) },
-    { title: "Bottom 5% by Rating", key: "bottom_5_rating", tag: "tag-yellow", valFn: p => p.rating != null ? p.rating.toFixed(1) + " ★" : "—" },
-    { title: "Rating < 3.5", key: "rating_below_3_5", tag: "tag-red", valFn: p => p.rating != null ? p.rating.toFixed(1) + " ★" : "—" },
-    { title: "Rating Declined ≥ 0.3", key: "rating_declining", tag: "tag-red", valFn: p => p.rating_decline != null ? "↓" + p.rating_decline.toFixed(1) : "—" },
-  ];
-  al.innerHTML = cards.map(c => {
-    const items = a[c.key] || [];
-    let html = `<div class="alert-card"><h4><span class="tag ${c.tag}">${items.length}</span> ${c.title}</h4>`;
-    if (!items.length) html += `<div class="alert-empty">None</div>`;
-    else {
-      html += `<ul class="alert-list">`;
-      items.slice(0, 6).forEach(p => { html += `<li><span class="alert-name">${p.parent_product}</span><span class="alert-val">${c.valFn(p)}</span></li>`; });
-      if (items.length > 6) html += `<li style="color:var(--text-muted)">+ ${items.length-6} more</li>`;
-      html += `</ul>`;
+// Alert cards with expandable lists
+function buildAlertCard(title, items, tagClass, valFn) {
+  const SHOW_N = 5;
+  let html = `<div class="alert-card"><h4><span class="tag ${tagClass}">${items.length}</span> ${title}</h4>`;
+  if (!items.length) { html += `<div class="alert-empty">None</div>`; }
+  else {
+    const id = "al_" + Math.random().toString(36).substr(2, 6);
+    html += `<ul class="alert-list">`;
+    items.forEach((p, i) => {
+      const cls = i >= SHOW_N ? 'class="hidden" data-expand="' + id + '"' : '';
+      html += `<li ${cls}><span class="alert-name">${p.parent_product}</span><span class="alert-val">${valFn(p)}</span></li>`;
+    });
+    html += `</ul>`;
+    if (items.length > SHOW_N) {
+      html += `<button class="expand-btn" onclick="expandAlert('${id}', this)">+ ${items.length - SHOW_N} more</button>`;
     }
-    return html + `</div>`;
-  }).join("");
+  }
+  return html + `</div>`;
 }
 
-// Filtering & sorting
-function setBrand(b, el) { brand = b; document.querySelectorAll(".chip").forEach(c => c.classList.remove("active")); el.classList.add("active"); render(); }
+function showAlerts(a) {
+  if (!a) return;
+  const fmt = n => "₹" + Number(n).toLocaleString("en-IN", {maximumFractionDigits:0});
+
+  // Top 10%
+  document.getElementById("alerts-top").innerHTML = [
+    buildAlertCard("Top 10% by Units", a.top_10_units || [], "tag-green", p => p.units_ordered.toLocaleString("en-IN") + " units"),
+    buildAlertCard("Top 10% by Revenue", a.top_10_revenue || [], "tag-green", p => fmt(p.revenue)),
+    buildAlertCard("Top 10% by Rating", a.top_10_rating || [], "tag-green", p => p.rating != null ? p.rating.toFixed(1) + " ★" : "—"),
+  ].join("");
+
+  // Bottom 10% + warnings
+  document.getElementById("alerts-bottom").innerHTML = [
+    buildAlertCard("Bottom 10% by Units", a.bottom_10_units || [], "tag-orange", p => p.units_ordered.toLocaleString("en-IN") + " units"),
+    buildAlertCard("Bottom 10% by Revenue", a.bottom_10_revenue || [], "tag-orange", p => fmt(p.revenue)),
+    buildAlertCard("Bottom 10% by Rating", a.bottom_10_rating || [], "tag-yellow", p => p.rating != null ? p.rating.toFixed(1) + " ★" : "—"),
+    buildAlertCard("Rating < 3.5", a.rating_below_3_5 || [], "tag-red", p => p.rating != null ? p.rating.toFixed(1) + " ★" : "—"),
+    buildAlertCard("Rating Declined ≥ 0.3 (30d)", a.rating_declining || [], "tag-red", p => p.rating_decline != null ? "↓" + p.rating_decline.toFixed(1) : "—"),
+  ].join("");
+}
+
+function expandAlert(id, btn) {
+  document.querySelectorAll(`[data-expand="${id}"]`).forEach(el => el.classList.remove("hidden"));
+  btn.remove();
+}
+
+// Suggestions
+function showSuggestions(data) {
+  const prods = data.products || [];
+  const insights = [];
+  const totalRev = data.summary?.total_revenue || 1;
+
+  // Revenue concentration
+  const top3Rev = prods.slice(0, 3).reduce((s, p) => s + p.revenue, 0);
+  const top3Pct = ((top3Rev / totalRev) * 100).toFixed(0);
+  if (top3Pct > 30) insights.push(`<span class="insight-icon">📌</span> Top 3 products make <strong>${top3Pct}%</strong> of revenue. Portfolio is concentrated — diversification may reduce risk.`);
+
+  // Low conversion high traffic
+  const hiTrafficLowConv = prods.filter(p => p.sessions > 500 && p.avg_conversion < 5);
+  if (hiTrafficLowConv.length) insights.push(`<span class="insight-icon">🔍</span> <strong>${hiTrafficLowConv.length}</strong> product(s) have 500+ sessions but < 5% conversion: ${hiTrafficLowConv.slice(0,3).map(p=>p.parent_product).join(", ")}. Listing optimization (images, A+, pricing) may help.`);
+
+  // Products with zero units
+  const zeroSales = prods.filter(p => p.units_ordered === 0);
+  if (zeroSales.length) insights.push(`<span class="insight-icon">❌</span> <strong>${zeroSales.length}</strong> product(s) had zero sales in 30 days: ${zeroSales.slice(0,4).map(p=>p.parent_product).join(", ")}. Strong removal candidates.`);
+
+  // Rating problems
+  const badRating = prods.filter(p => p.rating != null && p.rating < 3.0);
+  if (badRating.length) insights.push(`<span class="insight-icon">⚠️</span> <strong>${badRating.length}</strong> product(s) below 3.0 rating. Consider fixing quality issues or removing: ${badRating.map(p=>p.parent_product).join(", ")}.`);
+
+  // High conversion low sessions
+  const lowTrafficHighConv = prods.filter(p => p.sessions < 200 && p.avg_conversion > 15 && p.units_ordered > 5);
+  if (lowTrafficHighConv.length) insights.push(`<span class="insight-icon">🚀</span> <strong>${lowTrafficHighConv.length}</strong> product(s) have great conversion (>15%) but low traffic (<200 sessions): ${lowTrafficHighConv.slice(0,3).map(p=>p.parent_product).join(", ")}. Increase PPC/visibility to boost sales.`);
+
+  // Brand split
+  const mRev = prods.filter(p => p.brand === "Mithila Foods").reduce((s, p) => s + p.revenue, 0);
+  const hRev = prods.filter(p => p.brand === "Howrah Foods").reduce((s, p) => s + p.revenue, 0);
+  const mPct = ((mRev / totalRev) * 100).toFixed(0);
+  insights.push(`<span class="insight-icon">📊</span> Revenue split: Mithila Foods <strong>${mPct}%</strong>, Howrah Foods <strong>${(100-mPct)}%</strong>.`);
+
+  if (!insights.length) insights.push(`<span class="insight-icon">✅</span> Portfolio looks healthy. No critical issues detected.`);
+
+  document.getElementById("suggestions").innerHTML = `<h3>💡 Insights & Suggestions</h3><ul>${insights.map(i => `<li>${i}</li>`).join("")}</ul>`;
+}
+
+// Table
+function setBrand(b, el) { currentBrand = b; document.querySelectorAll(".chip").forEach(c => c.classList.remove("active")); el.classList.add("active"); render(); }
 function doSort(col) { if (sortCol === col) sortDir = -sortDir; else { sortCol = col; sortDir = -1; } render(); }
 
 function render() {
   const q = (document.getElementById("search").value || "").toLowerCase();
   let rows = allProducts.filter(p => {
-    if (brand !== "all" && p.brand !== brand) return false;
+    if (currentBrand !== "all" && p.brand !== currentBrand) return false;
     if (q && !p.parent_product.toLowerCase().includes(q) && !p.brand.toLowerCase().includes(q)) return false;
     return true;
   });
@@ -242,11 +346,7 @@ function render() {
     return (av < bv ? -1 : av > bv ? 1 : 0) * sortDir;
   });
   document.getElementById("count-lbl").textContent = rows.length + " products";
-
-  // Update sorted th
-  document.querySelectorAll("thead th").forEach(th => {
-    th.classList.toggle("sorted", th.dataset.col === sortCol);
-  });
+  document.querySelectorAll("thead th").forEach(th => th.classList.toggle("sorted", th.dataset.col === sortCol));
 
   const tbody = document.getElementById("tbody");
   if (!rows.length) { tbody.innerHTML = ""; document.getElementById("empty").style.display = "block"; return; }
@@ -255,11 +355,15 @@ function render() {
   const fmt = n => "₹" + Number(n).toLocaleString("en-IN", {maximumFractionDigits: 0});
   tbody.innerHTML = rows.map((p, i) => {
     const flagsHtml = (p.flags || []).map(f => {
-      const cls = f.includes("below") || f.includes("declining") ? "flag-red" : "flag-orange";
-      const label = f.replace("bottom_5_", "B5% ").replace("rating_below_3.5", "< 3.5★").replace("rating_declining", "↓ Rating");
+      let cls = "flag-orange";
+      if (f.includes("top_10")) cls = "flag-green";
+      else if (f.includes("below") || f.includes("declining")) cls = "flag-red";
+      const label = f.replace("bottom_10_", "↓ ").replace("top_10_", "↑ ").replace("rating_below_3.5", "< 3.5★").replace("rating_declining", "↓ Rating");
       return `<span class="flag ${cls}">${label}</span>`;
     }).join("") || "—";
-    const ratingDecline = p.rating_decline != null && p.rating_decline > 0 ? `<span style="color:var(--red)">↓${p.rating_decline.toFixed(1)}</span>` : (p.rating_decline != null && p.rating_decline < 0 ? `<span style="color:var(--green)">↑${Math.abs(p.rating_decline).toFixed(1)}</span>` : "—");
+    const rDelta = p.rating_decline != null && p.rating_decline > 0
+      ? `<span style="color:var(--red)">↓${p.rating_decline.toFixed(1)}</span>`
+      : (p.rating_decline != null && p.rating_decline < 0 ? `<span style="color:var(--green)">↑${Math.abs(p.rating_decline).toFixed(1)}</span>` : "—");
     return `<tr>
       <td style="color:var(--text-muted);font-size:12px">${i+1}</td>
       <td><strong>${p.parent_product}</strong></td>
@@ -271,24 +375,21 @@ function render() {
       <td>${p.avg_conversion}%</td>
       <td>${p.rating != null ? p.rating.toFixed(1) + " ★" : "—"}</td>
       <td>${p.review_count != null ? p.review_count.toLocaleString("en-IN") : "—"}</td>
-      <td>${ratingDecline}</td>
+      <td>${rDelta}</td>
       <td>${flagsHtml}</td>
     </tr>`;
   }).join("");
 }
 
 function download() { window.location.href = "/churn/download"; }
-
 function toast(msg, type="") { const el = document.getElementById("toast"); el.textContent = msg; el.className = type; el.style.display = "block"; setTimeout(() => el.style.display = "none", 4000); }
 
-// Auto-load last saved report on page load
+// Auto-load last report
 (async () => {
   try {
     const r = await fetch("/churn/last-report");
     const data = await r.json();
-    if (data.products && data.products.length) {
-      loadData(data);
-    }
+    if (data.products && data.products.length) loadData(data);
   } catch(e) {}
 })();
 </script>
