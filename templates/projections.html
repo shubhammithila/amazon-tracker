@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Projections — Amazon Tracker</title>
+<style>
+:root{--bg:#0f1117;--surface:#1a1d27;--border:#2a2d3a;--text:#e2e8f0;--text-muted:#64748b;--accent:#6366f1;--green:#22c55e;--yellow:#eab308;--red:#ef4444;--orange:#f97316}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px}
+header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
+header h1{font-size:16px;font-weight:600}
+.nav-links{display:flex;gap:16px;margin-left:32px}
+.nav-links a{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent;transition:all .2s}
+.nav-links a:hover,.nav-links a.active{color:var(--text);border-color:var(--accent)}
+.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:13px;text-decoration:none}
+main{max-width:1600px;margin:0 auto;padding:20px}
+h2{font-size:20px;font-weight:600;margin-bottom:4px}
+.subtitle{color:var(--text-muted);font-size:13px;margin-bottom:16px}
+
+.globals-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px;display:flex;gap:20px;flex-wrap:wrap;align-items:center}
+.globals-card label{font-size:12px;color:var(--text-muted);display:flex;flex-direction:column;gap:4px}
+.globals-card input{background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:5px 8px;width:70px;font-size:13px;text-align:center}
+.globals-card input:focus{outline:none;border-color:var(--accent)}
+.btn{background:var(--accent);color:#fff;border:none;border-radius:6px;padding:7px 14px;font-size:13px;font-weight:500;cursor:pointer}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn-outline{background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer}
+.btn-outline:hover{border-color:var(--accent);color:var(--text)}
+.btn-danger{background:transparent;color:var(--red);border:1px solid var(--red);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;opacity:.7}
+.btn-danger:hover{opacity:1}
+
+.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:16px}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center}
+.stat .num{font-size:20px;font-weight:700}.stat .lbl{font-size:10px;color:var(--text-muted);margin-top:3px;text-transform:uppercase;letter-spacing:.04em}
+.stat.alert .num{color:var(--red)}.stat.warn .num{color:var(--orange)}
+
+.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.chip{padding:5px 12px;border-radius:20px;border:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:12px;cursor:pointer}
+.chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.search-input{background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:6px 10px;font-size:13px;width:180px;margin-left:auto}
+.search-input:focus{outline:none;border-color:var(--accent)}
+
+.table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border)}
+table{width:100%;border-collapse:collapse;min-width:1200px}
+thead th{background:var(--surface);padding:7px 8px;text-align:center;font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid var(--border);white-space:nowrap;cursor:pointer;user-select:none}
+thead th:hover{color:var(--text)}thead th.sorted{color:var(--accent)}
+thead th.col-group-input{background:#1e2235;border-bottom:2px solid var(--accent)}
+thead th.col-group-calc{background:#1a2520}
+thead th.col-group-alert{background:#251a1a}
+tbody tr{border-bottom:1px solid var(--border)}tbody tr:hover{background:rgba(99,102,241,.03)}
+td{padding:5px 6px;font-size:12px;text-align:center;white-space:nowrap}
+td.product-name{text-align:left;font-weight:600;font-size:13px;padding-left:10px}
+td.brand-cell{text-align:left;font-size:11px;color:var(--text-muted)}
+td input{background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 5px;width:55px;font-size:12px;text-align:center}
+td input:focus{outline:none;border-color:var(--accent)}
+td input.wide{width:70px}
+.alert-pos{color:var(--red);font-weight:700}.alert-neg{color:var(--green);font-weight:600}
+.inv-critical{color:var(--red);font-weight:700}.inv-warning{color:var(--orange);font-weight:600}.inv-good{color:var(--green)}
+.empty-state{text-align:center;padding:40px;color:var(--text-muted)}
+#toast{position:fixed;bottom:20px;right:20px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 18px;font-size:13px;display:none;z-index:1000}
+#toast.error{border-color:var(--red);color:var(--red)}#toast.success{border-color:var(--green);color:var(--green)}
+</style>
+</head>
+<body>
+<header>
+<span>📦</span><h1>Amazon Tracker v2</h1>
+<nav class="nav-links">
+<a href="/">Dashboard</a><a href="/history-page">History</a><a href="/keywords-page">Keywords</a><a href="/invoice-page">Invoice</a><a href="/churn-page">Portfolio</a><a href="/projections-page" class="active">Projections</a>
+</nav>
+<div class="header-right"><a href="/logout">Logout</a></div>
+</header>
+<main>
+<h2>📈 Sales &amp; Stock Projections</h2>
+<p class="subtitle">Enter last month's sales, tweak seasonal/growth factors, get next month forecast + reorder alerts. All values in <strong>kg</strong>.</p>
+
+<!-- Global Defaults -->
+<div class="globals-card">
+  <label>Growth Rate<input type="number" id="g-growth" value="0.30" step="0.05" min="0" max="3" onchange="recalcAll()"/></label>
+  <label>Seasonal Impact<input type="number" id="g-seasonal" value="1.0" step="0.1" min="0.1" max="5" onchange="recalcAll()"/></label>
+  <label>Supplier→WH (d)<input type="number" id="g-s2w" value="5" min="0" max="30" onchange="recalcAll()"/></label>
+  <label>Packing (d)<input type="number" id="g-pack" value="2" min="0" max="15" onchange="recalcAll()"/></label>
+  <label>WH→IXD (d)<input type="number" id="g-w2i" value="10" min="0" max="30" onchange="recalcAll()"/></label>
+  <label>IXD→FBA (d)<input type="number" id="g-i2f" value="5" min="0" max="15" onchange="recalcAll()"/></label>
+  <label>WH Buffer (d)<input type="number" id="g-wh-buf" value="10" min="0" max="30" onchange="recalcAll()"/></label>
+  <div style="display:flex;gap:8px;margin-left:auto;align-items:center">
+    <button class="btn" onclick="recalcAll()">🔄 Recalculate</button>
+    <button class="btn-outline" onclick="downloadExcel()">⬇ Excel</button>
+    <button class="btn-outline" onclick="initFromDefaults()">↺ Reset to Defaults</button>
+    <button class="btn-danger" onclick="clearAll()">Clear</button>
+  </div>
+</div>
+
+<!-- Summary -->
+<div class="summary" id="summary" style="display:none"></div>
+
+<!-- Controls -->
+<div class="controls">
+  <button class="chip active" data-brand="all" onclick="setBrand('all',this)">All</button>
+  <button class="chip" data-brand="Mithila Foods" onclick="setBrand('Mithila Foods',this)">Mithila Foods</button>
+  <button class="chip" data-brand="Howrah Foods" onclick="setBrand('Howrah Foods',this)">Howrah Foods</button>
+  <span style="font-size:11px;color:var(--text-muted)" id="count-lbl"></span>
+  <input type="text" class="search-input" placeholder="Search product..." oninput="renderTable()" id="search"/>
+</div>
+
+<!-- Table -->
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+  <th>#</th>
+  <th style="text-align:left">Product</th>
+  <th style="text-align:left">Brand</th>
+  <th class="col-group-input">Last Month<br/>Sale (kg)</th>
+  <th class="col-group-input">Seasonal</th>
+  <th class="col-group-input">Growth</th>
+  <th class="col-group-calc">Forecast<br/>(kg/mo)</th>
+  <th class="col-group-calc">Daily<br/>(kg/d)</th>
+  <th class="col-group-input">Lead<br/>Days</th>
+  <th class="col-group-calc">Ideal<br/>FBA</th>
+  <th class="col-group-input">Current<br/>FBA</th>
+  <th class="col-group-alert">Ship<br/>Alert</th>
+  <th class="col-group-input">WH Buf<br/>Days</th>
+  <th class="col-group-calc">Ideal<br/>WH</th>
+  <th class="col-group-input">Current<br/>WH</th>
+  <th class="col-group-alert">Reorder<br/>Alert</th>
+  <th class="col-group-input">Rate<br/>(₹/kg)</th>
+  <th class="col-group-calc">Stock<br/>Value (₹)</th>
+  <th class="col-group-alert">Inv<br/>Days</th>
+</tr>
+</thead>
+<tbody id="tbody"></tbody>
+</table>
+</div>
+<div class="empty-state" id="empty" style="display:none">No products. Click "Reset to Defaults" to load product list.</div>
+</main>
+<div id="toast"></div>
+<script>
+let products = [];
+let currentBrand = "all";
+
+// Load saved or init
+(async()=>{
+  const r = await fetch("/projections/last");
+  const data = await r.json();
+  if(data.products && data.products.length){
+    products = data.products;
+    if(data.globals){
+      if(data.globals.growth_rate!=null) document.getElementById("g-growth").value=data.globals.growth_rate;
+      if(data.globals.seasonal_impact!=null) document.getElementById("g-seasonal").value=data.globals.seasonal_impact;
+    }
+    showSummary(data.summary);
+    renderTable();
+  } else {
+    await initFromDefaults();
+  }
+})();
+
+async function initFromDefaults(){
+  const r = await fetch("/projections/init",{method:"POST"});
+  const data = await r.json();
+  products = data.products;
+  renderTable();
+  toast("Loaded "+products.length+" products from defaults","success");
+}
+
+function getGlobals(){
+  return {
+    growth_rate: parseFloat(document.getElementById("g-growth").value)||0.3,
+    seasonal_impact: parseFloat(document.getElementById("g-seasonal").value)||1.0,
+    supplier_to_wh: parseInt(document.getElementById("g-s2w").value)||5,
+    packing: parseInt(document.getElementById("g-pack").value)||2,
+    wh_to_ixd: parseInt(document.getElementById("g-w2i").value)||10,
+    ixd_to_fba: parseInt(document.getElementById("g-i2f").value)||5,
+    wh_buffer_days: parseInt(document.getElementById("g-wh-buf").value)||10,
+  };
+}
+
+async function recalcAll(){
+  // Collect values from table inputs
+  collectFromTable();
+  const globals = getGlobals();
+  const body = {globals, products};
+  const r = await fetch("/projections/calculate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  const data = await r.json();
+  products = data.products;
+  showSummary(data.summary);
+  renderTable();
+  toast("Recalculated "+products.length+" products","success");
+}
+
+function collectFromTable(){
+  // Read all editable inputs from DOM back into products array
+  const rows = document.querySelectorAll("tbody tr");
+  rows.forEach(tr=>{
+    const idx = parseInt(tr.dataset.idx);
+    if(isNaN(idx)||!products[idx]) return;
+    const p = products[idx];
+    const get = id => {const el=tr.querySelector(`[data-field="${id}"]`);return el?parseFloat(el.value)||0:p[id]||0;};
+    p.last_month_sale = get("last_month_sale");
+    p.seasonal_impact = get("seasonal_impact");
+    p.growth_rate = get("growth_rate");
+    p.current_fba_stock = get("current_fba_stock");
+    p.current_wh_stock = get("current_wh_stock");
+    p.wh_buffer_days = get("wh_buffer_days");
+    p.purchase_rate = get("purchase_rate");
+    // Lead time from combined field
+    const leadEl = tr.querySelector('[data-field="total_lead_time"]');
+    if(leadEl){
+      const lt = parseInt(leadEl.value)||22;
+      // Distribute: keep proportions from globals
+      const g = getGlobals();
+      const gTotal = g.supplier_to_wh+g.packing+g.wh_to_ixd+g.ixd_to_fba;
+      if(gTotal>0){
+        p.supplier_to_wh = Math.round(g.supplier_to_wh/gTotal*lt);
+        p.packing = Math.round(g.packing/gTotal*lt);
+        p.wh_to_ixd = Math.round(g.wh_to_ixd/gTotal*lt);
+        p.ixd_to_fba = lt - p.supplier_to_wh - p.packing - p.wh_to_ixd;
+      }
+    }
+  });
+}
+
+function showSummary(s){
+  if(!s)return;
+  const fmt = n=>"₹"+Number(n).toLocaleString("en-IN",{maximumFractionDigits:0});
+  document.getElementById("summary").style.display="grid";
+  document.getElementById("summary").innerHTML=`
+    <div class="stat"><div class="num">${s.total_products}</div><div class="lbl">Products</div></div>
+    <div class="stat"><div class="num">${Number(s.total_forecast_kg).toLocaleString("en-IN",{maximumFractionDigits:0})}</div><div class="lbl">Forecast (kg)</div></div>
+    <div class="stat"><div class="num">${fmt(s.total_ideal_value)}</div><div class="lbl">Ideal Stock Value</div></div>
+    <div class="stat"><div class="num">${fmt(s.total_current_value)}</div><div class="lbl">Current Stock Value</div></div>
+    <div class="stat ${s.shipment_alerts>0?'alert':''}"><div class="num">${s.shipment_alerts}</div><div class="lbl">Shipment Alerts</div></div>
+    <div class="stat ${s.reorder_alerts>0?'warn':''}"><div class="num">${s.reorder_alerts}</div><div class="lbl">Reorder Alerts</div></div>
+    <div class="stat ${s.critical_alerts>0?'alert':''}"><div class="num">${s.critical_alerts}</div><div class="lbl">Critical (&lt;7d)</div></div>`;
+}
+
+function setBrand(b,el){currentBrand=b;document.querySelectorAll('.chip[data-brand]').forEach(c=>c.classList.remove("active"));el.classList.add("active");renderTable();}
+
+function renderTable(){
+  const q=(document.getElementById("search").value||"").toLowerCase();
+  let filtered=products.map((p,i)=>({...p,_idx:i})).filter(p=>{
+    if(currentBrand!=="all"&&p.brand!==currentBrand)return false;
+    if(q&&!p.product.toLowerCase().includes(q))return false;
+    return true;
+  });
+  document.getElementById("count-lbl").textContent=filtered.length+" of "+products.length;
+  const tbody=document.getElementById("tbody");
+  if(!filtered.length){tbody.innerHTML="";document.getElementById("empty").style.display="block";return;}
+  document.getElementById("empty").style.display="none";
+
+  const fmt=n=>"₹"+Number(n).toLocaleString("en-IN",{maximumFractionDigits:0});
+  tbody.innerHTML=filtered.map((p,i)=>{
+    const shipCls=p.shipment_alert>0?"alert-pos":"alert-neg";
+    const reorderCls=p.reorder_alert>0?"alert-pos":"alert-neg";
+    const invCls=p.inventory_days<7?"inv-critical":p.inventory_days<14?"inv-warning":"inv-good";
+    const leadTotal=(p.supplier_to_wh||0)+(p.packing||0)+(p.wh_to_ixd||0)+(p.ixd_to_fba||0);
+    return `<tr data-idx="${p._idx}">
+      <td style="color:var(--text-muted);font-size:11px">${i+1}</td>
+      <td class="product-name">${p.product}</td>
+      <td class="brand-cell">${p.brand||""}</td>
+      <td><input data-field="last_month_sale" value="${p.last_month_sale||0}" class="wide"/></td>
+      <td><input data-field="seasonal_impact" value="${p.seasonal_impact||1}" style="width:45px"/></td>
+      <td><input data-field="growth_rate" value="${p.growth_rate||0.3}" style="width:45px"/></td>
+      <td><strong>${p.monthly_forecast?Math.round(p.monthly_forecast):0}</strong></td>
+      <td style="color:var(--text-muted)">${p.daily_rate?p.daily_rate.toFixed(1):0}</td>
+      <td><input data-field="total_lead_time" value="${leadTotal}" style="width:40px"/></td>
+      <td><strong>${p.ideal_fba_stock?Math.round(p.ideal_fba_stock):0}</strong></td>
+      <td><input data-field="current_fba_stock" value="${p.current_fba_stock||0}" class="wide"/></td>
+      <td class="${shipCls}">${p.shipment_alert?Math.round(p.shipment_alert):0}</td>
+      <td><input data-field="wh_buffer_days" value="${p.wh_buffer_days||10}" style="width:40px"/></td>
+      <td>${p.ideal_wh_stock?Math.round(p.ideal_wh_stock):0}</td>
+      <td><input data-field="current_wh_stock" value="${p.current_wh_stock||0}" style="width:55px"/></td>
+      <td class="${reorderCls}">${p.reorder_alert?Math.round(p.reorder_alert):0}</td>
+      <td><input data-field="purchase_rate" value="${p.purchase_rate||0}" style="width:50px"/></td>
+      <td style="font-size:11px">${p.ideal_stock_value?fmt(p.ideal_stock_value):"—"}</td>
+      <td class="${invCls}">${p.inventory_days!=null?Math.round(p.inventory_days):0}d</td>
+    </tr>`;
+  }).join("");
+}
+
+function downloadExcel(){window.location.href="/projections/download";}
+async function clearAll(){if(!confirm("Clear all projection data?"))return;await fetch("/projections/clear",{method:"DELETE"});products=[];document.getElementById("summary").style.display="none";renderTable();toast("Cleared","success");}
+
+function toast(msg,type=""){const el=document.getElementById("toast");el.textContent=msg;el.className=type;el.style.display="block";setTimeout(()=>el.style.display="none",3500);}
+</script>
+</body>
+</html>
