@@ -73,6 +73,20 @@ td input.wide{width:70px}
 <p class="subtitle">Enter last month's sales, tweak seasonal/growth factors, get next month forecast + reorder alerts. All values in <strong>kg</strong>.</p>
 
 <!-- Global Defaults -->
+<!-- CSV Upload -->
+<div class="globals-card" style="flex-direction:column;align-items:stretch;gap:12px">
+  <div style="display:flex;align-items:center;gap:12px">
+    <strong style="font-size:13px">📂 Import Sales Data</strong>
+    <span style="font-size:11px;color:var(--text-muted)">Upload Business Report CSV (By ASIN, last 30 days) to auto-fill "Last Month Sale" in kg</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px">
+    <input type="file" id="csv-file" accept=".csv" style="font-size:12px;color:var(--text-muted)"/>
+    <button class="btn" onclick="uploadCSV()" id="csv-btn" disabled>Import Sales from CSV</button>
+    <span id="csv-spin" style="display:none"><span class="spinner"></span></span>
+    <span id="csv-result" style="font-size:12px;color:var(--green)"></span>
+  </div>
+</div>
+
 <div class="globals-card">
   <label>Growth Rate<input type="number" id="g-growth" value="0.30" step="0.05" min="0" max="3" onchange="recalcAll()"/></label>
   <label>Seasonal Impact<input type="number" id="g-seasonal" value="1.0" step="0.1" min="0.1" max="5" onchange="recalcAll()"/></label>
@@ -279,6 +293,30 @@ function renderTable(){
 
 function downloadExcel(){window.location.href="/projections/download";}
 async function clearAll(){if(!confirm("Clear all projection data?"))return;await fetch("/projections/clear",{method:"DELETE"});products=[];document.getElementById("summary").style.display="none";renderTable();toast("Cleared","success");}
+
+// CSV Upload
+document.getElementById("csv-file").addEventListener("change",function(){document.getElementById("csv-btn").disabled=!this.files.length;});
+async function uploadCSV(){
+  const fileInput=document.getElementById("csv-file");
+  if(!fileInput.files[0])return;
+  document.getElementById("csv-btn").disabled=true;
+  document.getElementById("csv-spin").style.display="inline";
+  document.getElementById("csv-result").textContent="";
+  const fd=new FormData();fd.append("file",fileInput.files[0]);
+  try{
+    const r=await fetch("/projections/upload-csv",{method:"POST",body:fd});
+    const data=await r.json();
+    if(data.error) throw new Error(data.error);
+    products=data.products;
+    showSummary({total_products:data.total_products,total_forecast_kg:data.total_forecast_kg,total_ideal_value:0,total_current_value:0,shipment_alerts:0,reorder_alerts:0,critical_alerts:0});
+    renderTable();
+    document.getElementById("csv-result").textContent=`Imported ${data.filled_from_csv} products, ${data.total_kg_from_csv} kg total sales`;
+    toast(`Sales imported: ${data.filled_from_csv} products filled from CSV`,"success");
+    // Now auto-recalculate with server to get full summary
+    await recalcAll();
+  }catch(e){toast(e.message,"error");}
+  finally{document.getElementById("csv-btn").disabled=false;document.getElementById("csv-spin").style.display="none";}
+}
 
 function toast(msg,type=""){const el=document.getElementById("toast");el.textContent=msg;el.className=type;el.style.display="block";setTimeout(()=>el.style.display="none",3500);}
 </script>

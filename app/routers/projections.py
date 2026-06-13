@@ -1,11 +1,12 @@
 """Projections — forecast next month sales, calculate ideal stock and reorder alerts."""
 import io
 import json
+import re
 import logging
 from pathlib import Path
 
 import pandas as pd
-from fastapi import APIRouter, Request, Depends
+from fastapi import APIRouter, Request, Depends, UploadFile, File
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.routers.auth import require_auth
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent.parent
 DEFAULTS_FILE = BASE_DIR / "invoice" / "projection_defaults.json"
+FAMILIES_FILE = BASE_DIR / "invoice" / "product_families.json"
 DATA_FILE = BASE_DIR.parent / "projection_data.json"
 
 
@@ -38,6 +40,17 @@ def save_data(data: dict):
 
 
 DEFAULTS = load_defaults()
+
+
+def load_families() -> dict:
+    """Load ASIN -> {parent_product, brand, weight} mapping."""
+    if FAMILIES_FILE.exists():
+        with open(FAMILIES_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+FAMILIES = load_families()
 
 
 def calculate_projections(products: list[dict]) -> list[dict]:
@@ -94,7 +107,117 @@ def calculate_projections(products: list[dict]) -> list[dict]:
     return products
 
 
+# ─── CSV Parsing ──────────────────────────────────────────────────────────────
+
+def _clean_number(val) -> float:
+    if val is None or str(val).strip() in ("", "-", "nan"):
+        return 0.0
+    cleaned = re.sub(r"[₹,%\s]", "", str(val))
+    try:
+        return float(cleaned)
+    except ValueError:
+        return 0.0
+
+
+def parse_business_report_for_projections(content: bytes) -> dict[str, float]:
+    """
+    Parse Business Report CSV → aggregate by parent product → return {product_name: total_kg_sold}.
+    Maps ASIN → parent product using FAMILIES, multiplies units × weight to get kg.
+    """
+    try:
+        df = pd.read_csv(io.BytesIO(content))
+    except Exception:
+        df = pd.read_csv(io.BytesIO(content), encoding="utf-8-sig")
+
+    child_col = "(Child) ASIN"
+    if child_col not in df.columns:
+        raise ValueError("Could not find '(Child) ASIN' column. Upload Amazon Business Report (By ASIN).")
+
+    # Step 1: Aggregate units by child ASIN (dedup FBA + non-FBA rows)
+    asin_units: dict[str, float] = {}
+    for _, row in df.iterrows():
+        asin = str(row.get(child_col, "")).strip()
+        if not asin or len(asin) < 10:
+            continue
+        units = _clean_number(row.get("Units Ordered", 0))
+        asin_units[asin] = asin_units.get(asin, 0) + units
+
+    # Step 2: Map ASINs to parent products and convert units to kg
+    product_kg: dict[str, float] = {}
+    unmapped = []
+
+    for asin, units in asin_units.items():
+        family = FAMILIES.get(asin)
+        if not family:
+            unmapped.append(asin)
+            continue
+
+        parent = family["parent_product"]
+        weight = family.get("weight") or 0  # kg per unit
+
+        kg_sold = units * weight
+        product_kg[parent] = product_kg.get(parent, 0) + kg_sold
+
+    if unmapped:
+        logger.info(f"Projections upload: {len(unmapped)} unmapped ASINs")
+
+    return product_kg
+
+
 # ─── Endpoints ────────────────────────────────────────────────────────────────
+
+@router.post("/upload-csv")
+async def upload_csv(
+    request: Request,
+    file: UploadFile = File(...),
+    _=Depends(require_auth),
+):
+    """
+    Upload Business Report CSV → auto-fill last month sales (in kg) per parent product.
+    Returns products array ready for the projections table.
+    """
+    content = await file.read()
+    try:
+        product_kg = parse_business_report_for_projections(content)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+    # Build products list from defaults, filling in last_month_sale from CSV
+    products = []
+    for name, d in DEFAULTS.items():
+        kg_sold = round(product_kg.get(name, 0), 2)
+        products.append({
+            "product": name,
+            "brand": d.get("brand", "Mithila Foods"),
+            "last_month_sale": kg_sold,
+            "seasonal_impact": d["seasonal_impact"],
+            "growth_rate": d["growth_rate"],
+            "supplier_to_wh": d["supplier_to_wh"],
+            "packing": d["packing"],
+            "wh_to_ixd": d["wh_to_ixd"],
+            "ixd_to_fba": d["ixd_to_fba"],
+            "wh_buffer_days": d["wh_buffer_days"],
+            "purchase_rate": d["purchase_rate"],
+            "current_fba_stock": 0,
+            "current_wh_stock": 0,
+        })
+
+    # Run calculations
+    products = calculate_projections(products)
+    products.sort(key=lambda x: x.get("monthly_forecast", 0), reverse=True)
+
+    # Summary
+    total_forecast = sum(p["monthly_forecast"] for p in products)
+    filled = sum(1 for p in products if p["last_month_sale"] > 0)
+
+    return JSONResponse({
+        "products": products,
+        "total_products": len(products),
+        "filled_from_csv": filled,
+        "total_kg_from_csv": round(sum(product_kg.values()), 1),
+        "total_forecast_kg": round(total_forecast, 0),
+    })
+
 
 @router.get("/defaults")
 async def get_defaults(request: Request, _=Depends(require_auth)):
