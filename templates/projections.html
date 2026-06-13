@@ -40,7 +40,7 @@ h2{font-size:20px;font-weight:600;margin-bottom:4px}
 .search-input:focus{outline:none;border-color:var(--accent)}
 
 .table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border)}
-table{width:100%;border-collapse:collapse;min-width:1200px}
+table{width:100%;border-collapse:collapse;min-width:1500px}
 thead th{background:var(--surface);padding:7px 8px;text-align:center;font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid var(--border);white-space:nowrap;cursor:pointer;user-select:none}
 thead th:hover{color:var(--text)}thead th.sorted{color:var(--accent)}
 thead th.col-group-input{background:#1e2235;border-bottom:2px solid var(--accent)}
@@ -128,7 +128,11 @@ td input.wide{width:70px}
   <th class="col-group-input">Growth</th>
   <th class="col-group-calc">Forecast<br/>(kg/mo)</th>
   <th class="col-group-calc">Daily<br/>(kg/d)</th>
-  <th class="col-group-input">Lead<br/>Days</th>
+  <th class="col-group-input">S→WH<br/>(d)</th>
+  <th class="col-group-input">Pack<br/>(d)</th>
+  <th class="col-group-input">WH→IXD<br/>(d)</th>
+  <th class="col-group-input">IXD→FBA<br/>(d)</th>
+  <th class="col-group-calc">Lead<br/>Total</th>
   <th class="col-group-calc">Ideal<br/>FBA</th>
   <th class="col-group-input">Current<br/>FBA</th>
   <th class="col-group-alert">Ship<br/>Alert</th>
@@ -212,24 +216,14 @@ function collectFromTable(){
     p.last_month_sale = get("last_month_sale");
     p.seasonal_impact = get("seasonal_impact");
     p.growth_rate = get("growth_rate");
+    p.supplier_to_wh = get("supplier_to_wh");
+    p.packing = get("packing");
+    p.wh_to_ixd = get("wh_to_ixd");
+    p.ixd_to_fba = get("ixd_to_fba");
     p.current_fba_stock = get("current_fba_stock");
     p.current_wh_stock = get("current_wh_stock");
     p.wh_buffer_days = get("wh_buffer_days");
     p.purchase_rate = get("purchase_rate");
-    // Lead time from combined field
-    const leadEl = tr.querySelector('[data-field="total_lead_time"]');
-    if(leadEl){
-      const lt = parseInt(leadEl.value)||22;
-      // Distribute: keep proportions from globals
-      const g = getGlobals();
-      const gTotal = g.supplier_to_wh+g.packing+g.wh_to_ixd+g.ixd_to_fba;
-      if(gTotal>0){
-        p.supplier_to_wh = Math.round(g.supplier_to_wh/gTotal*lt);
-        p.packing = Math.round(g.packing/gTotal*lt);
-        p.wh_to_ixd = Math.round(g.wh_to_ixd/gTotal*lt);
-        p.ixd_to_fba = lt - p.supplier_to_wh - p.packing - p.wh_to_ixd;
-      }
-    }
   });
 }
 
@@ -276,7 +270,11 @@ function renderTable(){
       <td><input data-field="growth_rate" value="${p.growth_rate||0.3}" style="width:45px"/></td>
       <td><strong>${p.monthly_forecast?Math.round(p.monthly_forecast):0}</strong></td>
       <td style="color:var(--text-muted)">${p.daily_rate?p.daily_rate.toFixed(1):0}</td>
-      <td><input data-field="total_lead_time" value="${leadTotal}" style="width:40px"/></td>
+      <td><input data-field="supplier_to_wh" value="${p.supplier_to_wh||5}" style="width:35px"/></td>
+      <td><input data-field="packing" value="${p.packing||2}" style="width:35px"/></td>
+      <td><input data-field="wh_to_ixd" value="${p.wh_to_ixd||10}" style="width:35px"/></td>
+      <td><input data-field="ixd_to_fba" value="${p.ixd_to_fba||5}" style="width:35px"/></td>
+      <td style="color:var(--text-muted)">${leadTotal}</td>
       <td><strong>${p.ideal_fba_stock?Math.round(p.ideal_fba_stock):0}</strong></td>
       <td><input data-field="current_fba_stock" value="${p.current_fba_stock||0}" class="wide"/></td>
       <td class="${shipCls}">${p.shipment_alert?Math.round(p.shipment_alert):0}</td>
