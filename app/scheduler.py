@@ -39,8 +39,12 @@ async def scheduled_product_scrape():
         async with async_session() as db:
             await save_results_to_db(results, db)
         logger.info(f"Scheduled scrape complete: {len(results)} results")
+        # Clear in-memory results to free RAM (scheduled scrapes don't need to keep them)
+        scrape_state.results.clear()
 
     await run_scrape(asins, on_complete=on_complete)
+    # Ensure cleanup even if on_complete didn't fire
+    scrape_state.results.clear()
 
 
 async def scheduled_keyword_track():
