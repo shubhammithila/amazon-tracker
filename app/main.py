@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import get_settings
 from app.database import engine, Base
-from app.routers import auth, scrape, products, keywords, ws, invoice, churn, projections
+from app.routers import auth, scrape, products, keywords, ws, invoice, churn, projections, shipment
 from app.routers.auth import get_current_user, RedirectException
 from app.scheduler import setup_scheduler
 
@@ -41,6 +41,7 @@ app.include_router(ws.router)
 app.include_router(invoice.router)
 app.include_router(churn.router)
 app.include_router(projections.router)
+app.include_router(shipment.router)
 
 
 @app.exception_handler(RedirectException)
@@ -88,6 +89,13 @@ async def projections_page(request: Request):
     if not get_current_user(request):
         return RedirectResponse(url="/login", status_code=303)
     return templates.TemplateResponse(request, "projections.html")
+
+
+@app.get("/shipment-page", response_class=HTMLResponse)
+async def shipment_page(request: Request):
+    if not get_current_user(request):
+        return RedirectResponse(url="/login", status_code=303)
+    return templates.TemplateResponse(request, "shipment.html")
 
 
 @app.get("/health")

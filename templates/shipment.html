@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Shipment Maker — Amazon Tracker</title>
+<style>
+:root{--bg:#0f1117;--surface:#1a1d27;--border:#2a2d3a;--text:#e2e8f0;--text-muted:#64748b;--accent:#6366f1;--green:#22c55e;--yellow:#eab308;--red:#ef4444;--orange:#f97316}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px}
+header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
+header h1{font-size:16px;font-weight:600}
+.nav-links{display:flex;gap:16px;margin-left:32px}
+.nav-links a{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent;transition:all .2s}
+.nav-links a:hover,.nav-links a.active{color:var(--text);border-color:var(--accent)}
+.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:13px;text-decoration:none}
+main{max-width:1600px;margin:0 auto;padding:20px}
+h2{font-size:20px;font-weight:600;margin-bottom:4px}
+.subtitle{color:var(--text-muted);font-size:13px;margin-bottom:16px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px}
+.card h3{font-size:14px;margin-bottom:8px}
+.card p{color:var(--text-muted);font-size:12px;margin-bottom:10px}
+.form-row{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}
+.form-group{display:flex;flex-direction:column;gap:4px}
+.form-group label{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
+.form-group input[type="file"]{font-size:12px;color:var(--text-muted)}
+.form-group input[type="number"]{background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:6px 10px;width:70px;font-size:13px}
+.btn{background:var(--accent);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:13px;font-weight:500;cursor:pointer}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn-outline{background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer}
+.btn-outline:hover{border-color:var(--accent);color:var(--text)}
+.btn-danger{background:transparent;color:var(--red);border:1px solid var(--red);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;opacity:.7}
+.btn-danger:hover{opacity:1}
+.btn-green{background:var(--green);color:#000;border:none;border-radius:6px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center}
+.stat .num{font-size:20px;font-weight:700}.stat .lbl{font-size:10px;color:var(--text-muted);margin-top:3px;text-transform:uppercase;letter-spacing:.04em}
+.stat.alert .num{color:var(--red)}
+
+.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.chip{padding:5px 12px;border-radius:20px;border:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:12px;cursor:pointer}
+.chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.search-input{background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:6px 10px;font-size:13px;width:160px;margin-left:auto}
+.search-input:focus{outline:none;border-color:var(--accent)}
+
+.table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border)}
+table{width:100%;border-collapse:collapse;min-width:1400px}
+thead th{background:var(--surface);padding:7px 6px;text-align:center;font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid var(--border);white-space:nowrap;position:sticky;top:0}
+thead th.col-smb{background:#1e1e2e;width:28px}
+thead th.col-input{background:#1e2235}
+thead th.col-calc{background:#1a2520}
+thead th.col-day{background:#25201a}
+tbody tr{border-bottom:1px solid var(--border)}tbody tr:hover{background:rgba(99,102,241,.03)}
+tbody tr.no-ship{opacity:.4}
+td{padding:5px 5px;font-size:12px;text-align:center;white-space:nowrap}
+td.left{text-align:left}
+td input[type="number"]{background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);padding:2px 4px;width:48px;font-size:11px;text-align:center}
+td input[type="number"]:focus{outline:none;border-color:var(--accent)}
+td input[type="checkbox"]{width:14px;height:14px;cursor:pointer}
+.deficit-pos{color:var(--red);font-weight:700}.deficit-neg{color:var(--green)}
+.remaining-pos{color:var(--orange);font-weight:600}.remaining-zero{color:var(--green);font-weight:600}
+.empty-state{text-align:center;padding:40px;color:var(--text-muted)}
+#toast{position:fixed;bottom:20px;right:20px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 18px;font-size:13px;display:none;z-index:1000}
+#toast.error{border-color:var(--red);color:var(--red)}#toast.success{border-color:var(--green);color:var(--green)}
+</style>
+</head>
+<body>
+<header>
+<span>📦</span><h1>Amazon Tracker v2</h1>
+<nav class="nav-links">
+<a href="/">Dashboard</a><a href="/history-page">History</a><a href="/keywords-page">Keywords</a><a href="/invoice-page">Invoice</a><a href="/churn-page">Portfolio</a><a href="/projections-page">Projections</a><a href="/shipment-page" class="active">Shipment</a>
+</nav>
+<div class="header-right"><a href="/logout">Logout</a></div>
+</header>
+<main>
+<h2>📦 Shipment Maker</h2>
+<p class="subtitle">Upload sales + stock reports → generate packing plan → track daily packing → download shipment file for Amazon.</p>
+
+<!-- Upload Card -->
+<div class="card">
+  <h3>Generate New Plan</h3>
+  <p>Upload Business Report CSV (last 7 days, By ASIN) + FBA Inventory Report CSV</p>
+  <div class="form-row">
+    <div class="form-group"><label>Sales CSV (Business Report)</label><input type="file" id="sales-file" accept=".csv"/></div>
+    <div class="form-group"><label>Stock CSV (FBA Inventory)</label><input type="file" id="stock-file" accept=".csv"/></div>
+    <div class="form-group"><label>Multiplier (weeks)</label><input type="number" id="multiplier" value="5" min="1" max="12" step="1"/></div>
+    <button class="btn" id="gen-btn" onclick="generate()">Generate Plan</button>
+    <span id="gen-spin" style="display:none"><span class="spinner"></span></span>
+  </div>
+</div>
+
+<!-- Results -->
+<div id="results" style="display:none">
+
+<div class="summary" id="summary"></div>
+
+<!-- Actions bar -->
+<div class="controls">
+  <button class="chip active" data-filter="deficit" onclick="setFilter('deficit',this)">Needs Shipment</button>
+  <button class="chip" data-filter="all" onclick="setFilter('all',this)">All Products</button>
+  <span style="font-size:11px;color:var(--text-muted)" id="count-lbl"></span>
+  <input type="text" class="search-input" placeholder="Search..." oninput="renderTable()" id="search"/>
+  <button class="btn-outline" onclick="savePlan()">💾 Save Progress</button>
+  <button class="btn-outline" onclick="downloadPacking()">⬇ Packing Plan</button>
+  <button class="btn-outline" onclick="downloadShipment('remaining')">⬇ Shipment (Remaining)</button>
+  <button class="btn-outline" onclick="downloadShipment('all')">⬇ Shipment (Full)</button>
+  <button class="btn-danger" onclick="clearPlan()">Clear</button>
+</div>
+
+<!-- Table -->
+<div class="table-wrap">
+<table>
+<thead><tr>
+  <th class="col-smb">S</th><th class="col-smb">M</th><th class="col-smb">B</th>
+  <th>Brand</th><th>FBA SKU</th><th>ASIN</th><th style="text-align:left">Item</th><th>Wt</th>
+  <th class="col-calc">Sales<br/>(7d)</th>
+  <th class="col-calc">Proj</th>
+  <th class="col-calc">FBA<br/>Stock</th>
+  <th class="col-calc">Deficit</th>
+  <th class="col-input">Ship<br/>Plan</th>
+  <th class="col-input">Avl</th>
+  <th class="col-day">D1</th><th class="col-day">D2</th><th class="col-day">D3</th><th class="col-day">D4</th><th class="col-day">D5</th><th class="col-day">D6</th>
+  <th class="col-calc">Remain</th>
+</tr></thead>
+<tbody id="tbody"></tbody>
+</table>
+</div>
+</div>
+</main>
+<div id="toast"></div>
+<script>
+let plan = [];
+let currentFilter = "deficit";
+
+// Load saved plan on page load
+(async()=>{
+  const r = await fetch("/shipment/last");
+  const data = await r.json();
+  if(data.plan && data.plan.length){
+    plan = data.plan;
+    if(data.multiplier) document.getElementById("multiplier").value = data.multiplier;
+    showResults();
+  }
+})();
+
+async function generate(){
+  const salesFile = document.getElementById("sales-file").files[0];
+  const stockFile = document.getElementById("stock-file").files[0];
+  if(!salesFile || !stockFile){ toast("Upload both CSV files","error"); return; }
+  document.getElementById("gen-btn").disabled = true;
+  document.getElementById("gen-spin").style.display = "inline";
+  const fd = new FormData();
+  fd.append("sales_csv", salesFile);
+  fd.append("stock_csv", stockFile);
+  fd.append("multiplier", document.getElementById("multiplier").value);
+  try{
+    const r = await fetch("/shipment/generate",{method:"POST",body:fd});
+    const data = await r.json();
+    if(data.error) throw new Error(data.error);
+    plan = data.plan;
+    showResults();
+    toast(plan.length + " products loaded","success");
+  }catch(e){toast(e.message,"error");}
+  finally{document.getElementById("gen-btn").disabled=false;document.getElementById("gen-spin").style.display="none";}
+}
+
+function showResults(){
+  document.getElementById("results").style.display = "block";
+  updateSummary();
+  renderTable();
+}
+
+function updateSummary(){
+  const needShip = plan.filter(p=>p.deficit>0).length;
+  const totalUnits = plan.reduce((s,p)=>s+(p.shipment_plan||0),0);
+  const totalPacked = plan.reduce((s,p)=>s+packed(p),0);
+  const totalRemaining = totalUnits - totalPacked;
+  document.getElementById("summary").innerHTML = `
+    <div class="stat"><div class="num">${plan.length}</div><div class="lbl">Total SKUs</div></div>
+    <div class="stat alert"><div class="num">${needShip}</div><div class="lbl">Need Shipment</div></div>
+    <div class="stat"><div class="num">${totalUnits.toLocaleString("en-IN")}</div><div class="lbl">Plan (units)</div></div>
+    <div class="stat"><div class="num">${totalPacked.toLocaleString("en-IN")}</div><div class="lbl">Packed</div></div>
+    <div class="stat ${totalRemaining>0?'alert':''}"><div class="num">${totalRemaining.toLocaleString("en-IN")}</div><div class="lbl">Remaining</div></div>
+  `;
+}
+
+function packed(p){ return (p.day1||0)+(p.day2||0)+(p.day3||0)+(p.day4||0)+(p.day5||0)+(p.day6||0); }
+
+function setFilter(f,el){
+  currentFilter=f;
+  document.querySelectorAll('.chip[data-filter]').forEach(c=>c.classList.remove("active"));
+  el.classList.add("active");
+  renderTable();
+}
+
+function renderTable(){
+  const q = (document.getElementById("search").value||"").toLowerCase();
+  let rows = plan.filter(p=>{
+    if(currentFilter==="deficit" && p.deficit<=0 && (p.shipment_plan||0)<=0) return false;
+    if(q && !p.item.toLowerCase().includes(q) && !p.asin.toLowerCase().includes(q) && !(p.fba_sku||"").toLowerCase().includes(q)) return false;
+    return true;
+  });
+  document.getElementById("count-lbl").textContent = rows.length + " items";
+  const tbody = document.getElementById("tbody");
+  if(!rows.length){tbody.innerHTML='<tr><td colspan="21" class="empty-state">No items match filter.</td></tr>';return;}
+
+  tbody.innerHTML = rows.map((p,i)=>{
+    const idx = plan.indexOf(p);
+    const pk = packed(p);
+    const rem = (p.shipment_plan||0) - pk;
+    const defCls = p.deficit>0?"deficit-pos":"deficit-neg";
+    const remCls = rem>0?"remaining-pos":"remaining-zero";
+    const trCls = (p.shipment_plan||0)<=0?"no-ship":"";
+    return `<tr class="${trCls}" data-idx="${idx}">
+      <td><input type="checkbox" ${p.s?"checked":""} onchange="upd(${idx},'s',this.checked)"/></td>
+      <td><input type="checkbox" ${p.m?"checked":""} onchange="upd(${idx},'m',this.checked)"/></td>
+      <td><input type="checkbox" ${p.b?"checked":""} onchange="upd(${idx},'b',this.checked)"/></td>
+      <td style="font-size:11px">${p.brand}</td>
+      <td style="font-size:10px;color:var(--text-muted)">${p.fba_sku||""}</td>
+      <td style="font-size:10px">${p.asin}</td>
+      <td class="left"><strong>${p.item}</strong></td>
+      <td style="font-size:11px;color:var(--text-muted)">${p.weight?p.weight+"kg":""}</td>
+      <td>${p.sales_7d}</td>
+      <td>${p.projection}</td>
+      <td>${p.fba_stock}</td>
+      <td class="${defCls}">${p.deficit}</td>
+      <td><input type="number" value="${p.shipment_plan||0}" min="0" onchange="upd(${idx},'shipment_plan',+this.value)"/></td>
+      <td><input type="number" value="${p.available||0}" min="0" onchange="upd(${idx},'available',+this.value)" style="width:42px"/></td>
+      <td><input type="number" value="${p.day1||0}" min="0" onchange="upd(${idx},'day1',+this.value)" style="width:40px"/></td>
+      <td><input type="number" value="${p.day2||0}" min="0" onchange="upd(${idx},'day2',+this.value)" style="width:40px"/></td>
+      <td><input type="number" value="${p.day3||0}" min="0" onchange="upd(${idx},'day3',+this.value)" style="width:40px"/></td>
+      <td><input type="number" value="${p.day4||0}" min="0" onchange="upd(${idx},'day4',+this.value)" style="width:40px"/></td>
+      <td><input type="number" value="${p.day5||0}" min="0" onchange="upd(${idx},'day5',+this.value)" style="width:40px"/></td>
+      <td><input type="number" value="${p.day6||0}" min="0" onchange="upd(${idx},'day6',+this.value)" style="width:40px"/></td>
+      <td class="${remCls}">${rem}</td>
+    </tr>`;
+  }).join("");
+}
+
+function upd(idx, field, val){
+  plan[idx][field] = val;
+  // Update remaining in the row without full re-render
+  updateSummary();
+  // Re-render just the remaining cell
+  const tr = document.querySelector(`tr[data-idx="${idx}"]`);
+  if(tr){
+    const pk = packed(plan[idx]);
+    const rem = (plan[idx].shipment_plan||0) - pk;
+    const lastTd = tr.lastElementChild;
+    lastTd.textContent = rem;
+    lastTd.className = rem>0?"remaining-pos":"remaining-zero";
+  }
+}
+
+async function savePlan(){
+  const mult = parseFloat(document.getElementById("multiplier").value)||5;
+  await fetch("/shipment/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({plan,multiplier:mult,created_at:new Date().toISOString()})});
+  toast("Plan saved","success");
+}
+
+function downloadPacking(){ window.location.href="/shipment/download-packing-plan"; }
+function downloadShipment(mode){ window.location.href="/shipment/download-shipment-file?mode="+mode; }
+async function clearPlan(){
+  if(!confirm("Clear shipment plan?"))return;
+  await fetch("/shipment/clear",{method:"DELETE"});
+  plan=[];document.getElementById("results").style.display="none";
+  toast("Cleared","success");
+}
+
+function toast(msg,type=""){const el=document.getElementById("toast");el.textContent=msg;el.className=type;el.style.display="block";setTimeout(()=>el.style.display="none",3500);}
+</script>
+</body>
+</html>
