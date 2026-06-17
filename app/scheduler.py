@@ -34,16 +34,23 @@ async def scheduled_product_scrape():
 
     logger.info(f"Starting scheduled scrape of {len(asins)} products")
 
-    async def on_complete(results):
-        from app.routers.scrape import save_results_to_db
-        async with async_session() as db:
-            await save_results_to_db(results, db)
-        logger.info(f"Scheduled scrape complete: {len(results)} results")
-        # Clear in-memory results to free RAM (scheduled scrapes don't need to keep them)
-        scrape_state.results.clear()
+    # Save each result immediately as it comes in (don't buffer all 250+ in memory)
+    async def on_result(result):
+        if result.get("status") == "OK":
+            try:
+                from app.routers.scrape import save_results_to_db
+                async with async_session() as db:
+                    await save_results_to_db([result], db)
+            except Exception as e:
+                logger.warning(f"Failed to save result for {result.get('asin')}: {e}")
 
-    await run_scrape(asins, on_complete=on_complete)
-    # Ensure cleanup even if on_complete didn't fire
+    async def on_complete(results):
+        logger.info(f"Scheduled scrape complete: {len(results)} results")
+        # Clear immediately to free RAM
+        scrape_state.results.clear()
+        results.clear()
+
+    await run_scrape(asins, on_result=on_result, on_complete=on_complete)
     scrape_state.results.clear()
 
 
