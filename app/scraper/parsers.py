@@ -170,17 +170,47 @@ def extract_fulfillment(tree: html.HtmlElement) -> Optional[str]:
 
 
 def extract_deal(tree: html.HtmlElement) -> str:
-    deal_selectors = [
+    """
+    Detect the red deal badge — covers:
+    - 'Ends in XX:XX' countdown timer (limited time deal)
+    - 'Limited time deal', 'Deal of the Day', 'Lightning Deal'
+    - savingsPercentage badge (the -46% red tag)
+    - dealBadge / dealnudge divs
+    """
+    # Primary: data-feature-name="dealBadge" div (the red "Ends in" tag)
+    deal_feature = tree.xpath('//*[@data-feature-name="dealBadge"]//text()')
+    if deal_feature:
+        texts = [t.strip() for t in deal_feature if t.strip()]
+        for t in texts:
+            tl = t.lower()
+            if any(kw in tl for kw in ('ends in', 'limited time deal', 'deal of the day',
+                                        'lightning deal', 'prime day deal', 'best deal',
+                                        'savings and sales')):
+                return "Yes"
+
+    # Secondary: savings percentage badge (red -XX% label)
+    savings = tree.xpath('//*[contains(@class,"savingsPercentage")]/text()')
+    if savings:
+        for s in savings:
+            s = s.strip()
+            if s and s != '0%' and s.startswith('-'):
+                return "Yes"
+
+    # Tertiary: legacy selectors
+    legacy_selectors = [
         '//*[@id="dealBadge"]',
         '//*[@id="dealnudge"]',
         '//*[contains(@class,"dealBadge")]',
         '//span[contains(text(),"Limited time deal")]',
         '//span[contains(text(),"Deal of the Day")]',
         '//span[contains(text(),"Lightning Deal")]',
+        '//span[contains(@class,"deal")]',
+        '//*[@id="apex_desktop_dealPriceWidget"]',
     ]
-    for sel in deal_selectors:
+    for sel in legacy_selectors:
         if tree.xpath(sel):
             return "Yes"
+
     return "No"
 
 
