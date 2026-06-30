@@ -188,10 +188,15 @@ def extract_deal(tree: html.HtmlElement) -> str:
                                         'savings and sales')):
                 return "Yes"
 
-    # Secondary: savings percentage badge (red -XX% label)
-    savings = tree.xpath('//*[contains(@class,"savingsPercentage")]/text()')
-    if savings:
-        for s in savings:
+    # Secondary: savings percentage badge ONLY when inside a dealBadge/deal widget
+    # (plain price discounts also have savingsPercentage but are NOT deals)
+    savings_in_deal = tree.xpath(
+        '//*[@data-feature-name="dealBadge"]//*[contains(@class,"savingsPercentage")]/text() | '
+        '//*[@id="dealBadge"]//*[contains(@class,"savingsPercentage")]/text() | '
+        '//*[contains(@class,"apex_desktop_deal")]//*[contains(@class,"savingsPercentage")]/text()'
+    )
+    if savings_in_deal:
+        for s in savings_in_deal:
             s = s.strip()
             if s and s != '0%' and s.startswith('-'):
                 return "Yes"
@@ -288,6 +293,38 @@ def detect_dog_page(tree: html.HtmlElement) -> bool:
     return False
 
 
+def detect_unavailable(tree: html.HtmlElement) -> bool:
+    """Detect 'Currently unavailable' / 'out of stock' / suppressed listings."""
+    unavail_indicators = [
+        '//*[@id="availability"]//text()',
+        '//*[@id="availability_feature_div"]//text()',
+        '//*[@id="outOfStock"]//text()',
+    ]
+    for sel in unavail_indicators:
+        texts = tree.xpath(sel)
+        combined = " ".join(t.strip().lower() for t in texts if t.strip())
+        if any(phrase in combined for phrase in (
+            "currently unavailable",
+            "out of stock",
+            "we don't know when or if",
+            "unavailable",
+        )):
+            return True
+
+    # Also check if there's no buybox at all (no "Add to Cart" button and no price)
+    has_buybox = bool(
+        tree.xpath('//*[@id="add-to-cart-button"]') or
+        tree.xpath('//*[@id="buy-now-button"]') or
+        tree.xpath('//span[contains(@class,"priceToPay")]')
+    )
+    # If there's a title but absolutely no buybox, treat as unavailable
+    title = tree.xpath('//*[@id="productTitle"]/text()')
+    if title and not has_buybox:
+        return True
+
+    return False
+
+
 def parse_product_page(raw_html: str, asin: str) -> dict:
     tree = html.fromstring(raw_html)
 
@@ -311,6 +348,26 @@ def parse_product_page(raw_html: str, asin: str) -> dict:
             "asin": asin,
             "url": f"https://www.amazon.in/dp/{asin}",
             "status": "Parse Error (no title)",
+        }
+
+    # If listing exists but is currently unavailable — keep title/ratings/BSR
+    # but explicitly clear price/deal/seller so stale data doesn't persist
+    if detect_unavailable(tree):
+        return {
+            "asin": asin,
+            "url": f"https://www.amazon.in/dp/{asin}",
+            "title": title,
+            "rating": extract_rating(tree),
+            "rating_count": extract_rating_count(tree),
+            "bsr": extract_bsr(tree),
+            "bsr_numeric": extract_bsr_numeric(tree),
+            "bsr_category": extract_bsr_category(tree),
+            "price": None,       # explicitly clear
+            "seller": None,      # explicitly clear
+            "fulfillment": None, # explicitly clear
+            "deal": "No",        # explicitly clear
+            "use_by": extract_use_by(tree),
+            "status": "Unavailable",
         }
 
     return {

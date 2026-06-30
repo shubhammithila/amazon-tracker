@@ -23,7 +23,9 @@ _scrape_task: Optional[asyncio.Task] = None
 async def save_results_to_db(results: list[dict], db: AsyncSession):
     now = datetime.utcnow()
     for r in results:
-        if r.get("status") != "OK":
+        status = r.get("status")
+        # Process OK listings AND Unavailable ones (to clear stale price/deal data)
+        if status not in ("OK", "Unavailable"):
             continue
 
         asin = r["asin"]
@@ -48,7 +50,17 @@ async def save_results_to_db(results: list[dict], db: AsyncSession):
             except ValueError:
                 pass
 
-        if price_val is not None:
+        # For Unavailable listings: save a null-price row to overwrite stale data
+        if status == "Unavailable":
+            db.add(PriceHistory(
+                product_id=product.id,
+                price=None,
+                seller=None,
+                fulfillment=None,
+                is_deal=False,
+                scraped_at=now,
+            ))
+        elif price_val is not None:
             db.add(PriceHistory(
                 product_id=product.id,
                 price=price_val,
