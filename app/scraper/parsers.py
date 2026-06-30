@@ -171,49 +171,38 @@ def extract_fulfillment(tree: html.HtmlElement) -> Optional[str]:
 
 def extract_deal(tree: html.HtmlElement) -> str:
     """
-    Detect the red deal badge — covers:
-    - 'Ends in XX:XX' countdown timer (limited time deal)
-    - 'Limited time deal', 'Deal of the Day', 'Lightning Deal'
-    - savingsPercentage badge (the -46% red tag)
-    - dealBadge / dealnudge divs
+    Detect ACTIVE deal badge only — the red 'Ends in XX:XX' / 'Limited time deal' tag.
+    Relies ONLY on the dealBadge feature div having a real countdown/deal timer.
+    Does NOT match template strings or plain MRP discounts.
     """
-    # Primary: data-feature-name="dealBadge" div (the red "Ends in" tag)
-    deal_feature = tree.xpath('//*[@data-feature-name="dealBadge"]//text()')
-    if deal_feature:
-        texts = [t.strip() for t in deal_feature if t.strip()]
-        for t in texts:
-            tl = t.lower()
-            if any(kw in tl for kw in ('ends in', 'limited time deal', 'deal of the day',
-                                        'lightning deal', 'prime day deal', 'best deal',
-                                        'savings and sales')):
-                return "Yes"
+    # The dealBadge feature div only has deal-keyword text when an active deal is running.
+    # When there's no deal, the div exists but all its text is JS code or empty.
+    deal_texts = tree.xpath('//*[@data-feature-name="dealBadge"]//text()')
+    if deal_texts:
+        # Filter out JS/script content — keep only short readable strings
+        readable = [
+            t.strip().lower() for t in deal_texts
+            if t.strip()
+            and len(t.strip()) < 80
+            and 'function' not in t
+            and 'p.when' not in t.lower()
+            and '{' not in t
+            and 'P.declare' not in t
+        ]
+        combined = " ".join(readable)
+        if any(kw in combined for kw in (
+            'ends in', 'limited time deal', 'deal of the day',
+            'lightning deal', 'prime day deal', 'best deal',
+            'savings and sales',
+        )):
+            return "Yes"
 
-    # Secondary: savings percentage badge ONLY when inside a dealBadge/deal widget
-    # (plain price discounts also have savingsPercentage but are NOT deals)
-    savings_in_deal = tree.xpath(
-        '//*[@data-feature-name="dealBadge"]//*[contains(@class,"savingsPercentage")]/text() | '
-        '//*[@id="dealBadge"]//*[contains(@class,"savingsPercentage")]/text() | '
-        '//*[contains(@class,"apex_desktop_deal")]//*[contains(@class,"savingsPercentage")]/text()'
-    )
-    if savings_in_deal:
-        for s in savings_in_deal:
-            s = s.strip()
-            if s and s != '0%' and s.startswith('-'):
-                return "Yes"
-
-    # Tertiary: legacy selectors
-    legacy_selectors = [
-        '//*[@id="dealBadge"]',
-        '//*[@id="dealnudge"]',
-        '//*[contains(@class,"dealBadge")]',
-        '//span[contains(text(),"Limited time deal")]',
-        '//span[contains(text(),"Deal of the Day")]',
-        '//span[contains(text(),"Lightning Deal")]',
-        '//span[contains(@class,"deal")]',
-        '//*[@id="apex_desktop_dealPriceWidget"]',
-    ]
-    for sel in legacy_selectors:
-        if tree.xpath(sel):
+        # Also check for a countdown timer element with a target time
+        timer = tree.xpath(
+            '//*[@data-feature-name="dealBadge"]//*[@data-target-time] | '
+            '//*[@data-feature-name="dealBadge"]//span[contains(@class,"countdown")]'
+        )
+        if timer:
             return "Yes"
 
     return "No"
