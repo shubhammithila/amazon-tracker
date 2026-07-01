@@ -133,6 +133,34 @@ async def scrape_worker(
             queue.task_done()
 
 
+BATCH_SIZE = 50  # Process ASINs in batches to keep peak memory low
+
+
+async def _run_batch(
+    asins_batch: list[str],
+    state: "ScrapeState",
+    on_result: Optional[Callable],
+) -> None:
+    """Run a single batch of ASINs with a fresh httpx client, then free memory."""
+    queue: asyncio.Queue = asyncio.Queue()
+    for asin in asins_batch:
+        queue.put_nowait(asin)
+
+    semaphore = asyncio.Semaphore(settings.scrape_concurrency)
+    client = create_client(timeout=settings.scrape_timeout)
+    try:
+        workers = [
+            asyncio.create_task(
+                scrape_worker(semaphore, queue, client, state, on_result)
+            )
+            for _ in range(min(settings.scrape_concurrency, len(asins_batch)))
+        ]
+        await asyncio.gather(*workers)
+    finally:
+        await client.aclose()
+        gc.collect()
+
+
 async def run_scrape(
     asins: list[str],
     on_result: Optional[Callable] = None,
@@ -144,7 +172,7 @@ async def run_scrape(
     state.running = True
     state.total = len(asins)
     state.round_total = settings.scrape_retry_rounds
-    logger.info(f"Starting scrape of {len(asins)} ASINs")
+    logger.info(f"Starting scrape of {len(asins)} ASINs in batches of {BATCH_SIZE}")
 
     try:
         for round_num in range(1, settings.scrape_retry_rounds + 1):
@@ -166,24 +194,13 @@ async def run_scrape(
                 state.progress = 0
                 state.total = len(asins_to_scrape)
 
-            queue: asyncio.Queue = asyncio.Queue()
-            for asin in asins_to_scrape:
-                queue.put_nowait(asin)
-
-            semaphore = asyncio.Semaphore(settings.scrape_concurrency)
-            client = create_client(timeout=settings.scrape_timeout)
-
-            try:
-                workers = [
-                    asyncio.create_task(
-                        scrape_worker(semaphore, queue, client, state, on_result)
-                    )
-                    for _ in range(settings.scrape_concurrency)
-                ]
-                await asyncio.gather(*workers)
-            finally:
-                await client.aclose()
-                gc.collect()  # Force free HTML/lxml memory after each round
+            # Process in batches to cap peak memory usage
+            for i in range(0, len(asins_to_scrape), BATCH_SIZE):
+                if state.stopped:
+                    break
+                batch = asins_to_scrape[i:i + BATCH_SIZE]
+                logger.info(f"Batch {i // BATCH_SIZE + 1}: {len(batch)} ASINs")
+                await _run_batch(batch, state, on_result)
 
             if on_round_complete:
                 await on_round_complete(round_num, state.error_count)
