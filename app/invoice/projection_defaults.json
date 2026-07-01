@@ -856,5 +856,38 @@
     "seasonal_impact": 1.0,
     "growth_rate": 0.3,
     "brand": "Howrah Foods"
+  },
+  "ABC Sattu": {
+    "purchase_rate": 190.0,
+    "seasonal_impact": 1.0,
+    "growth_rate": 0.3,
+    "brand": "Mithila Foods",
+    "supplier_to_wh": 7,
+    "packing": 2,
+    "wh_to_ixd": 10,
+    "ixd_to_fba": 5,
+    "wh_buffer_days": 11.0
+  },
+  "Pea Isolate Sattu": {
+    "purchase_rate": 250.0,
+    "seasonal_impact": 1.0,
+    "growth_rate": 0.3,
+    "brand": "Mithila Foods",
+    "supplier_to_wh": 7,
+    "packing": 2,
+    "wh_to_ixd": 10,
+    "ixd_to_fba": 5,
+    "wh_buffer_days": 11.0
+  },
+  "Kulthi Sattu": {
+    "purchase_rate": 112.0,
+    "seasonal_impact": 1.0,
+    "growth_rate": 0.3,
+    "brand": "Mithila Foods",
+    "supplier_to_wh": 7,
+    "packing": 2,
+    "wh_to_ixd": 10,
+    "ixd_to_fba": 5,
+    "wh_buffer_days": 11.0
   }
 }

@@ -1003,5 +1003,25 @@
     "parent_product": "moong dal bori",
     "brand": "Howrah Foods",
     "weight": 0.3
+  },
+  "B0H55V3FJ3": {
+    "parent_product": "ABC Sattu",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0H561RM7X": {
+    "parent_product": "ABC Sattu",
+    "brand": "Mithila Foods",
+    "weight": 1.0
+  },
+  "B0H4M6SZNF": {
+    "parent_product": "Pea Isolate Sattu",
+    "brand": "Mithila Foods",
+    "weight": 0.5
+  },
+  "B0H4MF6QTG": {
+    "parent_product": "Pea Isolate Sattu",
+    "brand": "Mithila Foods",
+    "weight": 1.0
   }
 }
