@@ -73,7 +73,6 @@ async def fetch_product_page(client: httpx.AsyncClient, asin: str) -> dict:
         result = parse_product_page(text, asin)
         # Explicitly free the large HTML string immediately after parsing
         del text
-        response.close()
         return result
     except httpx.TimeoutException:
         return {"asin": asin, "url": url, "status": "Timeout"}
