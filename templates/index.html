@@ -171,7 +171,7 @@
     </div>
     <div class="sheet-row">
       <span style="font-size:12px;color:var(--text-muted);font-weight:600;white-space:nowrap;">Google Sheet:</span>
-      <input type="text" id="sheet-url" placeholder="Paste public Google Sheet URL...">
+      <input type="text" id="sheet-url" value="https://docs.google.com/spreadsheets/d/11dBw92P7Bg0oFyfqramGqdAlLTGhcb2ScjmR_1wtiTM/edit?gid=0#gid=0" placeholder="Paste public Google Sheet URL...">
       <button id="btn-fetch-sheet">Load ASINs</button>
       <span id="sheet-status"></span>
     </div>
@@ -425,10 +425,8 @@
   });
 
   // Google Sheet loader
-  document.getElementById("btn-fetch-sheet").addEventListener("click", async () => {
-    const url = document.getElementById("sheet-url").value.trim();
-    if (!url) { showError("Enter a Google Sheet URL"); return; }
-    hideError();
+  async function loadSheetAsins(url) {
+    if (!url) return;
     const btn = document.getElementById("btn-fetch-sheet");
     const status = document.getElementById("sheet-status");
     btn.disabled = true; btn.textContent = "Fetching..."; status.textContent = "";
@@ -441,7 +439,20 @@
       status.textContent = `Loaded ${data.count} ASINs`;
     } catch (e) { showError("Failed: " + e.message); }
     finally { btn.disabled = false; btn.textContent = "Load ASINs"; }
+  }
+
+  document.getElementById("btn-fetch-sheet").addEventListener("click", async () => {
+    const url = document.getElementById("sheet-url").value.trim();
+    if (!url) { showError("Enter a Google Sheet URL"); return; }
+    hideError();
+    await loadSheetAsins(url);
   });
+
+  // Auto-load ASINs from pre-filled sheet URL on page open
+  (async () => {
+    const url = document.getElementById("sheet-url").value.trim();
+    if (url) await loadSheetAsins(url);
+  })();
 
   // Helpers
   function parseRatingCount(str) { if (!str) return 0; const m = String(str).match(/[\d,]+/); return m ? parseInt(m[0].replace(/,/g, "")) : 0; }
