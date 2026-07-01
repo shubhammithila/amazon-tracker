@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import logging
 import random
 from datetime import datetime
@@ -69,7 +70,11 @@ async def fetch_product_page(client: httpx.AsyncClient, asin: str) -> dict:
         if response.status_code != 200:
             return {"asin": asin, "url": url, "status": f"HTTP {response.status_code}"}
         text = response.content.decode("utf-8", errors="replace")
-        return parse_product_page(text, asin)
+        result = parse_product_page(text, asin)
+        # Explicitly free the large HTML string immediately after parsing
+        del text
+        response.close()
+        return result
     except httpx.TimeoutException:
         return {"asin": asin, "url": url, "status": "Timeout"}
     except httpx.ConnectError:
@@ -178,6 +183,7 @@ async def run_scrape(
                 await asyncio.gather(*workers)
             finally:
                 await client.aclose()
+                gc.collect()  # Force free HTML/lxml memory after each round
 
             if on_round_complete:
                 await on_round_complete(round_num, state.error_count)
