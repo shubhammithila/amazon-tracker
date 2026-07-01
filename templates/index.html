@@ -310,6 +310,9 @@
         document.getElementById("result-count").textContent = allResults.length;
         document.getElementById("results-section").style.display = "block";
         renderTable(filteredResults);
+        // Show download button during scraping too (partial download)
+        document.getElementById("btn-download").style.display = "inline-block";
+        document.getElementById("btn-download").textContent = `⬇ Download (${allResults.length} so far)`;
       }
     } else {
       document.getElementById("btn-stop").style.display = "none";
@@ -318,6 +321,7 @@
         document.getElementById("progress-label").textContent = `Done — ${d.result_count} results`;
         document.getElementById("progress-fill").style.width = "100%";
         document.getElementById("btn-download").style.display = "inline-block";
+        document.getElementById("btn-download").textContent = "Download All";
       }
       if (d.last_scraped_at) {
         document.getElementById("last-fetched").textContent = "Last: " + d.last_scraped_at.slice(0, 16) + " UTC";
