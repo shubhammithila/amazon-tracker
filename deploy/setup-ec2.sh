@@ -47,17 +47,36 @@ if [ ! -f .env ]; then
     echo ">>> Creating .env file..."
     # Generate a random secret key
     SECRET=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+    # Generate a random app password too. This script previously wrote
+    # APP_PASSWORD=admin123, so any deployment where the operator missed the
+    # "change this" notice was publicly reachable with a known password.
+    # Allow APP_PASSWORD to be supplied via the environment for automation.
+    if [ -z "${APP_PASSWORD}" ]; then
+        APP_PASSWORD=$(python3 -c "import secrets; print(secrets.token_urlsafe(18))")
+        GENERATED_PASSWORD=1
+    fi
     cat > .env <<ENVEOF
 # Amazon Tracker v2 Configuration
 DATABASE_URL=sqlite+aiosqlite:///./tracker.db
-APP_PASSWORD=admin123
+APP_PASSWORD=${APP_PASSWORD}
 SECRET_KEY=${SECRET}
 SCHEDULER_ENABLED=true
 DAILY_SCRAPE_HOUR=6
 DAILY_SCRAPE_MINUTE=0
 ENVEOF
-    echo "    .env created with default settings"
-    echo "    >>> IMPORTANT: Change APP_PASSWORD in /opt/amazon-tracker/.env"
+    chmod 600 .env
+    echo "    .env created (mode 600)"
+    if [ -n "${GENERATED_PASSWORD}" ]; then
+        echo ""
+        echo "    ============================================================"
+        echo "    LOGIN PASSWORD (generated — save it now, shown only once):"
+        echo ""
+        echo "        ${APP_PASSWORD}"
+        echo ""
+        echo "    Change it later with: nano /opt/amazon-tracker/.env"
+        echo "    ============================================================"
+        echo ""
+    fi
 else
     echo "    .env already exists, skipping..."
 fi
