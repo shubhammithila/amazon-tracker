@@ -135,13 +135,26 @@ async def _run_scrape_task(asins: list[str]):
 async def start_scrape(request: Request, _=Depends(require_auth)):
     global _scrape_task
 
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Request body must be valid JSON"}, status_code=400)
+
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Request body must be a JSON object"}, status_code=400)
+
     asins_raw = body.get("asins", "")
 
     if isinstance(asins_raw, str):
         asins = [a.strip() for a in re.split(r"[,\s\n]+", asins_raw) if a.strip()]
+    elif isinstance(asins_raw, list):
+        # Coerce each entry — a list containing numbers or nulls would otherwise
+        # raise AttributeError on .strip() and surface as a 500.
+        asins = [str(a).strip() for a in asins_raw if str(a or "").strip()]
     else:
-        asins = [a.strip() for a in asins_raw if a.strip()]
+        return JSONResponse(
+            {"error": "'asins' must be a string or a list of ASINs"}, status_code=400
+        )
 
     asins = list(dict.fromkeys(a.upper() for a in asins if re.match(r"^B0[A-Z0-9]{8}$", a.upper())))
 
@@ -184,8 +197,15 @@ async def stop_scrape(request: Request, _=Depends(require_auth)):
 async def fetch_sheet(request: Request, _=Depends(require_auth)):
     import httpx
 
-    body = await request.json()
-    url = body.get("url", "")
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Request body must be valid JSON"}, status_code=400)
+
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Request body must be a JSON object"}, status_code=400)
+
+    url = str(body.get("url", "") or "")
 
     match = re.search(r"/d/([a-zA-Z0-9_-]+)", url)
     if not match:
@@ -194,10 +214,26 @@ async def fetch_sheet(request: Request, _=Depends(require_auth)):
     sheet_id = match.group(1)
     csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
 
-    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-        resp = await client.get(csv_url)
-        if resp.status_code != 200:
-            return JSONResponse({"error": "Failed to fetch sheet"}, status_code=400)
+    # A timeout or DNS failure reaching Google would otherwise propagate and 500.
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            resp = await client.get(csv_url)
+    except httpx.TimeoutException:
+        return JSONResponse(
+            {"error": "Timed out fetching the sheet — check the URL is public"},
+            status_code=504,
+        )
+    except httpx.HTTPError as e:
+        return JSONResponse(
+            {"error": f"Could not reach Google Sheets: {type(e).__name__}"},
+            status_code=502,
+        )
+
+    if resp.status_code != 200:
+        return JSONResponse(
+            {"error": f"Failed to fetch sheet (HTTP {resp.status_code}) — is it shared publicly?"},
+            status_code=400,
+        )
 
     lines = resp.text.strip().split("\n")
     asins = set()
