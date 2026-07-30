@@ -1,5 +1,6 @@
 """FBA Invoice generation endpoints."""
 import json
+import re
 from datetime import datetime
 
 from fastapi import APIRouter, Request, Depends, UploadFile, File
@@ -82,10 +83,36 @@ async def invoice_history(request: Request, _=Depends(require_auth), db: AsyncSe
 @router.post("/save")
 async def save_invoice(request: Request, _=Depends(require_auth), db: AsyncSession = Depends(get_db)):
     """Save a finalized invoice to database."""
-    data = await request.json()
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Request body must be valid JSON"}, status_code=400)
+
+    if not isinstance(data, dict):
+        return JSONResponse({"error": "Request body must be a JSON object"}, status_code=400)
+
+    # GST invoice numbers are a legally sequential series. An empty or itemless
+    # payload used to be accepted, which persisted a zero-value invoice and
+    # permanently burned the next number in the series. Validate before saving.
+    items = data.get("items") or []
+    if not isinstance(items, list) or not items:
+        return JSONResponse(
+            {"error": "Cannot save an invoice with no line items"}, status_code=400
+        )
+
+    details = data.get("details") or {}
+    if not isinstance(details, dict):
+        return JSONResponse({"error": "'details' must be an object"}, status_code=400)
+
+    missing = [f for f in ("shipment_id", "date") if not str(details.get(f, "")).strip()]
+    if missing:
+        return JSONResponse(
+            {"error": f"Missing required invoice field(s): {', '.join(missing)}"},
+            status_code=400,
+        )
 
     # Determine invoice number — use user-provided if edited, else auto-generate
-    user_invoice_no = data.get("details", {}).get("invoice_no", "").strip()
+    user_invoice_no = str(details.get("invoice_no", "") or "").strip()
 
     last_invoice = (await db.execute(
         select(Invoice).order_by(desc(Invoice.invoice_number)).limit(1)
@@ -97,38 +124,55 @@ async def save_invoice(request: Request, _=Depends(require_auth), db: AsyncSessi
     if user_invoice_no:
         # User edited the invoice number — use it, try to extract the seq number
         invoice_no = user_invoice_no
-        import re
         seq_match = re.search(r"/(\d+)$", user_invoice_no)
         if seq_match:
             next_num = int(seq_match.group(1))
     else:
         invoice_no = get_next_invoice_number(last_num)
 
-    # Calculate totals
+    # invoice_no is UNIQUE in the schema; catching it here turns a 500 into a
+    # clear message instead of an IntegrityError traceback.
+    duplicate = (await db.execute(
+        select(Invoice).where(Invoice.invoice_no == invoice_no).limit(1)
+    )).scalar_one_or_none()
+    if duplicate:
+        return JSONResponse(
+            {"error": f"Invoice {invoice_no} already exists (id {duplicate.id})"},
+            status_code=409,
+        )
+
+    # Calculate totals. Values arrive from a JSON form, so coerce defensively —
+    # a stray string would otherwise raise TypeError mid-request and 500.
+    def _num(value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     total_qty = 0
-    total_taxable = 0
-    total_igst = 0
-    total_amount = 0
-    for item in data.get("items", []):
-        qty = item.get("quantity", 0)
-        rate = item.get("rate", 0)
-        gst_rate = item.get("gst_rate", 5)
+    total_taxable = 0.0
+    total_igst = 0.0
+    total_amount = 0.0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        qty = _num(item.get("quantity"))
+        rate = _num(item.get("rate"))
+        gst_rate = _num(item.get("gst_rate"), 5.0)
         taxable = qty * rate
         igst = taxable * gst_rate / 100
-        total_qty += qty
+        total_qty += int(qty)
         total_taxable += taxable
         total_igst += igst
         total_amount += taxable + igst
-
-    details = data.get("details", {})
 
     inv = Invoice(
         invoice_no=invoice_no,
         invoice_number=next_num,
         shipment_id=details.get("shipment_id", ""),
         date=details.get("date", ""),
-        supplier_gstin=data.get("supplier", {}).get("gstin", SUPPLIER_GSTIN),
-        recipient_gstin=data.get("recipient", {}).get("gstin", ""),
+        supplier_gstin=(data.get("supplier") or {}).get("gstin") or SUPPLIER_GSTIN,
+        recipient_gstin=(data.get("recipient") or {}).get("gstin", ""),
         recipient_state=details.get("place_of_supply", ""),
         fc_code=details.get("fc_code", ""),
         transporter=details.get("transporter", ""),
