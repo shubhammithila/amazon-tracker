@@ -113,6 +113,7 @@ sudo systemctl stop tracker
 # Update code (if using git)
 cd /opt/amazon-tracker
 git pull
+venv/bin/alembic upgrade head    # ALWAYS run before restart — applies schema changes
 sudo systemctl restart tracker
 
 # Change password
@@ -134,8 +135,30 @@ scp -i "C:\path\to\your-key.pem" tracker.tar.gz ubuntu@YOUR_EC2_IP:~/
 # Then on EC2:
 cd /opt/amazon-tracker
 tar -xzf ~/tracker.tar.gz
+venv/bin/alembic upgrade head    # ALWAYS run before restart — applies schema changes
 sudo systemctl restart tracker
 ```
+
+### Database Migrations
+
+Alembic owns the schema. The app's `create_all()` on startup only creates
+*missing tables* — it will never add a column to a table that already exists.
+Skipping the migration step is what silently broke `/products` (the
+`products.use_by` column existed in the model but not in the database).
+
+```bash
+# Apply all pending migrations (safe to re-run; no-op when up to date)
+venv/bin/alembic upgrade head
+
+# Check which revision the database is on
+venv/bin/alembic current
+
+# After changing app/models.py, generate a migration and COMMIT IT
+venv/bin/alembic revision --autogenerate -m "describe the change"
+```
+
+Migration files in `alembic/versions/` are tracked in git on purpose. If they
+are gitignored, production has no way to learn about schema changes.
 
 ---
 

@@ -10,6 +10,5 @@ venv/
 *.egg-info/
 dist/
 build/
-alembic/versions/*.py
-!alembic/versions/__init__.py
 tracker.db
+.gstack/

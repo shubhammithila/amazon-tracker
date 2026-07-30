@@ -19,9 +19,14 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # create_all() only ever CREATEs missing tables — it never ALTERs an
+    # existing one. Relying on it silently skipped new columns (products.use_by),
+    # which 500'd the whole /products router. Alembic owns the schema now;
+    # run `alembic upgrade head` before starting. This call is kept only so a
+    # brand-new empty database still boots, and it is a no-op once migrated.
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables created")
+    logger.info("Database ready (run 'alembic upgrade head' to apply migrations)")
     setup_scheduler()
     yield
     from app.scheduler import scheduler

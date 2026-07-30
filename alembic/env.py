@@ -26,13 +26,23 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        render_as_batch=True,
+        compare_type=True,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def do_run_migrations(connection):
-    context.configure(connection=connection, target_metadata=target_metadata)
+    # render_as_batch is required for SQLite: it has no native ALTER COLUMN /
+    # DROP COLUMN, so Alembic must rebuild the table instead. Harmless on
+    # PostgreSQL, so it stays on unconditionally to keep dev and prod identical.
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        render_as_batch=True,
+        compare_type=True,
+    )
     with context.begin_transaction():
         context.run_migrations()
 
