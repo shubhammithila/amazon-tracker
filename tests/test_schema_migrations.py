@@ -175,6 +175,54 @@ def test_alembic_ini_script_location_resolves():
 
 # ─── The endpoints that were dead ────────────────────────────────────────────
 
+def test_shipment_tables_and_unique_indexes_after_migrations(tmp_path, monkeypatch):
+    """The shipment workflow's concurrency guard lives in the schema.
+
+    idx_packing_days_plan_date and idx_packing_entries_day_asin being UNIQUE is
+    what turns an ops double-save into an upsert instead of double-counted
+    units. If either index loses its unique flag in a future migration, packing
+    totals silently double — so pin it here, at the schema level.
+    """
+    db_file = tmp_path / "shipcheck.db"
+    sync_url = f"sqlite:///{db_file.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_file.as_posix()}")
+    import app.config
+    app.config.get_settings.cache_clear()
+    try:
+        _upgrade_to_head_on(sync_url)
+        engine = create_engine(sync_url)
+        try:
+            inspector = inspect(engine)
+            tables = set(inspector.get_table_names())
+            expected = {
+                "shipment_plans", "shipment_plan_items",
+                "shipment_packing_days", "shipment_packing_entries",
+            }
+            missing = expected - tables
+            assert not missing, f"missing shipment tables after migration: {missing}"
+
+            day_indexes = {
+                ix["name"]: ix["unique"]
+                for ix in inspector.get_indexes("shipment_packing_days")
+            }
+            entry_indexes = {
+                ix["name"]: ix["unique"]
+                for ix in inspector.get_indexes("shipment_packing_entries")
+            }
+        finally:
+            engine.dispose()
+    finally:
+        app.config.get_settings.cache_clear()
+
+    assert day_indexes.get("idx_packing_days_plan_date"), (
+        "idx_packing_days_plan_date must be UNIQUE — one packing day per plan per date"
+    )
+    assert entry_indexes.get("idx_packing_entries_day_asin"), (
+        "idx_packing_entries_day_asin must be UNIQUE — a double-save must upsert, "
+        "not double-count units"
+    )
+
+
 async def test_products_endpoints_do_not_500(auth_client):
     """All four /products endpoints returned 500 before ISSUE-001 was fixed."""
     for path in ("/products", "/products/download"):

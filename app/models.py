@@ -176,6 +176,127 @@ class ChurnScore(Base):
     report = relationship("ChurnReport", back_populates="scores")
 
 
+class ShipmentPlan(Base):
+    """One weekly shipment plan generated from a sales + stock CSV upload.
+
+    Replaces the single shipment_plan.json blob at repo root. Two roles now write
+    concurrently (the owner edits plan quantities, ops records packing), and the
+    old whole-file overwrite let either clobber the other.
+    """
+    __tablename__ = "shipment_plans"
+
+    id = Column(Integer, primary_key=True)
+    label = Column(String(100))
+    multiplier = Column(Numeric(4, 1), default=5.0)
+    status = Column(String(20), default="active")  # active / closed
+    # Carry-over thresholds: a day is held only when cartons AND units are both
+    # below these (see app/shipment/logic.is_held).
+    min_cartons = Column(Integer, default=25)
+    min_units = Column(Integer, default=500)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    items = relationship(
+        "ShipmentPlanItem", back_populates="plan", lazy="selectin",
+        cascade="all, delete-orphan",
+    )
+    days = relationship(
+        "ShipmentPackingDay", back_populates="plan", lazy="selectin",
+        cascade="all, delete-orphan",
+    )
+
+
+class ShipmentPlanItem(Base):
+    """One SKU line in a plan. Only the owner writes these."""
+    __tablename__ = "shipment_plan_items"
+    __table_args__ = (
+        Index("idx_shipment_plan_items_plan_asin", "plan_id", "asin"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    plan_id = Column(Integer, ForeignKey("shipment_plans.id"), nullable=False)
+    asin = Column(String(10), nullable=False)
+    fba_sku = Column(String(100))
+    brand = Column(String(4))
+    item = Column(Text)
+    # Casefolded parent_product, so SQL ORDER BY matches app.shipment.logic.sort_key.
+    sort_product = Column(String(120))
+    weight = Column(Numeric(6, 3))
+
+    # Snapshot of the CSV upload. Never rewritten after /generate, so the plan
+    # always shows the numbers it was actually built from.
+    sales_7d = Column(Integer, default=0)
+    projection = Column(Integer, default=0)
+    fba_stock = Column(Integer, default=0)
+    deficit = Column(Integer, default=0)
+
+    # Owner-editable. Stored already rounded to the nearest 10; a manual
+    # override is kept verbatim.
+    shipment_plan = Column(Integer, default=0)
+    available = Column(Integer, default=0)
+    s = Column(Boolean, default=False)
+    m = Column(Boolean, default=False)
+    b = Column(Boolean, default=False)
+
+    plan = relationship("ShipmentPlan", back_populates="items")
+
+
+class ShipmentPackingDay(Base):
+    """One calendar day of packing against a plan.
+
+    status flow: open -> submitted (ops finished the day) -> verified (owner
+    approved) -> shipped (invoice attached). `held` means the day was too small
+    to ship alone and is waiting to be combined with later packing.
+    """
+    __tablename__ = "shipment_packing_days"
+    __table_args__ = (
+        # Unique so a repeated submit updates the day instead of duplicating it.
+        Index("idx_packing_days_plan_date", "plan_id", "pack_date", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    plan_id = Column(Integer, ForeignKey("shipment_plans.id"), nullable=False)
+    # 'YYYY-MM-DD'. A string, matching Invoice.date, because the UI posts a
+    # plain <input type="date"> and the business runs in IST while the server
+    # stores UTC — an explicit date avoids a late-evening entry landing on the
+    # wrong day.
+    pack_date = Column(String(10), nullable=False)
+    status = Column(String(12), default="open")
+    hold_reason = Column(Text)
+    # Denormalised totals, recomputed on every write so the day list and the
+    # hold check never have to load every entry.
+    total_units = Column(Integer, default=0)
+    total_cartons = Column(Integer, default=0)
+    submitted_by = Column(String(20))  # 'ops' / 'admin'
+    submitted_at = Column(DateTime)
+    verified_at = Column(DateTime)
+    invoice_id = Column(Integer, ForeignKey("invoices.id"))
+
+    plan = relationship("ShipmentPlan", back_populates="days")
+    entries = relationship(
+        "ShipmentPackingEntry", back_populates="day", lazy="selectin",
+        cascade="all, delete-orphan",
+    )
+
+
+class ShipmentPackingEntry(Base):
+    """Units and cartons packed for one SKU on one day. Only ops writes these."""
+    __tablename__ = "shipment_packing_entries"
+    __table_args__ = (
+        # Unique so a double-save upserts rather than double-counting the units.
+        Index("idx_packing_entries_day_asin", "day_id", "asin", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    day_id = Column(Integer, ForeignKey("shipment_packing_days.id"), nullable=False)
+    asin = Column(String(10), nullable=False)
+    units = Column(Integer, default=0)
+    cartons = Column(Integer, default=0)
+    note = Column(Text)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    day = relationship("ShipmentPackingDay", back_populates="entries")
+
+
 class Invoice(Base):
     __tablename__ = "invoices"
 
