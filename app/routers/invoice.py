@@ -1,5 +1,6 @@
 """FBA Invoice generation endpoints."""
 import json
+import logging
 import re
 from datetime import datetime
 
@@ -18,6 +19,8 @@ from app.invoice.company_data import (
     SUPPLIER_NAME, SUPPLIER_ADDRESS, SUPPLIER_GSTIN, TRANSPORTERS,
     get_next_invoice_number,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/invoice")
 
@@ -185,8 +188,15 @@ async def save_invoice(request: Request, _=Depends(require_auth), db: AsyncSessi
     db.add(inv)
     await db.commit()
 
-    # Save HSN codes to master database so they're remembered for next time
-    save_invoice_hsn_codes(data.get("items", []))
+    # Save HSN codes to master database so they're remembered for next time.
+    # Best-effort: the invoice is already committed, so a failure updating the
+    # HSN cache must not turn a successful save into a 500. Otherwise the
+    # operator retries and consumes another GST number for an invoice that
+    # already exists.
+    try:
+        save_invoice_hsn_codes(items)
+    except Exception:
+        logger.exception("Invoice %s saved, but updating the HSN master failed", invoice_no)
 
     return JSONResponse({"invoice_no": invoice_no, "id": inv.id})
 

@@ -79,6 +79,12 @@ def save_invoice_hsn_codes(items: list):
     master = load_hsn_master()
     updated = False
     for item in items:
+        # Items come straight from a JSON request body, so an entry may not be a
+        # dict. This runs *after* the invoice is committed, so raising here
+        # returned a 500 for an invoice that had actually been saved — the
+        # operator would retry and burn another GST number.
+        if not isinstance(item, dict):
+            continue
         sku = item.get("sku", "")
         hsn = item.get("hsn_code", DEFAULT_HSN)
         gst = item.get("gst_rate", DEFAULT_GST_RATE)
