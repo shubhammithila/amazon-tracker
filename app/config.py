@@ -4,6 +4,10 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     app_password: str = "admin123"
+    # Second login for the operations employee: reaches only the packing-entry
+    # screen (/ops-page) and its documents. Plan editing, verification and GST
+    # invoicing stay behind app_password. Empty string disables the ops login.
+    ops_password: str = "ops123"
     secret_key: str = "change-me-in-production-use-random-bytes"
     database_url: str = "sqlite+aiosqlite:///./tracker.db"
 

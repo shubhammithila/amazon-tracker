@@ -75,8 +75,15 @@ async def test_no_page_links_to_a_removed_tab(auth_client, page):
         assert f'href="{dead}"' not in r.text, f"{page} still links to removed page {dead}"
 
 
-async def test_nav_partial_is_the_only_place_links_are_defined():
-    """Guard the de-duplication itself: no template may hardcode its own nav.
+# ops.html is allowed its own nav because every link in nav.html is admin-only
+# and would 403 for its user. It is exempt from "must include the partial" but
+# NOT from scrutiny: test_a_hardcoded_nav_must_not_duplicate_admin_links below
+# checks it contains no canonical admin link, which is the property that matters.
+OWN_NAV_ALLOWED = {"ops.html"}
+
+
+async def test_nav_partial_is_the_only_place_admin_links_are_defined():
+    """Guard the de-duplication itself: no admin page may hardcode its own nav.
 
     If someone pastes a <nav class="nav-links"> block back into a page, the
     partial stops being the single source of truth and drift can resume.
@@ -87,12 +94,37 @@ async def test_nav_partial_is_the_only_place_links_are_defined():
     offenders = [
         path.name
         for path in templates_dir.glob("*.html")
-        if path.name not in ("nav.html", "login.html")
-        and "<nav class=\"nav-links\">" in path.read_text(encoding="utf-8")
+        if path.name not in ({"nav.html", "login.html"} | OWN_NAV_ALLOWED)
+        and '<nav class="nav-links">' in path.read_text(encoding="utf-8")
     ]
     assert not offenders, (
         f"These templates hardcode a nav instead of including nav.html: {offenders}. "
         "That is exactly how the Shipment link went missing from Projections."
+    )
+
+
+@pytest.mark.parametrize("template_name", sorted(OWN_NAV_ALLOWED))
+async def test_a_hardcoded_nav_must_not_duplicate_admin_links(template_name):
+    """The only reason to hardcode a nav is to *exclude* the admin links.
+
+    Without this, OWN_NAV_ALLOWED would be a hole in the drift guard: someone
+    could copy the full admin nav into ops.html and nothing would object, giving
+    the packer five links that all answer 403.
+    """
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent.parent / "templates" / template_name
+    assert path.is_file(), f"{template_name} is in OWN_NAV_ALLOWED but does not exist"
+
+    markup = path.read_text(encoding="utf-8")
+    leaked = [
+        href
+        for name, href in CANONICAL_NAV.items()
+        if href != "/" and f'href="{href}"' in markup
+    ]
+    assert not leaked, (
+        f"{template_name} hardcodes its own nav but links to admin page(s) {leaked}. "
+        "Either include nav.html or link only to pages this role can open."
     )
 
 

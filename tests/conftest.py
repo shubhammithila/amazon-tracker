@@ -29,6 +29,7 @@ if str(REPO_ROOT) not in sys.path:
 # touch tracker.db.
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///file:testdb?mode=memory&cache=shared&uri=true"
 os.environ["APP_PASSWORD"] = "test-password"
+os.environ["OPS_PASSWORD"] = "test-ops-password"
 os.environ["SECRET_KEY"] = "test-secret-key-not-used-in-production"
 os.environ["SCHEDULER_ENABLED"] = "false"  # never start cron jobs during tests
 os.environ["DATA_RETENTION_DAYS"] = "90"
