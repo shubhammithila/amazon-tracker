@@ -28,10 +28,23 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database ready (run 'alembic upgrade head' to apply migrations)")
     setup_scheduler()
-    yield
-    from app.scheduler import scheduler
-    scheduler.shutdown(wait=False)
-    await engine.dispose()
+    try:
+        yield
+    finally:
+        from app.scheduler import scheduler
+
+        # setup_scheduler() returns early when SCHEDULER_ENABLED is false, so the
+        # scheduler may never have started. Calling shutdown() on a scheduler
+        # that was never started raises AttributeError on its unset event loop —
+        # which aborted the whole shutdown path and skipped engine.dispose()
+        # below, leaking connections on every exit.
+        if scheduler.running:
+            try:
+                scheduler.shutdown(wait=False)
+            except Exception:
+                logger.exception("Scheduler shutdown failed")
+
+        await engine.dispose()
 
 
 app = FastAPI(title="Amazon Tracker v2", lifespan=lifespan)
