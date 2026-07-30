@@ -1,15 +1,17 @@
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from sqlalchemy import select
+from sqlalchemy import select, delete
 
 from app.config import get_settings
 from app.database import async_session
-from app.models import Product, Keyword
+from app.models import (
+    Product, Keyword, KeywordRanking,
+    PriceHistory, BSRHistory, RatingHistory, SellerOffer,
+)
 from app.scraper.engine import run_scrape, scrape_state, ScrapeAlreadyRunning
 from app.scraper.keyword_tracker import track_keyword_rankings
-from app.models import KeywordRanking
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -102,6 +104,37 @@ async def scheduled_keyword_track():
     logger.info("Scheduled keyword tracking complete")
 
 
+async def scheduled_purge_old_history():
+    """Delete history rows older than settings.data_retention_days.
+
+    The setting existed but nothing ever read it, so price/BSR/rating/seller
+    history grew without bound. At ~250 ASINs scraped daily that is ~91k rows a
+    year per table on a t2.micro with a 90-day retention policy on paper.
+    """
+    days = settings.data_retention_days
+    if not days or days <= 0:
+        logger.info("Data retention disabled (data_retention_days <= 0)")
+        return
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    deleted_total = 0
+
+    async with async_session() as db:
+        for model in (PriceHistory, BSRHistory, RatingHistory, SellerOffer, KeywordRanking):
+            result = await db.execute(
+                delete(model).where(model.scraped_at < cutoff)
+            )
+            count = result.rowcount or 0
+            deleted_total += count
+            if count:
+                logger.info(f"Retention: deleted {count} rows from {model.__tablename__}")
+        await db.commit()
+
+    logger.info(
+        f"Retention sweep complete: {deleted_total} rows older than {days} days removed"
+    )
+
+
 def setup_scheduler():
     if not settings.scheduler_enabled:
         return
@@ -113,15 +146,28 @@ def setup_scheduler():
         replace_existing=True,
     )
 
+    # Wrap with % 24 — a daily_scrape_hour of 23 would otherwise build an
+    # invalid CronTrigger(hour=24) and crash scheduler setup at startup.
+    keyword_hour = (settings.daily_scrape_hour + 1) % 24
     scheduler.add_job(
         scheduled_keyword_track,
-        CronTrigger(hour=settings.daily_scrape_hour + 1, minute=30),
+        CronTrigger(hour=keyword_hour, minute=30),
         id="daily_keyword_track",
+        replace_existing=True,
+    )
+
+    # Purge after both scrapes so a run is never competing with deletes.
+    purge_hour = (settings.daily_scrape_hour + 3) % 24
+    scheduler.add_job(
+        scheduled_purge_old_history,
+        CronTrigger(hour=purge_hour, minute=15),
+        id="daily_history_purge",
         replace_existing=True,
     )
 
     scheduler.start()
     logger.info(
         f"Scheduler started: products at {settings.daily_scrape_hour:02d}:{settings.daily_scrape_minute:02d}, "
-        f"keywords at {settings.daily_scrape_hour + 1:02d}:30"
+        f"keywords at {keyword_hour:02d}:30, "
+        f"history purge at {purge_hour:02d}:15 (retention {settings.data_retention_days}d)"
     )
