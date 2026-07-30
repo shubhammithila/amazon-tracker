@@ -10,7 +10,7 @@ from sqlalchemy import select, func
 
 from app.database import get_db
 from app.models import Product, PriceHistory, BSRHistory, RatingHistory, SellerOffer, ScrapeJob
-from app.scraper.engine import run_scrape, scrape_state, ScrapeState
+from app.scraper.engine import run_scrape, scrape_state, ScrapeState, ScrapeAlreadyRunning
 from app.routers.auth import require_auth
 from app.config import get_settings
 
@@ -117,6 +117,14 @@ async def _run_scrape_task(asins: list[str]):
 
     try:
         await run_scrape(asins, on_complete=on_complete)
+    except ScrapeAlreadyRunning:
+        # Another run claimed the scraper between the route check and here.
+        # Do not touch shared state — it belongs to the run that won.
+        logger.warning("Manual scrape skipped: another scrape is already running")
+    except asyncio.CancelledError:
+        # /stop cancels this task. run_scrape's finally already cleared running.
+        logger.info("Scrape task cancelled")
+        raise
     except Exception as e:
         logger.exception(f"Scrape task crashed: {e}")
         scrape_state.error = str(e)

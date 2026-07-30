@@ -6,7 +6,7 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.database import async_session
 from app.models import Product, Keyword
-from app.scraper.engine import run_scrape, scrape_state
+from app.scraper.engine import run_scrape, scrape_state, ScrapeAlreadyRunning
 from app.scraper.keyword_tracker import track_keyword_rankings
 from app.models import KeywordRanking
 from datetime import datetime
@@ -18,6 +18,9 @@ scheduler = AsyncIOScheduler()
 
 
 async def scheduled_product_scrape():
+    # Cheap pre-check so we don't load every ASIN for nothing. run_scrape()
+    # performs the authoritative atomic claim and raises ScrapeAlreadyRunning
+    # if a manual run wins the race, so this is an optimisation, not the guard.
     if scrape_state.running:
         logger.info("Scrape already running, skipping scheduled run")
         return
@@ -46,11 +49,18 @@ async def scheduled_product_scrape():
 
     async def on_complete(results):
         logger.info(f"Scheduled scrape complete: {len(results)} results")
-        # Clear immediately to free RAM
-        scrape_state.results.clear()
-        results.clear()
 
-    await run_scrape(asins, on_result=on_result, on_complete=on_complete)
+    try:
+        await run_scrape(asins, on_result=on_result, on_complete=on_complete)
+    except ScrapeAlreadyRunning:
+        # A manual scrape claimed the scraper between the pre-check and here.
+        # Never touch scrape_state — those results belong to the other run.
+        logger.info("Scheduled scrape skipped: a manual scrape started first")
+        return
+
+    # Free the buffered results now that every row is persisted. Safe here
+    # because the atomic claim guarantees this run owned the state; the previous
+    # unconditional clears could wipe a concurrent manual scrape's results.
     scrape_state.results.clear()
 
 

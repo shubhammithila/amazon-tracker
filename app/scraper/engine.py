@@ -17,9 +17,32 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+class ScrapeAlreadyRunning(RuntimeError):
+    """Raised when a scrape is requested while another one is in flight."""
+
+
 class ScrapeState:
     def __init__(self):
+        # A single lock guards claiming the scraper. Both the manual /scrape
+        # route and the 06:00 scheduled job used to check `if running:` and then
+        # act, so an overlap could start two runs against one shared state — and
+        # whichever finished first cleared the other's results.
+        self._claim_lock = asyncio.Lock()
         self.reset()
+
+    async def claim_for_new_run(self) -> bool:
+        """Atomically reset state and mark the scraper busy.
+
+        Returns False if a run is already in flight, so the caller must not
+        touch shared state. reset() deliberately happens under the lock:
+        it sets running=False, and doing it outside would reopen the race.
+        """
+        async with self._claim_lock:
+            if self.running:
+                return False
+            self.reset()
+            self.running = True
+            return True
 
     def reset(self):
         self.running = False
@@ -166,9 +189,15 @@ async def run_scrape(
     on_round_complete: Optional[Callable] = None,
     on_complete: Optional[Callable] = None,
 ):
-    scrape_state.reset()
     state = scrape_state
-    state.running = True
+
+    # Claim the scraper before wiping state. reset() sets running=False, so
+    # resetting first would reopen the window that lets a second run (manual vs
+    # scheduled) start and then clear the first run's results.
+    if not await state.claim_for_new_run():
+        logger.warning("run_scrape called while a scrape is already running — ignoring")
+        raise ScrapeAlreadyRunning()
+
     state.total = len(asins)
     state.round_total = settings.scrape_retry_rounds
     logger.info(f"Starting scrape of {len(asins)} ASINs in batches of {BATCH_SIZE}")
