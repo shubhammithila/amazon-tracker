@@ -1,0 +1,25 @@
+{#
+  Shared admin navigation.
+
+  This exists because the nav was previously copy-pasted into all 7 page
+  templates and drifted: projections.html was missing the Shipment link
+  entirely, so opening Projections made the Shipment tab disappear.
+
+  Include it (do not extend) — each page is a standalone document with its own
+  inline <style>, and the .nav-links CSS is already defined identically in each.
+
+      {% include "nav.html" %}
+
+  Pass `active` from the route to highlight the current tab, e.g.
+      templates.TemplateResponse(request, "shipment.html", {"active": "shipment"})
+
+  Do NOT add links here without also adding the key to CANONICAL_NAV in
+  tests/test_nav_consistency.py — that test is what actually stops the drift.
+#}
+<nav class="nav-links">
+  <a href="/" class="{{ 'active' if active == 'dashboard' else '' }}">Dashboard</a>
+  <a href="/invoice-page" class="{{ 'active' if active == 'invoice' else '' }}">Invoice</a>
+  <a href="/churn-page" class="{{ 'active' if active == 'churn' else '' }}">Portfolio</a>
+  <a href="/projections-page" class="{{ 'active' if active == 'projections' else '' }}">Projections</a>
+  <a href="/shipment-page" class="{{ 'active' if active == 'shipment' else '' }}">Shipment</a>
+</nav>

@@ -140,15 +140,7 @@
 <header>
   <span>📦</span>
   <h1>Amazon Tracker v2</h1>
-  <nav class="nav-links">
-    <a href="/" class="active">Dashboard</a>
-    <a href="/history-page">History</a>
-    <a href="/keywords-page">Keywords</a>
-    <a href="/invoice-page">Invoice</a>
-    <a href="/churn-page">Portfolio</a>
-    <a href="/projections-page">Projections</a>
-    <a href="/shipment-page">Shipment</a>
-  </nav>
+  {% include "nav.html" %}
   <div class="header-right">
     <span id="last-fetched"></span>
     <span class="ws-status disconnected" id="ws-dot" title="WebSocket"></span>

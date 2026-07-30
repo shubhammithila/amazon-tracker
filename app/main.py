@@ -67,53 +67,43 @@ async def auth_redirect_handler(request: Request, exc: RedirectException):
     return RedirectResponse(url="/login", status_code=303)
 
 
+# Each page passes `active` so templates/nav.html can highlight the current tab.
+# The nav itself lives in that one partial: it used to be copy-pasted into every
+# template and drifted (projections.html had no Shipment link, so opening
+# Projections made the Shipment tab vanish).
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     if not get_current_user(request):
         return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse(request, "index.html")
-
-
-@app.get("/history-page", response_class=HTMLResponse)
-async def history_page(request: Request):
-    if not get_current_user(request):
-        return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse(request, "history.html")
-
-
-@app.get("/keywords-page", response_class=HTMLResponse)
-async def keywords_page(request: Request):
-    if not get_current_user(request):
-        return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse(request, "keywords.html")
+    return templates.TemplateResponse(request, "index.html", {"active": "dashboard"})
 
 
 @app.get("/invoice-page", response_class=HTMLResponse)
 async def invoice_page(request: Request):
     if not get_current_user(request):
         return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse(request, "invoice.html")
+    return templates.TemplateResponse(request, "invoice.html", {"active": "invoice"})
 
 
 @app.get("/churn-page", response_class=HTMLResponse)
 async def churn_page(request: Request):
     if not get_current_user(request):
         return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse(request, "churn.html")
+    return templates.TemplateResponse(request, "churn.html", {"active": "churn"})
 
 
 @app.get("/projections-page", response_class=HTMLResponse)
 async def projections_page(request: Request):
     if not get_current_user(request):
         return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse(request, "projections.html")
+    return templates.TemplateResponse(request, "projections.html", {"active": "projections"})
 
 
 @app.get("/shipment-page", response_class=HTMLResponse)
 async def shipment_page(request: Request):
     if not get_current_user(request):
         return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse(request, "shipment.html")
+    return templates.TemplateResponse(request, "shipment.html", {"active": "shipment"})
 
 
 @app.get("/health")
