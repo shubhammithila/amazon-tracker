@@ -26,12 +26,12 @@ from pathlib import Path
 
 import pandas as pd
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.routers.auth import ROLE_ADMIN, require_admin, require_ops_or_admin
-from app.shipment import logic, repository
+from app.shipment import documents, logic, repository
 
 router = APIRouter(prefix="/shipment")
 logger = logging.getLogger(__name__)
@@ -610,6 +610,173 @@ async def release_packing(
     await db.commit()
     await db.refresh(day)
     return JSONResponse({"status": day.status})
+
+
+# ─── Downloads ───────────────────────────────────────────────────────────────
+#
+# Every route here goes through _document_rows(), which returns the SAME dicts
+# /active sends to the browser, in the SAME order. So a download cannot disagree
+# with the screen about either row order or a computed number — there is one
+# code path producing both, not two that happen to agree today.
+
+async def _document_rows(db: AsyncSession):
+    """(plan, item dicts in canonical order, days) or None if there is no plan."""
+    plan = await repository.get_active_plan(db)
+    if plan is None:
+        return None
+
+    items = await repository.load_plan_items(db, plan.id)
+    days = await repository.load_days_with_entries(db, plan.id)
+    packed_map = logic.packed_units_by_asin(days)
+    shippable_map = logic.shippable_units_by_asin(days)
+    rows = [
+        _item_payload(i, packed_map.get(i.asin, 0), shippable_map.get(i.asin, 0))
+        for i in items
+    ]
+    plan_dict = {
+        "id": plan.id,
+        "label": plan.label,
+        "min_cartons": int(plan.min_cartons or 0),
+        "min_units": int(plan.min_units or 0),
+    }
+    return plan_dict, rows, days
+
+
+def _no_plan():
+    return JSONResponse({"error": "No active plan to download."}, status_code=404)
+
+
+def _attachment(buffer: io.BytesIO, filename: str, content_type: str) -> StreamingResponse:
+    """Send an in-memory document as a download.
+
+    A dated filename on purpose: the owner keeps these in a folder and
+    `packed.xlsx` overwriting last week's `packed.xlsx` in the Downloads folder
+    is a real way to lose a record.
+    """
+    return StreamingResponse(
+        buffer,
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@router.get("/download/packing-plan.xlsx")
+async def download_packing_plan_xlsx(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """The full plan as Excel — requirement 3."""
+    loaded = await _document_rows(db)
+    if loaded is None:
+        return _no_plan()
+    plan, rows, _days = loaded
+    return _attachment(
+        documents.build_packing_plan_xlsx(plan, rows),
+        f"packing-plan-{date.today().isoformat()}.xlsx",
+        XLSX_TYPE,
+    )
+
+
+@router.get("/download/packing-plan.pdf")
+async def download_packing_plan_pdf(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """The full plan as PDF — requirement 3 asked for both formats."""
+    loaded = await _document_rows(db)
+    if loaded is None:
+        return _no_plan()
+    plan, rows, _days = loaded
+    return _attachment(
+        documents.build_packing_plan_pdf(plan, rows),
+        f"packing-plan-{date.today().isoformat()}.pdf",
+        "application/pdf",
+    )
+
+
+@router.get("/download/remaining.pdf")
+async def download_remaining_pdf(
+    request: Request,
+    pack_date: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_ops_or_admin),
+):
+    """The morning clipboard sheet — requirement 5.
+
+    Open to ops, unlike the other downloads: this is the one document the packer
+    actually needs, and making him ask the owner for it every morning would
+    defeat the point of giving him his own screen.
+    """
+    if pack_date is not None and not _valid_date(pack_date):
+        return JSONResponse({"error": "Date must be YYYY-MM-DD"}, status_code=400)
+
+    loaded = await _document_rows(db)
+    if loaded is None:
+        return _no_plan()
+    plan, rows, _days = loaded
+    stamp = pack_date or date.today().isoformat()
+    return _attachment(
+        documents.build_remaining_pdf(plan, rows, pack_date=stamp),
+        f"still-to-pack-{stamp}.pdf",
+        "application/pdf",
+    )
+
+
+@router.get("/download/packed.xlsx")
+async def download_packed_xlsx(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """Daily packed units and cartons — requirements 6 and 7.
+
+    Admin only. This is the owner's input for building the actual shipment, and
+    it exposes every day including held ones.
+    """
+    loaded = await _document_rows(db)
+    if loaded is None:
+        return _no_plan()
+    plan, rows, days = loaded
+    return _attachment(
+        documents.build_packed_xlsx(plan, rows, days),
+        f"packed-daily-{date.today().isoformat()}.xlsx",
+        XLSX_TYPE,
+    )
+
+
+@router.get("/download/shipment-file.xlsx")
+async def download_shipment_file_xlsx(
+    request: Request,
+    mode: str = "remaining",
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """The Amazon upload sheet.
+
+    An unknown `mode` is rejected rather than quietly treated as `remaining`. The
+    three modes produce genuinely different quantities, and a typo silently
+    yielding a plausible-looking file is how the wrong numbers get uploaded to
+    Amazon.
+    """
+    if mode not in ("remaining", "all", "verified"):
+        return JSONResponse(
+            {"error": "mode must be remaining, all or verified"}, status_code=400
+        )
+
+    loaded = await _document_rows(db)
+    if loaded is None:
+        return _no_plan()
+    _plan, rows, days = loaded
+    return _attachment(
+        documents.build_shipment_file_xlsx(rows, mode=mode, days=days),
+        f"shipment-{mode}-{date.today().isoformat()}.xlsx",
+        XLSX_TYPE,
+    )
 
 
 # ─── One-shot legacy import (admin) ──────────────────────────────────────────

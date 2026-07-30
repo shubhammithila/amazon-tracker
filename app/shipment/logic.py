@@ -199,18 +199,23 @@ def hold_reason(
     )
 
 
-def shippable_units_by_asin(days: Sequence) -> dict[str, int]:
-    """Units per ASIN across days cleared to ship. Held days are excluded.
+def units_by_asin(days: Sequence, statuses=None) -> dict[str, int]:
+    """Units per ASIN, optionally restricted to days in `statuses`.
 
-    This is also how requirement 9's combining works: a held day simply is not
-    counted, and once it is released (or a later day joins it) the same
-    aggregation picks the units up. No separate carry-over bookkeeping.
+    The three named wrappers below differ ONLY in which statuses they count, so
+    they share this one loop. Three copies of it is how "packed" and "shippable"
+    quietly start disagreeing about, say, whether a blank ASIN contributes.
+
+    `statuses=None` means every day regardless of status.
     """
     totals: dict[str, int] = {}
     for day in days:
-        status = day.get("status") if isinstance(day, Mapping) else getattr(day, "status", None)
-        if status not in SHIPPABLE_STATUSES:
-            continue
+        if statuses is not None:
+            status = (
+                day.get("status") if isinstance(day, Mapping) else getattr(day, "status", None)
+            )
+            if status not in statuses:
+                continue
         entries = day.get("entries") if isinstance(day, Mapping) else getattr(day, "entries", [])
         for entry in entries or []:
             asin = (
@@ -221,6 +226,16 @@ def shippable_units_by_asin(days: Sequence) -> dict[str, int]:
                 continue
             totals[asin] = totals.get(asin, 0) + int(units or 0)
     return totals
+
+
+def shippable_units_by_asin(days: Sequence) -> dict[str, int]:
+    """Units per ASIN across days cleared to ship. Held days are excluded.
+
+    This is also how requirement 9's combining works: a held day simply is not
+    counted, and once it is released (or a later day joins it) the same
+    aggregation picks the units up. No separate carry-over bookkeeping.
+    """
+    return units_by_asin(days, SHIPPABLE_STATUSES)
 
 
 def packed_units_by_asin(days: Sequence) -> dict[str, int]:
@@ -229,18 +244,17 @@ def packed_units_by_asin(days: Sequence) -> dict[str, int]:
     Drives the "remaining to pack" figure. Held units are counted here on
     purpose — they are already in boxes and must not be packed twice.
     """
-    totals: dict[str, int] = {}
-    for day in days:
-        entries = day.get("entries") if isinstance(day, Mapping) else getattr(day, "entries", [])
-        for entry in entries or []:
-            asin = (
-                entry.get("asin") if isinstance(entry, Mapping) else getattr(entry, "asin", "")
-            ) or ""
-            units = entry.get("units") if isinstance(entry, Mapping) else getattr(entry, "units", 0)
-            if not asin:
-                continue
-            totals[asin] = totals.get(asin, 0) + int(units or 0)
-    return totals
+    return units_by_asin(days, None)
+
+
+def verified_units_by_asin(days: Sequence) -> dict[str, int]:
+    """Units per ASIN on days the owner has verified.
+
+    Narrower than `shippable`: a submitted day may ship, but only a verified one
+    may be invoiced, because that approval is what gates the GST number. The
+    shipment file's `mode=verified` and the invoice bridge both key off this.
+    """
+    return units_by_asin(days, INVOICEABLE_STATUSES)
 
 
 def held_totals(days: Sequence) -> dict[str, int]:

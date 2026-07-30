@@ -11,7 +11,18 @@ from app.config import get_settings
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False, unlike alembic's generated default.
+    #
+    # alembic.ini declares only root/sqlalchemy/alembic, and fileConfig defaults to
+    # disabling every logger it does not name. When migrations run in-process — the
+    # migration test does, and a startup hook could — that silently switches off
+    # `app.*` logging for the rest of the process. It cost a genuinely confusing
+    # failure: tests/test_shipment_documents.py's missing-SKU warning test passed
+    # alone and failed in the full suite, because test_schema_migrations.py had run
+    # first and killed the logger.
+    #
+    # Nothing wants alembic's logging setup to reach into the application's.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

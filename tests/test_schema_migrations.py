@@ -166,6 +166,59 @@ def test_alembic_env_uses_batch_mode_for_sqlite():
     )
 
 
+def test_running_migrations_does_not_disable_application_logging(tmp_path, monkeypatch):
+    """An in-process `alembic upgrade` must not switch off `app.*` loggers.
+
+    env.py calls logging.config.fileConfig, which defaults to
+    disable_existing_loggers=True and would then disable every logger not named
+    in alembic.ini — and alembic.ini names only root, sqlalchemy and alembic.
+
+    This is not hypothetical tidiness. It cost a genuinely confusing failure:
+    tests/test_shipment_documents.py's missing-SKU warning test passed on its own
+    and failed in the full suite, because this file had run first and killed
+    `app.shipment.documents`. A production startup hook that runs migrations
+    would silence application logging the same way, and nobody would notice until
+    they went looking for a warning that was never emitted.
+
+    Asserted behaviourally rather than by grepping env.py for the keyword, so it
+    still holds if the logging setup is restructured.
+    """
+    import logging
+
+    probe = logging.getLogger("app.shipment.documents")
+    assert not probe.disabled, "the probe logger was already disabled before this test"
+
+    db_file = tmp_path / "logcheck.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_file.as_posix()}")
+    import app.config
+    app.config.get_settings.cache_clear()
+    try:
+        _upgrade_to_head_on(f"sqlite:///{db_file.as_posix()}")
+    finally:
+        app.config.get_settings.cache_clear()
+
+    assert not probe.disabled, (
+        "running migrations disabled the app.shipment.documents logger — "
+        "alembic/env.py must call fileConfig(..., disable_existing_loggers=False)"
+    )
+
+    # Belt and braces: the logger being enabled is only useful if a record
+    # actually reaches a handler afterwards.
+    records: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    handler = _Capture()
+    probe.addHandler(handler)
+    try:
+        probe.warning("probe %d", 1)
+    finally:
+        probe.removeHandler(handler)
+    assert records == ["probe 1"], f"logging is broken after migrations: {records}"
+
+
 def test_alembic_ini_script_location_resolves():
     parser = configparser.ConfigParser()
     parser.read(REPO_ROOT / "alembic.ini", encoding="utf-8")
