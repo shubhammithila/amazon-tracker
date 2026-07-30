@@ -19,32 +19,15 @@ highest-risk in the plan) so a mistake fails loudly here instead of in
 production.
 """
 import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 
-from app.main import app
 from app.routers.auth import SESSION_COOKIE, serializer
 
 pytestmark = pytest.mark.regression
 
 ADMIN_PAGES = ["/", "/invoice-page", "/churn-page", "/projections-page", "/shipment-page"]
 
-
-@pytest.fixture
-def ops_cookie():
-    """A validly signed session cookie carrying the ops role."""
-    return serializer.dumps({"authenticated": True, "role": "ops"})
-
-
-@pytest_asyncio.fixture
-async def ops_client(db_schema, ops_cookie):
-    """HTTP client authenticated as the operations employee."""
-    transport = ASGITransport(app=app)
-    async with AsyncClient(
-        transport=transport, base_url="http://test", follow_redirects=False
-    ) as ac:
-        ac.cookies.set(SESSION_COOKIE, ops_cookie)
-        yield ac
+# `ops_cookie` and `ops_client` live in tests/conftest.py — the shipment DB and
+# invoice-bridge tests need them too, and two definitions could drift apart.
 
 
 # ─── The load-bearing invariant: legacy cookies stay admin ───────────────────

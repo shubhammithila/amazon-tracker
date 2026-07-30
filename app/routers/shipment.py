@@ -1,22 +1,44 @@
-"""Shipment Maker — upload sales + stock CSVs, generate packing plan, track daily packing."""
+"""Shipment Maker — CSV upload to packing plan, daily packing entry, documents.
+
+Storage moved out of ``shipment_plan.json`` and into the database. The reason is
+not tidiness: two roles now write concurrently. The owner edits plan quantities
+while the operations employee records what was packed, and the old
+whole-file-overwrite ``POST /save`` meant whoever saved last silently destroyed
+the other's work. Plan rows and packing rows are now separate records with
+separate endpoints and separate roles, so there is nothing to clobber.
+
+Auth is per-route rather than router-wide, because this is the one router where
+the distinction matters:
+
+    admin only     generate, edit items, thresholds, delete, verify, release
+    ops + admin    read the plan, enter packing, submit a day, morning PDF
+
+``parse_sales_csv`` and ``parse_stock_csv`` are unchanged — they work, and
+rewriting a working parser during a storage migration would make a failure
+impossible to attribute.
+"""
 import io
 import json
-import re
 import logging
+import re
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
-from fastapi import APIRouter, Request, Depends, UploadFile, File, Form
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.routers.auth import require_auth
+from app.database import get_db
+from app.routers.auth import ROLE_ADMIN, require_admin, require_ops_or_admin
+from app.shipment import logic, repository
 
 router = APIRouter(prefix="/shipment")
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent.parent
 FAMILIES_FILE = BASE_DIR / "invoice" / "product_families.json"
-DATA_FILE = BASE_DIR.parent / "shipment_plan.json"
+LEGACY_DATA_FILE = BASE_DIR.parent / "shipment_plan.json"
 
 
 def load_families() -> dict:
@@ -90,7 +112,94 @@ def parse_stock_csv(content: bytes) -> dict[str, int]:
     return asin_stock
 
 
-# ─── Endpoints ────────────────────────────────────────────────────────────────
+def parse_sku_map(content: bytes) -> dict[str, str]:
+    """{ASIN: merchant SKU} from the stock report.
+
+    Split out of generate_plan and no longer wrapped in a bare
+    `except Exception: pass`. Amazon's shipment upload keys on the merchant SKU,
+    so an empty fba_sku means that row is rejected on their side — swallowing the
+    parse error made a real failure invisible. Now it is logged, and
+    /shipment/active reports how many items are missing a SKU.
+    """
+    try:
+        df = pd.read_csv(io.BytesIO(content))
+    except Exception:
+        try:
+            df = pd.read_csv(io.BytesIO(content), encoding="utf-8-sig")
+        except Exception:
+            logger.warning("Could not read the stock CSV for SKU mapping", exc_info=True)
+            return {}
+
+    if "sku" not in df.columns or "asin" not in df.columns:
+        logger.warning(
+            "Stock CSV has no 'sku'/'asin' pair (columns: %s) — plan items will "
+            "have no merchant SKU and Amazon will reject the upload.",
+            list(df.columns)[:12],
+        )
+        return {}
+
+    out: dict[str, str] = {}
+    for asin, sku in zip(df["asin"].astype(str), df["sku"].astype(str)):
+        asin = asin.strip()
+        sku = sku.strip()
+        if asin and sku and sku.lower() != "nan":
+            out.setdefault(asin, sku)
+    return out
+
+
+def _item_payload(item, packed: int, shippable: int) -> dict:
+    """One plan item as the frontend consumes it.
+
+    `packed` and `shippable` are both sent, deliberately. Held units are packed
+    (they are in boxes; re-packing them would double the order) but not shippable
+    (the day is parked). Collapsing them into one number is the subtle bug this
+    whole feature is built to avoid.
+    """
+    planned = int(item.shipment_plan or 0)
+    return {
+        "asin": item.asin,
+        "fba_sku": item.fba_sku or "",
+        "brand": item.brand or "",
+        "item": item.item or "",
+        "weight": float(item.weight or 0),
+        "sales_7d": int(item.sales_7d or 0),
+        "projection": int(item.projection or 0),
+        "fba_stock": int(item.fba_stock or 0),
+        "deficit": int(item.deficit or 0),
+        "shipment_plan": planned,
+        "available": int(item.available or 0),
+        "s": bool(item.s),
+        "m": bool(item.m),
+        "b": bool(item.b),
+        "packed": packed,
+        "shippable": shippable,
+        "remaining": logic.remaining_for(planned, packed),
+    }
+
+
+def _plan_payload(plan, items, days) -> dict:
+    packed_map = logic.packed_units_by_asin(days)
+    shippable_map = logic.shippable_units_by_asin(days)
+    return {
+        "plan": {
+            "id": plan.id,
+            "label": plan.label,
+            "multiplier": float(plan.multiplier or 5),
+            "status": plan.status,
+            "min_cartons": int(plan.min_cartons or 0),
+            "min_units": int(plan.min_units or 0),
+            "created_at": plan.created_at.isoformat() if plan.created_at else None,
+        },
+        "items": [
+            _item_payload(i, packed_map.get(i.asin, 0), shippable_map.get(i.asin, 0))
+            for i in items
+        ],
+        "days": days,
+        "held": logic.held_totals(days),
+    }
+
+
+# ─── Plan lifecycle (admin) ──────────────────────────────────────────────────
 
 @router.post("/generate")
 async def generate_plan(
@@ -98,9 +207,10 @@ async def generate_plan(
     sales_csv: UploadFile = File(...),
     stock_csv: UploadFile = File(...),
     multiplier: float = Form(5.0),
-    _=Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
 ):
-    """Upload sales + stock CSVs → generate shipment plan."""
+    """Upload sales + stock CSVs → a new active plan, closing the previous one."""
     sales_content = await sales_csv.read()
     stock_content = await stock_csv.read()
 
@@ -114,173 +224,487 @@ async def generate_plan(
     except Exception as e:
         return JSONResponse({"error": f"Stock CSV error: {e}"}, status_code=400)
 
-    # Build plan from FAMILIES (master product list)
-    plan = []
+    sku_map = parse_sku_map(stock_content)
+
+    items: list[dict] = []
     for asin, info in FAMILIES.items():
         units_sold = sales.get(asin, 0)
         fba_stock = stock.get(asin, 0)
         projection = int(units_sold * multiplier)
         deficit = projection - fba_stock
 
-        plan.append({
-            "brand": "MF" if info["brand"] == "Mithila Foods" else "HF",
-            "fba_sku": "",  # Will be filled from SKU data
+        items.append({
+            "brand": "MF" if info.get("brand") == "Mithila Foods" else "HF",
+            "fba_sku": sku_map.get(asin, ""),
             "asin": asin,
-            "item": info["parent_product"],
+            "item": info.get("parent_product") or "",
             "weight": info.get("weight") or 0,
             "sales_7d": units_sold,
             "projection": projection,
             "fba_stock": fba_stock,
             "deficit": deficit,
-            "shipment_plan": max(0, deficit),  # Default: ship the deficit (0 if negative)
+            # Rounding happens HERE and nowhere else, then is persisted. Doing it
+            # in a renderer would mean the screen and the download could disagree,
+            # and a manual override would be silently re-rounded on every view.
+            "shipment_plan": logic.round_to_10(max(0, deficit)),
             "available": 0,
-            "day1": 0, "day2": 0, "day3": 0, "day4": 0, "day5": 0, "day6": 0,
             "s": False, "m": False, "b": False,
         })
 
-    # Try to get FBA SKU from stock CSV (sku column)
-    try:
-        stock_df = pd.read_csv(io.BytesIO(stock_content))
-        if "sku" in stock_df.columns and "asin" in stock_df.columns:
-            sku_map = dict(zip(stock_df["asin"].astype(str), stock_df["sku"].astype(str)))
-            for p in plan:
-                if not p["fba_sku"]:
-                    p["fba_sku"] = sku_map.get(p["asin"], "")
-    except Exception:
-        pass
+    plan = await repository.create_plan(db, items, multiplier=multiplier)
+    stored = await repository.load_plan_items(db, plan.id)
+    missing_sku = await repository.count_items_missing_sku(db, plan.id)
 
-    # Sort: positive deficit first (descending), then by item name
-    plan.sort(key=lambda x: (-x["deficit"], x["item"], x["weight"]))
-
-    # Save
-    data = {
-        "multiplier": multiplier,
-        "plan": plan,
-        "created_at": pd.Timestamp.now().isoformat(),
-    }
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-
-    return JSONResponse(data)
+    payload = _plan_payload(plan, stored, [])
+    payload["missing_sku_count"] = missing_sku
+    if missing_sku:
+        payload["warning"] = (
+            f"{missing_sku} item(s) to ship have no merchant SKU. Amazon's upload "
+            "needs the SKU, not the ASIN, so those rows will be rejected."
+        )
+    return JSONResponse(payload)
 
 
-@router.get("/last")
-async def get_last_plan(request: Request, _=Depends(require_auth)):
-    """Get last saved shipment plan."""
-    if not DATA_FILE.exists():
-        return JSONResponse({"plan": [], "multiplier": 5.0})
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return JSONResponse(json.load(f))
+@router.get("/active")
+async def get_active(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_ops_or_admin),
+):
+    """The plan being packed: items in canonical order, days, thresholds, role.
+
+    `role` is included so the frontend can hide controls it is not allowed to
+    use. It is a convenience, never the enforcement — the server re-checks on
+    every mutating route.
+    """
+    plan = await repository.get_active_plan(db)
+    if plan is None:
+        return JSONResponse({"plan": None, "items": [], "days": [], "role": role})
+
+    items = await repository.load_plan_items(db, plan.id)
+    days = await repository.load_days_with_entries(db, plan.id)
+
+    payload = _plan_payload(plan, items, days)
+    payload["role"] = role
+    payload["missing_sku_count"] = await repository.count_items_missing_sku(db, plan.id)
+    return JSONResponse(payload)
 
 
-@router.post("/save")
-async def save_plan(request: Request, _=Depends(require_auth)):
-    """Save updated plan (after editing in UI)."""
+@router.post("/items")
+async def update_items(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """Owner edits to plan quantities and the S/M/B flags.
+
+    Admin-only, and structurally incapable of writing packing data: the
+    repository whitelists which columns this may touch. That is what stops the
+    old clobbering bug from returning in a new shape.
+    """
     body = await request.json()
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(body, f, ensure_ascii=False)
-    return JSONResponse({"status": "saved"})
+    plan_id = body.get("plan_id")
+    updates = body.get("items") or []
+
+    plan = (
+        await repository.get_plan(db, int(plan_id))
+        if plan_id
+        else await repository.get_active_plan(db)
+    )
+    if plan is None:
+        return JSONResponse({"error": "No active plan"}, status_code=404)
+
+    changed = await repository.update_plan_items(db, plan.id, updates)
+    return JSONResponse({"status": "saved", "changed": changed})
 
 
-@router.delete("/clear")
-async def clear_plan(request: Request, _=Depends(require_auth)):
-    if DATA_FILE.exists():
-        DATA_FILE.unlink()
-    return JSONResponse({"status": "cleared"})
-
-
-@router.get("/download-packing-plan")
-async def download_packing_plan(request: Request, _=Depends(require_auth)):
-    """Download packing plan as Excel (for warehouse team)."""
-    if not DATA_FILE.exists():
-        return JSONResponse({"error": "No plan"}, status_code=404)
-
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    items = [p for p in data["plan"] if p.get("shipment_plan", 0) > 0]
-
-    rows = [{
-        "S": "",
-        "M": "",
-        "B": "",
-        "Brand": p["brand"],
-        "FBA SKU": p["fba_sku"],
-        "ASIN": p["asin"],
-        "Item": p["item"],
-        "Weight": f"{p['weight']}kg" if p["weight"] else "",
-        "Shipment": p["shipment_plan"],
-        "Avl": p.get("available", ""),
-        "Day 1": p.get("day1", ""),
-        "Day 2": p.get("day2", ""),
-        "Day 3": p.get("day3", ""),
-        "Day 4": p.get("day4", ""),
-        "Day 5": p.get("day5", ""),
-        "Day 6": p.get("day6", ""),
-    } for p in items]
-
-    df = pd.DataFrame(rows)
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Packing Plan")
-        ws = writer.sheets["Packing Plan"]
-        # Set column widths
-        widths = [4, 4, 4, 6, 18, 12, 20, 8, 10, 6, 7, 7, 7, 7, 7, 7]
-        from openpyxl.utils import get_column_letter
-        for i, w in enumerate(widths, 1):
-            ws.column_dimensions[get_column_letter(i)].width = w
-
-    buffer.seek(0)
-    return StreamingResponse(
-        buffer,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=FBA_Packing_Plan.xlsx"},
+@router.patch("/plan/{plan_id}/thresholds")
+async def patch_thresholds(
+    plan_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """Adjust the carry-over thresholds for this plan."""
+    body = await request.json()
+    plan = await repository.update_thresholds(
+        db, plan_id, body.get("min_cartons"), body.get("min_units")
+    )
+    if plan is None:
+        return JSONResponse({"error": "Plan not found"}, status_code=404)
+    return JSONResponse(
+        {
+            "status": "saved",
+            "min_cartons": int(plan.min_cartons or 0),
+            "min_units": int(plan.min_units or 0),
+        }
     )
 
 
-@router.get("/download-shipment-file")
-async def download_shipment_file(
+@router.delete("/plan/{plan_id}")
+async def remove_plan(
+    plan_id: int,
     request: Request,
-    mode: str = "remaining",  # "remaining" or "all"
-    _=Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
 ):
-    """Download FBA SKU + Units for Amazon shipment creation."""
-    if not DATA_FILE.exists():
-        return JSONResponse({"error": "No plan"}, status_code=404)
+    """Delete a plan and all its packing history. Admin only, and destructive."""
+    if not await repository.delete_plan(db, plan_id):
+        return JSONResponse({"error": "Plan not found"}, status_code=404)
+    return JSONResponse({"status": "cleared"})
 
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        data = json.load(f)
+
+# ─── Daily packing (ops + admin) ─────────────────────────────────────────────
+
+def _valid_date(value: str) -> bool:
+    try:
+        date.fromisoformat(value)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+@router.get("/packing/{pack_date}")
+async def get_packing(
+    pack_date: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_ops_or_admin),
+):
+    """What was entered for one date, plus what is still outstanding per SKU.
+
+    Returns every planned SKU, not only the ones already touched — this is the
+    list the packer works down, so a SKU with nothing entered yet must appear.
+    """
+    if not _valid_date(pack_date):
+        return JSONResponse({"error": "Date must be YYYY-MM-DD"}, status_code=400)
+
+    plan = await repository.get_active_plan(db)
+    if plan is None:
+        return JSONResponse({"error": "No active plan"}, status_code=404)
+
+    items = await repository.load_plan_items(db, plan.id)
+    days = await repository.load_days_with_entries(db, plan.id)
+
+    today = next((d for d in days if d["pack_date"] == pack_date), None)
+    entered = {e["asin"]: e for e in (today or {}).get("entries", [])}
+
+    # Packed on OTHER days, so "remaining" on this screen does not subtract what
+    # the packer is entering right now and make the target appear to move.
+    other_days = [d for d in days if d["pack_date"] != pack_date]
+    packed_elsewhere = logic.packed_units_by_asin(other_days)
 
     rows = []
-    for p in data["plan"]:
-        ship = p.get("shipment_plan", 0)
-        if ship <= 0:
+    for item in items:
+        planned = int(item.shipment_plan or 0)
+        if planned <= 0:
             continue
+        prior = packed_elsewhere.get(item.asin, 0)
+        mine = entered.get(item.asin) or {}
+        rows.append(
+            {
+                "asin": item.asin,
+                "fba_sku": item.fba_sku or "",
+                "item": item.item or "",
+                "weight": float(item.weight or 0),
+                "planned": planned,
+                "packed_before": prior,
+                "remaining": logic.remaining_for(planned, prior),
+                "units": int(mine.get("units") or 0),
+                "cartons": int(mine.get("cartons") or 0),
+                "note": mine.get("note") or "",
+            }
+        )
 
-        packed = sum(p.get(f"day{d}", 0) or 0 for d in range(1, 7))
-        remaining = ship - packed
+    return JSONResponse(
+        {
+            "plan_id": plan.id,
+            "pack_date": pack_date,
+            "role": role,
+            "day": today,
+            "status": (today or {}).get("status", logic.STATUS_OPEN),
+            "min_cartons": int(plan.min_cartons or 0),
+            "min_units": int(plan.min_units or 0),
+            "items": rows,
+        }
+    )
 
-        if mode == "remaining" and remaining <= 0:
+
+@router.post("/packing/{pack_date}")
+async def save_packing(
+    pack_date: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_ops_or_admin),
+):
+    """Upsert units and cartons for a date. The only write ops performs.
+
+    Refuses once the day is verified or shipped: an invoice may already carry
+    those numbers, and silently editing them would put the GST document and the
+    warehouse record out of agreement.
+    """
+    if not _valid_date(pack_date):
+        return JSONResponse({"error": "Date must be YYYY-MM-DD"}, status_code=400)
+
+    body = await request.json()
+    entries = body.get("entries") or []
+
+    plan = await repository.get_active_plan(db)
+    if plan is None:
+        return JSONResponse({"error": "No active plan"}, status_code=404)
+
+    existing = await repository.get_day(db, plan.id, pack_date)
+    if existing is not None and existing.status in (
+        logic.STATUS_VERIFIED,
+        logic.STATUS_SHIPPED,
+    ):
+        return JSONResponse(
+            {
+                "error": f"{pack_date} is already {existing.status} and cannot be "
+                "edited. Ask the owner to reopen it."
+            },
+            status_code=409,
+        )
+
+    day = await repository.save_packing_entries(
+        db, plan.id, pack_date, entries, submitted_by=role
+    )
+    return JSONResponse(
+        {
+            "status": "saved",
+            "pack_date": day.pack_date,
+            "day_status": day.status,
+            "total_units": int(day.total_units or 0),
+            "total_cartons": int(day.total_cartons or 0),
+        }
+    )
+
+
+@router.post("/packing/{pack_date}/submit")
+async def submit_packing(
+    pack_date: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_ops_or_admin),
+):
+    """Close a day's packing → `submitted`, or `held` if it is too small.
+
+    The hold is a suggestion the system makes, not a lock: the owner can always
+    force it through with /release. Holding is what requirement 9 asked for —
+    a 20-carton/400-unit day waits and combines with tomorrow rather than
+    becoming its own uneconomic shipment.
+    """
+    if not _valid_date(pack_date):
+        return JSONResponse({"error": "Date must be YYYY-MM-DD"}, status_code=400)
+
+    plan = await repository.get_active_plan(db)
+    if plan is None:
+        return JSONResponse({"error": "No active plan"}, status_code=404)
+
+    day = await repository.get_day(db, plan.id, pack_date)
+    if day is None or (day.total_units == 0 and day.total_cartons == 0):
+        return JSONResponse(
+            {"error": f"Nothing recorded for {pack_date} yet."}, status_code=400
+        )
+
+    if day.status in (logic.STATUS_VERIFIED, logic.STATUS_SHIPPED):
+        return JSONResponse(
+            {"error": f"{pack_date} is already {day.status}."}, status_code=409
+        )
+
+    held = logic.is_held(
+        day.total_cartons, day.total_units, plan.min_cartons, plan.min_units
+    )
+    day.status = logic.STATUS_HELD if held else logic.STATUS_SUBMITTED
+    day.hold_reason = (
+        logic.hold_reason(
+            day.total_cartons, day.total_units, plan.min_cartons, plan.min_units
+        )
+        if held
+        else None
+    )
+    day.submitted_by = role
+    day.submitted_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(day)
+
+    return JSONResponse(
+        {
+            "status": day.status,
+            "held": held,
+            "hold_reason": day.hold_reason,
+            "total_units": int(day.total_units or 0),
+            "total_cartons": int(day.total_cartons or 0),
+        }
+    )
+
+
+@router.post("/packing/{pack_date}/verify")
+async def verify_packing(
+    pack_date: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """Owner approval. Admin only — this is what gates the GST invoice."""
+    if not _valid_date(pack_date):
+        return JSONResponse({"error": "Date must be YYYY-MM-DD"}, status_code=400)
+
+    plan = await repository.get_active_plan(db)
+    if plan is None:
+        return JSONResponse({"error": "No active plan"}, status_code=404)
+
+    day = await repository.get_day(db, plan.id, pack_date)
+    if day is None:
+        return JSONResponse({"error": f"No packing for {pack_date}"}, status_code=404)
+
+    if day.status == logic.STATUS_OPEN:
+        return JSONResponse(
+            {"error": f"{pack_date} has not been submitted yet."}, status_code=400
+        )
+    if day.status == logic.STATUS_SHIPPED:
+        return JSONResponse(
+            {"error": f"{pack_date} is already shipped."}, status_code=409
+        )
+
+    # A held day can be verified directly: verifying IS the owner deciding the
+    # units are good, and requiring a separate release first would be two clicks
+    # for one decision.
+    day.status = logic.STATUS_VERIFIED
+    day.hold_reason = None
+    day.verified_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(day)
+    return JSONResponse({"status": day.status, "verified_at": day.verified_at.isoformat()})
+
+
+@router.post("/packing/{pack_date}/release")
+async def release_packing(
+    pack_date: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """Force a held day back to `submitted` — ship it anyway.
+
+    The threshold suggests; the owner decides. Without this the system could park
+    stock indefinitely on its own judgement.
+    """
+    if not _valid_date(pack_date):
+        return JSONResponse({"error": "Date must be YYYY-MM-DD"}, status_code=400)
+
+    plan = await repository.get_active_plan(db)
+    if plan is None:
+        return JSONResponse({"error": "No active plan"}, status_code=404)
+
+    day = await repository.get_day(db, plan.id, pack_date)
+    if day is None:
+        return JSONResponse({"error": f"No packing for {pack_date}"}, status_code=404)
+    if day.status != logic.STATUS_HELD:
+        return JSONResponse(
+            {"error": f"{pack_date} is {day.status}, not held."}, status_code=409
+        )
+
+    day.status = logic.STATUS_SUBMITTED
+    day.hold_reason = None
+    await db.commit()
+    await db.refresh(day)
+    return JSONResponse({"status": day.status})
+
+
+# ─── One-shot legacy import (admin) ──────────────────────────────────────────
+
+@router.post("/import-legacy")
+async def import_legacy(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """Import the old shipment_plan.json, mapping day1..day6 to synthetic dates.
+
+    Deliberately a route and not an Alembic migration: file I/O does not belong
+    in schema history, and this needs to run at most once, by hand, on a machine
+    that happens to still have the file.
+
+    The old format had no real dates — only "day 1" through "day 6" — so the
+    imported days are labelled from the file's created_at. They are historical
+    record, not something anyone will pack against again.
+    """
+    if not LEGACY_DATA_FILE.exists():
+        return JSONResponse(
+            {"error": "No shipment_plan.json found; nothing to import."},
+            status_code=404,
+        )
+
+    try:
+        with open(LEGACY_DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        return JSONResponse({"error": f"Could not read the file: {e}"}, status_code=400)
+
+    legacy_items = data.get("plan") or []
+    if not legacy_items:
+        return JSONResponse({"error": "The file has no plan rows."}, status_code=400)
+
+    try:
+        created = datetime.fromisoformat(str(data.get("created_at")))
+    except (TypeError, ValueError):
+        created = datetime.utcnow()
+
+    items = [
+        {
+            "brand": row.get("brand") or "",
+            "fba_sku": row.get("fba_sku") or "",
+            "asin": row.get("asin") or "",
+            "item": row.get("item") or "",
+            "weight": row.get("weight") or 0,
+            "sales_7d": row.get("sales_7d") or 0,
+            "projection": row.get("projection") or 0,
+            "fba_stock": row.get("fba_stock") or 0,
+            "deficit": row.get("deficit") or 0,
+            # Imported verbatim, NOT re-rounded: these are numbers the owner
+            # already worked to, and quietly changing them on import would make
+            # the imported plan disagree with the shipment already sent.
+            "shipment_plan": row.get("shipment_plan") or 0,
+            "available": row.get("available") or 0,
+            "s": bool(row.get("s")),
+            "m": bool(row.get("m")),
+            "b": bool(row.get("b")),
+        }
+        for row in legacy_items
+        if row.get("asin")
+    ]
+
+    plan = await repository.create_plan(
+        db,
+        items,
+        multiplier=float(data.get("multiplier") or 5),
+        label=f"Imported {created:%Y-%m-%d}",
+    )
+
+    days_created = 0
+    for offset in range(1, 7):
+        entries = [
+            {"asin": row["asin"], "units": int(row.get(f"day{offset}") or 0), "cartons": 0}
+            for row in legacy_items
+            if row.get("asin") and int(row.get(f"day{offset}") or 0) > 0
+        ]
+        if not entries:
             continue
+        # Synthetic consecutive dates from the file's creation date — the old
+        # format only knew "day 1..6", so there is no true date to recover.
+        pack_date = date.fromordinal(created.date().toordinal() + offset - 1)
+        await repository.save_packing_entries(
+            db, plan.id, pack_date.isoformat(), entries, submitted_by=ROLE_ADMIN
+        )
+        days_created += 1
 
-        qty = remaining if mode == "remaining" else ship
-        if qty <= 0:
-            continue
-
-        rows.append({
-            "sku": p["fba_sku"] or p["asin"],
-            "quantity": qty,
-        })
-
-    df = pd.DataFrame(rows)
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Shipment")
-    buffer.seek(0)
-
-    fname = f"Shipment_{'Remaining' if mode == 'remaining' else 'Full'}.xlsx"
-    return StreamingResponse(
-        buffer,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename={fname}"},
+    return JSONResponse(
+        {
+            "status": "imported",
+            "plan_id": plan.id,
+            "items": len(items),
+            "days": days_created,
+            "note": "Cartons are 0 — the old format never recorded them.",
+        }
     )
