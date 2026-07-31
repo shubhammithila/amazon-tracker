@@ -6,14 +6,21 @@ you find yourself rounding or sorting anywhere else, move it in here instead.
 
 Vocabulary, because two of these are easy to conflate:
 
-  planned    what the plan says to send to Amazon for a SKU
-  packed     units physically boxed, INCLUDING days that are on hold
-  shippable  units on days cleared to ship, EXCLUDING held days
-  remaining  planned - packed  (what is still to be boxed)
+  planned     what the plan says to send to Amazon for a SKU
+  packed      units physically boxed, INCLUDING days that are on hold
+  shippable   units on days cleared to ship, EXCLUDING held days
+  remaining   planned - packed  (what is still to be boxed)
+  carry-over  the accumulated held days, judged together rather than singly
 
 `packed` and `shippable` must stay separate. A held day's units exist in the
 warehouse — telling the floor to pack them again would double-pack the order —
 but they must not appear in a shipment until the day is released.
+
+`is_held` and `carry_over` answer different questions and both are needed.
+`is_held` asks "is this one day worth shipping alone?", which must stay
+per-day or a small Tuesday would ship small. `carry_over` asks "is the parked
+backlog worth shipping now?", which is the actual instruction behind
+requirement 9 and cannot be derived from any single day.
 """
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Iterable, Mapping, Sequence
@@ -257,15 +264,81 @@ def verified_units_by_asin(days: Sequence) -> dict[str, int]:
     return units_by_asin(days, INVOICEABLE_STATUSES)
 
 
-def held_totals(days: Sequence) -> dict[str, int]:
-    """Summary of what is parked, so a held day cannot quietly become lost stock."""
-    units = cartons = day_count = 0
+def held_days(days: Sequence) -> list:
+    """Just the days that are parked, in the order they were given.
+
+    Callers get the dates so a held day can be named rather than merely counted:
+    "2 days on hold" is not actionable, "30 Jul and 31 Jul are on hold" is.
+    """
+    out = []
     for day in days:
         status = day.get("status") if isinstance(day, Mapping) else getattr(day, "status", None)
-        if status != STATUS_HELD:
-            continue
-        day_count += 1
+        if status == STATUS_HELD:
+            out.append(day)
+    return out
+
+
+def held_totals(days: Sequence) -> dict[str, int]:
+    """Summary of what is parked, so a held day cannot quietly become lost stock."""
+    units = cartons = 0
+    parked = held_days(days)
+    for day in parked:
         entries = day.get("entries") if isinstance(day, Mapping) else getattr(day, "entries", [])
         units += packed_units(entries or [])
         cartons += packed_cartons(entries or [])
-    return {"days": day_count, "units": units, "cartons": cartons}
+    return {"days": len(parked), "units": units, "cartons": cartons}
+
+
+def carry_over(
+    days: Sequence,
+    min_cartons: int = DEFAULT_MIN_CARTONS,
+    min_units: int = DEFAULT_MIN_UNITS,
+) -> dict:
+    """The parked backlog, and whether it is now big enough to ship.
+
+    This is the half of requirement 9 that `is_held` cannot answer. `is_held`
+    judges one day **in isolation**, which is correct — a 20-carton day genuinely
+    should not become its own shipment, and a later day must be held too rather
+    than shipping small on its own. But that leaves the actual instruction
+    ("combine it with next day packing and then create a shipment") with no
+    trigger: Monday is held, Tuesday is held, together they clear the minimum,
+    and nothing anywhere says so. Held stock then accumulates until somebody
+    happens to look, which is exactly how a held day becomes lost stock.
+
+    So the accumulated total is checked against the same thresholds:
+
+        Mon 20c/400u held  +  Tue 10c/200u held  ->  30c/600u, clears -> ship
+        Mon 20c/400u held  +  Tue  2c/40u  held  ->  22c/440u, still short
+
+    `clears` is a prompt, never an action. Releasing stays the owner's decision
+    (a big backlog may still be worth holding for a fuller truck), so nothing
+    here changes a status — it only makes the situation impossible to miss.
+
+    `shortfall_*` is what is still needed on each axis, so a screen can say
+    "5 more cartons or 100 more units" instead of only "not yet".
+    """
+    totals = held_totals(days)
+    units = int(totals["units"])
+    cartons = int(totals["cartons"])
+    floor_cartons = max(0, int(min_cartons or 0))
+    floor_units = max(0, int(min_units or 0))
+
+    # `is_held` treats an empty day as "not held" rather than "held", so guard on
+    # the day count: zero parked days must not read as a backlog that clears.
+    clears = totals["days"] > 0 and not is_held(cartons, units, floor_cartons, floor_units)
+
+    return {
+        "days": totals["days"],
+        "dates": [
+            (d.get("pack_date") if isinstance(d, Mapping) else getattr(d, "pack_date", ""))
+            or ""
+            for d in held_days(days)
+        ],
+        "units": units,
+        "cartons": cartons,
+        "clears": clears,
+        "min_cartons": floor_cartons,
+        "min_units": floor_units,
+        "shortfall_cartons": max(0, floor_cartons - cartons),
+        "shortfall_units": max(0, floor_units - units),
+    }

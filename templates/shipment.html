@@ -196,7 +196,13 @@ let plan = null;
 let items = [];
 let days = [];
 let held = {days: 0, units: 0, cartons: 0};
+let carryOver = null;
 let missingSku = 0;
+// Warning about held stock stranded on the plan a /generate just replaced. Held
+// separately from the payload because the NEW plan has no held days, so
+// renderBanners would have nothing to derive it from and it would disappear the
+// instant it was rendered.
+let rollover = "";
 let currentFilter = "deficit";
 
 // ASINs whose plan fields the owner has edited but not yet saved. Only these are
@@ -206,6 +212,9 @@ const dirty = new Set();
 load();
 
 async function load(){
+  // A fresh load means the owner has moved on from the last generate, so the
+  // stranded-stock warning does not follow him around forever.
+  rollover = "";
   try{
     const r = await fetch("/shipment/active");
     const data = await r.json();
@@ -223,6 +232,7 @@ function adopt(data){
   items = data.items || [];
   days = data.days || [];
   held = data.held || {days:0, units:0, cartons:0};
+  carryOver = data.carry_over || null;
   missingSku = data.missing_sku_count || 0;
   dirty.clear();
   markClean();
@@ -252,6 +262,17 @@ async function generate(){
     const r = await fetch("/shipment/generate",{method:"POST",body:fd});
     const data = await r.json();
     if(data.error) throw new Error(data.error);
+
+    /* Held stock left on the plan being replaced. This has to be sticky, not a
+       toast, and it must be set BEFORE adopt() renders.
+
+       /shipment/active only ever returns the active plan, so a day held on
+       Saturday drops off every screen the moment this new plan is generated —
+       the boxes are still on the warehouse floor and nothing else in the app
+       will mention them again. A toast the owner might blink past is not good
+       enough for stock that is about to become invisible. It stays until the
+       next load, which is when he has had a chance to act on it. */
+    rollover = data.warning && (data.abandoned_holds || []).length ? data.warning : "";
     adopt(data);
     toast(items.length + " products loaded","success");
   }catch(e){ toast(e.message,"error"); }
@@ -265,15 +286,48 @@ async function generate(){
 
 function renderBanners(){
   const out = [];
+  // First, and in the loudest style available: this is stock that is physically
+  // in the warehouse and is about to appear on no screen at all.
+  if(rollover){
+    out.push(`<div class="banner error"><strong>Stock left on the previous plan.</strong>
+      ${esc(rollover)}</div>`);
+  }
   if(missingSku){
     out.push(`<div class="banner warn"><strong>${missingSku} item(s) have no merchant SKU.</strong>
       Amazon's upload keys on the merchant SKU, not the ASIN, so those rows are rejected on their side.
       They are written to the Amazon file with a blank SKU rather than a plausible-looking ASIN, so you can spot them before uploading.</div>`);
   }
-  if(held.days){
-    out.push(`<div class="banner info"><strong>${held.days} day(s) on hold</strong> —
-      ${held.units.toLocaleString("en-IN")} units in ${held.cartons.toLocaleString("en-IN")} cartons.
-      Those boxes exist and are counted as packed, but stay out of the shipment until you verify or release the day.</div>`);
+  /* The carry-over banner answers the question "N days on hold" does not:
+     whether the parked days have now ADDED UP to a shipment.
+
+     Requirement 9 was "we combine it with next day packing and then create a
+     shipment", and the combining half needs a trigger. The per-day hold cannot
+     provide one — each day is correctly held on its own merits — so without
+     this the owner has to add the held columns up himself every morning, and
+     held stock sits until someone happens to notice.
+
+     It stays a prompt. The Ship anyway buttons are on the day cards and the
+     owner clicks them; a big backlog may still be worth holding for a fuller
+     truck, so nothing here releases anything. */
+  if(carryOver && carryOver.days){
+    const dates = (carryOver.dates || []).map(esc).join(", ");
+    const units = carryOver.units.toLocaleString("en-IN");
+    const cartons = carryOver.cartons.toLocaleString("en-IN");
+    if(carryOver.clears){
+      out.push(`<div class="banner warn"><strong>The held days now add up to a shipment.</strong>
+        ${carryOver.days} day(s) on hold — ${dates} — carrying ${units} units in ${cartons} cartons,
+        which clears your ${carryOver.min_cartons}-carton / ${carryOver.min_units}-unit minimum.
+        Verify them, or use <em>Ship anyway</em>, to move those units into the shipment.
+        Nothing has been released automatically — that stays your call.</div>`);
+    }else{
+      const needs = [];
+      if(carryOver.shortfall_cartons) needs.push(`${carryOver.shortfall_cartons} more cartons`);
+      if(carryOver.shortfall_units) needs.push(`${carryOver.shortfall_units} more units`);
+      out.push(`<div class="banner info"><strong>${carryOver.days} day(s) on hold</strong> —
+        ${dates} — carrying ${units} units in ${cartons} cartons.
+        Those boxes exist and count as packed, but stay out of the shipment until you verify or release the day.
+        ${needs.length ? "Combined with tomorrow's packing they ship once there are " + needs.join(" or ") + "." : ""}</div>`);
+    }
   }
   document.getElementById("banners").innerHTML = out.join("");
 }

@@ -273,6 +273,27 @@ async def load_days(db: AsyncSession, plan_id: int) -> list[ShipmentPackingDay]:
     return list(result.scalars())
 
 
+async def load_held_days(db: AsyncSession, plan_id: int) -> list[ShipmentPackingDay]:
+    """Days parked by the threshold, oldest first.
+
+    Used to warn before a plan is replaced. ``/active`` only ever shows the
+    active plan, so a day held on Saturday disappears from every screen the
+    moment Monday's plan is generated — the boxes are still in the warehouse but
+    nothing in the app mentions them again. That is precisely the "held stock
+    becomes lost stock" failure the hold was introduced to prevent, so the owner
+    is told before it happens rather than discovering it at stock-take.
+    """
+    result = await db.execute(
+        select(ShipmentPackingDay)
+        .where(
+            ShipmentPackingDay.plan_id == plan_id,
+            ShipmentPackingDay.status == logic.STATUS_HELD,
+        )
+        .order_by(ShipmentPackingDay.pack_date)
+    )
+    return list(result.scalars())
+
+
 async def get_day(
     db: AsyncSession, plan_id: int, pack_date: str
 ) -> ShipmentPackingDay | None:

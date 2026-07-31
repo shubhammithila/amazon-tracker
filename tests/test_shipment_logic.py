@@ -231,8 +231,8 @@ def test_hold_reason_names_the_actual_numbers():
 
 # ─── packed vs shippable (the crux of requirement 9) ─────────────────────────
 
-def _day(status, entries):
-    return {"status": status, "entries": entries}
+def _day(status, entries, pack_date=""):
+    return {"status": status, "entries": entries, "pack_date": pack_date}
 
 
 def test_held_units_count_as_packed_but_not_as_shippable():
@@ -320,6 +320,148 @@ def test_held_totals_summarises_parked_stock():
 def test_held_totals_is_zero_when_nothing_is_parked():
     days = [_day(logic.STATUS_VERIFIED, [{"asin": "B01", "units": 10, "cartons": 1}])]
     assert logic.held_totals(days) == {"days": 0, "units": 0, "cartons": 0}
+
+
+# ─── Carry-over: the half of requirement 9 that is_held cannot answer ────────
+#
+# "we do not create a shipment, instead we combine it with next day packing and
+# then create a shipment."
+#
+# is_held judges ONE day, which is right — a small Tuesday must be held too, not
+# shipped on its own. But that leaves the second half of the sentence with no
+# trigger at all: both days sit held, together they clear the minimum, and
+# nothing says so. carry_over is what notices.
+
+def test_two_held_days_together_clear_the_threshold():
+    """The exact scenario from the request, one step further than is_held goes.
+
+    Monday 20c/400u is held. Tuesday 10c/200u is held. Neither is shippable
+    alone and is_held is right about both — but 30c/600u is a shipment, and
+    something has to say so or the stock just sits there.
+    """
+    days = [
+        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 400, "cartons": 20}], "2026-07-30"),
+        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 200, "cartons": 10}], "2026-07-31"),
+    ]
+    assert logic.is_held(20, 400) is True, "Monday alone should still be held"
+    assert logic.is_held(10, 200) is True, "Tuesday alone should still be held"
+
+    result = logic.carry_over(days)
+    assert result["clears"] is True, (
+        "30 cartons / 600 units of parked stock is a shipment, but carry_over "
+        "did not notice — held days would accumulate unnoticed"
+    )
+    assert (result["cartons"], result["units"]) == (30, 600)
+    assert result["days"] == 2
+
+
+def test_a_backlog_that_is_still_too_small_does_not_clear():
+    """Two tiny days are still one tiny shipment. No false prompt."""
+    days = [
+        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 400, "cartons": 20}], "2026-07-30"),
+        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 40, "cartons": 2}], "2026-07-31"),
+    ]
+    result = logic.carry_over(days)
+    assert result["clears"] is False
+    assert (result["cartons"], result["units"]) == (22, 440)
+
+
+def test_carry_over_reports_what_is_still_needed():
+    """So a screen can say "3 more cartons or 60 more units", not just "not yet".
+
+    A bare "still too small" tells the owner nothing about whether to wait one
+    more day or five.
+    """
+    days = [_day(logic.STATUS_HELD, [{"asin": "B01", "units": 440, "cartons": 22}], "2026-07-30")]
+    result = logic.carry_over(days, min_cartons=25, min_units=500)
+    assert result["shortfall_cartons"] == 3
+    assert result["shortfall_units"] == 60
+
+
+def test_a_cleared_backlog_reports_no_shortfall():
+    days = [_day(logic.STATUS_HELD, [{"asin": "B01", "units": 900, "cartons": 40}], "2026-07-30")]
+    result = logic.carry_over(days)
+    assert result["clears"] is True
+    assert result["shortfall_cartons"] == 0
+    assert result["shortfall_units"] == 0
+
+
+def test_carry_over_obeys_the_and_rule_like_is_held():
+    """One rule, not two. A heavy-bag backlog clears on cartons alone.
+
+    If carry_over used OR while is_held used AND, the screen would prompt the
+    owner to ship a backlog the server would then refuse to treat as shippable —
+    the two would be disagreeing about the same question.
+    """
+    heavy = [_day(logic.STATUS_HELD, [{"asin": "B01", "units": 300, "cartons": 30}], "d1")]
+    pouches = [_day(logic.STATUS_HELD, [{"asin": "B01", "units": 900, "cartons": 15}], "d2")]
+    assert logic.carry_over(heavy)["clears"] is True, "30 cartons of heavy bags is a shipment"
+    assert logic.carry_over(pouches)["clears"] is True, "900 units of pouches is a shipment"
+
+
+def test_nothing_parked_never_reads_as_a_shipment_ready_to_go():
+    """The empty-backlog trap, and the reason carry_over checks the day count.
+
+    is_held(0, 0) is False by design — an empty day is empty, not held. Reading
+    `clears` straight off `not is_held(...)` would therefore report that an empty
+    backlog is ready to ship, and the owner would be prompted to release nothing
+    every single time he opened the page.
+    """
+    assert logic.is_held(0, 0) is False, "premise of this test changed"
+
+    for days in ([], [_day(logic.STATUS_VERIFIED, [{"asin": "B01", "units": 900, "cartons": 40}])]):
+        result = logic.carry_over(days)
+        assert result["clears"] is False, "an empty backlog must not prompt a release"
+        assert result["days"] == 0
+        assert result["dates"] == []
+
+
+def test_carry_over_names_the_held_dates():
+    """"2 days on hold" is not actionable; naming them is.
+
+    The owner has to go and release specific dates, so the dates are what he
+    needs — and they come back in the order given, which is chronological from
+    repository.load_days.
+    """
+    days = [
+        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 10, "cartons": 1}], "2026-07-29"),
+        _day(logic.STATUS_SUBMITTED, [{"asin": "B01", "units": 900, "cartons": 40}], "2026-07-30"),
+        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 20, "cartons": 2}], "2026-07-31"),
+    ]
+    assert logic.carry_over(days)["dates"] == ["2026-07-29", "2026-07-31"]
+
+
+def test_carry_over_uses_the_plans_own_thresholds():
+    """The owner can move the minimum, and the backlog check must move with it."""
+    days = [_day(logic.STATUS_HELD, [{"asin": "B01", "units": 400, "cartons": 20}], "d1")]
+    assert logic.carry_over(days, min_cartons=25, min_units=500)["clears"] is False
+    assert logic.carry_over(days, min_cartons=10, min_units=100)["clears"] is True
+    assert logic.carry_over(days, min_cartons=10, min_units=100)["min_cartons"] == 10
+
+
+def test_carry_over_ignores_days_that_are_not_held():
+    """Only parked stock is carry-over. A submitted day is already going out."""
+    days = [
+        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 100, "cartons": 5}], "d1"),
+        _day(logic.STATUS_SUBMITTED, [{"asin": "B01", "units": 900, "cartons": 40}], "d2"),
+        _day(logic.STATUS_OPEN, [{"asin": "B01", "units": 800, "cartons": 35}], "d3"),
+        _day(logic.STATUS_VERIFIED, [{"asin": "B01", "units": 700, "cartons": 30}], "d4"),
+        _day(logic.STATUS_SHIPPED, [{"asin": "B01", "units": 600, "cartons": 25}], "d5"),
+    ]
+    result = logic.carry_over(days)
+    assert (result["cartons"], result["units"], result["days"]) == (5, 100, 1), (
+        "carry_over counted days that are not held — an open day is still being "
+        "packed and a submitted day is already going out"
+    )
+
+
+def test_held_days_returns_only_the_parked_ones():
+    days = [
+        _day(logic.STATUS_HELD, [], "d1"),
+        _day(logic.STATUS_SUBMITTED, [], "d2"),
+        _day(logic.STATUS_HELD, [], "d3"),
+    ]
+    assert [d["pack_date"] for d in logic.held_days(days)] == ["d1", "d3"]
 
 
 def test_only_verified_days_are_invoiceable():

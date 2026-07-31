@@ -208,6 +208,58 @@ def test_release_and_verify_are_both_reachable(source):
     assert "/release" in source, "no way to force-ship a held day"
 
 
+def test_the_combined_backlog_is_reported_not_just_the_individual_holds(source):
+    """Requirement 9's second half needs a place on the screen.
+
+    "N days on hold" does not answer the question the owner actually has, which
+    is whether those days have now added up to a shipment. Each day is correctly
+    held on its own merits, so nothing about a single day can tell him — and
+    without this he adds the held columns up by hand every morning, or forgets
+    to and the stock sits.
+
+    Asserted as a branch on `carryOver.clears`, not merely as the words being
+    present somewhere. That distinction was found by mutation, not foresight:
+    disabling the whole banner with `if(held.days && false)` left every keyword
+    in the file — they survive in the other branch — and the first, grep-only
+    version of this test passed happily on a page that had stopped reporting.
+    """
+    assert "carry_over" in source, (
+        "the page never reads carry_over, so the owner is not told when the held "
+        "days combine into a shippable total"
+    )
+    body = _without_comments(source)
+    assert re.search(r"if\s*\(\s*carryOver\s*&&\s*carryOver\.days\s*\)", body), (
+        "the held-days banner is not gated on carryOver — the page is back to "
+        "reading held_totals, which cannot say whether the backlog now ships"
+    )
+    assert re.search(r"if\s*\(\s*carryOver\.clears\s*\)", body), (
+        "nothing branches on carryOver.clears, so a backlog that has become a "
+        "shipment reads exactly like one that has not"
+    )
+    assert "shortfall_cartons" in body and "shortfall_units" in body, (
+        "the page cannot say how far short the backlog still is, only that it is"
+    )
+
+
+def test_stock_stranded_by_a_new_plan_is_reported(source):
+    """The silent-disappearance case, and it must not be a toast.
+
+    /shipment/active returns only the active plan, so a day held on Saturday
+    drops off every screen the moment Monday's plan is generated. Those boxes are
+    physically in the warehouse. The new plan has no held days of its own, so
+    this warning cannot be derived from the payload during a later render — it
+    has to be kept separately, which is what `rollover` is for.
+    """
+    assert "abandoned_holds" in source, (
+        "the page ignores abandoned_holds — generating a new plan would silently "
+        "hide packed stock that is still on the warehouse floor"
+    )
+    assert "rollover" in source, (
+        "the warning is not held outside the payload, so renderBanners would drop "
+        "it immediately: the new plan has no held days to derive it from"
+    )
+
+
 # ─── Escaping: CSV-derived strings reach innerHTML ───────────────────────────
 
 def test_untrusted_strings_are_escaped_before_reaching_innerhtml(source):

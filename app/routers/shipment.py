@@ -196,6 +196,11 @@ def _plan_payload(plan, items, days) -> dict:
         ],
         "days": days,
         "held": logic.held_totals(days),
+        # The other half of requirement 9. `held` says what is parked; this says
+        # whether the parked days have now added up to a shipment. Without it the
+        # owner has to add the held columns himself every morning, and held stock
+        # sits until someone happens to notice.
+        "carry_over": logic.carry_over(days, plan.min_cartons, plan.min_units),
     }
 
 
@@ -251,17 +256,52 @@ async def generate_plan(
             "s": False, "m": False, "b": False,
         })
 
+    # Check for stock parked on the plan about to be closed, BEFORE creating the
+    # new one. /active only ever shows the active plan, so a day held on Saturday
+    # silently drops off every screen when Monday's plan is generated — the boxes
+    # are still in the warehouse and nothing in the app mentions them again. The
+    # generate is not blocked (the owner may well have shipped them and simply
+    # not marked it), but he is told.
+    outgoing = await repository.get_active_plan(db)
+    abandoned_holds = (
+        [
+            {
+                "pack_date": d.pack_date,
+                "units": int(d.total_units or 0),
+                "cartons": int(d.total_cartons or 0),
+            }
+            for d in await repository.load_held_days(db, outgoing.id)
+        ]
+        if outgoing is not None
+        else []
+    )
+
     plan = await repository.create_plan(db, items, multiplier=multiplier)
     stored = await repository.load_plan_items(db, plan.id)
     missing_sku = await repository.count_items_missing_sku(db, plan.id)
 
     payload = _plan_payload(plan, stored, [])
     payload["missing_sku_count"] = missing_sku
+    payload["abandoned_holds"] = abandoned_holds
+
+    warnings = []
     if missing_sku:
-        payload["warning"] = (
+        warnings.append(
             f"{missing_sku} item(s) to ship have no merchant SKU. Amazon's upload "
             "needs the SKU, not the ASIN, so those rows will be rejected."
         )
+    if abandoned_holds:
+        parked_units = sum(h["units"] for h in abandoned_holds)
+        parked_cartons = sum(h["cartons"] for h in abandoned_holds)
+        warnings.append(
+            f"The previous plan had {len(abandoned_holds)} held day(s) carrying "
+            f"{parked_units} units in {parked_cartons} cartons "
+            f"({', '.join(h['pack_date'] for h in abandoned_holds)}). Those boxes "
+            "are packed but were never shipped, and this new plan does not know "
+            "about them — ship or write them off before packing against it."
+        )
+    if warnings:
+        payload["warning"] = " ".join(warnings)
     return JSONResponse(payload)
 
 
