@@ -4,20 +4,35 @@
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>Daily Packing — Amazon Tracker</title>
 {#
-  The operations employee's only screen.
+  The operations employee's only screen. Requirement 5.
 
-  Deliberately does NOT include nav.html: every link in that partial goes to an
-  admin-only page, and advertising a tab that answers 403 makes the app look
-  broken. tests/test_shipment_auth_roles.py asserts no admin href appears here.
+  Four things about this page are deliberate, and each one is load-bearing:
 
-  Sized for a phone held in a warehouse — large tap targets, one column, no
-  horizontal scrolling. The real packing grid arrives in step 8; this is the
-  route + shell that step 4 (roles) needs in place.
+  1. It does NOT include nav.html. Every link in that partial goes to an
+     admin-only page, and advertising a tab that answers 403 makes the app look
+     broken. tests/test_shipment_auth_roles.py asserts no admin href appears
+     here, so adding the partial "for consistency" fails the suite.
+
+  2. Cards, not a table. This is used on a phone held in one hand in a
+     warehouse. A row of narrow cells needs horizontal scrolling to reach the
+     cartons box, which is where mis-entry comes from. One SKU per block, two
+     large number inputs, no sideways movement anywhere on the page.
+
+  3. Saving is explicit, never per-keystroke. Warehouse wifi drops, and an
+     autosave that fails silently mid-list loses an hour of counting with no
+     sign it happened. The button reports what it did, and leaving with unsaved
+     work asks first.
+
+  4. NEVER sort the rows here. Order arrives from /shipment/packing/{date},
+     which is repository.load_plan_items' ORDER BY, which is logic.sort_items —
+     the same order the morning PDF prints in. The packer works down the paper
+     and down the screen together, so if this page reordered them he would be
+     hunting for every line. filter() preserves order, so searching is safe.
 #}
 <style>
 :root{--bg:#0f1117;--surface:#1a1d27;--border:#2a2d3a;--text:#e2e8f0;--text-muted:#64748b;--accent:#6366f1;--green:#22c55e;--yellow:#eab308;--red:#ef4444;--orange:#f97316}
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px;padding-bottom:96px}
 header{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
 header h1{font-size:16px;font-weight:600}
 .nav-links{display:flex;gap:16px;margin-left:24px}
@@ -28,10 +43,72 @@ main{max-width:760px;margin:0 auto;padding:18px}
 h2{font-size:21px;font-weight:600;margin-bottom:4px}
 .subtitle{color:var(--text-muted);font-size:13px;margin-bottom:16px}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:14px}
-.empty-state{text-align:center;padding:36px 16px;color:var(--text-muted)}
+.empty-state{text-align:center;padding:36px 16px;color:var(--text-muted);line-height:1.6}
 .date-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 input[type="date"]{background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:10px 12px;font-size:15px}
 .btn{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:12px 20px;font-size:15px;font-weight:500;cursor:pointer;min-height:44px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn-green{background:var(--green);color:#04150a;font-weight:600}
+.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:12px 18px;font-size:14px;cursor:pointer;min-height:44px}
+.btn-outline:hover{border-color:var(--accent)}
+
+/* Status + hold messaging */
+.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.badge.open{background:rgba(100,116,139,.2);color:#94a3b8}
+.badge.submitted{background:rgba(59,130,246,.18);color:#93c5fd}
+.badge.held{background:rgba(234,179,8,.18);color:#fde047}
+.badge.verified{background:rgba(34,197,94,.18);color:#86efac}
+.badge.shipped{background:rgba(99,102,241,.2);color:#a5b4fc}
+.banner{border-radius:8px;padding:12px 14px;font-size:13.5px;margin-bottom:14px;line-height:1.55}
+.banner.warn{background:rgba(234,179,8,.08);border:1px solid var(--yellow);color:#fde68a}
+.banner.info{background:rgba(59,130,246,.08);border:1px solid #3b82f6;color:#bfdbfe}
+.banner.good{background:rgba(34,197,94,.08);border:1px solid var(--green);color:#bbf7d0}
+.banner.error{background:rgba(239,68,68,.08);border:1px solid var(--red);color:#fecaca}
+
+/* Progress */
+.totals{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
+.tot{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center}
+.tot .num{font-size:22px;font-weight:700}
+.tot .lbl{font-size:10px;color:var(--text-muted);margin-top:3px;text-transform:uppercase;letter-spacing:.04em}
+.tot.low{border-color:var(--yellow)}.tot.low .num{color:var(--yellow)}
+.tot.ok .num{color:var(--green)}
+
+/* One SKU per block — the whole point of the layout */
+.sku{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px}
+.sku.done{border-color:rgba(34,197,94,.4)}
+.sku.touched{border-color:var(--accent)}
+.sku-name{font-size:15px;font-weight:600;line-height:1.35;margin-bottom:3px}
+.sku-meta{font-size:12px;color:var(--text-muted);margin-bottom:10px}
+.sku-meta .sku-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.sku-target{display:flex;gap:14px;font-size:12.5px;margin-bottom:11px;flex-wrap:wrap}
+.sku-target b{font-weight:700}
+.t-remaining{color:var(--orange)}
+.t-remaining.zero{color:var(--green)}
+.entry{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.entry label{display:block;font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px}
+/* 17px: iOS silently zooms the whole page in on focus for anything under 16px,
+   which on a phone means the packer loses his place in the list every time he
+   taps a box. */
+.entry input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:13px 12px;font-size:17px;font-weight:600;text-align:center;min-height:48px}
+.entry input:focus{outline:none;border-color:var(--accent)}
+.entry input:disabled{opacity:.5}
+.no-sku{color:var(--red);font-size:11px;font-weight:700}
+
+.search-input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:12px;font-size:15px;min-height:44px;margin-bottom:12px}
+.search-input:focus{outline:none;border-color:var(--accent)}
+
+/* Save bar pinned to the bottom: reachable by thumb, and it is the only way
+   entered numbers leave the phone. */
+.savebar{position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);padding:12px 18px;display:flex;gap:10px;align-items:center;z-index:200}
+.savebar .status{font-size:12.5px;color:var(--text-muted);flex:1;line-height:1.4}
+.savebar .status.dirty{color:var(--yellow)}
+.savebar .status.saved{color:var(--green)}
+@media (max-width:420px){
+  .totals{grid-template-columns:1fr 1fr}
+  .savebar{flex-wrap:wrap}
+  .savebar .status{flex-basis:100%;order:-1;margin-bottom:2px}
+  .savebar .btn{flex:1}
+}
 </style>
 </head>
 <body>
@@ -50,16 +127,403 @@ input[type="date"]{background:var(--bg);border:1px solid var(--border);border-ra
   <div class="date-row">
     <label for="packDate" style="color:var(--text-muted);font-size:13px">Packing date</label>
     <input type="date" id="packDate"/>
+    <span id="dayBadge"></span>
+    <button class="btn-outline" id="pdfBtn" style="margin-left:auto">Still to pack (PDF)</button>
   </div>
 </div>
 
-<div class="card">
-  <div class="empty-state" id="packingArea">
-    Loading the active shipment plan…
-  </div>
+<div id="messages"></div>
+<div id="totals"></div>
+
+<!-- Outside #packingArea on purpose: renderRows() replaces that element's
+     contents on every keystroke, so a search box inside it would be destroyed
+     mid-typing and lose focus and the caret. -->
+<input class="search-input" id="search" type="search" placeholder="Search SKU…"
+       style="display:none"/>
+
+<div id="packingArea">
+  <div class="card"><div class="empty-state">Loading the active shipment plan…</div></div>
 </div>
 </main>
+
+<div class="savebar" id="savebar" style="display:none">
+  <span class="status" id="saveStatus">No changes yet.</span>
+  <button class="btn" id="saveBtn">Save</button>
+  <button class="btn btn-green" id="submitBtn">Submit day</button>
+</div>
+
 <script>
+/* ── State ─────────────────────────────────────────────────────────────────
+   `rows` is kept in server order and never re-sorted (see note 4 at the top).
+   `dirty` holds only the ASINs actually touched, so a save posts the counts
+   this packer entered and cannot overwrite another device's untouched rows. */
+let rows = [];
+let dayStatus = "open";
+let minCartons = 0, minUnits = 0;
+const dirty = new Set();
+let saving = false;
+
+const $ = id => document.getElementById(id);
+
+/** Product names come from an uploaded CSV, so escape before innerHTML. */
+function esc(s){
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function n(v){ return Number(v || 0).toLocaleString("en-IN"); }
+
+/* A locked day is one the owner has already verified or invoiced. The server
+   409s on a write either way; disabling the inputs means the packer finds out
+   before he types fifty numbers rather than after. */
+function isLocked(){ return dayStatus === "verified" || dayStatus === "shipped"; }
+
+/* ── Loading ───────────────────────────────────────────────────────────── */
+
+async function load(){
+  const packDate = $("packDate").value;
+  if(!packDate) return;
+  $("packingArea").innerHTML =
+    '<div class="card"><div class="empty-state">Loading…</div></div>';
+  $("messages").innerHTML = "";
+
+  let r, data;
+  try{
+    r = await fetch(`/shipment/packing/${packDate}`);
+    data = await r.json();
+  }catch(err){
+    $("packingArea").innerHTML =
+      '<div class="card"><div class="empty-state">Could not reach the server. '
+      + 'Check the connection and try again.</div></div>';
+    return;
+  }
+
+  if(r.status === 404){
+    $("savebar").style.display = "none";
+    $("search").style.display = "none";
+    $("totals").innerHTML = "";
+    $("dayBadge").innerHTML = "";
+    rows = [];
+    $("packingArea").innerHTML =
+      '<div class="card"><div class="empty-state">'
+      + '<strong>No shipment plan is active.</strong><br/>'
+      + 'The plan has to be created before packing can be recorded against it.'
+      + '</div></div>';
+    return;
+  }
+  if(!r.ok){
+    $("packingArea").innerHTML =
+      `<div class="card"><div class="empty-state">${esc(data.error || "Something went wrong.")}</div></div>`;
+    return;
+  }
+
+  rows = data.items || [];
+  dayStatus = data.status || "open";
+  minCartons = Number(data.min_cartons || 0);
+  minUnits = Number(data.min_units || 0);
+  dirty.clear();
+
+  render();
+}
+
+/* ── Rendering ─────────────────────────────────────────────────────────── */
+
+function render(){
+  renderBadge();
+  renderMessages();
+  renderTotals();
+  // Hidden until there is something to search: an empty box above an empty list
+  // is just noise on a small screen.
+  $("search").style.display = rows.length ? "block" : "none";
+  renderRows();
+  renderSaveBar();
+}
+
+function renderBadge(){
+  $("dayBadge").innerHTML =
+    `<span class="badge ${esc(dayStatus)}">${esc(dayStatus)}</span>`;
+}
+
+function renderMessages(){
+  const parts = [];
+
+  if(isLocked()){
+    parts.push(
+      '<div class="banner info">This day is <strong>' + esc(dayStatus)
+      + '</strong>. The numbers are locked because an invoice may already use '
+      + 'them — ask the owner to reopen the day if something needs correcting.</div>'
+    );
+  }else if(dayStatus === "held"){
+    parts.push(
+      '<div class="banner warn">This day is <strong>on hold</strong> — it was too '
+      + 'small to ship on its own, so it will be combined with the next day. Keep '
+      + 'adding to it, or the owner can ship it anyway.</div>'
+    );
+  }else if(dayStatus === "submitted"){
+    parts.push(
+      '<div class="banner good">Submitted. The owner will verify it. You can still '
+      + 'correct the numbers until then.</div>'
+    );
+  }
+
+  const missing = rows.filter(i => !i.fba_sku).length;
+  if(missing){
+    parts.push(
+      `<div class="banner warn">${missing} SKU${missing === 1 ? " has" : "s have"} `
+      + 'no merchant SKU recorded. Pack them as normal — just tell the owner, '
+      + 'because Amazon will reject those lines on the upload.</div>'
+    );
+  }
+
+  $("messages").innerHTML = parts.join("");
+}
+
+function renderTotals(){
+  if(!rows.length){ $("totals").innerHTML = ""; return; }
+
+  const units = rows.reduce((s, i) => s + Number(i.units || 0), 0);
+  const cartons = rows.reduce((s, i) => s + Number(i.cartons || 0), 0);
+  const done = rows.filter(i => Number(i.units || 0) > 0).length;
+
+  /* The same AND rule the server applies in logic.is_held, shown live so the
+     packer can see he is one carton away from the day being held instead of
+     finding out after he submits. Mirrored deliberately — it is a hint, and
+     the server's answer is still the only one that counts. */
+  const wouldHold = units > 0 && cartons < minCartons && units < minUnits;
+
+  $("totals").innerHTML = `
+    <div class="totals">
+      <div class="tot ${wouldHold ? "low" : (units ? "ok" : "")}">
+        <div class="num">${n(units)}</div><div class="lbl">Units today</div></div>
+      <div class="tot ${wouldHold ? "low" : (cartons ? "ok" : "")}">
+        <div class="num">${n(cartons)}</div><div class="lbl">Cartons today</div></div>
+      <div class="tot"><div class="num">${done}/${rows.length}</div>
+        <div class="lbl">SKUs entered</div></div>
+    </div>
+    ${wouldHold ? '<div class="banner warn">Below the minimum for a shipment ('
+      + n(minCartons) + ' cartons or ' + n(minUnits) + ' units). Submitting now will '
+      + 'put the day <strong>on hold</strong> so it can be combined with tomorrow.</div>' : ""}
+  `;
+}
+
+function visibleRows(){
+  const q = $("search").value.trim().toLowerCase();
+  if(!q) return rows;
+  // filter() preserves order. Do not sort — see note 4 at the top of the file.
+  return rows.filter(i =>
+    (i.item || "").toLowerCase().includes(q)
+    || (i.asin || "").toLowerCase().includes(q)
+    || (i.fba_sku || "").toLowerCase().includes(q));
+}
+
+function renderRows(){
+  if(!rows.length){
+    $("packingArea").innerHTML =
+      '<div class="card"><div class="empty-state">Nothing to pack against this '
+      + 'plan — every SKU is already covered.</div></div>';
+    return;
+  }
+
+  const locked = isLocked() ? " disabled" : "";
+  const shown = visibleRows();
+
+  const cards = shown.map(i => {
+    /* Rows are addressed by their integer index in `rows`, carried in
+       data-index and read by one delegated listener. Two reasons, and the
+       second is the one that bit:
+
+       - No inline handler means no attribute for a stray quote in a
+         CSV-derived string to break out of.
+       - An escaped ASIN in a handler would not match the raw ASIN in `rows`.
+         `esc()` turns `&` into `&amp;`, so the lookup would miss and the
+         packer's count would be dropped without any error — silent data loss
+         is far worse here than a broken-looking page.
+
+       Every remaining interpolation is a number, a fixed class name, or
+       escaped. */
+    const index = rows.indexOf(i);
+    const units = Number(i.units || 0);
+    const remaining = Number(i.remaining || 0);
+    const cls = units > 0
+      ? (dirty.has(i.asin) ? "sku touched" : "sku done")
+      : "sku";
+
+    return `
+      <div class="${cls}">
+        <div class="sku-name">${esc(i.item) || "(unnamed)"}</div>
+        <div class="sku-meta">
+          <span class="sku-code">${esc(i.fba_sku) || '<span class="no-sku">NO SKU</span>'}</span>
+          · <span class="sku-code">${esc(i.asin)}</span>
+          ${i.weight ? " · " + esc(i.weight) + " kg" : ""}
+        </div>
+        <div class="sku-target">
+          <span>Plan <b>${n(i.planned)}</b></span>
+          <span>Packed earlier <b>${n(i.packed_before)}</b></span>
+          <span class="t-remaining ${remaining === 0 ? "zero" : ""}">Still needed
+            <b>${n(remaining)}</b></span>
+        </div>
+        <div class="entry">
+          <div>
+            <label for="u-${index}">Units</label>
+            <input id="u-${index}" type="number" min="0" inputmode="numeric"
+                   value="${units || ""}" placeholder="0"${locked}
+                   data-index="${index}" data-field="units"/>
+          </div>
+          <div>
+            <label for="c-${index}">Cartons</label>
+            <input id="c-${index}" type="number" min="0" inputmode="numeric"
+                   value="${Number(i.cartons || 0) || ""}" placeholder="0"${locked}
+                   data-index="${index}" data-field="cartons"/>
+          </div>
+        </div>
+      </div>`;
+  }).join("");
+
+  $("packingArea").innerHTML = shown.length ? cards
+    : '<div class="card"><div class="empty-state">No SKU matches that search.</div></div>';
+}
+
+function renderSaveBar(){
+  const bar = $("savebar");
+  if(!rows.length || isLocked()){ bar.style.display = "none"; return; }
+  bar.style.display = "flex";
+
+  const status = $("saveStatus");
+  if(saving){
+    status.className = "status";
+    status.textContent = "Saving…";
+  }else if(dirty.size){
+    status.className = "status dirty";
+    status.textContent = `${dirty.size} SKU${dirty.size === 1 ? "" : "s"} not saved yet.`;
+  }else{
+    status.className = "status saved";
+    status.textContent = "All changes saved.";
+  }
+  $("saveBtn").disabled = saving || dirty.size === 0;
+  $("submitBtn").disabled = saving;
+}
+
+/* ── Editing ───────────────────────────────────────────────────────────── */
+
+/* One delegated listener for every number box on the page, so re-rendering the
+   cards never leaves handlers behind. Updates the in-memory row and the totals
+   but deliberately does NOT re-render the cards: doing so would rebuild the
+   input the packer is typing into and drop the caret. */
+$("packingArea").addEventListener("input", e => {
+  const box = e.target;
+  const field = box.dataset.field;
+  if(!field) return;
+
+  const row = rows[Number(box.dataset.index)];
+  if(!row) return;
+
+  row[field] = Math.max(0, Math.floor(Number(box.value) || 0));
+  dirty.add(row.asin);
+  renderTotals();
+  renderSaveBar();
+});
+
+/* ── Saving and submitting ─────────────────────────────────────────────── */
+
+async function save(){
+  if(!dirty.size || saving) return true;
+  const packDate = $("packDate").value;
+  const entries = rows
+    .filter(i => dirty.has(i.asin))
+    .map(i => ({
+      asin: i.asin,
+      units: Number(i.units || 0),
+      cartons: Number(i.cartons || 0),
+      note: i.note || "",
+    }));
+
+  saving = true; renderSaveBar();
+  try{
+    const r = await fetch(`/shipment/packing/${packDate}`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({entries}),
+    });
+    const data = await r.json();
+    if(!r.ok){
+      $("messages").innerHTML =
+        `<div class="banner error">${esc(data.error || "Could not save.")}</div>`;
+      return false;
+    }
+    dirty.clear();
+    dayStatus = data.day_status || dayStatus;
+    return true;
+  }catch(err){
+    // Keep `dirty` populated: the numbers are still on screen and still unsaved,
+    // so the packer can retry rather than silently losing the count.
+    $("messages").innerHTML =
+      '<div class="banner error">Could not reach the server, so nothing was '
+      + 'saved. Your numbers are still on screen — try Save again.</div>';
+    return false;
+  }finally{
+    saving = false;
+    renderBadge(); renderTotals(); renderSaveBar();
+  }
+}
+
+async function submitDay(){
+  const packDate = $("packDate").value;
+  // Submit anything typed but not yet saved, otherwise the day would be closed
+  // against numbers the server has never seen.
+  if(dirty.size && !(await save())) return;
+
+  const units = rows.reduce((s, i) => s + Number(i.units || 0), 0);
+  if(!units && !confirm("Nothing has been entered for this day. Submit anyway?")) return;
+  if(!confirm(`Submit ${packDate}? The owner will review and verify it.`)) return;
+
+  saving = true; renderSaveBar();
+  try{
+    const r = await fetch(`/shipment/packing/${packDate}/submit`, {method: "POST"});
+    const data = await r.json();
+    if(!r.ok){
+      $("messages").innerHTML =
+        `<div class="banner error">${esc(data.error || "Could not submit.")}</div>`;
+      return;
+    }
+    dayStatus = data.status || "submitted";
+    if(data.held){
+      $("messages").innerHTML =
+        '<div class="banner warn"><strong>Day held.</strong> '
+        + esc(data.hold_reason || "Too small to ship on its own.")
+        + ' It will be combined with the next day.</div>';
+    }else{
+      $("messages").innerHTML =
+        `<div class="banner good"><strong>Submitted.</strong> ${n(data.total_units)} units `
+        + `in ${n(data.total_cartons)} cartons. The owner will verify it.</div>`;
+    }
+  }catch(err){
+    $("messages").innerHTML =
+      '<div class="banner error">Could not reach the server. Nothing was submitted.</div>';
+  }finally{
+    saving = false;
+    renderBadge(); renderTotals(); renderRows(); renderSaveBar();
+  }
+}
+
+/* ── Wiring ────────────────────────────────────────────────────────────── */
+
+$("saveBtn").addEventListener("click", save);
+$("submitBtn").addEventListener("click", submitDay);
+$("search").addEventListener("input", renderRows);
+
+$("pdfBtn").addEventListener("click", () => {
+  window.location = `/shipment/download/remaining.pdf?pack_date=${$("packDate").value}`;
+});
+
+$("packDate").addEventListener("change", async () => {
+  if(dirty.size && !confirm("You have unsaved numbers. Change date and lose them?")) return;
+  await load();
+});
+
+window.addEventListener("beforeunload", e => {
+  if(dirty.size){ e.preventDefault(); e.returnValue = ""; }
+});
+
 // Default the date picker to today in LOCAL time. toISOString() would convert to
 // UTC and show "yesterday" for anyone packing in the evening in IST.
 (function () {
@@ -67,6 +531,8 @@ input[type="date"]{background:var(--bg);border:1px solid var(--border);border-ra
   const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
   document.getElementById('packDate').value = local.toISOString().slice(0, 10);
 })();
+
+load();
 </script>
 </body>
 </html>
