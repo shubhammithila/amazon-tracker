@@ -260,6 +260,60 @@ def test_stock_stranded_by_a_new_plan_is_reported(source):
     )
 
 
+# ─── The invoice bridge: requirement 8 ───────────────────────────────────────
+
+def test_the_invoice_bridge_is_reachable_from_a_verified_day(source):
+    """"the operations team can directly generate invoice using this if they want to."
+
+    Only from a verified day. The server refuses anything less, and a button that
+    always errors reads as a broken app rather than as a rule being enforced.
+    """
+    body = _without_comments(source)
+    assert "/shipment/invoice-payload" in body, "no way to start an invoice"
+    assert "invoiceDay" in body, "the day cards offer no invoice action"
+    assert re.search(r'd\.status\s*===\s*"verified"', body), (
+        "the Invoice button is not gated on a verified day — it would be offered "
+        "on days the server will refuse"
+    )
+
+
+def test_the_handoff_goes_through_sessionstorage_not_the_url(source):
+    """A URL is shared, logged and bookmarked; this payload is invoice data.
+
+    It is also large enough to hit URL limits, so a query string would truncate
+    rather than fail cleanly — a silently short invoice.
+    """
+    body = _without_comments(source)
+    assert "sessionStorage.setItem" in body, "the payload is not stashed for the invoice page"
+    assert "shipmentInvoicePayload" in body, (
+        "the handoff key does not match the one templates/invoice.html reads"
+    )
+    assert "/invoice-page" in body, "nothing navigates to the invoice screen"
+
+
+def test_all_verified_days_are_invoiced_together(source):
+    """Where requirements 8 and 9 meet, and it must not become one-invoice-per-day.
+
+    Two days that were individually too small were combined precisely so they
+    would be ONE shipment. Two invoices would undo that, and each one spends a
+    number from a legally-sequential GST series.
+    """
+    body = _without_comments(source)
+    assert re.search(r'days\.filter\([^)]*status\s*===\s*"verified"', body), (
+        "invoiceDay does not gather every verified day — combined days would be "
+        "split across separate invoices"
+    )
+
+
+def test_an_already_invoiced_day_offers_no_second_invoice(source):
+    """Two GST documents against one set of boxes is a tax problem."""
+    body = _without_comments(source)
+    assert "invoice_id" in body, (
+        "the page never reads invoice_id, so it cannot tell an invoiced day apart "
+        "from one still waiting"
+    )
+
+
 # ─── Escaping: CSV-derived strings reach innerHTML ───────────────────────────
 
 def test_untrusted_strings_are_escaped_before_reaching_innerhtml(source):

@@ -22,6 +22,9 @@
     button:disabled { opacity: .4; cursor: not-allowed; }
     .btn-primary { background: var(--accent); color: #fff; }
     .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+    /* Warnings carried over from the Shipment tab — usually a line with no
+       purchase rate, which would otherwise save at zero taxable value. */
+    .handoff-warning { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--warning); border-radius: 6px; font-size: 12px; line-height: 1.5; color: #fde68a; background: rgba(245,158,11,.08); }
     .btn-success { background: var(--success); color: #fff; }
     .btn-success:hover { background: #16a34a; }
     .btn-warning { background: var(--warning); color: #000; }
@@ -112,13 +115,22 @@
         <label>Date</label>
         <input type="date" id="f-date">
       </div>
+      {#
+        Not readonly. They were, because the TSV always supplied both — but an
+        invoice built from the Shipment tab has neither: Amazon issues the
+        shipment id and assigns the FC only after the shipment exists.
+        /invoice/save refuses a blank shipment_id, so leaving these locked made
+        that whole path a dead end with no visible reason why.
+
+        The TSV flow still fills them automatically, so nothing changes there.
+      #}
       <div class="form-group">
         <label>Shipment ID</label>
-        <input type="text" id="f-shipment-id" readonly>
+        <input type="text" id="f-shipment-id" placeholder="from Amazon, e.g. FBA15ABCDEFG">
       </div>
       <div class="form-group">
         <label>Place of Supply</label>
-        <input type="text" id="f-place-supply" readonly>
+        <input type="text" id="f-place-supply" placeholder="destination state">
       </div>
       <div class="form-group">
         <label>Name of Transporter</label>
@@ -196,6 +208,11 @@
 <script>
   let parsedData = null;
   let finalInvoiceData = null;
+
+  // Handoff from the Shipment tab. See intakeFromShipment() at the foot of this
+  // script; the key is shared with templates/shipment.html.
+  const HANDOFF_KEY = "shipmentInvoicePayload";
+  let shipmentPackDates = [];
 
   // Set today's date
   document.getElementById("f-date").value = new Date().toISOString().split("T")[0];
@@ -339,7 +356,15 @@
     }
 
     // Build final invoice data
-    const wh = parsedData.metadata.warehouse;
+    /* `|| {}` matters now that a payload can arrive from the Shipment tab with
+       no warehouse: that path has no FC yet, and the old
+       `wh.city + ", " + wh.state` would render the literal string
+       "undefined, undefined undefined" as the recipient address on a GST
+       document — which reads like a formatting slip rather than a bug. */
+    const wh = parsedData.metadata.warehouse || {};
+    const fcAddress = wh.full_address
+      || [wh.city, wh.state, wh.pincode].filter(Boolean).join(", ")
+      || "";
     finalInvoiceData = {
       supplier: {
         name: document.getElementById("f-supplier-name").value,
@@ -348,7 +373,7 @@
       },
       recipient: {
         name: "Amazon FC " + (parsedData.metadata.ship_to || ""),
-        address: wh.full_address || (wh.city + ", " + wh.state + " " + wh.pincode),
+        address: fcAddress,
         gstin: document.getElementById("f-recipient-gstin").value,
       },
       details: {
@@ -356,7 +381,10 @@
         date: document.getElementById("f-date").value,
         shipment_id: document.getElementById("f-shipment-id").value,
         place_of_supply: document.getElementById("f-place-supply").value,
-        fc_code: parsedData.metadata.ship_to,
+        // Falls back to the typed Place of Supply for a shipment-sourced
+        // invoice, which has no FC in its payload at all.
+        fc_code: parsedData.metadata.ship_to
+          || document.getElementById("f-place-supply").value,
         transporter: transporter,
         eway_bill: eway,
         boxes: document.getElementById("f-boxes").value,
@@ -379,6 +407,39 @@
       if (saveRes.ok) {
         finalInvoiceData.details.invoice_no = saveData.invoice_no;
         document.getElementById("f-invoice-no").value = saveData.invoice_no;
+
+        /* Close the loop back to the shipment: mark those packing days shipped
+           and record which invoice covers them. That record is what stops the
+           same boxes being invoiced twice.
+
+           A second request rather than something inside /invoice/save, because
+           that route allocates the legally-sequential GST number and is left
+           strictly alone. The trade-off is real and deliberate: if this call
+           fails the invoice still exists while the days read `verified`, so the
+           app thinks they are un-invoiced. It is recoverable — the owner is told
+           and it can be retried — whereas a bug in this bookkeeping rolling back
+           a committed invoice would burn a number out of the series, which
+           cannot be undone. So the failure is surfaced loudly and not swallowed. */
+        if (shipmentPackDates.length) {
+          try {
+            const attachRes = await fetch("/shipment/attach-invoice", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                pack_dates: shipmentPackDates,
+                invoice_id: saveData.id,
+              }),
+            });
+            if (!attachRes.ok) throw new Error((await attachRes.json()).error || "failed");
+            shipmentPackDates = [];
+          } catch(e) {
+            alert(
+              "Invoice " + saveData.invoice_no + " was saved, but the packing days "
+              + "could not be marked as shipped (" + e.message + "). The invoice is "
+              + "fine — but those days still look un-invoiced on the Shipment tab, "
+              + "so take care not to invoice them a second time."
+            );
+          }
+        }
       }
     } catch(e) { console.error("Save failed:", e); }
 
@@ -426,6 +487,67 @@
     document.getElementById("s2").className = "step " + (n === 2 ? "active" : n > 2 ? "done" : "");
     document.getElementById("s3").className = "step " + (n === 3 ? "active" : "");
   }
+
+  /* ── Arriving from the Shipment tab: requirement 8 ────────────────────────
+     "when the data daily is entered and is verified by me, the operations team
+     can directly generate invoice using this if they want to."
+
+     The shipment page puts /shipment/invoice-payload's response into
+     sessionStorage and navigates here. That response is deliberately the same
+     shape /invoice/parse-shipment returns, so populateItems() and recalculate()
+     are reused unchanged. Forking them would give a GST document two rendering
+     paths that could drift apart, and only one of them would be exercised by
+     the TSV tests.
+
+     sessionStorage rather than a query string because the payload is large and
+     a URL is shared, logged and bookmarked. Read once and immediately removed,
+     so a later reload cannot silently re-open packing the owner has already
+     invoiced.
+
+     Placed at the end of the script on purpose: it calls populateItems,
+     recalculate and showStep, and running it here means it does not depend on
+     function hoisting to work. */
+  (function intakeFromShipment(){
+    let raw = null;
+    try{ raw = sessionStorage.getItem(HANDOFF_KEY); }catch(e){ return; }
+    if(!raw) return;
+    // Removed before parsing, so even a malformed payload cannot come back on
+    // the next reload and fail the same way forever.
+    try{ sessionStorage.removeItem(HANDOFF_KEY); }catch(e){}
+
+    let data = null;
+    try{ data = JSON.parse(raw); }
+    catch(e){ console.error("Could not read the shipment handoff", e); return; }
+    if(!data || !Array.isArray(data.items) || !data.items.length) return;
+
+    parsedData = data;
+    shipmentPackDates = Array.isArray(data.pack_dates) ? data.pack_dates : [];
+
+    const status = document.getElementById("upload-status");
+    status.textContent = data.items.length + " item(s) from verified packing on "
+      + shipmentPackDates.join(", ");
+    status.style.color = "var(--success)";
+
+    // The cartons ops counted daily, prefilled — requirement 7's concrete
+    // payoff. Prefilled, not forced: the owner can still correct it.
+    if(data.boxes) document.getElementById("f-boxes").value = data.boxes;
+
+    /* shipment_id, the FC and the place of supply stay EMPTY. That is the
+       design, not an omission: they come from Amazon only after the shipment
+       exists, and a guessed FC puts the wrong state's GSTIN on a tax document.
+       /invoice/save already refuses a blank shipment_id, so this cannot be
+       saved half-finished by accident. */
+    if(Array.isArray(data.warnings) && data.warnings.length){
+      const box = document.createElement("div");
+      box.className = "handoff-warning";
+      box.textContent = data.warnings.join(" ");
+      status.parentNode.appendChild(box);
+    }
+
+    populateItems(data.items);
+    recalculate();
+    showStep(2);
+  })();
 </script>
 </body>
 </html>

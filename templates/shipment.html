@@ -71,6 +71,7 @@ h2{font-size:20px;font-weight:600;margin-bottom:4px}
 .day .d-date{font-size:13px;font-weight:600;margin-bottom:5px}
 .day .d-nums{font-size:11px;color:var(--text-muted);margin-bottom:8px}
 .day .d-reason{font-size:11px;color:var(--yellow);margin-bottom:8px;line-height:1.45}
+.day .d-invoiced{font-size:11px;color:#a5b4fc;font-weight:600;align-self:center}
 .day .d-actions{display:flex;gap:6px;flex-wrap:wrap}
 .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
 .badge.open{background:rgba(100,116,139,.2);color:#94a3b8}
@@ -367,6 +368,19 @@ function renderDays(){
     if(d.status === "held"){
       actions.push(`<button class="btn-warn" onclick="releaseDay('${dt}')">Ship anyway</button>`);
     }
+    /* Requirement 8, offered only on a verified day. Verification is what allows
+       a GST invoice to be raised — the server refuses anything less, and a button
+       that always errors reads as a broken app rather than a rule.
+
+       Not offered on a shipped day: that one already carries an invoice id, and
+       inviting a second invoice for the same boxes is a tax problem, not a UI
+       annoyance. The id is shown instead so the owner can go and find it. */
+    if(d.status === "verified"){
+      actions.push(`<button class="btn-green" onclick="invoiceDay('${dt}')">Invoice</button>`);
+    }
+    if(d.status === "shipped" && d.invoice_id){
+      actions.push(`<span class="d-invoiced">On invoice #${Number(d.invoice_id)}</span>`);
+    }
     return `<div class="day ${st}">
       <div class="d-date">${dt} <span class="badge ${st}">${st}</span></div>
       <div class="d-nums">${d.total_units.toLocaleString("en-IN")} units · ${d.total_cartons.toLocaleString("en-IN")} cartons${d.submitted_by ? " · by " + esc(d.submitted_by) : ""}</div>
@@ -537,6 +551,49 @@ async function verifyDay(packDate){
 async function releaseDay(packDate){
   if(!confirm(`Ship ${packDate} anyway? It is below your threshold, so it will go as its own shipment rather than combining with the next day.`)) return;
   await dayAction(`/shipment/packing/${packDate}/release`, `${packDate} released for shipping`);
+}
+
+// ─── Invoice bridge: requirement 8 ──────────────────────────────────────────
+
+/* "when the data daily is entered and is verified by me, the operations team can
+   directly generate invoice using this if they want to."
+
+   Every verified day is invoiced together in one document, not one invoice per
+   day. That is the point where requirements 8 and 9 meet: two days that were
+   individually too small to ship were combined precisely so they would become
+   ONE shipment, and issuing two invoices for them would undo that. It also
+   matters that each invoice consumes a number from a legally-sequential GST
+   series, so splitting a shipment across two of them is a real cost.
+
+   The confirm names the dates because this is the last cheap moment to notice
+   the selection is wrong — after /invoice/save the number is spent. */
+async function invoiceDay(packDate){
+  const verified = days.filter(d => d.status === "verified").map(d => d.pack_date);
+  if(!verified.length){ toast("No verified days to invoice", "error"); return; }
+
+  const others = verified.filter(d => d !== packDate);
+  const question = others.length
+    ? `Invoice ${verified.length} verified days together (${verified.join(", ")})?\n\n`
+      + "They go onto ONE invoice — combining days is why they were held, and each "
+      + "invoice uses a number from the GST series."
+    : `Create an invoice from ${packDate}?`;
+  if(!confirm(question)) return;
+
+  try{
+    const r = await fetch("/shipment/invoice-payload", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({pack_dates: verified}),
+    });
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || "Could not build the invoice");
+
+    /* sessionStorage rather than a query string: the payload is large, and a URL
+       is shared, logged and bookmarked. templates/invoice.html reads this key
+       once and removes it. */
+    sessionStorage.setItem("shipmentInvoicePayload", JSON.stringify(data));
+    window.location.href = "/invoice-page";
+  }catch(e){ toast(e.message, "error"); }
 }
 
 async function dayAction(url, okMessage){

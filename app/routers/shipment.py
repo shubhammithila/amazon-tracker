@@ -30,6 +30,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.invoice.company_data import SUPPLIER_GSTIN
+from app.invoice.hsn_codes import lookup_hsn
+from app.invoice.parser import get_purchase_rate
 from app.routers.auth import ROLE_ADMIN, require_admin, require_ops_or_admin
 from app.shipment import documents, logic, repository
 
@@ -816,6 +819,316 @@ async def download_shipment_file_xlsx(
         documents.build_shipment_file_xlsx(rows, mode=mode, days=days),
         f"shipment-{mode}-{date.today().isoformat()}.xlsx",
         XLSX_TYPE,
+    )
+
+
+# ─── Invoice bridge (ops + admin) ────────────────────────────────────────────
+#
+# Requirement 8: "when the data daily is entered and is verified by me, the
+# operations team can directly generate invoice using this if they want to."
+#
+# Two words in that sentence carry all the risk. **"verified by me"** is the
+# gate: this endpoint refuses anything less, because the invoice number is a
+# legally-sequential GST document and issuing one against numbers the owner has
+# not approved cannot be undone by deleting a row. **"if they want to"** is why
+# ops may call it at all — but note what it does NOT do: it builds a *payload*.
+# `POST /invoice/save` is untouched, still the only thing that allocates an
+# invoice number, and its own 26 tests keep guarding that sequence.
+
+def _title_for(item) -> str:
+    """A human product title from the plan snapshot.
+
+    The plan stores the parent product and a weight, not Amazon's full listing
+    title — the CSVs it is built from do not carry one. So the title is composed,
+    and the SKU is appended because two SKUs of the same product and weight would
+    otherwise produce two identical invoice lines that nobody could tell apart
+    when checking the document against the boxes.
+    """
+    product = (item.item or "").strip() or item.asin
+    weight = float(item.weight or 0)
+    parts = [product.title() if product.islower() else product]
+    if weight:
+        # 0.5 -> "500 g", 1.0 -> "1 kg". Trailing ".0" on a label looks like a bug.
+        parts.append(f"{int(weight * 1000)} g" if weight < 1 else f"{weight:g} kg")
+    if item.fba_sku:
+        parts.append(f"({item.fba_sku})")
+    return " ".join(parts)
+
+
+@router.post("/invoice-payload")
+async def build_invoice_payload(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_ops_or_admin),
+):
+    """Turn verified packing days into the payload templates/invoice.html consumes.
+
+    Body: ``{"pack_dates": ["2026-07-30", "2026-07-31"]}``. Multiple dates is the
+    normal case, not an edge case — it is how requirement 9's combined days become
+    one invoice, which is the whole reason the aggregation is per-ASIN across days
+    rather than per-day.
+
+    Refuses, rather than doing something reasonable-looking, when:
+
+    * any requested day is not `verified` — 400. The owner's approval is what
+      gates the GST number, and "all but one day approved" is not approval.
+    * any requested day already has an invoice — 409. Invoicing the same boxes
+      twice is a GST problem, not a UI annoyance.
+
+    `shipment_id`, `fc_code` and `place_of_supply` are deliberately left blank:
+    those come from Amazon *after* the shipment exists, and guessing them would
+    put a wrong FC on a tax document.
+    """
+    body = await request.json()
+    raw_dates = body.get("pack_dates") or []
+    if isinstance(raw_dates, str):
+        raw_dates = [raw_dates]
+
+    # De-duplicated but order preserved, so the response lists dates the way the
+    # owner selected them.
+    pack_dates: list[str] = []
+    for value in raw_dates:
+        text = str(value).strip()
+        if text and text not in pack_dates:
+            pack_dates.append(text)
+
+    if not pack_dates:
+        return JSONResponse(
+            {"error": "Select at least one packed day to invoice."}, status_code=400
+        )
+
+    invalid = [d for d in pack_dates if not _valid_date(d)]
+    if invalid:
+        return JSONResponse(
+            {"error": f"Not a date (YYYY-MM-DD): {', '.join(invalid)}"}, status_code=400
+        )
+
+    plan = await repository.get_active_plan(db)
+    if plan is None:
+        return JSONResponse({"error": "No active plan"}, status_code=404)
+
+    days = []
+    for pack_date in pack_dates:
+        day = await repository.get_day(db, plan.id, pack_date)
+        if day is None:
+            return JSONResponse(
+                {"error": f"Nothing was packed on {pack_date}."}, status_code=404
+            )
+        days.append(day)
+
+    # Already invoiced is checked FIRST. Both conditions can be true at once (a
+    # shipped day is not `verified` either), and "already on invoice ST/26-27/031"
+    # tells the owner what actually happened, where "not verified yet" would send
+    # him looking for a verify button on a day that is finished.
+    invoiced = [d for d in days if d.invoice_id]
+    if invoiced:
+        return JSONResponse(
+            {
+                "error": "Already invoiced: "
+                + ", ".join(f"{d.pack_date} (invoice #{d.invoice_id})" for d in invoiced)
+                + ". Invoicing the same boxes twice would put two GST documents "
+                "against one shipment.",
+                "pack_dates": [d.pack_date for d in invoiced],
+            },
+            status_code=409,
+        )
+
+    unverified = [d for d in days if d.status not in logic.INVOICEABLE_STATUSES]
+    if unverified:
+        return JSONResponse(
+            {
+                "error": "These days are not verified yet: "
+                + ", ".join(f"{d.pack_date} ({d.status})" for d in unverified)
+                + ". The owner's verification is what allows a GST invoice to be "
+                "raised, so every selected day has to be verified first.",
+                "pack_dates": [d.pack_date for d in unverified],
+            },
+            status_code=400,
+        )
+
+    # Units per ASIN across the selected days. This is the aggregation that makes
+    # two combined held days into one invoice.
+    day_dicts = [
+        d
+        for d in await repository.load_days_with_entries(db, plan.id)
+        if d["pack_date"] in set(pack_dates)
+    ]
+    units_by_asin = logic.units_by_asin(day_dicts)
+    total_cartons = sum(int(d["total_cartons"] or 0) for d in day_dicts)
+
+    # Ordered through load_plan_items so the invoice lines come out product-then-
+    # weight, the same order as the screen and the four downloads. An invoice the
+    # owner checks against the packed sheet should read down in the same order.
+    items = await repository.load_plan_items(db, plan.id)
+
+    lines = []
+    for item in items:
+        units = int(units_by_asin.get(item.asin, 0))
+        if units <= 0:
+            continue
+        title = _title_for(item)
+        # Reuse the invoice module's own lookups rather than reimplementing them,
+        # so a rate or HSN correction made through the invoice screen applies here
+        # too. lookup_hsn keys on the SKU, which is why fba_sku is persisted.
+        hsn = lookup_hsn(title, sku=item.fba_sku or "")
+        lines.append(
+            {
+                "sku": item.fba_sku or "",
+                "title": title,
+                "short_title": " ".join(title.split()[:10]),
+                "asin": item.asin,
+                # Blank on purpose: the FNSKU only exists on an Amazon shipment
+                # document, and this invoice is being raised before one exists.
+                "fnsku": "",
+                "quantity": units,
+                "hsn_code": hsn["hsn_code"],
+                "gst_rate": hsn["gst_rate"],
+                "rate": get_purchase_rate(item.fba_sku or "", item.asin),
+                "unit": "Pcs",
+            }
+        )
+
+    if not lines:
+        return JSONResponse(
+            {
+                "error": "The selected day(s) have no packed units against the "
+                "current plan, so there is nothing to invoice."
+            },
+            status_code=400,
+        )
+
+    missing_rate = [line["sku"] or line["asin"] for line in lines if not line["rate"]]
+    missing_sku = [line["asin"] for line in lines if not line["sku"]]
+
+    warnings = []
+    if missing_rate:
+        warnings.append(
+            f"{len(missing_rate)} line(s) have no purchase rate in the master "
+            "pricing and will come through blank — fill them in before saving, or "
+            "the taxable value will be wrong."
+        )
+    if missing_sku:
+        warnings.append(
+            f"{len(missing_sku)} line(s) have no merchant SKU recorded."
+        )
+
+    return JSONResponse(
+        {
+            "source": "shipment",
+            "plan_id": plan.id,
+            "pack_dates": pack_dates,
+            "metadata": {
+                # Blank: these are Amazon's, and only exist once the shipment does.
+                "shipment_id": "",
+                "name": "",
+                "ship_to": "",
+                "recipient_gstin": "",
+                "supplier_gstin": SUPPLIER_GSTIN,
+                "warehouse": {},
+                "total_skus": len(lines),
+                "total_units": sum(line["quantity"] for line in lines),
+            },
+            "items": lines,
+            # Requirement 7's concrete payoff: the cartons ops counted daily
+            # prefill the invoice's Boxes field instead of being recounted.
+            "boxes": total_cartons,
+            "warnings": warnings,
+        }
+    )
+
+
+@router.post("/attach-invoice")
+async def attach_invoice(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_ops_or_admin),
+):
+    """Mark days `shipped` and record which invoice covers them.
+
+    Body: ``{"pack_dates": [...], "invoice_id": 42}``.
+
+    NOT under ``/packing/`` — deliberately, and found by a failing test rather
+    than foresight. ``POST /packing/{pack_date}`` is declared above, FastAPI
+    matches in declaration order, and so ``/packing/attach-invoice`` was being
+    parsed as a *date* and rejected with "Date must be YYYY-MM-DD". The damage
+    that hides is specific: the attach silently fails, the days stay `verified`
+    with no invoice_id, and the double-invoice guard has nothing recorded to fire
+    on. A path that cannot collide is worth more than a tidy prefix.
+
+    A separate call rather than a hook inside ``POST /invoice/save`` — that route
+    allocates the legally-sequential GST number and has 26 tests pinning the
+    sequence, so it is left alone on purpose. The cost of the separation is
+    honest and worth stating plainly, because it is a real hole and not a
+    theoretical one: if the browser dies between the save and this call, the
+    invoice exists while the days still read `verified` with no invoice_id. The
+    app then believes they are un-invoiced, and the 409 here cannot help —
+    nothing was recorded for it to fire on. A second invoice for the same boxes
+    is possible in that window.
+
+    It is accepted anyway, for two reasons. It is recoverable: calling this again
+    fixes the record, and the owner is the one clicking through the invoice
+    screen, so he sees the number he just raised. And the alternative coupling is
+    worse and *not* recoverable — a bug in this bookkeeping rolling back a
+    committed invoice would burn a number out of a legally-sequential GST series,
+    which cannot be undone by deleting a row.
+
+    Flagged in CLAUDE.md rather than papered over: closing it properly means
+    /invoice/save writing the attachment in its own transaction, which is a
+    change to the route whose 26 tests guard the GST sequence, and that is not a
+    thing to do in the same step as building the bridge.
+
+    Idempotent for the same invoice, so a retried call after a flaky response is
+    harmless. Attaching a *different* invoice to an already-invoiced day is
+    refused: that is two GST documents against one set of boxes.
+    """
+    body = await request.json()
+    raw_dates = body.get("pack_dates") or []
+    if isinstance(raw_dates, str):
+        raw_dates = [raw_dates]
+
+    try:
+        invoice_id = int(body.get("invoice_id"))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "invoice_id is required"}, status_code=400)
+
+    pack_dates = [str(d).strip() for d in raw_dates if str(d).strip()]
+    if not pack_dates:
+        return JSONResponse({"error": "pack_dates is required"}, status_code=400)
+
+    plan = await repository.get_active_plan(db)
+    if plan is None:
+        return JSONResponse({"error": "No active plan"}, status_code=404)
+
+    updated, already = [], []
+    for pack_date in pack_dates:
+        day = await repository.get_day(db, plan.id, pack_date)
+        if day is None:
+            return JSONResponse(
+                {"error": f"Nothing was packed on {pack_date}."}, status_code=404
+            )
+        if day.invoice_id and day.invoice_id != invoice_id:
+            return JSONResponse(
+                {
+                    "error": f"{pack_date} is already on invoice #{day.invoice_id}. "
+                    "Two GST invoices must not cover the same boxes."
+                },
+                status_code=409,
+            )
+        if day.invoice_id == invoice_id and day.status == logic.STATUS_SHIPPED:
+            already.append(pack_date)
+            continue
+        day.invoice_id = invoice_id
+        day.status = logic.STATUS_SHIPPED
+        updated.append(pack_date)
+
+    await db.commit()
+    return JSONResponse(
+        {
+            "status": "attached",
+            "invoice_id": invoice_id,
+            "updated": updated,
+            "already_attached": already,
+        }
     )
 
 

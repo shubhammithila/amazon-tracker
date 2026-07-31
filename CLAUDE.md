@@ -161,6 +161,30 @@ pydantic-settings, httpx, lxml, pandas, openpyxl, apscheduler,
 python-multipart, itsdangerous, jinja2, aiofiles, reportlab
 ```
 
+## Known gaps (deliberate, not oversights)
+
+### The invoice attach is a second request, so there is a window
+`POST /invoice/save` allocates the legally-sequential GST number and is left
+strictly untouched — the 26 tests in `tests/test_invoice_save.py` guard that
+sequence. Marking the packing days `shipped` is therefore a separate call,
+`POST /shipment/attach-invoice`, made by the browser right after a successful
+save.
+
+If the browser dies between the two, the invoice exists while the days still
+read `verified` with no `invoice_id`. The app then believes those boxes are
+un-invoiced, and the double-invoice 409 in `/shipment/invoice-payload` cannot
+help — nothing was recorded for it to fire on.
+
+Accepted because that failure is recoverable (retry the attach) and is shown to
+the owner rather than swallowed, whereas the alternative coupling is not
+recoverable: a bug in this bookkeeping rolling back a committed invoice would
+burn a number out of the GST series, and a gap in the series is a question you
+answer during an audit.
+
+Closing it properly means `/invoice/save` writing the attachment in its own
+transaction — a change to the route whose tests protect the sequence, so it
+wants its own commit and its own careful pass.
+
 ## Git
 - Branch: `claude/stoic-allen-bb3a55`
 - Remote: https://github.com/shubhammithila/amazon-tracker.git
