@@ -3,8 +3,26 @@
 <head>
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>Shipment Maker — Amazon Tracker</title>
+{#
+  The owner's shipment screen.
+
+  Two rules hold this page together, and both exist because breaking them is
+  invisible until it costs a real shipment:
+
+  1. NEVER sort `items` here. Row order arrives from /shipment/active, which is
+     repository.load_plan_items' ORDER BY, which is logic.sort_items — the same
+     order the four downloads use. A .sort() in this file would make the screen
+     and the Excel disagree, which is precisely the complaint requirement 3 was
+     raised about. Array.prototype.filter preserves order, so searching is safe.
+     tests/test_shipment_admin_ui.py greps this file for sort calls.
+
+  2. The per-day columns are READ-ONLY. Ops owns packing rows, the owner owns
+     plan rows, and they never write the same record — that write separation is
+     the entire reason the plan moved into the database. An editable day cell
+     here would put the two roles back on a collision course.
+#}
 <style>
-:root{--bg:#0f1117;--surface:#1a1d27;--border:#2a2d3a;--text:#e2e8f0;--text-muted:#64748b;--accent:#6366f1;--green:#22c55e;--yellow:#eab308;--red:#ef4444;--orange:#f97316}
+:root{--bg:#0f1117;--surface:#1a1d27;--border:#2a2d3a;--text:#e2e8f0;--text-muted:#64748b;--accent:#6366f1;--green:#22c55e;--yellow:#eab308;--red:#ef4444;--orange:#f97316;--blue:#3b82f6}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px}
 header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
@@ -13,7 +31,7 @@ header h1{font-size:16px;font-weight:600}
 .nav-links a{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent;transition:all .2s}
 .nav-links a:hover,.nav-links a.active{color:var(--text);border-color:var(--accent)}
 .header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:13px;text-decoration:none}
-main{max-width:1600px;margin:0 auto;padding:20px}
+main{max-width:1700px;margin:0 auto;padding:20px}
 h2{font-size:20px;font-weight:600;margin-bottom:4px}
 .subtitle{color:var(--text-muted);font-size:13px;margin-bottom:16px}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px}
@@ -23,21 +41,43 @@ h2{font-size:20px;font-weight:600;margin-bottom:4px}
 .form-group{display:flex;flex-direction:column;gap:4px}
 .form-group label{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
 .form-group input[type="file"]{font-size:12px;color:var(--text-muted)}
-.form-group input[type="number"]{background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:6px 10px;width:70px;font-size:13px}
+.form-group input[type="number"]{background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:6px 10px;width:80px;font-size:13px}
 .btn{background:var(--accent);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:13px;font-weight:500;cursor:pointer}
 .btn:disabled{opacity:.5;cursor:not-allowed}
 .btn-outline{background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer}
 .btn-outline:hover{border-color:var(--accent);color:var(--text)}
 .btn-danger{background:transparent;color:var(--red);border:1px solid var(--red);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;opacity:.7}
 .btn-danger:hover{opacity:1}
-.btn-green{background:var(--green);color:#000;border:none;border-radius:6px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer}
+.btn-green{background:var(--green);color:#04150a;border:none;border-radius:6px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer}
+.btn-warn{background:var(--yellow);color:#1a1400;border:none;border-radius:6px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 
-.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px}
+.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:10px;margin-bottom:16px}
 .stat{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center}
 .stat .num{font-size:20px;font-weight:700}.stat .lbl{font-size:10px;color:var(--text-muted);margin-top:3px;text-transform:uppercase;letter-spacing:.04em}
 .stat.alert .num{color:var(--red)}
+.stat.hold{border-color:var(--yellow)}.stat.hold .num{color:var(--yellow)}
+.stat.good .num{color:var(--green)}
+
+.banner{border-radius:8px;padding:10px 14px;font-size:12.5px;margin-bottom:14px;line-height:1.5}
+.banner.warn{background:rgba(234,179,8,.08);border:1px solid var(--yellow);color:#fde68a}
+.banner.info{background:rgba(59,130,246,.08);border:1px solid var(--blue);color:#bfdbfe}
+
+.days{display:flex;gap:10px;flex-wrap:wrap}
+.day{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;min-width:190px}
+.day.held{border-color:var(--yellow)}
+.day.verified{border-color:var(--green)}
+.day .d-date{font-size:13px;font-weight:600;margin-bottom:5px}
+.day .d-nums{font-size:11px;color:var(--text-muted);margin-bottom:8px}
+.day .d-reason{font-size:11px;color:var(--yellow);margin-bottom:8px;line-height:1.45}
+.day .d-actions{display:flex;gap:6px;flex-wrap:wrap}
+.badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.badge.open{background:rgba(100,116,139,.2);color:#94a3b8}
+.badge.submitted{background:rgba(59,130,246,.18);color:#93c5fd}
+.badge.held{background:rgba(234,179,8,.18);color:#fde047}
+.badge.verified{background:rgba(34,197,94,.18);color:#86efac}
+.badge.shipped{background:rgba(99,102,241,.2);color:#a5b4fc}
 
 .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
 .chip{padding:5px 12px;border-radius:20px;border:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:12px;cursor:pointer}
@@ -46,23 +86,29 @@ h2{font-size:20px;font-weight:600;margin-bottom:4px}
 .search-input:focus{outline:none;border-color:var(--accent)}
 
 .table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border)}
-table{width:100%;border-collapse:collapse;min-width:1400px}
+table{width:100%;border-collapse:collapse;min-width:1450px}
 thead th{background:var(--surface);padding:7px 6px;text-align:center;font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid var(--border);white-space:nowrap;position:sticky;top:0}
 thead th.col-smb{background:#1e1e2e;width:28px}
 thead th.col-input{background:#1e2235}
 thead th.col-calc{background:#1a2520}
 thead th.col-day{background:#25201a}
+thead th.col-day.held{background:#2e2410;color:#fde047}
 tbody tr{border-bottom:1px solid var(--border)}tbody tr:hover{background:rgba(99,102,241,.03)}
 tbody tr.no-ship{opacity:.4}
-td{padding:5px 5px;font-size:12px;text-align:center;white-space:nowrap}
+tbody tr.dirty{background:rgba(99,102,241,.07)}
+td{padding:5px;font-size:12px;text-align:center;white-space:nowrap}
 td.left{text-align:left}
-td input[type="number"]{background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);padding:2px 4px;width:48px;font-size:11px;text-align:center}
+td.day-cell{color:var(--text-muted)}
+td.day-cell.has{color:var(--text)}
+td input[type="number"]{background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);padding:2px 4px;width:52px;font-size:11px;text-align:center}
 td input[type="number"]:focus{outline:none;border-color:var(--accent)}
 td input[type="checkbox"]{width:14px;height:14px;cursor:pointer}
+.no-sku{color:var(--red);font-size:10px;font-weight:700}
 .deficit-pos{color:var(--red);font-weight:700}.deficit-neg{color:var(--green)}
 .remaining-pos{color:var(--orange);font-weight:600}.remaining-zero{color:var(--green);font-weight:600}
+.shippable-lt{color:var(--yellow);font-weight:600}
 .empty-state{text-align:center;padding:40px;color:var(--text-muted)}
-#toast{position:fixed;bottom:20px;right:20px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 18px;font-size:13px;display:none;z-index:1000}
+#toast{position:fixed;bottom:20px;right:20px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 18px;font-size:13px;display:none;z-index:1000;max-width:420px;line-height:1.5}
 #toast.error{border-color:var(--red);color:var(--red)}#toast.success{border-color:var(--green);color:var(--green)}
 </style>
 </head>
@@ -74,12 +120,12 @@ td input[type="checkbox"]{width:14px;height:14px;cursor:pointer}
 </header>
 <main>
 <h2>📦 Shipment Maker</h2>
-<p class="subtitle">Upload sales + stock reports → generate packing plan → track daily packing → download shipment file for Amazon.</p>
+<p class="subtitle">Upload sales + stock → plan rounded to the nearest 10 → the packer records units and cartons daily → verify → download the Amazon file.</p>
 
-<!-- Upload Card -->
+<!-- Generate -->
 <div class="card">
   <h3>Generate New Plan</h3>
-  <p>Upload Business Report CSV (last 7 days, By ASIN) + FBA Inventory Report CSV</p>
+  <p>Business Report CSV (last 7 days, By ASIN) + FBA Inventory Report CSV. This closes the current plan; its packing history is kept.</p>
   <div class="form-row">
     <div class="form-group"><label>Sales CSV (Business Report)</label><input type="file" id="sales-file" accept=".csv"/></div>
     <div class="form-group"><label>Stock CSV (FBA Inventory)</label><input type="file" id="stock-file" accept=".csv"/></div>
@@ -89,39 +135,54 @@ td input[type="checkbox"]{width:14px;height:14px;cursor:pointer}
   </div>
 </div>
 
+<div id="no-plan" class="card" style="display:none">
+  <div class="empty-state">No active plan yet. Upload the two CSVs above to create one.</div>
+</div>
+
 <!-- Results -->
 <div id="results" style="display:none">
 
+<div id="banners"></div>
 <div class="summary" id="summary"></div>
 
-<!-- Actions bar -->
+<!-- Packing days -->
+<div class="card">
+  <h3>Packing days</h3>
+  <p>Held days are below the shipping threshold and are excluded from shippable totals until you verify or release them. Their units still count as packed — the boxes exist.</p>
+  <div class="days" id="days"><span style="color:var(--text-muted);font-size:12px">Nothing packed against this plan yet.</span></div>
+  <div class="form-row" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+    <div class="form-group"><label>Min cartons to ship</label><input type="number" id="min-cartons" min="0" step="1"/></div>
+    <div class="form-group"><label>Min units to ship</label><input type="number" id="min-units" min="0" step="1"/></div>
+    <button class="btn-outline" onclick="saveThresholds()">Save thresholds</button>
+    <span style="font-size:11px;color:var(--text-muted);max-width:430px;line-height:1.45">
+      A day is held only when it is below <em>both</em> numbers — a heavy-bag day with few cartons, or a pouch day with few units, still ships.
+    </span>
+  </div>
+</div>
+
+<!-- Actions -->
 <div class="controls">
   <button class="chip active" data-filter="deficit" onclick="setFilter('deficit',this)">Needs Shipment</button>
+  <button class="chip" data-filter="outstanding" onclick="setFilter('outstanding',this)">Still To Pack</button>
   <button class="chip" data-filter="all" onclick="setFilter('all',this)">All Products</button>
   <span style="font-size:11px;color:var(--text-muted)" id="count-lbl"></span>
   <input type="text" class="search-input" placeholder="Search..." oninput="renderTable()" id="search"/>
-  <button class="btn-outline" onclick="savePlan()">💾 Save Progress</button>
-  <button class="btn-outline" onclick="downloadPacking()">⬇ Packing Plan</button>
-  <button class="btn-outline" onclick="downloadShipment('remaining')">⬇ Shipment (Remaining)</button>
-  <button class="btn-outline" onclick="downloadShipment('all')">⬇ Shipment (Full)</button>
-  <button class="btn-danger" onclick="clearPlan()">Clear</button>
+</div>
+<div class="controls">
+  <button class="btn-green" id="save-btn" onclick="saveItems()" disabled>💾 Save plan edits</button>
+  <button class="btn-outline" onclick="dl('/shipment/download/packing-plan.xlsx')">⬇ Plan (Excel)</button>
+  <button class="btn-outline" onclick="dl('/shipment/download/packing-plan.pdf')">⬇ Plan (PDF)</button>
+  <button class="btn-outline" onclick="dl('/shipment/download/packed.xlsx')">⬇ Packed daily (Excel)</button>
+  <button class="btn-outline" onclick="dl('/shipment/download/remaining.pdf')">⬇ Still to pack (PDF)</button>
+  <button class="btn-outline" onclick="dl('/shipment/download/shipment-file.xlsx?mode=remaining')">⬇ Amazon file (remaining)</button>
+  <button class="btn-outline" onclick="dl('/shipment/download/shipment-file.xlsx?mode=all')">⬇ Amazon file (full)</button>
+  <button class="btn-outline" onclick="dl('/shipment/download/shipment-file.xlsx?mode=verified')">⬇ Amazon file (verified)</button>
+  <button class="btn-danger" onclick="clearPlan()">Delete plan</button>
 </div>
 
-<!-- Table -->
 <div class="table-wrap">
 <table>
-<thead><tr>
-  <th class="col-smb">S</th><th class="col-smb">M</th><th class="col-smb">B</th>
-  <th>Brand</th><th>FBA SKU</th><th>ASIN</th><th style="text-align:left">Item</th><th>Wt</th>
-  <th class="col-calc">Sales<br/>(7d)</th>
-  <th class="col-calc">Proj</th>
-  <th class="col-calc">FBA<br/>Stock</th>
-  <th class="col-calc">Deficit</th>
-  <th class="col-input">Ship<br/>Plan</th>
-  <th class="col-input">Avl</th>
-  <th class="col-day">D1</th><th class="col-day">D2</th><th class="col-day">D3</th><th class="col-day">D4</th><th class="col-day">D5</th><th class="col-day">D6</th>
-  <th class="col-calc">Remain</th>
-</tr></thead>
+<thead><tr id="thead-row"></tr></thead>
 <tbody id="tbody"></tbody>
 </table>
 </div>
@@ -129,19 +190,53 @@ td input[type="checkbox"]{width:14px;height:14px;cursor:pointer}
 </main>
 <div id="toast"></div>
 <script>
-let plan = [];
+// Server-provided state. `items` order is authoritative and is never re-sorted
+// here; see the comment at the top of this file.
+let plan = null;
+let items = [];
+let days = [];
+let held = {days: 0, units: 0, cartons: 0};
+let missingSku = 0;
 let currentFilter = "deficit";
 
-// Load saved plan on page load
-(async()=>{
-  const r = await fetch("/shipment/last");
-  const data = await r.json();
-  if(data.plan && data.plan.length){
-    plan = data.plan;
-    if(data.multiplier) document.getElementById("multiplier").value = data.multiplier;
-    showResults();
-  }
-})();
+// ASINs whose plan fields the owner has edited but not yet saved. Only these are
+// POSTed, so a save cannot overwrite a field the owner never touched.
+const dirty = new Set();
+
+load();
+
+async function load(){
+  try{
+    const r = await fetch("/shipment/active");
+    const data = await r.json();
+    if(!data.plan){
+      document.getElementById("no-plan").style.display = "block";
+      document.getElementById("results").style.display = "none";
+      return;
+    }
+    adopt(data);
+  }catch(e){ toast("Could not load the active plan: " + e.message, "error"); }
+}
+
+function adopt(data){
+  plan = data.plan;
+  items = data.items || [];
+  days = data.days || [];
+  held = data.held || {days:0, units:0, cartons:0};
+  missingSku = data.missing_sku_count || 0;
+  dirty.clear();
+  markClean();
+  document.getElementById("no-plan").style.display = "none";
+  document.getElementById("results").style.display = "block";
+  if(plan.multiplier) document.getElementById("multiplier").value = plan.multiplier;
+  document.getElementById("min-cartons").value = plan.min_cartons;
+  document.getElementById("min-units").value = plan.min_units;
+  renderBanners();
+  renderSummary();
+  renderDays();
+  renderHead();
+  renderTable();
+}
 
 async function generate(){
   const salesFile = document.getElementById("sales-file").files[0];
@@ -157,117 +252,292 @@ async function generate(){
     const r = await fetch("/shipment/generate",{method:"POST",body:fd});
     const data = await r.json();
     if(data.error) throw new Error(data.error);
-    plan = data.plan;
-    showResults();
-    toast(plan.length + " products loaded","success");
-  }catch(e){toast(e.message,"error");}
-  finally{document.getElementById("gen-btn").disabled=false;document.getElementById("gen-spin").style.display="none";}
+    adopt(data);
+    toast(items.length + " products loaded","success");
+  }catch(e){ toast(e.message,"error"); }
+  finally{
+    document.getElementById("gen-btn").disabled = false;
+    document.getElementById("gen-spin").style.display = "none";
+  }
 }
 
-function showResults(){
-  document.getElementById("results").style.display = "block";
-  updateSummary();
-  renderTable();
+// ─── Summary ────────────────────────────────────────────────────────────────
+
+function renderBanners(){
+  const out = [];
+  if(missingSku){
+    out.push(`<div class="banner warn"><strong>${missingSku} item(s) have no merchant SKU.</strong>
+      Amazon's upload keys on the merchant SKU, not the ASIN, so those rows are rejected on their side.
+      They are written to the Amazon file with a blank SKU rather than a plausible-looking ASIN, so you can spot them before uploading.</div>`);
+  }
+  if(held.days){
+    out.push(`<div class="banner info"><strong>${held.days} day(s) on hold</strong> —
+      ${held.units.toLocaleString("en-IN")} units in ${held.cartons.toLocaleString("en-IN")} cartons.
+      Those boxes exist and are counted as packed, but stay out of the shipment until you verify or release the day.</div>`);
+  }
+  document.getElementById("banners").innerHTML = out.join("");
 }
 
-function updateSummary(){
-  const needShip = plan.filter(p=>p.deficit>0).length;
-  const totalUnits = plan.reduce((s,p)=>s+(p.shipment_plan||0),0);
-  const totalPacked = plan.reduce((s,p)=>s+packed(p),0);
-  const totalRemaining = totalUnits - totalPacked;
+function renderSummary(){
+  const needShip  = items.filter(i => i.shipment_plan > 0).length;
+  const planUnits = items.reduce((s,i) => s + i.shipment_plan, 0);
+  const packed    = items.reduce((s,i) => s + i.packed, 0);
+  const shippable = items.reduce((s,i) => s + i.shippable, 0);
+  const remaining = items.reduce((s,i) => s + i.remaining, 0);
   document.getElementById("summary").innerHTML = `
-    <div class="stat"><div class="num">${plan.length}</div><div class="lbl">Total SKUs</div></div>
-    <div class="stat alert"><div class="num">${needShip}</div><div class="lbl">Need Shipment</div></div>
-    <div class="stat"><div class="num">${totalUnits.toLocaleString("en-IN")}</div><div class="lbl">Plan (units)</div></div>
-    <div class="stat"><div class="num">${totalPacked.toLocaleString("en-IN")}</div><div class="lbl">Packed</div></div>
-    <div class="stat ${totalRemaining>0?'alert':''}"><div class="num">${totalRemaining.toLocaleString("en-IN")}</div><div class="lbl">Remaining</div></div>
+    <div class="stat"><div class="num">${items.length}</div><div class="lbl">Total SKUs</div></div>
+    <div class="stat alert"><div class="num">${needShip}</div><div class="lbl">To Ship</div></div>
+    <div class="stat"><div class="num">${planUnits.toLocaleString("en-IN")}</div><div class="lbl">Plan (units)</div></div>
+    <div class="stat"><div class="num">${packed.toLocaleString("en-IN")}</div><div class="lbl">Packed</div></div>
+    <div class="stat ${shippable < packed ? 'hold' : 'good'}"><div class="num">${shippable.toLocaleString("en-IN")}</div><div class="lbl">Shippable</div></div>
+    <div class="stat ${remaining > 0 ? 'alert' : 'good'}"><div class="num">${remaining.toLocaleString("en-IN")}</div><div class="lbl">Still to pack</div></div>
   `;
 }
 
-function packed(p){ return (p.day1||0)+(p.day2||0)+(p.day3||0)+(p.day4||0)+(p.day5||0)+(p.day6||0); }
+function renderDays(){
+  const box = document.getElementById("days");
+  if(!days.length){
+    box.innerHTML = '<span style="color:var(--text-muted);font-size:12px">Nothing packed against this plan yet.</span>';
+    return;
+  }
+  box.innerHTML = days.map(d => {
+    const st = esc(d.status);
+    const dt = esc(d.pack_date);
+    const actions = [];
+    // Verify is offered for anything submitted or held — verifying a held day IS
+    // the owner deciding those units are good, so demanding a release click first
+    // would be two clicks for one decision.
+    if(d.status === "submitted" || d.status === "held"){
+      actions.push(`<button class="btn-green" onclick="verifyDay('${dt}')">Verify</button>`);
+    }
+    if(d.status === "held"){
+      actions.push(`<button class="btn-warn" onclick="releaseDay('${dt}')">Ship anyway</button>`);
+    }
+    return `<div class="day ${st}">
+      <div class="d-date">${dt} <span class="badge ${st}">${st}</span></div>
+      <div class="d-nums">${d.total_units.toLocaleString("en-IN")} units · ${d.total_cartons.toLocaleString("en-IN")} cartons${d.submitted_by ? " · by " + esc(d.submitted_by) : ""}</div>
+      ${d.hold_reason ? `<div class="d-reason">${esc(d.hold_reason)}</div>` : ""}
+      <div class="d-actions">${actions.join("")}</div>
+    </div>`;
+  }).join("");
+}
 
-function setFilter(f,el){
-  currentFilter=f;
-  document.querySelectorAll('.chip[data-filter]').forEach(c=>c.classList.remove("active"));
-  el.classList.add("active");
-  renderTable();
+// ─── Table ──────────────────────────────────────────────────────────────────
+
+function renderHead(){
+  const dayCols = days.map(d =>
+    `<th class="col-day ${d.status === 'held' ? 'held' : ''}" title="${esc(d.status)}">${esc(d.pack_date.slice(5))}<br/>u / c</th>`
+  ).join("");
+  document.getElementById("thead-row").innerHTML = `
+    <th class="col-smb">S</th><th class="col-smb">M</th><th class="col-smb">B</th>
+    <th>Brand</th><th>Merchant SKU</th><th>ASIN</th><th style="text-align:left">Item</th><th>Wt</th>
+    <th class="col-calc">Sales<br/>(7d)</th>
+    <th class="col-calc">Proj</th>
+    <th class="col-calc">FBA<br/>Stock</th>
+    <th class="col-calc">Deficit</th>
+    <th class="col-input">To Ship</th>
+    <th class="col-input">Avl</th>
+    ${dayCols}
+    <th class="col-calc">Packed</th>
+    <th class="col-calc" title="Excludes held days">Shippable</th>
+    <th class="col-calc">Left</th>
+  `;
+}
+
+/** Units+cartons for one ASIN on one day, as "120/10". */
+function dayCell(day, asin){
+  const e = (day.entries || []).find(x => x.asin === asin);
+  if(!e || (!e.units && !e.cartons)) return {text:"·", has:false};
+  return {text:`${e.units}/${e.cartons}`, has:true};
+}
+
+function visibleItems(){
+  const q = (document.getElementById("search").value || "").toLowerCase();
+  // filter() preserves order. Do not sort — see the note at the top of the file.
+  return items.filter(i => {
+    if(currentFilter === "deficit" && i.shipment_plan <= 0) return false;
+    if(currentFilter === "outstanding" && i.remaining <= 0) return false;
+    if(q && !i.item.toLowerCase().includes(q)
+         && !i.asin.toLowerCase().includes(q)
+         && !(i.fba_sku || "").toLowerCase().includes(q)) return false;
+    return true;
+  });
 }
 
 function renderTable(){
-  const q = (document.getElementById("search").value||"").toLowerCase();
-  let rows = plan.filter(p=>{
-    if(currentFilter==="deficit" && p.deficit<=0 && (p.shipment_plan||0)<=0) return false;
-    if(q && !p.item.toLowerCase().includes(q) && !p.asin.toLowerCase().includes(q) && !(p.fba_sku||"").toLowerCase().includes(q)) return false;
-    return true;
-  });
-  document.getElementById("count-lbl").textContent = rows.length + " items";
+  const rows = visibleItems();
+  document.getElementById("count-lbl").textContent = rows.length + " of " + items.length + " items";
   const tbody = document.getElementById("tbody");
-  if(!rows.length){tbody.innerHTML='<tr><td colspan="21" class="empty-state">No items match filter.</td></tr>';return;}
-
-  tbody.innerHTML = rows.map((p,i)=>{
-    const idx = plan.indexOf(p);
-    const pk = packed(p);
-    const rem = (p.shipment_plan||0) - pk;
-    const defCls = p.deficit>0?"deficit-pos":"deficit-neg";
-    const remCls = rem>0?"remaining-pos":"remaining-zero";
-    const trCls = (p.shipment_plan||0)<=0?"no-ship":"";
-    return `<tr class="${trCls}" data-idx="${idx}">
-      <td><input type="checkbox" ${p.s?"checked":""} onchange="upd(${idx},'s',this.checked)"/></td>
-      <td><input type="checkbox" ${p.m?"checked":""} onchange="upd(${idx},'m',this.checked)"/></td>
-      <td><input type="checkbox" ${p.b?"checked":""} onchange="upd(${idx},'b',this.checked)"/></td>
-      <td style="font-size:11px">${p.brand}</td>
-      <td style="font-size:10px;color:var(--text-muted)">${p.fba_sku||""}</td>
-      <td style="font-size:10px">${p.asin}</td>
-      <td class="left"><strong>${p.item}</strong></td>
-      <td style="font-size:11px;color:var(--text-muted)">${p.weight?p.weight+"kg":""}</td>
-      <td>${p.sales_7d}</td>
-      <td>${p.projection}</td>
-      <td>${p.fba_stock}</td>
-      <td class="${defCls}">${p.deficit}</td>
-      <td><input type="number" value="${p.shipment_plan||0}" min="0" onchange="upd(${idx},'shipment_plan',+this.value)"/></td>
-      <td><input type="number" value="${p.available||0}" min="0" onchange="upd(${idx},'available',+this.value)" style="width:42px"/></td>
-      <td><input type="number" value="${p.day1||0}" min="0" onchange="upd(${idx},'day1',+this.value)" style="width:40px"/></td>
-      <td><input type="number" value="${p.day2||0}" min="0" onchange="upd(${idx},'day2',+this.value)" style="width:40px"/></td>
-      <td><input type="number" value="${p.day3||0}" min="0" onchange="upd(${idx},'day3',+this.value)" style="width:40px"/></td>
-      <td><input type="number" value="${p.day4||0}" min="0" onchange="upd(${idx},'day4',+this.value)" style="width:40px"/></td>
-      <td><input type="number" value="${p.day5||0}" min="0" onchange="upd(${idx},'day5',+this.value)" style="width:40px"/></td>
-      <td><input type="number" value="${p.day6||0}" min="0" onchange="upd(${idx},'day6',+this.value)" style="width:40px"/></td>
-      <td class="${remCls}">${rem}</td>
+  const colspan = 17 + days.length;
+  if(!rows.length){
+    tbody.innerHTML = `<tr><td colspan="${colspan}" class="empty-state">No items match this filter.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map(i => {
+    const dayCells = days.map(d => {
+      const c = dayCell(d, i.asin);
+      return `<td class="day-cell ${c.has ? "has" : ""}">${esc(c.text)}</td>`;
+    }).join("");
+    // Every interpolation below is either a number computed from JSON, or run
+    // through esc(). The ASIN in particular reaches three inline handlers and a
+    // data- attribute, so an unescaped quote in it would break out of the
+    // attribute — these strings come from an uploaded CSV, not a trusted source.
+    const asin = esc(i.asin);
+    return `<tr class="${i.shipment_plan <= 0 ? "no-ship" : ""} ${dirty.has(i.asin) ? "dirty" : ""}" data-asin="${asin}">
+      <td><input type="checkbox" ${i.s ? "checked" : ""} onchange="edit('${asin}','s',this.checked)"/></td>
+      <td><input type="checkbox" ${i.m ? "checked" : ""} onchange="edit('${asin}','m',this.checked)"/></td>
+      <td><input type="checkbox" ${i.b ? "checked" : ""} onchange="edit('${asin}','b',this.checked)"/></td>
+      <td style="font-size:11px">${esc(i.brand)}</td>
+      <td style="font-size:10px">${i.fba_sku ? `<span style="color:var(--text-muted)">${esc(i.fba_sku)}</span>` : '<span class="no-sku">no SKU</span>'}</td>
+      <td style="font-size:10px">${asin}</td>
+      <td class="left"><strong>${esc(i.item)}</strong></td>
+      <td style="font-size:11px;color:var(--text-muted)">${i.weight ? esc(i.weight) + "kg" : ""}</td>
+      <td>${i.sales_7d}</td>
+      <td>${i.projection}</td>
+      <td>${i.fba_stock}</td>
+      <td class="${i.deficit > 0 ? "deficit-pos" : "deficit-neg"}">${i.deficit}</td>
+      <td><input type="number" value="${i.shipment_plan}" min="0" onchange="edit('${asin}','shipment_plan',+this.value)"/></td>
+      <td><input type="number" value="${i.available}" min="0" style="width:44px" onchange="edit('${asin}','available',+this.value)"/></td>
+      ${dayCells}
+      <td>${i.packed}</td>
+      <td class="${i.shippable < i.packed ? "shippable-lt" : ""}">${i.shippable}</td>
+      <td class="${i.remaining > 0 ? "remaining-pos" : "remaining-zero"}">${i.remaining}</td>
     </tr>`;
   }).join("");
 }
 
-function upd(idx, field, val){
-  plan[idx][field] = val;
-  // Update remaining in the row without full re-render
-  updateSummary();
-  // Re-render just the remaining cell
-  const tr = document.querySelector(`tr[data-idx="${idx}"]`);
-  if(tr){
-    const pk = packed(plan[idx]);
-    const rem = (plan[idx].shipment_plan||0) - pk;
-    const lastTd = tr.lastElementChild;
-    lastTd.textContent = rem;
-    lastTd.className = rem>0?"remaining-pos":"remaining-zero";
+// ─── Editing ────────────────────────────────────────────────────────────────
+
+function edit(asin, field, value){
+  const item = items.find(i => i.asin === asin);
+  if(!item) return;
+  item[field] = value;
+  dirty.add(asin);
+  if(field === "shipment_plan"){
+    // Recompute locally so the row reads correctly straight away. The server
+    // recomputes the same way (logic.remaining_for) on the next load, and clamps
+    // at zero — over-packing should read "nothing left", not "-40 to pack".
+    item.remaining = Math.max(0, value - item.packed);
+    renderSummary();
   }
+  const tr = document.querySelector(`tr[data-asin="${asin}"]`);
+  if(tr){
+    tr.classList.add("dirty");
+    const left = tr.lastElementChild;
+    left.textContent = item.remaining;
+    left.className = item.remaining > 0 ? "remaining-pos" : "remaining-zero";
+  }
+  markDirty();
 }
 
-async function savePlan(){
-  const mult = parseFloat(document.getElementById("multiplier").value)||5;
-  await fetch("/shipment/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({plan,multiplier:mult,created_at:new Date().toISOString()})});
-  toast("Plan saved","success");
+function markDirty(){
+  const btn = document.getElementById("save-btn");
+  btn.disabled = dirty.size === 0;
+  btn.textContent = dirty.size ? `💾 Save ${dirty.size} edit(s)` : "💾 Save plan edits";
+}
+function markClean(){ markDirty(); }
+
+async function saveItems(){
+  if(!dirty.size) return;
+  const payload = items
+    .filter(i => dirty.has(i.asin))
+    .map(i => ({asin:i.asin, shipment_plan:i.shipment_plan, available:i.available, s:i.s, m:i.m, b:i.b}));
+  try{
+    const r = await fetch("/shipment/items",{
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({plan_id: plan.id, items: payload}),
+    });
+    const data = await r.json();
+    if(data.error) throw new Error(data.error);
+    toast(`Saved ${data.changed} item(s)`, "success");
+    // Reload rather than trusting local state: the packer may have submitted a
+    // day while this screen was open, which changes packed/shippable/remaining.
+    await load();
+  }catch(e){ toast(e.message, "error"); }
 }
 
-function downloadPacking(){ window.location.href="/shipment/download-packing-plan"; }
-function downloadShipment(mode){ window.location.href="/shipment/download-shipment-file?mode="+mode; }
+async function saveThresholds(){
+  const body = {
+    min_cartons: +document.getElementById("min-cartons").value,
+    min_units: +document.getElementById("min-units").value,
+  };
+  try{
+    const r = await fetch(`/shipment/plan/${plan.id}/thresholds`,{
+      method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if(data.error) throw new Error(data.error);
+    toast("Thresholds saved. They apply the next time a day is submitted.", "success");
+    plan.min_cartons = data.min_cartons;
+    plan.min_units = data.min_units;
+  }catch(e){ toast(e.message, "error"); }
+}
+
+// ─── Day actions ────────────────────────────────────────────────────────────
+
+async function verifyDay(packDate){
+  if(!confirm(`Verify ${packDate}? Verified units can be invoiced, and the day can no longer be edited by the packer.`)) return;
+  await dayAction(`/shipment/packing/${packDate}/verify`, `${packDate} verified`);
+}
+
+async function releaseDay(packDate){
+  if(!confirm(`Ship ${packDate} anyway? It is below your threshold, so it will go as its own shipment rather than combining with the next day.`)) return;
+  await dayAction(`/shipment/packing/${packDate}/release`, `${packDate} released for shipping`);
+}
+
+async function dayAction(url, okMessage){
+  try{
+    const r = await fetch(url, {method:"POST"});
+    const data = await r.json();
+    if(data.error) throw new Error(data.error);
+    toast(okMessage, "success");
+    await load();
+  }catch(e){ toast(e.message, "error"); }
+}
+
+// ─── Misc ───────────────────────────────────────────────────────────────────
+
+function setFilter(f, el){
+  currentFilter = f;
+  document.querySelectorAll(".chip[data-filter]").forEach(c => c.classList.remove("active"));
+  el.classList.add("active");
+  renderTable();
+}
+
+function dl(url){ window.location.href = url; }
+
 async function clearPlan(){
-  if(!confirm("Clear shipment plan?"))return;
-  await fetch("/shipment/clear",{method:"DELETE"});
-  plan=[];document.getElementById("results").style.display="none";
-  toast("Cleared","success");
+  if(!confirm("Delete this plan and all its packing history? This cannot be undone.")) return;
+  try{
+    const r = await fetch(`/shipment/plan/${plan.id}`, {method:"DELETE"});
+    const data = await r.json();
+    if(data.error) throw new Error(data.error);
+    plan = null; items = []; days = [];
+    document.getElementById("results").style.display = "none";
+    document.getElementById("no-plan").style.display = "block";
+    toast("Plan deleted", "success");
+  }catch(e){ toast(e.message, "error"); }
 }
 
-function toast(msg,type=""){const el=document.getElementById("toast");el.textContent=msg;el.className=type;el.style.display="block";setTimeout(()=>el.style.display="none",3500);}
+/** Product names and hold reasons come from CSVs and the DB, so escape them. */
+function esc(s){
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function toast(msg, type=""){
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.className = type;
+  el.style.display = "block";
+  setTimeout(() => el.style.display = "none", 4500);
+}
+
+// Leaving with unsaved plan edits is a real loss — the owner may have retyped
+// twenty quantities.
+window.addEventListener("beforeunload", e => {
+  if(dirty.size){ e.preventDefault(); e.returnValue = ""; }
+});
 </script>
 </body>
 </html>
