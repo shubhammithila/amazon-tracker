@@ -12,3 +12,14 @@ dist/
 build/
 tracker.db
 .gstack/
+
+# Local dev leftovers
+# cookies.txt was committed once and contains a real session token — see
+# CLAUDE.md. Untracked here, but it is still in git history.
+cookies.txt
+
+# The shipment plan and projections used to live in repo-root JSON blobs. The
+# shipment plan is now in the database; these patterns stay so a stray local
+# file (or a re-run of an old build) cannot be committed by accident.
+shipment_plan.json
+projection_data.json
