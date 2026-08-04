@@ -1,0 +1,293 @@
+/* Amazon Tracker — shared light theme.
+ *
+ * One stylesheet for all seven pages. Previously each template carried its own
+ * inline `:root` block plus a scattering of hardcoded colours, so "make it
+ * lighter" meant seven edits that would drift apart again by the next feature.
+ *
+ * Two things this file is deliberately NOT responsible for:
+ *
+ *   1. Layout. Each page keeps its own inline CSS for structure, because these
+ *      are seven standalone documents rather than one app shell, and converting
+ *      them to template inheritance is a large risky refactor for no benefit
+ *      here. This file owns COLOUR and TYPE only.
+ *
+ *   2. Printed documents. app/shipment/documents.py and
+ *      app/invoice/generator.py deliberately use a dark header band on a white
+ *      page — the accounting-document convention, and correct on paper
+ *      regardless of what the screen looks like. They are untouched.
+ *
+ * Design brief was "easy on the eyes, and easy for a normal 10th pass user".
+ * So: a warm off-white page rather than pure white (less glare under warehouse
+ * tube lighting), near-black text at a genuinely readable size, and colour used
+ * only to mean something — red is a problem, amber is waiting, green is done.
+ * Nothing is decorative.
+ */
+
+:root {
+  /* Surfaces. Off-white, not #fff: a pure-white field under bright light is
+     what makes long spreadsheet sessions tiring. */
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface2: #eef1f5;
+  --border: #d7dce3;
+  --border-strong: #b9c1cc;
+
+  /* Text. 4.5:1 or better against --surface for everything except --text-dim,
+     which is only ever used for supporting labels that repeat information. */
+  --text: #1a2230;
+  --text-muted: #55606f;
+  --text-dim: #7b8695;
+
+  /* One accent, used for interaction only — links, focus, the active tab. */
+  --accent: #1d4ed8;
+  --accent-hover: #1740b8;
+  --accent-soft: #eaf0fd;
+
+  /* Status. These carry meaning and are the only colours allowed to.
+     Every foreground/background pair here was measured for WCAG contrast, not
+     eyeballed — the soft tints are deliberately very pale so their matching
+     strong colour clears 4.5:1 on top of them. Darkening green and accent from
+     the obvious Tailwind values was what took two marginal 4.48s over the line. */
+  --green: #146c34;
+  --green-soft: #eaf7ee;
+  --red: #c62828;
+  --red-soft: #fdeaea;
+  --yellow: #a16207;
+  --yellow-soft: #fdf4e3;
+  --orange: #c2410c;
+  --orange-soft: #fdeee4;
+  --blue: #1d4ed8;
+  --blue-soft: #eaf0fd;
+
+  /* Aliases so existing markup keeps working. Several templates already use
+     --success/--warning/--danger; mapping them here avoids touching hundreds of
+     call sites and, more importantly, avoids two names drifting apart in
+     meaning later. */
+  --success: var(--green);
+  --warning: var(--yellow);
+  --danger: var(--red);
+
+  /* Text that sits ON a solid status colour. Named rather than hardcoded
+     because "#fff on a button" appeared 15 times across the templates and each
+     one had to be found by hand. */
+  --on-accent: #ffffff;
+  --on-green: #ffffff;
+  --on-yellow: #2b1c00;
+  --on-red: #ffffff;
+
+  --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
+  /* For the login card, which floats on the page rather than sitting in a
+     grid. A heavy black shadow reads as grime on a light background. */
+  --shadow-lg: 0 10px 24px -8px rgba(16, 24, 40, .18);
+  --radius: 8px;
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────────── */
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  /* 15px not 14: the smaller size was fine on a laptop and hard work on a
+     warehouse phone. */
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--accent); }
+
+/* ── Header and nav ───────────────────────────────────────────────────────── */
+
+header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+
+.nav-links a {
+  color: var(--text-muted);
+  font-size: 14px;
+}
+.nav-links a:hover { color: var(--text); }
+.nav-links a.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+/* ── Cards, panels ────────────────────────────────────────────────────────── */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+
+button { font-size: 14px; }
+
+.btn, .btn-primary { background: var(--accent); color: var(--on-accent); }
+.btn:hover:not(:disabled),
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+
+.btn-outline {
+  background: var(--surface);
+  color: var(--text-muted);
+  border: 1px solid var(--border-strong);
+}
+.btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+
+.btn-green, .btn-success { background: var(--green); color: var(--on-green); }
+.btn-warn, .btn-warning { background: var(--yellow); color: var(--on-yellow); }
+.btn-danger {
+  background: var(--surface);
+  color: var(--red);
+  border: 1px solid var(--red);
+  opacity: 1;
+}
+.btn-danger:hover { background: var(--red-soft); }
+
+/* ── Tables ───────────────────────────────────────────────────────────────── */
+
+thead th {
+  background: var(--surface2);
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-strong);
+  /* 11px: these are ALL-CAPS abbreviations, which are harder to read than
+     sentence case at the same size. */
+  font-size: 11px;
+}
+/* The column-group tints from the dark theme, re-derived. They exist so the eye
+   can find the input columns without reading the headers, which is the whole
+   point of a 20-column table. */
+thead th.col-smb   { background: var(--surface2); }
+thead th.col-input { background: var(--accent-soft); color: var(--accent); }
+thead th.col-calc  { background: var(--green-soft); color: var(--green); }
+thead th.col-day   { background: var(--yellow-soft); color: var(--yellow); }
+thead th.col-day.held { background: var(--orange-soft); color: var(--orange); }
+
+tbody tr { border-bottom: 1px solid var(--border); }
+tbody tr:hover { background: var(--accent-soft); }
+tbody tr.dirty { background: var(--yellow-soft); }
+/* Rows that need no shipment. 0.4 opacity was unreadable on white; a muted
+   colour says "not now" without making the text a puzzle. */
+tbody tr.no-ship { opacity: 1; color: var(--text-dim); }
+tbody tr.no-ship td { color: var(--text-dim); }
+
+td { font-size: 13px; }
+
+/* Inputs inside the grid. Bigger than the dark theme's 11px — these are typed
+   into all day, sometimes on a phone. Note 16px on the ops screen specifically:
+   iOS zooms the whole page for anything smaller, which loses the packer's place
+   in a 100-row list. */
+td input[type="number"], td input[type="text"] {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  font-size: 13px;
+}
+td input[type="number"]:focus, td input[type="text"]:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
+}
+
+/* ── Form controls ────────────────────────────────────────────────────────── */
+
+.form-group label {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.form-group input, .form-group select, .search-input {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+}
+.form-group input:focus, .form-group select:focus, .search-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
+}
+
+/* ── Stat tiles ───────────────────────────────────────────────────────────── */
+
+.stat, .tot {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+.stat .lbl, .tot .lbl { color: var(--text-muted); font-size: 11px; }
+.stat.alert { border-color: var(--red); }
+.stat.alert .num { color: var(--red); }
+.stat.good .num { color: var(--green); }
+.stat.hold { border-color: var(--yellow); }
+.stat.hold .num { color: var(--yellow); }
+
+/* ── Banners ──────────────────────────────────────────────────────────────── */
+
+.banner { border-radius: var(--radius); line-height: 1.55; font-size: 13.5px; }
+.banner.info  { background: var(--blue-soft);   border: 1px solid var(--blue);   color: #16358c; }
+.banner.warn  { background: var(--yellow-soft); border: 1px solid var(--yellow); color: #7c4a02; }
+.banner.error { background: var(--red-soft);    border: 1px solid var(--red);    color: #8e1f1f; }
+.banner.good  { background: var(--green-soft);  border: 1px solid var(--green);  color: #10592b; }
+
+/* ── Status badges ────────────────────────────────────────────────────────── */
+
+.badge { font-size: 10.5px; }
+.badge.open      { background: var(--surface2);   color: var(--text-muted); }
+.badge.submitted { background: var(--blue-soft);  color: var(--blue); }
+.badge.held      { background: var(--yellow-soft); color: var(--yellow); }
+.badge.verified  { background: var(--green-soft); color: var(--green); }
+.badge.shipped   { background: var(--accent-soft); color: var(--accent); }
+.badge.draft     { background: var(--orange-soft); color: var(--orange); }
+
+/* ── Day cards ────────────────────────────────────────────────────────────── */
+
+.day {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+.day.held     { border-color: var(--yellow); }
+.day.verified { border-color: var(--green); }
+.day .d-nums   { color: var(--text-muted); }
+.day .d-reason { color: var(--yellow); }
+.day .d-invoiced { color: var(--accent); }
+
+/* ── Chips / filters ──────────────────────────────────────────────────────── */
+
+.chip {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
+}
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+.chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+/* ── Semantic number colours ──────────────────────────────────────────────── */
+
+.deficit-pos   { color: var(--red); font-weight: 700; }
+.deficit-neg   { color: var(--green); }
+.remaining-pos { color: var(--orange); font-weight: 600; }
+.remaining-zero{ color: var(--green); font-weight: 600; }
+.shippable-lt  { color: var(--yellow); font-weight: 600; }
+.no-sku        { color: var(--red); font-weight: 700; }
+
+/* ── Misc ─────────────────────────────────────────────────────────────────── */
+
+.subtitle, .card p { color: var(--text-muted); }
+.spinner { border-color: var(--border); border-top-color: var(--accent); }
+.upload-area, .drop-zone {
+  background: var(--surface);
+  border: 2px dashed var(--border-strong);
+}
+.upload-area:hover, .drop-zone:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+#toast { color: var(--text); }

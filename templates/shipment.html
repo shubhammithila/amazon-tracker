@@ -22,7 +22,6 @@
      here would put the two roles back on a collision course.
 #}
 <style>
-:root{--bg:#0f1117;--surface:#1a1d27;--border:#2a2d3a;--text:#e2e8f0;--text-muted:#64748b;--accent:#6366f1;--green:#22c55e;--yellow:#eab308;--red:#ef4444;--orange:#f97316;--blue:#3b82f6}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px}
 header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
@@ -42,14 +41,14 @@ h2{font-size:20px;font-weight:600;margin-bottom:4px}
 .form-group label{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
 .form-group input[type="file"]{font-size:12px;color:var(--text-muted)}
 .form-group input[type="number"]{background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:6px 10px;width:80px;font-size:13px}
-.btn{background:var(--accent);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:13px;font-weight:500;cursor:pointer}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:6px;padding:8px 16px;font-size:13px;font-weight:500;cursor:pointer}
 .btn:disabled{opacity:.5;cursor:not-allowed}
 .btn-outline{background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer}
 .btn-outline:hover{border-color:var(--accent);color:var(--text)}
 .btn-danger{background:transparent;color:var(--red);border:1px solid var(--red);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;opacity:.7}
 .btn-danger:hover{opacity:1}
-.btn-green{background:var(--green);color:#04150a;border:none;border-radius:6px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer}
-.btn-warn{background:var(--yellow);color:#1a1400;border:none;border-radius:6px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer}
+.btn-green{background:var(--green);color:var(--on-green);border:none;border-radius:6px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer}
+.btn-warn{background:var(--yellow);color:var(--on-yellow);border:none;border-radius:6px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 
@@ -61,8 +60,8 @@ h2{font-size:20px;font-weight:600;margin-bottom:4px}
 .stat.good .num{color:var(--green)}
 
 .banner{border-radius:8px;padding:10px 14px;font-size:12.5px;margin-bottom:14px;line-height:1.5}
-.banner.warn{background:rgba(234,179,8,.08);border:1px solid var(--yellow);color:#fde68a}
-.banner.info{background:rgba(59,130,246,.08);border:1px solid var(--blue);color:#bfdbfe}
+.banner.warn{background:var(--yellow-soft);border:1px solid var(--yellow);color:var(--yellow)}
+.banner.info{background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue)}
 
 .days{display:flex;gap:10px;flex-wrap:wrap}
 .day{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;min-width:190px}
@@ -71,32 +70,32 @@ h2{font-size:20px;font-weight:600;margin-bottom:4px}
 .day .d-date{font-size:13px;font-weight:600;margin-bottom:5px}
 .day .d-nums{font-size:11px;color:var(--text-muted);margin-bottom:8px}
 .day .d-reason{font-size:11px;color:var(--yellow);margin-bottom:8px;line-height:1.45}
-.day .d-invoiced{font-size:11px;color:#a5b4fc;font-weight:600;align-self:center}
+.day .d-invoiced{font-size:11px;color:var(--accent);font-weight:600;align-self:center}
 .day .d-actions{display:flex;gap:6px;flex-wrap:wrap}
 .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
-.badge.open{background:rgba(100,116,139,.2);color:#94a3b8}
-.badge.submitted{background:rgba(59,130,246,.18);color:#93c5fd}
-.badge.held{background:rgba(234,179,8,.18);color:#fde047}
-.badge.verified{background:rgba(34,197,94,.18);color:#86efac}
-.badge.shipped{background:rgba(99,102,241,.2);color:#a5b4fc}
+.badge.open{background:var(--surface2);color:var(--text-muted)}
+.badge.submitted{background:var(--blue-soft);color:var(--blue)}
+.badge.held{background:var(--yellow-soft);color:var(--yellow)}
+.badge.verified{background:var(--green-soft);color:var(--green)}
+.badge.shipped{background:var(--accent-soft);color:var(--accent)}
 
 .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
 .chip{padding:5px 12px;border-radius:20px;border:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:12px;cursor:pointer}
-.chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.chip.active{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
 .search-input{background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:6px 10px;font-size:13px;width:160px;margin-left:auto}
 .search-input:focus{outline:none;border-color:var(--accent)}
 
 .table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border)}
 table{width:100%;border-collapse:collapse;min-width:1450px}
 thead th{background:var(--surface);padding:7px 6px;text-align:center;font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid var(--border);white-space:nowrap;position:sticky;top:0}
-thead th.col-smb{background:#1e1e2e;width:28px}
-thead th.col-input{background:#1e2235}
-thead th.col-calc{background:#1a2520}
-thead th.col-day{background:#25201a}
-thead th.col-day.held{background:#2e2410;color:#fde047}
-tbody tr{border-bottom:1px solid var(--border)}tbody tr:hover{background:rgba(99,102,241,.03)}
+thead th.col-smb{background:var(--surface2);width:28px}
+thead th.col-input{background:var(--accent-soft)}
+thead th.col-calc{background:var(--green-soft)}
+thead th.col-day{background:var(--yellow-soft)}
+thead th.col-day.held{background:var(--orange-soft);color:var(--yellow)}
+tbody tr{border-bottom:1px solid var(--border)}tbody tr:hover{background:var(--accent-soft)}
 tbody tr.no-ship{opacity:.4}
-tbody tr.dirty{background:rgba(99,102,241,.07)}
+tbody tr.dirty{background:var(--accent-soft)}
 td{padding:5px;font-size:12px;text-align:center;white-space:nowrap}
 td.left{text-align:left}
 td.day-cell{color:var(--text-muted)}
@@ -112,6 +111,7 @@ td input[type="checkbox"]{width:14px;height:14px;cursor:pointer}
 #toast{position:fixed;bottom:20px;right:20px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 18px;font-size:13px;display:none;z-index:1000;max-width:420px;line-height:1.5}
 #toast.error{border-color:var(--red);color:var(--red)}#toast.success{border-color:var(--green);color:var(--green)}
 </style>
+<link rel="stylesheet" href="/static/theme.css"/>
 </head>
 <body>
 <header>

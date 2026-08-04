@@ -30,7 +30,6 @@
      hunting for every line. filter() preserves order, so searching is safe.
 #}
 <style>
-:root{--bg:#0f1117;--surface:#1a1d27;--border:#2a2d3a;--text:#e2e8f0;--text-muted:#64748b;--accent:#6366f1;--green:#22c55e;--yellow:#eab308;--red:#ef4444;--orange:#f97316}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px;padding-bottom:96px}
 header{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
@@ -46,24 +45,24 @@ h2{font-size:21px;font-weight:600;margin-bottom:4px}
 .empty-state{text-align:center;padding:36px 16px;color:var(--text-muted);line-height:1.6}
 .date-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 input[type="date"]{background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:10px 12px;font-size:15px}
-.btn{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:12px 20px;font-size:15px;font-weight:500;cursor:pointer;min-height:44px}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:8px;padding:12px 20px;font-size:15px;font-weight:500;cursor:pointer;min-height:44px}
 .btn:disabled{opacity:.45;cursor:not-allowed}
-.btn-green{background:var(--green);color:#04150a;font-weight:600}
+.btn-green{background:var(--green);color:var(--on-green);font-weight:600}
 .btn-outline{background:transparent;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:12px 18px;font-size:14px;cursor:pointer;min-height:44px}
 .btn-outline:hover{border-color:var(--accent)}
 
 /* Status + hold messaging */
 .badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
-.badge.open{background:rgba(100,116,139,.2);color:#94a3b8}
-.badge.submitted{background:rgba(59,130,246,.18);color:#93c5fd}
-.badge.held{background:rgba(234,179,8,.18);color:#fde047}
-.badge.verified{background:rgba(34,197,94,.18);color:#86efac}
-.badge.shipped{background:rgba(99,102,241,.2);color:#a5b4fc}
+.badge.open{background:var(--surface2);color:var(--text-muted)}
+.badge.submitted{background:var(--blue-soft);color:var(--blue)}
+.badge.held{background:var(--yellow-soft);color:var(--yellow)}
+.badge.verified{background:var(--green-soft);color:var(--green)}
+.badge.shipped{background:var(--accent-soft);color:var(--accent)}
 .banner{border-radius:8px;padding:12px 14px;font-size:13.5px;margin-bottom:14px;line-height:1.55}
-.banner.warn{background:rgba(234,179,8,.08);border:1px solid var(--yellow);color:#fde68a}
-.banner.info{background:rgba(59,130,246,.08);border:1px solid #3b82f6;color:#bfdbfe}
-.banner.good{background:rgba(34,197,94,.08);border:1px solid var(--green);color:#bbf7d0}
-.banner.error{background:rgba(239,68,68,.08);border:1px solid var(--red);color:#fecaca}
+.banner.warn{background:var(--yellow-soft);border:1px solid var(--yellow);color:var(--yellow)}
+.banner.info{background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue)}
+.banner.good{background:var(--green-soft);border:1px solid var(--green);color:var(--green)}
+.banner.error{background:var(--red-soft);border:1px solid var(--red);color:var(--red)}
 
 /* Progress */
 .totals{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
@@ -75,7 +74,7 @@ input[type="date"]{background:var(--bg);border:1px solid var(--border);border-ra
 
 /* One SKU per block — the whole point of the layout */
 .sku{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px}
-.sku.done{border-color:rgba(34,197,94,.4)}
+.sku.done{border-color:var(--green-soft)}
 .sku.touched{border-color:var(--accent)}
 .sku-name{font-size:15px;font-weight:600;line-height:1.35;margin-bottom:3px}
 .sku-meta{font-size:12px;color:var(--text-muted);margin-bottom:10px}
@@ -110,6 +109,7 @@ input[type="date"]{background:var(--bg);border:1px solid var(--border);border-ra
   .savebar .btn{flex:1}
 }
 </style>
+<link rel="stylesheet" href="/static/theme.css"/>
 </head>
 <body>
 <header>

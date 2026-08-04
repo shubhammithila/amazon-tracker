@@ -4,7 +4,6 @@
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>Projections — Amazon Tracker</title>
 <style>
-:root{--bg:#0f1117;--surface:#1a1d27;--border:#2a2d3a;--text:#e2e8f0;--text-muted:#64748b;--accent:#6366f1;--green:#22c55e;--yellow:#eab308;--red:#ef4444;--orange:#f97316}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px}
 header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
@@ -21,7 +20,7 @@ h2{font-size:20px;font-weight:600;margin-bottom:4px}
 .globals-card label{font-size:12px;color:var(--text-muted);display:flex;flex-direction:column;gap:4px}
 .globals-card input{background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:5px 8px;width:70px;font-size:13px;text-align:center}
 .globals-card input:focus{outline:none;border-color:var(--accent)}
-.btn{background:var(--accent);color:#fff;border:none;border-radius:6px;padding:7px 14px;font-size:13px;font-weight:500;cursor:pointer}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:6px;padding:7px 14px;font-size:13px;font-weight:500;cursor:pointer}
 .btn:disabled{opacity:.5;cursor:not-allowed}
 .btn-outline{background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer}
 .btn-outline:hover{border-color:var(--accent);color:var(--text)}
@@ -35,7 +34,7 @@ h2{font-size:20px;font-weight:600;margin-bottom:4px}
 
 .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
 .chip{padding:5px 12px;border-radius:20px;border:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:12px;cursor:pointer}
-.chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.chip.active{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
 .search-input{background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:6px 10px;font-size:13px;width:180px;margin-left:auto}
 .search-input:focus{outline:none;border-color:var(--accent)}
 
@@ -43,10 +42,10 @@ h2{font-size:20px;font-weight:600;margin-bottom:4px}
 table{width:100%;border-collapse:collapse;min-width:1500px}
 thead th{background:var(--surface);padding:7px 8px;text-align:center;font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid var(--border);white-space:nowrap;cursor:pointer;user-select:none}
 thead th:hover{color:var(--text)}thead th.sorted{color:var(--accent)}
-thead th.col-group-input{background:#1e2235;border-bottom:2px solid var(--accent)}
-thead th.col-group-calc{background:#1a2520}
-thead th.col-group-alert{background:#251a1a}
-tbody tr{border-bottom:1px solid var(--border)}tbody tr:hover{background:rgba(99,102,241,.03)}
+thead th.col-group-input{background:var(--accent-soft);border-bottom:2px solid var(--accent)}
+thead th.col-group-calc{background:var(--green-soft)}
+thead th.col-group-alert{background:var(--red-soft)}
+tbody tr{border-bottom:1px solid var(--border)}tbody tr:hover{background:var(--accent-soft)}
 td{padding:5px 6px;font-size:12px;text-align:center;white-space:nowrap}
 td.product-name{text-align:left;font-weight:600;font-size:13px;padding-left:10px}
 td.brand-cell{text-align:left;font-size:11px;color:var(--text-muted)}
@@ -59,6 +58,7 @@ td input.wide{width:70px}
 #toast{position:fixed;bottom:20px;right:20px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 18px;font-size:13px;display:none;z-index:1000}
 #toast.error{border-color:var(--red);color:var(--red)}#toast.success{border-color:var(--green);color:var(--green)}
 </style>
+<link rel="stylesheet" href="/static/theme.css"/>
 </head>
 <body>
 <header>
