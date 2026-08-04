@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (454 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (569 tests; random order by default)
 
 ### Two logins
 | Env var | Role | Gets |
@@ -74,6 +74,14 @@ app/
 ### Tabs
 Dashboard, Invoice, Portfolio, Projections, Shipment — and `/ops-page` for the
 warehouse, which is not in the nav because every link in it is admin-only.
+
+Colour lives in **`static/theme.css`** and nowhere else — one shared light theme
+for all seven pages. `tests/test_theme.py` fails on any template that re-declares
+`:root`, hardcodes a hex/rgba colour, or forgets the stylesheet link, and it
+computes WCAG contrast for every foreground/background pair rather than trusting
+how they look. `app/shipment/documents.py` and `app/invoice/generator.py` keep
+their dark header bands: those are printed documents, where dark-on-white is the
+accounting convention.
 
 The nav lives in `templates/nav.html` and is `include`d, not inherited. It used
 to be copy-pasted into all 7 templates and had drifted: `projections.html` was
@@ -167,17 +175,84 @@ save from a flaky warehouse phone into an update rather than a double-count.
 
 `tests/test_shipment_plan_db.py` has the clobber tests in both interleavings.
 
+### Plan lifecycle: draft → active → closed
+A generated plan starts as **`draft`**, visible only to the owner. He removes
+rows, fixes quantities and fills missing SKUs, then `POST /plan/{id}/finalise`
+promotes it and closes the previous plan. Until then the warehouse keeps packing
+the old one.
+
+`repository.get_active_plan()` matches `active` **and nothing else**, and that
+omission is load-bearing: it is what makes all eleven pre-existing packing and
+download endpoints draft-blind without a single edit to any of them. Widen it and
+the warehouse starts packing plans the owner has not finished.
+
+> **`create_plan` must never call `close_active_plans()`.** It used to. With
+> drafts that means uploading a CSV instantly closes the plan being packed — the
+> packer's screen empties mid-shift with nothing to explain it, while the
+> replacement sits invisible in draft. The close belongs in `finalise_plan`, which
+> is the moment the owner actually decides.
+> `test_generate_does_not_disturb_the_plan_being_packed` guards it.
+
+### Removing rows
+`excluded_at` is stamped, not deleted, so a mis-click is one click back.
+`load_plan_items(..., include_excluded=False)` filters by default — forgetting the
+flag then hides a row (cosmetic) rather than leaking a removed SKU onto the
+packer's sheet, an Amazon upload or a GST invoice. All five downloads inherit it
+through that one function.
+
+**Excluding a row that already has boxes packed is refused (409).**
+`logic.packed_units_by_asin` aggregates packing entries by ASIN and never consults
+plan items, while the invoice bridge builds its lines *from* plan items — so an
+excluded-but-packed row means real boxes ship with no GST line against them. The
+error names the units and dates and points at `To Ship = 0` instead. The same
+guard's other half: `POST /packing/{date}` drops entries for rows excluded since
+the packer's phone loaded, and reports them, rather than creating the orphan.
+
 ### One place for each rule
 - **Sorting** happens once, in `repository.load_plan_items()`' ORDER BY — the
   only SELECT of plan items anywhere. The dashboard, the ops screen and all four
   downloads render that order as-is. Requirement 3 came from the screen and the
   Excel disagreeing; a client-side `.sort()` would recreate it, so both templates
   are grepped for one.
+
+  Order is **brand → category → product → weight → ASIN**: Mithila Foods before
+  Howrah Foods, then P1 Sattu · P2 Chana · P3 Flours · P4 Rice · P5 Seeds · P6
+  Rest. Product sits *above* weight so every size of one product is contiguous and
+  the packer visits one location once.
+
+  `brand_rank` is persisted because `'MF'`/`'HF'` cannot order alphabetically —
+  H sorts before M. Category is **JOINed from `product_categories`**, never stored
+  on the row: re-classifying a product then needs no row rewrite and cannot leave
+  a plan silently mis-sorted against a stale key. `logic.sort_key` reads the rank
+  `load_plan_items` attaches rather than re-deriving it, or an owner's override
+  would apply in SQL and be ignored in Python.
+
+  Keyword defaults come from `logic.category_for`, and **the rule order is the
+  rule**: nine of the 74 real product names match several keywords, and three
+  change bucket depending on which is tested first — "Bangla Chana Sattu" is a
+  sattu, "Rice Atta" is a flour, "chana dal badi" is a chana. Every default is
+  overridable per product in the app.
+
 - **Rounding** happens once, in `POST /shipment/generate`, and is persisted. Use
   `logic.round_to_10`, never `round(n/10)*10` — the builtin does banker's
   rounding and turns **25 into 20** and **5 into 0**. A real need also never
   rounds away to nothing: 4 units becomes 10, because a stockout on a slow SKU
   costs the Buy Box.
+
+### Two "left to do" numbers, not one
+| Function | Answers | Subtracts stock on hand? |
+|---|---|---|
+| `logic.remaining_for` | what the packer must **box** | no |
+| `logic.still_to_source` | what the owner must **make** | yes |
+
+`remaining_for` deliberately does not accept an `available` argument, and a test
+asserts its *signature*: stock finished on a shelf is not in a carton, so if the
+packer's number subtracted it he would box 410 when the plan needs 610 and the
+shipment would go out short. Found by mutation — adding an optional parameter
+passed every value-based test because no caller was passing it.
+
+(The `available` column existed and fed nothing at all from the first Shipment
+build until this was fixed. Typing into it changed no number anywhere.)
 
 ### Day lifecycle
 `open` → `submitted` → `verified` → `shipped`, with `held` off to one side.
