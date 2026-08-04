@@ -159,6 +159,7 @@ def _item_payload(item, packed: int, shippable: int) -> dict:
     whole feature is built to avoid.
     """
     planned = int(item.shipment_plan or 0)
+    available = int(item.available or 0)
     return {
         "asin": item.asin,
         "fba_sku": item.fba_sku or "",
@@ -170,13 +171,18 @@ def _item_payload(item, packed: int, shippable: int) -> dict:
         "fba_stock": int(item.fba_stock or 0),
         "deficit": int(item.deficit or 0),
         "shipment_plan": planned,
-        "available": int(item.available or 0),
+        "available": available,
         "s": bool(item.s),
         "m": bool(item.m),
         "b": bool(item.b),
         "packed": packed,
         "shippable": shippable,
+        # Two different questions, so two numbers. `remaining` is what still has
+        # to be BOXED and ignores warehouse stock, because stock on a shelf is
+        # not in a carton yet. `to_source` is what still has to be MADE, and is
+        # the one that reacts when the owner types into the In-stock column.
         "remaining": logic.remaining_for(planned, packed),
+        "to_source": logic.still_to_source(planned, packed, available),
     }
 
 

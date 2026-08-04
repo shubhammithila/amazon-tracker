@@ -260,6 +260,59 @@ def test_stock_stranded_by_a_new_plan_is_reported(source):
     )
 
 
+# ─── The In-stock column must actually drive a number ────────────────────────
+
+def test_editing_any_field_recomputes_the_derived_cells(source):
+    """The reported bug: "when i am changing the available. Left to pack is not
+    changing."
+
+    `edit()` used to recompute only inside an `if(field === "shipment_plan")`
+    branch, so typing into the In-stock box updated the in-memory row and then
+    repainted nothing. The number was real and the screen never showed it.
+    """
+    body = _without_comments(source)
+    edit = body[body.find("function edit("):]
+    edit = edit[:edit.find("\nfunction ", 10)]
+
+    assert 'if(field === "shipment_plan")' not in edit, (
+        "the recompute is gated on the field again — editing In stock will not "
+        "move any number on screen, which is the bug that was reported"
+    )
+    assert "to_source" in edit, "edit() never recomputes the To-make figure"
+    assert "item.remaining" in edit, "edit() never recomputes the To-pack figure"
+
+
+def test_the_derived_cells_are_addressed_by_class_not_position(source):
+    """`tr.lastElementChild` broke the moment a column was appended.
+
+    It silently updated whichever cell happened to be last — so the fix for one
+    column would have corrupted the other. Class-based lookup cannot drift.
+    """
+    body = _without_comments(source)
+    assert "lastElementChild" not in body, (
+        "a derived cell is addressed by position; appending a column would then "
+        "repaint the wrong number with no error"
+    )
+    assert "cell-topack" in body and "cell-tomake" in body, (
+        "the derived cells carry no stable class for edit() to find"
+    )
+
+
+def test_both_derived_numbers_are_shown(source):
+    """Two questions, two columns.
+
+    "To pack" ignores warehouse stock because stock on a shelf is not in a
+    carton; "To make" subtracts it. One column cannot answer both, and the
+    packer's number is the one that must not shrink.
+    """
+    assert "To pack" in source, "no column for what still needs boxing"
+    assert "To make" in source, "no column for what still needs producing"
+    assert "In stock" in source, (
+        'the column is still labelled "Avl" — the packer and the owner both have '
+        "to guess what it means"
+    )
+
+
 # ─── The invoice bridge: requirement 8 ───────────────────────────────────────
 
 def test_the_invoice_bridge_is_reachable_from_a_verified_day(source):

@@ -211,7 +211,12 @@ async def test_downloaded_numbers_match_the_dashboard(auth_client, plan_factory)
         item = screen[row[3]]
         assert row[header.index("To Ship")] == item["shipment_plan"]
         assert row[header.index("Packed")] == item["packed"]
-        assert row[header.index("Remaining")] == item["remaining"]
+        assert row[header.index("To Pack")] == item["remaining"]
+        # In Stock and To Make travel too. The In-stock figure fed nothing at all
+        # before this change, so a download that quietly dropped it would put the
+        # column straight back to being decorative.
+        assert row[header.index("In Stock")] == item["available"]
+        assert row[header.index("To Make")] == item["to_source"]
 
 
 def _column(header: list, date_str: str, kind: str) -> int:

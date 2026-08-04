@@ -339,13 +339,17 @@ function renderSummary(){
   const packed    = items.reduce((s,i) => s + i.packed, 0);
   const shippable = items.reduce((s,i) => s + i.shippable, 0);
   const remaining = items.reduce((s,i) => s + i.remaining, 0);
+  const toSource  = items.reduce((s,i) => s + (i.to_source ?? i.remaining), 0);
+  const inStock   = items.reduce((s,i) => s + (Number(i.available) || 0), 0);
   document.getElementById("summary").innerHTML = `
     <div class="stat"><div class="num">${items.length}</div><div class="lbl">Total SKUs</div></div>
     <div class="stat alert"><div class="num">${needShip}</div><div class="lbl">To Ship</div></div>
     <div class="stat"><div class="num">${planUnits.toLocaleString("en-IN")}</div><div class="lbl">Plan (units)</div></div>
+    <div class="stat"><div class="num">${inStock.toLocaleString("en-IN")}</div><div class="lbl">In stock</div></div>
     <div class="stat"><div class="num">${packed.toLocaleString("en-IN")}</div><div class="lbl">Packed</div></div>
     <div class="stat ${shippable < packed ? 'hold' : 'good'}"><div class="num">${shippable.toLocaleString("en-IN")}</div><div class="lbl">Shippable</div></div>
     <div class="stat ${remaining > 0 ? 'alert' : 'good'}"><div class="num">${remaining.toLocaleString("en-IN")}</div><div class="lbl">Still to pack</div></div>
+    <div class="stat ${toSource > 0 ? 'alert' : 'good'}"><div class="num">${toSource.toLocaleString("en-IN")}</div><div class="lbl">Still to make</div></div>
   `;
 }
 
@@ -404,11 +408,12 @@ function renderHead(){
     <th class="col-calc">FBA<br/>Stock</th>
     <th class="col-calc">Deficit</th>
     <th class="col-input">To Ship</th>
-    <th class="col-input">Avl</th>
+    <th class="col-input" title="Finished stock already in your warehouse, ready to pack">In stock</th>
     ${dayCols}
     <th class="col-calc">Packed</th>
     <th class="col-calc" title="Excludes held days">Shippable</th>
-    <th class="col-calc">Left</th>
+    <th class="col-calc" title="Still to box: To Ship − Packed. Ignores warehouse stock, because stock on a shelf is not in a carton yet.">To pack</th>
+    <th class="col-calc" title="Still to make or buy: To Ship − In stock − Packed">To make</th>
   `;
 }
 
@@ -469,7 +474,8 @@ function renderTable(){
       ${dayCells}
       <td>${i.packed}</td>
       <td class="${i.shippable < i.packed ? "shippable-lt" : ""}">${i.shippable}</td>
-      <td class="${i.remaining > 0 ? "remaining-pos" : "remaining-zero"}">${i.remaining}</td>
+      <td class="cell-topack ${i.remaining > 0 ? "remaining-pos" : "remaining-zero"}">${i.remaining}</td>
+      <td class="cell-tomake ${i.to_source > 0 ? "remaining-pos" : "remaining-zero"}">${i.to_source}</td>
     </tr>`;
   }).join("");
 }
@@ -481,21 +487,39 @@ function edit(asin, field, value){
   if(!item) return;
   item[field] = value;
   dirty.add(asin);
-  if(field === "shipment_plan"){
-    // Recompute locally so the row reads correctly straight away. The server
-    // recomputes the same way (logic.remaining_for) on the next load, and clamps
-    // at zero — over-packing should read "nothing left", not "-40 to pack".
-    item.remaining = Math.max(0, value - item.packed);
-    renderSummary();
-  }
+
+  /* Recompute both derived numbers on EVERY edit, not just on To Ship.
+     This is the reported bug: In stock (formerly "Avl") was editable and
+     changed nothing on screen, because only the shipment_plan branch
+     recalculated. A number you can type into that never moves anything reads as
+     a broken page.
+
+     Mirrors logic.remaining_for and logic.still_to_source exactly, including the
+     clamp at zero — over-packing should read "nothing left", not "-40". The
+     server recomputes the same way on the next load. */
+  const planned   = Math.max(0, Number(item.shipment_plan) || 0);
+  const available = Math.max(0, Number(item.available) || 0);
+  const packed    = Math.max(0, Number(item.packed) || 0);
+  item.remaining = Math.max(0, planned - packed);
+  item.to_source = Math.max(0, planned - available - packed);
+
   const tr = document.querySelector(`tr[data-asin="${asin}"]`);
   if(tr){
     tr.classList.add("dirty");
-    const left = tr.lastElementChild;
-    left.textContent = item.remaining;
-    left.className = item.remaining > 0 ? "remaining-pos" : "remaining-zero";
+    /* Addressed by class, not by lastElementChild. There are now two derived
+       cells and "To make" is last, so position-based lookup silently updated the
+       wrong column the moment a column was appended. */
+    paint(tr.querySelector(".cell-topack"), item.remaining, "cell-topack");
+    paint(tr.querySelector(".cell-tomake"), item.to_source, "cell-tomake");
   }
+  renderSummary();
   markDirty();
+}
+
+function paint(cell, value, keepClass){
+  if(!cell) return;
+  cell.textContent = value;
+  cell.className = `${keepClass} ${value > 0 ? "remaining-pos" : "remaining-zero"}`;
 }
 
 function markDirty(){

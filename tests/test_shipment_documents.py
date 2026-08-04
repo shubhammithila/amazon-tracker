@@ -192,7 +192,7 @@ def test_packing_plan_xlsx_has_a_row_per_item_and_a_header(plan, items):
     header, rows = _read_rows(documents.build_packing_plan_xlsx(plan, items))
     assert len(rows) == len(items)
     assert header[0] == "Brand"
-    assert "Remaining" in header
+    assert "To Pack" in header
 
 
 def test_packing_plan_xlsx_carries_the_numbers_not_just_the_names(plan, items):
@@ -200,7 +200,19 @@ def test_packing_plan_xlsx_carries_the_numbers_not_just_the_names(plan, items):
     chana_1kg = next(r for r in rows if r[3] == "B0AAA00001")
     assert chana_1kg[header.index("To Ship")] == 500
     assert chana_1kg[header.index("Packed")] == 200
-    assert chana_1kg[header.index("Remaining")] == 300
+    assert chana_1kg[header.index("To Pack")] == 300
+
+
+def test_the_plan_sheet_shows_stock_on_hand_and_what_is_left_to_make(plan, items):
+    """The In-stock figure has to leave the screen, or it is decorative again.
+
+    The owner plans production from this sheet. "To Pack" answers what the packer
+    must box (ignoring warehouse stock, which is not in a carton yet); "To Make"
+    answers what he must produce. Both are needed and they are different numbers.
+    """
+    header, rows = _read_rows(documents.build_packing_plan_xlsx(plan, items))
+    assert "In Stock" in header, "the plan sheet does not carry the In-stock figure"
+    assert "To Make" in header, "the plan sheet does not say what is left to produce"
 
 
 def test_weight_label_trims_the_pointless_zero():
@@ -295,7 +307,7 @@ def test_packed_xlsx_separates_total_from_shippable(plan, items, days):
     assert row[header.index("Shippable Units")] == 0, (
         "held units leaked into shippable — they would be shipped twice"
     )
-    assert row[header.index("Remaining")] == 0, (
+    assert row[header.index("To Pack")] == 0, (
         "held units were not counted as packed — the floor would pack them again"
     )
 
@@ -340,7 +352,7 @@ def test_packed_xlsx_works_before_anyone_has_packed(plan, items):
     crash — the owner downloads this to see the targets before packing starts."""
     header, rows = _read_rows(documents.build_packed_xlsx(plan, items, []))
     assert len(rows) == len(items)
-    assert header[-1] == "Remaining"
+    assert header[-1] == "To Pack"
 
 
 # ─── Shipment file: the Amazon upload ────────────────────────────────────────

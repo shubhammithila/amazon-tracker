@@ -197,6 +197,72 @@ def test_remaining_never_negative_when_overpacked():
     assert logic.remaining_for(100, 140) == 0
 
 
+# ─── Still to source: the In-stock column, which used to do nothing ──────────
+#
+# `available` has been an editable column since the first Shipment build
+# (12cb580) and never fed a single calculation. Typing a stock figure into it
+# changed no number anywhere, on any screen or in any document, which reads as
+# the page being broken rather than as a column being decorative.
+
+@pytest.mark.parametrize(
+    "planned,packed,available,expected",
+    [
+        (610, 0, 0, 610),      # nothing on the shelf: unchanged from before
+        (610, 0, 200, 410),    # 200 finished already -> only 410 to make
+        (610, 0, 610, 0),      # exactly covered
+        (610, 0, 700, 0),      # more stock than needed, never negative
+        (610, 100, 200, 310),  # and 100 of it already boxed
+        (0, 0, 50, 0),         # nothing planned stays nothing
+    ],
+)
+def test_still_to_source_subtracts_warehouse_stock(planned, packed, available, expected):
+    assert logic.still_to_source(planned, packed, available) == expected
+
+
+def test_still_to_source_reacts_to_available_at_all():
+    """The actual reported bug, stated as bluntly as possible.
+
+    "when i am changing the available. Left to pack is not changing." If this
+    assertion can pass with `available` ignored, the fix is not a fix.
+    """
+    assert logic.still_to_source(500, 0, 0) != logic.still_to_source(500, 0, 100), (
+        "changing available did not change the number — the In-stock column is "
+        "still decorative"
+    )
+
+
+def test_the_packers_number_ignores_warehouse_stock():
+    """The two numbers must NOT be the same function.
+
+    Stock finished on a shelf is not in a carton. If `remaining` subtracted it,
+    the packer would be told to box 410 when the plan needs 610 boxed, and the
+    shipment would go out short — a worse bug than the one being fixed.
+
+    Asserted against the SIGNATURE, not just the call. Found by mutation: giving
+    `remaining_for` an `available=0` third parameter and subtracting it passed
+    every value-based test in this file, because every caller passes two
+    arguments so the new default never fired. The collapse would then have been
+    one keyword away, and the failure — a short shipment — appears in Amazon's
+    receiving report, not on any screen here.
+    """
+    import inspect
+
+    params = list(inspect.signature(logic.remaining_for).parameters)
+    assert params == ["planned", "packed"], (
+        f"remaining_for takes {params} — it must not accept `available` at all. "
+        "The packer boxes what the plan says; stock on a shelf is not in a carton."
+    )
+
+    assert logic.remaining_for(610, 0) == 610
+    assert logic.still_to_source(610, 0, 200) == 410
+
+
+@pytest.mark.parametrize("junk", [None, "", "abc", -50])
+def test_still_to_source_survives_junk_available(junk):
+    """The value arrives from a number input, so it can be blank or nonsense."""
+    assert logic.still_to_source(100, 0, junk) == 100
+
+
 # ─── The hold rule (requirement 9) ───────────────────────────────────────────
 
 @pytest.mark.parametrize(

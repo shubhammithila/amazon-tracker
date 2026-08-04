@@ -96,10 +96,13 @@ def build_packing_plan_xlsx(plan: dict, items: list[dict]) -> io.BytesIO:
     sheet = workbook.active
     sheet.title = "Packing Plan"
 
+    # "In Stock" and "To Make" are here because the owner plans production from
+    # this sheet. Without them the In-stock figure he typed lives only on screen,
+    # which is how it came to be a column that fed nothing at all.
     headers = [
         "Brand", "Product", "Weight", "ASIN", "Merchant SKU",
         "7d Sales", "Projection", "FBA Stock", "Deficit",
-        "To Ship", "Packed", "Remaining", "Sizes",
+        "To Ship", "In Stock", "Packed", "To Pack", "To Make", "Sizes",
     ]
     rows = [
         [
@@ -113,15 +116,17 @@ def build_packing_plan_xlsx(plan: dict, items: list[dict]) -> io.BytesIO:
             int(item.get("fba_stock") or 0),
             int(item.get("deficit") or 0),
             int(item.get("shipment_plan") or 0),
+            int(item.get("available") or 0),
             int(item.get("packed") or 0),
             int(item.get("remaining") or 0),
+            int(item.get("to_source") or 0),
             _flags(item),
         ]
         for item in items
     ]
     _write_sheet(
         sheet, headers, rows,
-        [8, 30, 9, 14, 20, 10, 11, 11, 10, 10, 10, 11, 8],
+        [8, 30, 9, 14, 20, 10, 11, 11, 10, 10, 10, 10, 10, 10, 8],
     )
 
     buffer = io.BytesIO()
@@ -155,7 +160,11 @@ def build_packed_xlsx(plan: dict, items: list[dict], days: list[dict]) -> io.Byt
         suffix = f" ({status})" if status in (logic.STATUS_HELD, logic.STATUS_OPEN) else ""
         headers.append(f"{label} Units{suffix}")
         headers.append(f"{label} Cartons{suffix}")
-    headers += ["Total Units", "Total Cartons", "Shippable Units", "Remaining"]
+    # "To Pack", matching the plan sheet and the screen. Both sheets used to say
+    # "Remaining", which invited reading one as the other — and on this sheet it
+    # means units still to BOX, which is not the same question as the plan
+    # sheet's "To Make".
+    headers += ["Total Units", "Total Cartons", "Shippable Units", "To Pack"]
 
     # ASIN -> {units, cartons} per day, so a SKU untouched on a day reads 0
     # rather than shifting the later columns left.

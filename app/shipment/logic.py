@@ -7,9 +7,11 @@ you find yourself rounding or sorting anywhere else, move it in here instead.
 Vocabulary, because two of these are easy to conflate:
 
   planned     what the plan says to send to Amazon for a SKU
+  available   finished stock already in the warehouse, ready to pack
   packed      units physically boxed, INCLUDING days that are on hold
   shippable   units on days cleared to ship, EXCLUDING held days
-  remaining   planned - packed  (what is still to be boxed)
+  remaining   planned - packed            (still to BOX — the packer's number)
+  to source   planned - available - packed (still to MAKE — the owner's number)
   carry-over  the accumulated held days, judged together rather than singly
 
 `packed` and `shippable` must stay separate. A held day's units exist in the
@@ -153,17 +155,47 @@ def packed_cartons(entries: Iterable) -> int:
     return total
 
 
-def remaining_for(planned, packed: int) -> int:
-    """How much is still to be boxed. Never negative.
-
-    Over-packing is clamped to 0 rather than shown as a negative: the warehouse
-    sheet should read "nothing left to do", not "-40 to pack".
-    """
+def _as_count(value) -> int:
+    """A non-negative integer from anything the CSV or a form might hand us."""
     try:
-        target = int(planned or 0)
+        return max(0, int(value or 0))
     except (TypeError, ValueError):
-        target = 0
-    return max(0, target - max(0, int(packed or 0)))
+        return 0
+
+
+def remaining_for(planned, packed: int) -> int:
+    """How many units still need boxing — the PACKER's question.
+
+    ``available`` is deliberately not a parameter. Stock sitting finished on a
+    warehouse shelf still has to be put into cartons, so subtracting it here
+    would tell the packer to box less than the plan needs and the shipment would
+    go out short. See ``still_to_source`` for the owner's different question.
+
+    Over-packing clamps to 0 rather than showing a negative: the warehouse sheet
+    should read "nothing left to do", not "-40 to pack".
+    """
+    return max(0, _as_count(planned) - _as_count(packed))
+
+
+def still_to_source(planned, packed: int, available=0) -> int:
+    """How much must still be produced or bought — the OWNER's question.
+
+    Two numbers, two names, for the same reason ``packed`` and ``shippable`` are
+    separate: they answer different questions and collapsing them hides a real
+    error. The packer needs to know what to box; the owner needs to know what to
+    make. Stock already on the shelf changes the second and not the first.
+
+        still_to_source(610, 0, 0)     == 610
+        still_to_source(610, 0, 200)   == 410   # 200 already on the shelf
+        still_to_source(610, 0, 700)   == 0     # fully covered by stock on hand
+        still_to_source(610, 100, 200) == 310   # and 100 of it is already boxed
+
+    This function exists because ``available`` was a bug, not a gap. It has been
+    an editable column since the first Shipment build (commit 12cb580) and never
+    fed a single calculation in any renderer or document — typing into it changed
+    nothing on screen, which reads as the page being broken.
+    """
+    return max(0, _as_count(planned) - _as_count(available) - _as_count(packed))
 
 
 def is_held(
