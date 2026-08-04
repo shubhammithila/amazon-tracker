@@ -183,6 +183,15 @@ def _item_payload(item, packed: int, shippable: int) -> dict:
         # the one that reacts when the owner types into the In-stock column.
         "remaining": logic.remaining_for(planned, packed),
         "to_source": logic.still_to_source(planned, packed, available),
+        # Only ever non-null on the owner's draft view, which is the single caller
+        # that asks for excluded rows. Everywhere else they are filtered out in
+        # SQL, so this is None and the frontend renders nothing special.
+        "excluded_at": item.excluded_at.isoformat() if item.excluded_at else None,
+        # The joined sort priority, so the screen can show WHY a row sits where it
+        # does. Attached by load_plan_items; defaulted for rows loaded elsewhere.
+        "category": int(
+            getattr(item, "category_rank", None) or logic.DEFAULT_CATEGORY
+        ),
     }
 
 

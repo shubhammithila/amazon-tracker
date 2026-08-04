@@ -79,6 +79,9 @@
   /* For the login card, which floats on the page rather than sitting in a
      grid. A heavy black shadow reads as grime on a light background. */
   --shadow-lg: 0 10px 24px -8px rgba(16, 24, 40, .18);
+  /* Modal backdrop. Dimmed rather than blacked out, so the table behind stays
+     legible enough to keep your place. */
+  --backdrop: rgba(16, 24, 40, .45);
   --radius: 8px;
 }
 

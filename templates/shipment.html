@@ -108,6 +108,33 @@ td input[type="checkbox"]{width:14px;height:14px;cursor:pointer}
 .remaining-pos{color:var(--orange);font-weight:600}.remaining-zero{color:var(--green);font-weight:600}
 .shippable-lt{color:var(--yellow);font-weight:600}
 .empty-state{text-align:center;padding:40px;color:var(--text-muted)}
+
+/* Draft mode. The banner is deliberately loud: the single most confusing thing
+   about a draft is not knowing whether the warehouse can see it. */
+.draft-strip{background:var(--orange-soft);border:1px solid var(--orange);border-radius:8px;padding:12px 16px;margin-bottom:14px;font-size:13.5px;line-height:1.55}
+.draft-strip strong{color:var(--orange)}
+/* Excluded rows, when the "show removed" toggle is on. Struck through and dimmed
+   so they cannot be mistaken for part of the plan while still being readable
+   enough to find the one you want back. */
+tbody tr.excluded{background:var(--surface2)}
+tbody tr.excluded td{color:var(--text-dim);text-decoration:line-through}
+tbody tr.excluded td.no-strike{text-decoration:none}
+tbody tr.selected{background:var(--accent-soft)}
+td.pick{width:30px}
+td input[type="text"].sku-input{width:120px;font-size:11px}
+
+/* Sort priority editor */
+.overlay{position:fixed;inset:0;background:var(--backdrop);display:flex;align-items:center;justify-content:center;z-index:2000;padding:20px}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow-lg);padding:20px 22px;max-width:620px;width:100%;max-height:86vh;overflow:auto}
+.modal h3{font-size:16px;margin-bottom:6px}
+.modal p{font-size:12.5px;color:var(--text-muted);line-height:1.55;margin-bottom:12px}
+.cat-list{max-height:46vh;overflow:auto;border:1px solid var(--border);border-radius:8px}
+.cat-row{display:flex;align-items:center;gap:10px;padding:7px 10px;border-bottom:1px solid var(--border)}
+.cat-row:last-child{border-bottom:none}
+.cat-row .name{flex:1;font-size:13px}
+.cat-row select{background:var(--surface);border:1px solid var(--border-strong);border-radius:5px;color:var(--text);padding:4px 6px;font-size:12px}
+.cat-row .src{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;min-width:56px;text-align:right}
+.cat-row.changed{background:var(--yellow-soft)}
 #toast{position:fixed;bottom:20px;right:20px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 18px;font-size:13px;display:none;z-index:1000;max-width:420px;line-height:1.5}
 #toast.error{border-color:var(--red);color:var(--red)}#toast.success{border-color:var(--green);color:var(--green)}
 </style>
@@ -126,7 +153,9 @@ td input[type="checkbox"]{width:14px;height:14px;cursor:pointer}
 <!-- Generate -->
 <div class="card">
   <h3>Generate New Plan</h3>
-  <p>Business Report CSV (last 7 days, By ASIN) + FBA Inventory Report CSV. This closes the current plan; its packing history is kept.</p>
+  <p>Business Report CSV (last 7 days, By ASIN) + FBA Inventory Report CSV.
+     This creates a <strong>draft</strong> that only you can see — the warehouse keeps working
+     from the current plan until you press <em>Finalise</em>.</p>
   <div class="form-row">
     <div class="form-group"><label>Sales CSV (Business Report)</label><input type="file" id="sales-file" accept=".csv"/></div>
     <div class="form-group"><label>Stock CSV (FBA Inventory)</label><input type="file" id="stock-file" accept=".csv"/></div>
@@ -169,8 +198,24 @@ td input[type="checkbox"]{width:14px;height:14px;cursor:pointer}
   <span style="font-size:11px;color:var(--text-muted)" id="count-lbl"></span>
   <input type="text" class="search-input" placeholder="Search..." oninput="renderTable()" id="search"/>
 </div>
+<!-- Row selection. Only shown when something is ticked, so it does not sit there
+     as a permanently-disabled bar the owner has to read past. -->
+<div class="controls" id="selection-bar" style="display:none">
+  <strong id="selection-count" style="font-size:13px"></strong>
+  <button class="btn-danger" onclick="excludeSelected(true)">Remove from plan</button>
+  <button class="btn-outline" onclick="excludeSelected(false)">Put back</button>
+  <button class="btn-outline" onclick="clearSelection()">Clear selection</button>
+  <span style="font-size:11px;color:var(--text-muted);max-width:420px;line-height:1.45">
+    Removing is reversible — nothing is deleted. Rows already packed cannot be removed;
+    set <em>To Ship</em> to 0 instead so the boxes stay on the invoice.
+  </span>
+</div>
+
 <div class="controls">
   <button class="btn-green" id="save-btn" onclick="saveItems()" disabled>💾 Save plan edits</button>
+  <button class="btn" id="finalise-btn" onclick="finalisePlan()" style="display:none">✓ Finalise plan</button>
+  <button class="btn-outline" id="excluded-toggle" onclick="toggleExcluded()" style="display:none"></button>
+  <button class="btn-outline" onclick="openCategories()">⚙ Sort priority</button>
   <button class="btn-outline" onclick="dl('/shipment/download/packing-plan.xlsx')">⬇ Plan (Excel)</button>
   <button class="btn-outline" onclick="dl('/shipment/download/packing-plan.pdf')">⬇ Plan (PDF)</button>
   <button class="btn-outline" onclick="dl('/shipment/download/packed.xlsx')">⬇ Packed daily (Excel)</button>
@@ -189,6 +234,30 @@ td input[type="checkbox"]{width:14px;height:14px;cursor:pointer}
 </div>
 </div>
 </main>
+
+<!-- Sort priority editor.
+     The keyword rules in logic.category_for are only defaults, and a few are
+     debatable by nature — "Makhana Powder" matches 'powder' and lands in Flours,
+     "Sesame Laddoo" matches 'sesame' and lands in Seeds. Rather than argue about
+     keywords, the owner sets the priority per product here and it applies to
+     every plan from then on, because the priority is read at query time. -->
+<div id="cat-overlay" class="overlay" style="display:none" onclick="if(event.target===this) closeCategories()">
+  <div class="modal">
+    <h3>Sort priority</h3>
+    <p>Rows are ordered <strong>Mithila Foods first</strong>, then by this priority,
+       then product name, then weight. Change a product here and every plan reorders,
+       including this one.</p>
+    <input type="search" class="search-input" id="cat-search" placeholder="Search product…"
+           style="width:100%;margin:0 0 10px" oninput="renderCategories()"/>
+    <div id="cat-list" class="cat-list"></div>
+    <div class="controls" style="margin:12px 0 0">
+      <button class="btn-green" onclick="saveCategories()">Save priorities</button>
+      <button class="btn-outline" onclick="closeCategories()">Cancel</button>
+      <span id="cat-dirty" style="font-size:11px;color:var(--text-muted)"></span>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 <script>
 // Server-provided state. `items` order is authoritative and is never re-sorted
@@ -210,6 +279,21 @@ let currentFilter = "deficit";
 // POSTed, so a save cannot overwrite a field the owner never touched.
 const dirty = new Set();
 
+// Ticked rows, for bulk remove/restore. ASINs rather than indices so a re-render
+// (search, filter, reload) cannot silently move the selection onto other rows —
+// which with a destructive action would be the worst possible bug here.
+const selected = new Set();
+
+// Whether removed rows are listed. Off by default: the plan should read as the
+// plan, with removals out of sight unless you are looking for them.
+let showExcluded = false;
+
+// Sort-priority labels, mirroring logic.CATEGORY_LABELS. Replaced by the server's
+// copy when the editor is opened, so the two cannot drift.
+let CAT_LABELS = {1:"Sattu", 2:"Chana", 3:"Flours", 4:"Rice", 5:"Seeds", 6:"Rest"};
+let categories = [];
+const catEdits = new Map();
+
 load();
 
 async function load(){
@@ -217,6 +301,13 @@ async function load(){
   // stranded-stock warning does not follow him around forever.
   rollover = "";
   try{
+    /* The DRAFT wins when one exists. That is the whole point of the state: the
+       owner is preparing a replacement, so this screen must show him what he is
+       preparing, not what the warehouse is still packing. The banner says which
+       one he is looking at, because that is the confusing part. */
+    const draft = await (await fetch("/shipment/draft")).json();
+    if(draft && draft.plan){ adopt(draft); return; }
+
     const r = await fetch("/shipment/active");
     const data = await r.json();
     if(!data.plan){
@@ -225,8 +316,10 @@ async function load(){
       return;
     }
     adopt(data);
-  }catch(e){ toast("Could not load the active plan: " + e.message, "error"); }
+  }catch(e){ toast("Could not load the plan: " + e.message, "error"); }
 }
+
+function isDraft(){ return !!plan && plan.status === "draft"; }
 
 function adopt(data){
   plan = data.plan;
@@ -236,16 +329,41 @@ function adopt(data){
   carryOver = data.carry_over || null;
   missingSku = data.missing_sku_count || 0;
   dirty.clear();
+  // The selection is cleared on every load. Keeping it across a reload would
+  // mean "Remove from plan" could act on rows the owner ticked against a
+  // different version of the list.
+  selected.clear();
   markClean();
   document.getElementById("no-plan").style.display = "none";
   document.getElementById("results").style.display = "block";
   if(plan.multiplier) document.getElementById("multiplier").value = plan.multiplier;
   document.getElementById("min-cartons").value = plan.min_cartons;
   document.getElementById("min-units").value = plan.min_units;
+  document.getElementById("finalise-btn").style.display = isDraft() ? "" : "none";
   renderBanners();
   renderSummary();
   renderDays();
   renderHead();
+  renderTable();
+  renderSelection();
+  renderExcludedToggle();
+}
+
+function excludedItems(){ return items.filter(i => i.excluded_at); }
+function activeItems(){ return items.filter(i => !i.excluded_at); }
+
+function renderExcludedToggle(){
+  const btn = document.getElementById("excluded-toggle");
+  const count = excludedItems().length;
+  // Hidden entirely when nothing is removed: a "Show removed (0)" button is
+  // noise on a screen that already has a lot of buttons.
+  btn.style.display = count ? "" : "none";
+  btn.textContent = showExcluded ? `Hide removed (${count})` : `Show removed (${count})`;
+}
+
+function toggleExcluded(){
+  showExcluded = !showExcluded;
+  renderExcludedToggle();
   renderTable();
 }
 
@@ -275,7 +393,7 @@ async function generate(){
        next load, which is when he has had a chance to act on it. */
     rollover = data.warning && (data.abandoned_holds || []).length ? data.warning : "";
     adopt(data);
-    toast(items.length + " products loaded","success");
+    toast(items.length + " products loaded as a draft — review, then Finalise","success");
   }catch(e){ toast(e.message,"error"); }
   finally{
     document.getElementById("gen-btn").disabled = false;
@@ -287,7 +405,22 @@ async function generate(){
 
 function renderBanners(){
   const out = [];
-  // First, and in the loudest style available: this is stock that is physically
+
+  /* Which plan am I looking at? The single most confusing thing about a draft is
+     not knowing whether the warehouse can already see it, so it is said plainly
+     and at the top, before anything else on the page. */
+  if(isDraft()){
+    const removed = excludedItems().length;
+    out.push(`<div class="draft-strip">
+      <strong>DRAFT — the warehouse cannot see this yet.</strong>
+      Remove rows you do not want, fix quantities and fill in any missing SKUs,
+      then press <em>Finalise plan</em>. Until you do, the packer keeps working from
+      the previous plan.
+      ${removed ? ` <strong>${removed} row(s) removed.</strong>` : ""}
+    </div>`);
+  }
+
+  // Then, in the loudest style available: this is stock that is physically
   // in the warehouse and is about to appear on no screen at all.
   if(rollover){
     out.push(`<div class="banner error"><strong>Stock left on the previous plan.</strong>
@@ -401,8 +534,9 @@ function renderHead(){
     `<th class="col-day ${d.status === 'held' ? 'held' : ''}" title="${esc(d.status)}">${esc(d.pack_date.slice(5))}<br/>u / c</th>`
   ).join("");
   document.getElementById("thead-row").innerHTML = `
+    <th class="col-smb" title="Select all shown"><input type="checkbox" id="pick-all" onchange="pickAll(this.checked)"/></th>
     <th class="col-smb">S</th><th class="col-smb">M</th><th class="col-smb">B</th>
-    <th>Brand</th><th>Merchant SKU</th><th>ASIN</th><th style="text-align:left">Item</th><th>Wt</th>
+    <th>Brand</th><th title="Amazon's upload keys on this, not the ASIN — click to fill a missing one">Merchant SKU</th><th>ASIN</th><th style="text-align:left">Item</th><th title="Sort priority: 1 Sattu, 2 Chana, 3 Flours, 4 Rice, 5 Seeds, 6 Rest">Cat</th><th>Wt</th>
     <th class="col-calc">Sales<br/>(7d)</th>
     <th class="col-calc">Proj</th>
     <th class="col-calc">FBA<br/>Stock</th>
@@ -428,8 +562,11 @@ function visibleItems(){
   const q = (document.getElementById("search").value || "").toLowerCase();
   // filter() preserves order. Do not sort — see the note at the top of the file.
   return items.filter(i => {
-    if(currentFilter === "deficit" && i.shipment_plan <= 0) return false;
-    if(currentFilter === "outstanding" && i.remaining <= 0) return false;
+    // Removed rows are hidden unless the owner asks for them. They are only ever
+    // in `items` at all on the draft view; /active filters them out in SQL.
+    if(i.excluded_at && !showExcluded) return false;
+    if(currentFilter === "deficit" && i.shipment_plan <= 0 && !i.excluded_at) return false;
+    if(currentFilter === "outstanding" && i.remaining <= 0 && !i.excluded_at) return false;
     if(q && !i.item.toLowerCase().includes(q)
          && !i.asin.toLowerCase().includes(q)
          && !(i.fba_sku || "").toLowerCase().includes(q)) return false;
@@ -439,9 +576,10 @@ function visibleItems(){
 
 function renderTable(){
   const rows = visibleItems();
-  document.getElementById("count-lbl").textContent = rows.length + " of " + items.length + " items";
+  const total = showExcluded ? items.length : activeItems().length;
+  document.getElementById("count-lbl").textContent = rows.length + " of " + total + " items";
   const tbody = document.getElementById("tbody");
-  const colspan = 17 + days.length;
+  const colspan = 19 + days.length;
   if(!rows.length){
     tbody.innerHTML = `<tr><td colspan="${colspan}" class="empty-state">No items match this filter.</td></tr>`;
     return;
@@ -452,25 +590,38 @@ function renderTable(){
       return `<td class="day-cell ${c.has ? "has" : ""}">${esc(c.text)}</td>`;
     }).join("");
     // Every interpolation below is either a number computed from JSON, or run
-    // through esc(). The ASIN in particular reaches three inline handlers and a
+    // through esc(). The ASIN in particular reaches several inline handlers and a
     // data- attribute, so an unescaped quote in it would break out of the
     // attribute — these strings come from an uploaded CSV, not a trusted source.
     const asin = esc(i.asin);
-    return `<tr class="${i.shipment_plan <= 0 ? "no-ship" : ""} ${dirty.has(i.asin) ? "dirty" : ""}" data-asin="${asin}">
+    const gone = !!i.excluded_at;
+    const cls = [
+      i.shipment_plan <= 0 && !gone ? "no-ship" : "",
+      dirty.has(i.asin) ? "dirty" : "",
+      gone ? "excluded" : "",
+      selected.has(i.asin) ? "selected" : "",
+    ].filter(Boolean).join(" ");
+    return `<tr class="${cls}" data-asin="${asin}">
+      <td class="pick no-strike"><input type="checkbox" ${selected.has(i.asin) ? "checked" : ""}
+          onchange="pick('${asin}',this.checked)"/></td>
       <td><input type="checkbox" ${i.s ? "checked" : ""} onchange="edit('${asin}','s',this.checked)"/></td>
       <td><input type="checkbox" ${i.m ? "checked" : ""} onchange="edit('${asin}','m',this.checked)"/></td>
       <td><input type="checkbox" ${i.b ? "checked" : ""} onchange="edit('${asin}','b',this.checked)"/></td>
       <td style="font-size:11px">${esc(i.brand)}</td>
-      <td style="font-size:10px">${i.fba_sku ? `<span style="color:var(--text-muted)">${esc(i.fba_sku)}</span>` : '<span class="no-sku">no SKU</span>'}</td>
+      <td class="no-strike"><input type="text" class="sku-input" value="${esc(i.fba_sku)}"
+          placeholder="no SKU — type it" title="Amazon rejects rows with no merchant SKU"
+          onchange="edit('${asin}','fba_sku',this.value.trim())"
+          style="${i.fba_sku ? "" : "border-color:var(--red)"}"/></td>
       <td style="font-size:10px">${asin}</td>
       <td class="left"><strong>${esc(i.item)}</strong></td>
+      <td style="font-size:11px;color:var(--text-muted)" title="${esc(CAT_LABELS[i.category] || "")}">${Number(i.category) || 6}</td>
       <td style="font-size:11px;color:var(--text-muted)">${i.weight ? esc(i.weight) + "kg" : ""}</td>
       <td>${i.sales_7d}</td>
       <td>${i.projection}</td>
       <td>${i.fba_stock}</td>
       <td class="${i.deficit > 0 ? "deficit-pos" : "deficit-neg"}">${i.deficit}</td>
-      <td><input type="number" value="${i.shipment_plan}" min="0" onchange="edit('${asin}','shipment_plan',+this.value)"/></td>
-      <td><input type="number" value="${i.available}" min="0" style="width:44px" onchange="edit('${asin}','available',+this.value)"/></td>
+      <td class="no-strike"><input type="number" value="${i.shipment_plan}" min="0" onchange="edit('${asin}','shipment_plan',+this.value)"/></td>
+      <td class="no-strike"><input type="number" value="${i.available}" min="0" style="width:44px" onchange="edit('${asin}','available',+this.value)"/></td>
       ${dayCells}
       <td>${i.packed}</td>
       <td class="${i.shippable < i.packed ? "shippable-lt" : ""}">${i.shippable}</td>
@@ -478,6 +629,150 @@ function renderTable(){
       <td class="cell-tomake ${i.to_source > 0 ? "remaining-pos" : "remaining-zero"}">${i.to_source}</td>
     </tr>`;
   }).join("");
+  const all = document.getElementById("pick-all");
+  if(all) all.checked = rows.length > 0 && rows.every(i => selected.has(i.asin));
+}
+
+// ─── Row selection and removal ──────────────────────────────────────────────
+
+function pick(asin, on){
+  if(on) selected.add(asin); else selected.delete(asin);
+  const tr = document.querySelector(`tr[data-asin="${asin}"]`);
+  if(tr) tr.classList.toggle("selected", on);
+  renderSelection();
+}
+
+function pickAll(on){
+  // Only the rows currently VISIBLE. Ticking the header while a search is active
+  // must not silently select 200 rows the owner cannot see — and the next click
+  // would remove them all.
+  visibleItems().forEach(i => on ? selected.add(i.asin) : selected.delete(i.asin));
+  renderTable();
+  renderSelection();
+}
+
+function clearSelection(){ selected.clear(); renderTable(); renderSelection(); }
+
+function renderSelection(){
+  const bar = document.getElementById("selection-bar");
+  bar.style.display = selected.size ? "" : "none";
+  document.getElementById("selection-count").textContent =
+    `${selected.size} row${selected.size === 1 ? "" : "s"} selected`;
+}
+
+async function excludeSelected(excluded){
+  if(!selected.size) return;
+  const asins = [...selected];
+  const verb = excluded ? "Remove" : "Put back";
+  if(excluded && !confirm(
+      `${verb} ${asins.length} row(s) from the plan?\n\n`
+      + "They disappear from the packer's screen and every download. "
+      + "Nothing is deleted — you can put them back.")) return;
+
+  try{
+    const r = await fetch(`/shipment/plan/${plan.id}/items/exclude`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({asins, excluded}),
+    });
+    const data = await r.json();
+    // A 409 means at least one row is already packed. The server's message names
+    // the units and dates, so show it as-is rather than paraphrasing it away.
+    if(!r.ok) throw new Error(data.error || "Could not update the plan");
+    toast(`${data.count} row(s) ${excluded ? "removed" : "restored"}`, "success");
+    selected.clear();
+    await load();
+  }catch(e){ toast(e.message, "error"); }
+}
+
+// ─── Sort priority editor ───────────────────────────────────────────────────
+
+async function openCategories(){
+  try{
+    const data = await (await fetch("/shipment/categories")).json();
+    CAT_LABELS = data.labels || CAT_LABELS;
+    categories = data.categories || [];
+    catEdits.clear();
+    document.getElementById("cat-search").value = "";
+    document.getElementById("cat-overlay").style.display = "flex";
+    renderCategories();
+  }catch(e){ toast("Could not load sort priorities: " + e.message, "error"); }
+}
+
+function closeCategories(){
+  document.getElementById("cat-overlay").style.display = "none";
+}
+
+function renderCategories(){
+  const q = (document.getElementById("cat-search").value || "").toLowerCase();
+  const shown = categories.filter(c =>
+    !q || (c.product_label || c.product_key).toLowerCase().includes(q));
+
+  /* Listed literally rather than derived with .sort(). The no-sorting rule in
+     this file is about ROW order, but a blanket ban is the only version of that
+     rule a grep can enforce — and P1..P6 is a fixed ladder anyway. */
+  const options = [1, 2, 3, 4, 5, 6];
+  document.getElementById("cat-list").innerHTML = shown.map(c => {
+    const key = esc(c.product_key);
+    const current = catEdits.has(c.product_key) ? catEdits.get(c.product_key) : c.priority;
+    const opts = options.map(p =>
+      `<option value="${p}" ${p === current ? "selected" : ""}>P${p} ${esc(CAT_LABELS[p])}</option>`
+    ).join("");
+    return `<div class="cat-row ${catEdits.has(c.product_key) ? "changed" : ""}" data-key="${key}">
+      <span class="name">${esc(c.product_label || c.product_key)}</span>
+      <select onchange="setCategory('${key}', +this.value)">${opts}</select>
+      <span class="src">${c.source === "manual" ? "chosen" : "guessed"}</span>
+    </div>`;
+  }).join("") || '<div class="empty-state" style="padding:20px">No products match.</div>';
+
+  document.getElementById("cat-dirty").textContent =
+    catEdits.size ? `${catEdits.size} change(s) not saved` : "";
+}
+
+function setCategory(key, priority){
+  const row = categories.find(c => c.product_key === key);
+  // Setting it back to its original value un-marks it, so the "N changes" count
+  // never overstates what will actually be written.
+  if(row && row.priority === priority) catEdits.delete(key);
+  else catEdits.set(key, priority);
+  renderCategories();
+}
+
+async function saveCategories(){
+  if(!catEdits.size){ closeCategories(); return; }
+  try{
+    const r = await fetch("/shipment/categories", {
+      method:"PATCH", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({categories: Object.fromEntries(catEdits)}),
+    });
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || "Could not save");
+    closeCategories();
+    toast(`${data.changed} priority change(s) saved — rows reordered`, "success");
+    // Reload rather than re-sorting here: order is the server's job, and sorting
+    // on the client is exactly what makes the screen and the downloads disagree.
+    await load();
+  }catch(e){ toast(e.message, "error"); }
+}
+
+async function finalisePlan(){
+  const removed = excludedItems().length;
+  const noSku = activeItems().filter(i => i.shipment_plan > 0 && !i.fba_sku).length;
+  let question = "Finalise this plan?\n\nThe warehouse will start packing from it, "
+    + "and the current plan will be closed.";
+  if(removed) question += `\n\n${removed} row(s) are removed and will not be packed.`;
+  // Warned at the last moment it is cheap to fix, because Amazon rejects those
+  // rows on their side and the owner finds out days later.
+  if(noSku) question += `\n\n⚠ ${noSku} row(s) still have no merchant SKU — Amazon `
+    + "will reject those lines. You can fill them in now.";
+  if(!confirm(question)) return;
+
+  try{
+    const r = await fetch(`/shipment/plan/${plan.id}/finalise`, {method:"POST"});
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || "Could not finalise");
+    toast("Plan finalised — the warehouse can see it now", "success");
+    await load();
+  }catch(e){ toast(e.message, "error"); }
 }
 
 // ─── Editing ────────────────────────────────────────────────────────────────
@@ -533,7 +828,14 @@ async function saveItems(){
   if(!dirty.size) return;
   const payload = items
     .filter(i => dirty.has(i.asin))
-    .map(i => ({asin:i.asin, shipment_plan:i.shipment_plan, available:i.available, s:i.s, m:i.m, b:i.b}));
+    // fba_sku travels too — that is item 6. The column was display-only, so a
+    // typed SKU was discarded on save with no sign it had been. The repository
+    // has always accepted the field (EDITABLE_ITEM_FIELDS); only the UI was
+    // missing.
+    .map(i => ({
+      asin: i.asin, shipment_plan: i.shipment_plan, available: i.available,
+      fba_sku: i.fba_sku || "", s: i.s, m: i.m, b: i.b,
+    }));
   try{
     const r = await fetch("/shipment/items",{
       method:"POST", headers:{"Content-Type":"application/json"},
