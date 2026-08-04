@@ -15,6 +15,7 @@ import io
 import pytest
 
 from app.shipment import logic
+from tests.conftest import CANONICAL_ORDER
 
 pytestmark = pytest.mark.regression
 
@@ -134,9 +135,10 @@ async def test_downloaded_xlsx_order_matches_the_canonical_order(
     the screen, which is repository.load_plan_items' ORDER BY, which is
     logic.sort_items.
 
-    The plan_factory fixture includes 'aloe vera juice' — lowercase but first
-    alphabetically — precisely so that a case-sensitive sort anywhere in this
-    path produces a different order and fails here.
+    The plan_factory fixture includes 'aloe vera juice' — lowercase, first
+    alphabetically, but Howrah Foods and category P6 — precisely so that dropping
+    the brand rank, the category rank OR the casefold anywhere in this path
+    produces a different order and fails here.
     """
     from app.shipment import repository
 
@@ -148,8 +150,13 @@ async def test_downloaded_xlsx_order_matches_the_canonical_order(
     # Guard the guard: if the DB order were already wrong this test would happily
     # compare wrong against wrong.
     assert expected == [i.asin for i in logic.sort_items(items)]
-    assert expected[0] == "B0CCC00001", (
-        f"expected the lowercase-but-first product first, got {expected}"
+    assert expected == CANONICAL_ORDER, (
+        f"the DB order is not canonical, so this test would compare wrong against "
+        f"wrong: {expected}"
+    )
+    assert expected[-1] == "B0CCC00001", (
+        f"the HF/P6 row should sort last despite being first alphabetically, got "
+        f"{expected}"
     )
 
     r = await auth_client.get("/shipment/download/packing-plan.xlsx")

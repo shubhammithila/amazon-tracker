@@ -50,6 +50,80 @@ DEFAULT_MIN_UNITS = 500
 
 ROUNDING_STEP = 10
 
+# ─── Sort priority ───────────────────────────────────────────────────────────
+
+#: Brand order on the packing sheet. Mithila Foods is the bigger line and is
+#: packed first. Persisted as a rank because the stored codes are 'MF' and 'HF'
+#: and those cannot order alphabetically — H sorts before M.
+BRAND_ORDER = {"MF": 0, "MITHILA FOODS": 0, "HF": 1, "HOWRAH FOODS": 1}
+UNKNOWN_BRAND_RANK = 2
+
+#: Requested category order: P1 Sattu, P2 Chana, P3 Flours, P4 Rice, P5 Seeds,
+#: P6 everything else.
+CATEGORY_LABELS = {
+    1: "Sattu",
+    2: "Chana",
+    3: "Flours",
+    4: "Rice",
+    5: "Seeds",
+    6: "Rest",
+}
+DEFAULT_CATEGORY = 6
+
+#: Ordered rules — FIRST match wins, so the order of this list is the rule, not
+#: an implementation detail. Nine of the 74 real product names match more than
+#: one keyword, and three of those change bucket depending on which is tested
+#: first:
+#:
+#:   "Bangla Chana Sattu"  sattu + chana  -> P1, because it IS a sattu
+#:   "Rice Atta"           atta  + rice   -> P3, because it IS a flour
+#:   "chana dal badi"      chana + dal    -> P2, the chana is the ingredient
+#:
+#: Defaults only. Every one of these is overridable per product in the app, so a
+#: wrong guess here is a dropdown away from fixed rather than a code change.
+CATEGORY_RULES: tuple[tuple[int, tuple[str, ...]], ...] = (
+    (1, ("sattu",)),
+    # Flours before rice so "Rice Atta" lands in flours, and before chana so
+    # "Moringa Besan" is a flour rather than a pulse.
+    (3, ("atta", "besan", "flour", "maida", "suji", "sooji", "powder")),
+    (2, ("chana", "chickpea", "chholay", "cholay")),
+    (4, ("rice", "chawal", "moori", "chuda", "chura", "poha", "murmura", "lai")),
+    (5, ("seed", "til ", "tilkut", "revdi", "flax", "posta", "sesame")),
+)
+
+
+def category_for(name) -> int:
+    """Default sort priority 1..6 for a parent product name.
+
+    Keyword-derived, first rule wins. Returns 6 ("Rest") for anything unmatched,
+    which is the requested behaviour rather than a failure — most of the
+    catalogue's 74 products are legitimately "rest".
+
+    Substring matching is deliberate over word matching: the names in
+    product_families.json are inconsistently spaced and cased ("bss 200g",
+    "Desi Tilkut Jaggery", "banskathi rice"), so requiring word boundaries would
+    miss more than it would protect. The one place that bites is short keys, so
+    "til " carries its trailing space to avoid matching "Tilkut" via "til" and,
+    worse, "utility"-style false hits in future names.
+    """
+    text = f" {str(name or '').casefold().strip()} "
+    if not text.strip():
+        return DEFAULT_CATEGORY
+    for priority, keywords in CATEGORY_RULES:
+        if any(keyword in text for keyword in keywords):
+            return priority
+    return DEFAULT_CATEGORY
+
+
+def brand_rank_for(brand) -> int:
+    """0 for Mithila Foods, 1 for Howrah Foods, 2 for anything unrecognised.
+
+    Unknown brands sort last rather than first: a new brand appearing at the top
+    of the packing sheet would look like the sheet was broken, whereas at the
+    bottom it looks like what it is — something new to classify.
+    """
+    return BRAND_ORDER.get(str(brand or "").strip().upper(), UNKNOWN_BRAND_RANK)
+
 
 def round_to_step(value, step: int = ROUNDING_STEP) -> int:
     """Round to the nearest `step`, halves up, with a floor of one step.
@@ -116,24 +190,70 @@ def _text_of(item, *names: str) -> str:
     return ""
 
 
-def sort_key(item) -> tuple:
-    """Order rows product-wise, then weight-wise, then by ASIN.
+def _int_of(item, name, default):
+    raw = item.get(name) if isinstance(item, Mapping) else getattr(item, name, None)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
 
-    Casefolded so the ordering does not depend on how a product name happens to
-    be capitalised in product_families.json ('sattu' vs 'Jau Sattu'). ASIN is
-    the final tiebreak purely so the order is deterministic — two SKUs with the
-    same product and weight would otherwise sort arbitrarily and the row order
-    could differ between the screen and a download.
+
+def sort_key(item) -> tuple:
+    """Brand → category → product → weight → ASIN.
+
+        Mithila Foods before Howrah Foods
+        P1 Sattu, P2 Chana, P3 Flours, P4 Rice, P5 Seeds, P6 Rest
+        then product name, then weight, then ASIN
+
+    **Product sits above weight on purpose.** It means every size of one product
+    is a contiguous block ("ABC Sattu 0.5kg, ABC Sattu 1kg, Beetroot Sattu…"),
+    so the packer picks one product from one warehouse location and finishes it.
+    Weight-above-product would group all 0.5kg pouches together instead and
+    scatter each product down the page.
+
+    Reads pre-computed ranks (`brand_rank`, `category_rank`) when they are
+    present, falling back to deriving them from `brand` and the product name.
+    The fallback is what lets this function work on plain dicts in tests and on
+    rows loaded before the ranks existed; the persisted/joined values are what
+    let SQL reproduce this exact order in ``repository.load_plan_items``.
+
+    Casefolded so ordering does not depend on how a name happens to be
+    capitalised in product_families.json ('sattu' vs 'Jau Sattu'). ASIN is the
+    final tiebreak purely for determinism — two SKUs with the same product and
+    weight would otherwise sort arbitrarily, and the screen and a download could
+    then disagree.
 
     Accepts either a dict or an ORM object, so callers can use it before or
     after persistence.
     """
     product = _text_of(item, "sort_product", "item", "parent_product")
-    return (product.casefold(), _weight_of(item), _text_of(item, "asin"))
+
+    brand_rank = _int_of(item, "brand_rank", None)
+    if brand_rank is None:
+        brand_rank = brand_rank_for(_text_of(item, "brand"))
+
+    category_rank = _int_of(item, "category_rank", None)
+    if category_rank is None:
+        category_rank = category_for(product)
+
+    return (
+        brand_rank,
+        category_rank,
+        product.casefold(),
+        _weight_of(item),
+        _text_of(item, "asin"),
+    )
 
 
 def sort_items(items: Iterable) -> list:
-    """Product-then-weight ordering. The only ordering used anywhere."""
+    """Brand-then-category-then-product-then-weight. The only ordering anywhere.
+
+    ``repository.load_plan_items`` must reproduce this in SQL;
+    tests/test_shipment_plan_db.py asserts the two agree, which is what stops the
+    screen and the five downloads drifting apart.
+    """
     return sorted(items, key=sort_key)
 
 

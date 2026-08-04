@@ -285,7 +285,14 @@ async def generate_plan(
         else []
     )
 
-    plan = await repository.create_plan(db, items, multiplier=multiplier)
+    # A DRAFT, and the active plan is left completely alone. The owner removes
+    # rows, fixes quantities and fills missing SKUs before the warehouse ever
+    # sees it; POST /plan/{id}/finalise is what promotes it. Any previous draft is
+    # discarded first so there is only ever one to work on.
+    await repository.delete_draft_plans(db)
+    plan = await repository.create_plan(
+        db, items, multiplier=multiplier, status=repository.STATUS_DRAFT
+    )
     stored = await repository.load_plan_items(db, plan.id)
     missing_sku = await repository.count_items_missing_sku(db, plan.id)
 
@@ -403,6 +410,178 @@ async def remove_plan(
     return JSONResponse({"status": "cleared"})
 
 
+# ─── Draft preparation (admin) ───────────────────────────────────────────────
+#
+# A generated plan is a DRAFT: the owner's to edit, invisible to the warehouse.
+# /finalise is the single moment it replaces what the packer is working from.
+
+@router.get("/draft")
+async def get_draft(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """The plan being prepared, if any. Admin only — a draft is not packable."""
+    plan = await repository.get_draft_plan(db)
+    if plan is None:
+        return JSONResponse({"plan": None, "items": [], "days": [], "role": role})
+
+    # include_excluded so the owner can see and restore what he removed. This is
+    # one of only two places that should ever pass it.
+    items = await repository.load_plan_items(db, plan.id, include_excluded=True)
+    payload = _plan_payload(plan, items, [])
+    payload["role"] = role
+    payload["missing_sku_count"] = await repository.count_items_missing_sku(db, plan.id)
+    return JSONResponse(payload)
+
+
+@router.post("/plan/{plan_id}/finalise")
+async def finalise_plan(
+    plan_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """Promote a draft to active. This is what "finalise the plan" means.
+
+    Admin only: deciding that the warehouse's plan has changed is the owner's
+    call, not the packer's. Closing the previous active plan happens here, in the
+    same transaction, rather than at generate — see repository.create_plan.
+    """
+    plan = await repository.finalise_plan(db, plan_id)
+    if plan is None:
+        return JSONResponse({"error": "Plan not found"}, status_code=404)
+
+    items = await repository.load_plan_items(db, plan.id)
+    days = await repository.load_days_with_entries(db, plan.id)
+    payload = _plan_payload(plan, items, days)
+    payload["role"] = role
+    payload["status"] = "finalised"
+    return JSONResponse(payload)
+
+
+@router.post("/plan/{plan_id}/items/exclude")
+async def exclude_items(
+    plan_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """Remove rows from a plan, reversibly. Body: {"asins": [...], "excluded": bool}
+
+    **Refuses to exclude a row that already has boxes packed against it**, and
+    that refusal is the whole reason this endpoint is not a one-liner.
+    ``logic.packed_units_by_asin`` aggregates packing entries by ASIN and never
+    consults plan items, while the invoice bridge builds its lines FROM plan
+    items. So an excluded-but-packed row means real boxes ship with no GST line
+    against them — an under-statement on a tax document, discovered at
+    reconciliation rather than on any screen here.
+
+    The owner is pointed at the correct move instead: set To Ship to 0, which
+    stops further packing while keeping the row, its history and its invoice line.
+    """
+    body = await request.json()
+    asins = [str(a).strip() for a in (body.get("asins") or []) if str(a).strip()]
+    excluded = bool(body.get("excluded", True))
+
+    if not asins:
+        return JSONResponse({"error": "Select at least one row."}, status_code=400)
+
+    plan = await repository.get_plan(db, plan_id)
+    if plan is None:
+        return JSONResponse({"error": "Plan not found"}, status_code=404)
+
+    if excluded:
+        days = await repository.load_days_with_entries(db, plan.id)
+        packed = logic.packed_units_by_asin(days)
+        blocked = []
+        for asin in asins:
+            units = int(packed.get(asin, 0))
+            if units <= 0:
+                continue
+            dates = sorted(
+                d["pack_date"]
+                for d in days
+                for e in (d.get("entries") or [])
+                if e.get("asin") == asin and int(e.get("units") or 0) > 0
+            )
+            blocked.append({"asin": asin, "units": units, "dates": dates})
+
+        if blocked:
+            detail = "; ".join(
+                f"{b['asin']} ({b['units']} units on {', '.join(b['dates'])})"
+                for b in blocked
+            )
+            return JSONResponse(
+                {
+                    "error": (
+                        f"Cannot remove {detail}. Those boxes are already packed, and "
+                        "removing the row would drop them from the invoice — the "
+                        "stock would ship with nothing billed against it. Set To Ship "
+                        "to 0 instead: packing stops and the record is kept."
+                    ),
+                    "blocked": blocked,
+                },
+                status_code=409,
+            )
+
+    changed = await repository.set_item_excluded(db, plan.id, asins, excluded)
+    return JSONResponse(
+        {
+            "status": "excluded" if excluded else "restored",
+            "changed": changed,
+            "count": len(changed),
+        }
+    )
+
+
+# ─── Product sort priority (admin) ───────────────────────────────────────────
+
+@router.get("/categories")
+async def get_categories(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """Every product's sort priority, for the editor.
+
+    Keyword defaults are seeded at generate time; `source` says whether a value
+    was guessed or chosen, so the screen can show which still need a look.
+    """
+    rows = await repository.load_categories(db)
+    return JSONResponse(
+        {
+            "labels": logic.CATEGORY_LABELS,
+            "categories": [
+                {
+                    "product_key": r.product_key,
+                    "product_label": r.product_label or r.product_key,
+                    "priority": int(r.priority or logic.DEFAULT_CATEGORY),
+                    "source": r.source or "keyword",
+                }
+                for r in rows
+            ],
+        }
+    )
+
+
+@router.patch("/categories")
+async def patch_categories(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """Override sort priorities. Body: {"categories": {"chana sattu": 2, ...}}
+
+    Applies immediately to every plan, current and future, because
+    load_plan_items reads the priority at query time rather than from a copy
+    stored on the row.
+    """
+    body = await request.json()
+    changed = await repository.set_categories(db, body.get("categories") or {})
+    return JSONResponse({"status": "saved", "changed": changed})
+
+
 # ─── Daily packing (ops + admin) ─────────────────────────────────────────────
 
 def _valid_date(value: str) -> bool:
@@ -491,6 +670,16 @@ async def save_packing(
     Refuses once the day is verified or shipped: an invoice may already carry
     those numbers, and silently editing them would put the GST document and the
     warehouse record out of agreement.
+
+    Entries for rows the owner has since EXCLUDED are dropped rather than stored,
+    and reported back. This closes the stale-screen race: the packer's phone still
+    lists a row the owner removed a minute ago, and accepting that count would
+    manufacture exactly the state /items/exclude refuses to create — packed units
+    against a row that appears on no document and no invoice.
+
+    The whole save is not rejected over it. His other counts are real, manual work
+    and must not be thrown away because one row went stale; the dropped ASINs come
+    back so the screen can say what happened and refresh.
     """
     if not _valid_date(pack_date):
         return JSONResponse({"error": "Date must be YYYY-MM-DD"}, status_code=400)
@@ -515,18 +704,34 @@ async def save_packing(
             status_code=409,
         )
 
+    included = {
+        i.asin for i in await repository.load_plan_items(db, plan.id)
+    }
+    kept, dropped = [], []
+    for raw in entries:
+        asin = str((raw or {}).get("asin") or "").strip()
+        if asin and asin not in included:
+            dropped.append(asin)
+            continue
+        kept.append(raw)
+
     day = await repository.save_packing_entries(
-        db, plan.id, pack_date, entries, submitted_by=role
+        db, plan.id, pack_date, kept, submitted_by=role
     )
-    return JSONResponse(
-        {
-            "status": "saved",
-            "pack_date": day.pack_date,
-            "day_status": day.status,
-            "total_units": int(day.total_units or 0),
-            "total_cartons": int(day.total_cartons or 0),
-        }
-    )
+    payload = {
+        "status": "saved",
+        "pack_date": day.pack_date,
+        "day_status": day.status,
+        "total_units": int(day.total_units or 0),
+        "total_cartons": int(day.total_cartons or 0),
+    }
+    if dropped:
+        payload["dropped"] = dropped
+        payload["warning"] = (
+            f"{len(dropped)} item(s) were removed from the plan by the owner and "
+            "were not saved. Refresh to see the current list."
+        )
+    return JSONResponse(payload)
 
 
 @router.post("/packing/{pack_date}/submit")

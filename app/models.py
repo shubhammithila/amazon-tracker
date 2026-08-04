@@ -188,7 +188,17 @@ class ShipmentPlan(Base):
     id = Column(Integer, primary_key=True)
     label = Column(String(100))
     multiplier = Column(Numeric(4, 1), default=5.0)
-    status = Column(String(20), default="active")  # active / closed
+    # draft / active / closed.
+    #
+    # `draft` is where a generated plan starts: the owner deletes rows, fixes
+    # quantities and fills missing SKUs while the WAREHOUSE STILL SEES THE OLD
+    # ACTIVE PLAN. Only `finalise` promotes it. That gap matters — without it the
+    # packer could start boxing rows the owner was about to remove.
+    #
+    # repository.get_active_plan() selects `active` only, which is what keeps all
+    # the pre-existing packing endpoints draft-safe by omission rather than by
+    # eleven separate edits.
+    status = Column(String(20), default="active")
     # Carry-over thresholds: a day is held only when cartons AND units are both
     # below these (see app/shipment/logic.is_held).
     min_cartons = Column(Integer, default=25)
@@ -219,8 +229,24 @@ class ShipmentPlanItem(Base):
     brand = Column(String(4))
     item = Column(Text)
     # Casefolded parent_product, so SQL ORDER BY matches app.shipment.logic.sort_key.
+    # Doubles as the join key into product_categories.
     sort_product = Column(String(120))
     weight = Column(Numeric(6, 3))
+
+    # Brand as a sortable rank: 0 Mithila Foods, 1 Howrah Foods, 2 unknown.
+    # Needed because the stored codes are 'MF' and 'HF' and those cannot order
+    # alphabetically — H sorts before M. Brand never changes for an ASIN, so
+    # persisting the rank carries no staleness risk. See logic.brand_rank_for.
+    brand_rank = Column(Integer, default=2, nullable=False)
+
+    # Set when the owner removes the row from the plan. A TIMESTAMP rather than a
+    # boolean for two reasons: `WHERE excluded_at IS NULL` treats every
+    # pre-migration row as included with no backfill, and a nullable Boolean
+    # invites `== False`, which silently drops legacy NULL rows. It also records
+    # when, which the "show excluded" toggle displays.
+    #
+    # Reversible on purpose — an accidental multi-row exclude is one click back.
+    excluded_at = Column(DateTime)
 
     # Snapshot of the CSV upload. Never rewritten after /generate, so the plan
     # always shows the numbers it was actually built from.
@@ -229,8 +255,9 @@ class ShipmentPlanItem(Base):
     fba_stock = Column(Integer, default=0)
     deficit = Column(Integer, default=0)
 
-    # Owner-editable. Stored already rounded to the nearest 10; a manual
-    # override is kept verbatim.
+    # Owner-editable. `shipment_plan` is stored already rounded to the nearest
+    # 10; a manual override is kept verbatim. `available` is finished stock on the
+    # warehouse shelf and drives the "To make" figure (logic.still_to_source).
     shipment_plan = Column(Integer, default=0)
     available = Column(Integer, default=0)
     s = Column(Boolean, default=False)
@@ -238,6 +265,40 @@ class ShipmentPlanItem(Base):
     b = Column(Boolean, default=False)
 
     plan = relationship("ShipmentPlan", back_populates="items")
+
+
+class ProductCategory(Base):
+    """Sort priority for a parent product: P1 Sattu … P6 Rest.
+
+    A table of its own, keyed by product rather than by plan item, for one
+    reason: the owner classifies a PRODUCT once and expects it to hold. There are
+    74 distinct products behind 205 ASINs, so per-item storage would mean
+    re-making the same 74 decisions on every weekly upload.
+
+    Deliberately NOT denormalised onto the item row and NOT baked into a stored
+    composite sort key. ``repository.load_plan_items`` joins this table and orders
+    on the joined column, so re-classifying a product needs no row rewrite and
+    cannot leave an existing plan silently mis-sorted against a stale key.
+
+    Rows are seeded from ``logic.category_for`` keyword defaults at generate time
+    and then overridden by hand; ``source`` records which, so the UI can show
+    what was guessed versus what was chosen.
+    """
+    __tablename__ = "product_categories"
+    __table_args__ = (
+        # UNIQUE: one priority per product, and the upsert target.
+        Index("idx_product_categories_key", "product_key", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    # Casefolded parent product name — matches ShipmentPlanItem.sort_product,
+    # which is the join key.
+    product_key = Column(String(120), nullable=False)
+    # The name as it reads on screen, for the category editor.
+    product_label = Column(Text)
+    priority = Column(Integer, default=6, nullable=False)
+    source = Column(String(10), default="keyword")  # keyword / manual
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class ShipmentPackingDay(Base):

@@ -21,6 +21,7 @@ import io
 import pytest
 
 from app.shipment import documents, logic
+from tests.conftest import CANONICAL_ORDER
 
 pytestmark = pytest.mark.regression
 
@@ -70,18 +71,20 @@ def plan():
 
 @pytest.fixture
 def items():
-    """Deliberately awkward: mixed case, and a lowercase name that sorts FIRST.
+    """Deliberately awkward, mirroring conftest.plan_factory exactly.
 
-    'aloe vera juice' is lowercase but belongs first once casefolded. A builder
-    that sorted case-sensitively (or by ASIN, or not at all when given shuffled
-    input) puts it somewhere else, which is what makes the ordering assertions
-    able to fail. Same reasoning as the plan_factory fixture in conftest.py.
+    'aloe vera juice' is lowercase and sorts FIRST alphabetically, but it is
+    Howrah Foods and category P6 Rest, so it must come LAST. A builder that
+    re-sorted by name, by ASIN, case-sensitively, or that ignored brand and
+    category, would put it somewhere else — which is what makes the ordering
+    assertions below able to fail rather than merely able to pass.
     """
     return logic.sort_items([
         _item("B0AAA00001", "Chana Sattu", 1.0, shipment_plan=500, packed=200, remaining=300),
         _item("B0AAA00002", "Chana Sattu", 0.5, shipment_plan=300, packed=300, remaining=0),
         _item("B0BBB00001", "jau sattu", 1.0, shipment_plan=200, packed=0, remaining=200),
-        _item("B0CCC00001", "aloe vera juice", 2.0, shipment_plan=100, packed=40, remaining=60),
+        _item("B0CCC00001", "aloe vera juice", 2.0, brand="HF",
+              shipment_plan=100, packed=40, remaining=60),
     ])
 
 
@@ -110,8 +113,12 @@ def days():
 
 # ─── Row order: the point of the file ────────────────────────────────────────
 
-EXPECTED_ORDER = ["B0CCC00001", "B0AAA00002", "B0AAA00001", "B0BBB00001"]
-#                  aloe 2kg      chana 0.5kg   chana 1kg     jau 1kg
+#: Imported rather than restated. The order lived in three separate hardcoded
+#: copies (here, test_shipment_plan_db, test_shipment_download_routes), which is
+#: three places to update and three chances to update only two — and a stale copy
+#: that still passes is worse than one that fails.
+EXPECTED_ORDER = CANONICAL_ORDER
+#  MF·P1 chana 0.5kg → MF·P1 chana 1kg → MF·P1 jau 1kg → HF·P6 aloe
 
 
 def test_the_fixture_itself_is_in_canonical_order(items):

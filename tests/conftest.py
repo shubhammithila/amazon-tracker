@@ -178,26 +178,47 @@ async def ops_client(db_schema, ops_cookie):
         yield ac
 
 
+#: The canonical order the fixture's DEFAULT_ITEMS must come back in:
+#: brand → category → product → weight → ASIN.
+#:
+#:   B0AAA00002  MF · P1 Sattu · chana sattu · 0.5kg
+#:   B0AAA00001  MF · P1 Sattu · chana sattu · 1.0kg
+#:   B0BBB00001  MF · P1 Sattu · jau sattu   · 1.0kg
+#:   B0CCC00001  HF · P6 Rest  · aloe vera juice
+#:
+#: Shared so the ordering tests, the document tests and the download tests all
+#: assert against ONE list. They previously each hardcoded their own copy, which
+#: is three places to update and three chances to update only two.
+CANONICAL_ORDER = ["B0AAA00002", "B0AAA00001", "B0BBB00001", "B0CCC00001"]
+
+
 @pytest_asyncio.fixture
 async def plan_factory(db):
-    """Create an active shipment plan with items, via the real repository.
+    """Create a shipment plan with items, via the real repository.
 
-    Goes through ``repository.create_plan`` rather than inserting rows directly
-    so the tests exercise the same write path the app uses — including the
-    casefolded ``sort_product`` that the canonical ORDER BY depends on. A test
-    that hand-built rows could pass while the real code stored them wrongly.
+    Goes through ``repository.create_plan`` rather than inserting rows directly so
+    the tests exercise the same write path the app uses — including the casefolded
+    ``sort_product`` the ORDER BY joins on and the ``brand_rank`` it sorts by. A
+    test that hand-built rows could pass while the real code stored them wrongly.
 
-    Weights and names are chosen so product-then-weight ordering is observable,
-    and so that a *case-sensitive* sort produces a visibly different order.
+    **Creates an ACTIVE plan by default.** ``create_plan`` now defaults to `draft`
+    (the owner edits before the warehouse sees it), but almost every test here is
+    about packing, which only works against an active plan. Tests that care about
+    the draft workflow pass ``status="draft"`` explicitly.
 
-    That second property needs care. SQLite's default collation is binary, so
-    every capital letter sorts before every lowercase one. A lowercase name that
-    is also last alphabetically — 'jau sattu' here — therefore lands in the same
-    position under both collations and proves nothing. The lowercase name has to
-    be one that belongs FIRST: 'aloe vera juice' sorts first when casefolded, but
-    last under binary collation, so dropping the casefold reorders the list and
-    the ordering tests fail. Verified by mutation: pointing the ORDER BY at the
-    raw column makes tests/test_shipment_plan_db.py fail.
+    The items are chosen so several ordering properties are observable at once:
+
+    * **Category beats alphabet.** 'aloe vera juice' sorts first alphabetically
+      but is P6 Rest, so it must land LAST. If category ranking were dropped it
+      would jump to the front and the ordering tests would fail loudly.
+    * **Brand beats everything.** That same row is the only HF row, so it also
+      proves Mithila Foods comes first.
+    * **Product above weight.** The two 'chana sattu' rows (0.5kg, 1kg) must be
+      adjacent and in weight order.
+    * **Case-insensitivity.** SQLite's default collation is binary, so every
+      capital sorts before every lowercase. 'jau sattu' is lowercase and must
+      still sit among the capitalised 'Chana Sattu' rows; dropping the casefold
+      moves it and the ordering tests fail.
     """
     from app.shipment import repository
 
@@ -208,18 +229,23 @@ async def plan_factory(db):
          "brand": "MF", "fba_sku": "MF-CH-500G", "shipment_plan": 300, "deficit": 290},
         {"asin": "B0BBB00001", "item": "jau sattu", "weight": 1.0,
          "brand": "MF", "fba_sku": "MF-JAU-1KG", "shipment_plan": 200, "deficit": 150},
-        # Lowercase on purpose, and first alphabetically — see the docstring.
+        # Lowercase AND alphabetically first AND the only HF row AND category
+        # P6 — so it must come last. See the docstring.
         {"asin": "B0CCC00001", "item": "aloe vera juice", "weight": 2.0,
          "brand": "HF", "fba_sku": "HF-ALOE-2L", "shipment_plan": 0, "deficit": -50},
     ]
 
-    async def _make(items=None, multiplier=5.0, min_cartons=25, min_units=500):
+    async def _make(
+        items=None, multiplier=5.0, min_cartons=25, min_units=500,
+        status=repository.STATUS_ACTIVE,
+    ):
         return await repository.create_plan(
             db,
             items if items is not None else [dict(i) for i in DEFAULT_ITEMS],
             multiplier=multiplier,
             min_cartons=min_cartons,
             min_units=min_units,
+            status=status,
         )
 
     return _make

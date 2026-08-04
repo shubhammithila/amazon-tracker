@@ -353,14 +353,15 @@ async def test_the_first_ever_plan_does_not_warn(auth_client, real_asin):
     assert r.json()["abandoned_holds"] == []
 
 
-async def test_the_new_plan_starts_with_an_empty_backlog(
+async def test_generating_a_draft_leaves_the_old_backlog_visible(
     auth_client, ops_client, plan_factory, real_asin
 ):
-    """The warning is about the *old* plan; the new one is genuinely clean.
+    """A draft must not change what the owner is currently looking at.
 
-    Leaking the previous plan's held days into the new plan's carry-over would be
-    worse than saying nothing: the owner would be prompted to release days that
-    are not even on the plan he is looking at.
+    Generating no longer closes the active plan, so /active still describes the
+    plan being packed — including its held days. That is the point: the held stock
+    is real and must not disappear from view just because a replacement plan is
+    being prepared.
     """
     await plan_factory()
     await _pack(ops_client, MONDAY, 400, 20)
@@ -370,6 +371,35 @@ async def test_the_new_plan_starts_with_an_empty_backlog(
         files=_csvs([(real_asin, 100, "SKU-1")]),
         data={"multiplier": "5"},
     )
+
+    carry = await _carry_over(auth_client)
+    assert carry["days"] == 1, (
+        "generating a draft hid the active plan's held stock — 400 packed units "
+        "would drop off the screen while still sitting in the warehouse"
+    )
+    assert carry["units"] == 400
+
+
+async def test_the_finalised_plan_starts_with_an_empty_backlog(
+    auth_client, ops_client, plan_factory, real_asin
+):
+    """Once the new plan IS active, the old plan's holds must not follow it.
+
+    Leaking them would be worse than saying nothing: the owner would be prompted
+    to release days that are not even on the plan he is looking at. The
+    abandoned-holds warning at generate is what tells him about them instead.
+    """
+    await plan_factory()
+    await _pack(ops_client, MONDAY, 400, 20)
+
+    r = await auth_client.post(
+        "/shipment/generate",
+        files=_csvs([(real_asin, 100, "SKU-1")]),
+        data={"multiplier": "5"},
+    )
+    new_id = r.json()["plan"]["id"]
+    r = await auth_client.post(f"/shipment/plan/{new_id}/finalise")
+    assert r.status_code == 200, r.text
 
     carry = await _carry_over(auth_client)
     assert carry["days"] == 0, "the old plan's held days leaked into the new plan"

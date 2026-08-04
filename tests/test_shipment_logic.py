@@ -98,28 +98,161 @@ def test_a_real_need_is_never_rounded_away():
     assert logic.round_to_10(0) == 0, "zero need must stay zero"
 
 
-# ─── Product-then-weight ordering ────────────────────────────────────────────
+# ─── Category priority: P1 Sattu … P6 Rest ───────────────────────────────────
+#
+# The requested order. Keyword defaults only — every one is overridable per
+# product in the app, so a wrong guess is a dropdown away rather than a code
+# change. What is pinned here is the RULE ORDER, because nine of the 74 real
+# product names match more than one keyword and three change bucket depending on
+# which keyword is tested first.
 
-def test_sort_orders_by_product_then_weight():
+@pytest.mark.parametrize(
+    "name,expected,why",
+    [
+        ("Jau Sattu", 1, "plain sattu"),
+        ("Roasted Chana", 2, "plain chana"),
+        ("Jau Atta", 3, "atta is a flour"),
+        ("Moringa Besan", 3, "besan is a flour, not a pulse"),
+        ("Katarni rice", 4, "plain rice"),
+        ("Arwa Chawal", 4, "chawal is rice"),
+        ("white sesame seeds", 5, "seeds"),
+        ("Flax Seed", 5, "singular 'seed' must match too"),
+        ("Champaran Mutton Masala", 6, "genuinely none of the five"),
+        ("herbal gulal", 6, "not even food"),
+        ("", 6, "blank name must not raise"),
+        (None, 6, "missing name must not raise"),
+    ],
+)
+def test_category_for(name, expected, why):
+    assert logic.category_for(name) == expected, why
+
+
+@pytest.mark.parametrize(
+    "name,expected,why",
+    [
+        # The three that rule order decides. Each would land elsewhere if the
+        # rules were reordered, and nothing else in the suite would notice.
+        ("Bangla Chana Sattu", 1, "it IS a sattu; 'sattu' must beat 'chana'"),
+        ("Rice Atta", 3, "it IS a flour; 'atta' must beat 'rice'"),
+        ("chana dal badi", 2, "the chana is the ingredient; 'chana' must beat 'dal'"),
+    ],
+)
+def test_category_rules_are_order_dependent_and_the_order_is_the_rule(name, expected, why):
+    assert logic.category_for(name) == expected, why
+
+
+def test_every_real_product_gets_a_category_in_range():
+    """All 74 live products must land in 1..6, and none may raise.
+
+    A KeyError here would take out /shipment/generate entirely, so this runs
+    against the real catalogue rather than invented names.
+    """
+    families = json.loads(
+        (Path(__file__).resolve().parent.parent / "app" / "invoice" / "product_families.json")
+        .read_text(encoding="utf-8")
+    )
+    names = {v.get("parent_product") for v in families.values()}
+    assert len(names) > 50, "catalogue looks wrong; this test would prove nothing"
+    for name in names:
+        assert logic.category_for(name) in logic.CATEGORY_LABELS, name
+
+
+# ─── Brand order: Mithila Foods first ────────────────────────────────────────
+
+def test_mithila_foods_sorts_before_howrah_foods():
+    """The codes are 'MF' and 'HF', so this cannot be left to alphabetics.
+
+    H sorts before M. Ranking is why the column exists.
+    """
+    assert logic.brand_rank_for("MF") < logic.brand_rank_for("HF")
+
+
+@pytest.mark.parametrize("brand", ["", None, "XX", "Some New Brand"])
+def test_an_unknown_brand_sorts_last_not_first(brand):
+    """A new brand at the TOP of the packing sheet reads as a broken sheet.
+
+    At the bottom it reads as what it is: something new that needs classifying.
+    """
+    assert logic.brand_rank_for(brand) > logic.brand_rank_for("HF")
+
+
+# ─── Full ordering ───────────────────────────────────────────────────────────
+
+def test_sort_orders_by_brand_then_category_then_product_then_weight():
+    """The requested order, end to end.
+
+    Note Sattu before Chana even though 'Chana' < 'Sattu' alphabetically: these
+    are categories now, not names, which is the whole point of the change.
+    """
     items = [
-        {"item": "Sattu", "weight": 2.0, "asin": "B03"},
-        {"item": "Chana", "weight": 5.0, "asin": "B01"},
-        {"item": "Sattu", "weight": 0.5, "asin": "B02"},
-        {"item": "Chana", "weight": 1.0, "asin": "B04"},
+        {"brand": "HF", "item": "Jau Sattu", "weight": 1.0, "asin": "B05"},
+        {"brand": "MF", "item": "Roasted Chana", "weight": 1.0, "asin": "B03"},
+        {"brand": "MF", "item": "ABC Sattu", "weight": 1.0, "asin": "B02"},
+        {"brand": "MF", "item": "ABC Sattu", "weight": 0.5, "asin": "B01"},
+        {"brand": "MF", "item": "Katarni rice", "weight": 5.0, "asin": "B04"},
     ]
-    assert [(i["item"], i["weight"]) for i in logic.sort_items(items)] == [
-        ("Chana", 1.0), ("Chana", 5.0), ("Sattu", 0.5), ("Sattu", 2.0),
+    assert [i["asin"] for i in logic.sort_items(items)] == [
+        "B01",  # MF · P1 Sattu · ABC Sattu · 0.5kg
+        "B02",  # MF · P1 Sattu · ABC Sattu · 1kg
+        "B03",  # MF · P2 Chana
+        "B04",  # MF · P4 Rice
+        "B05",  # HF last, whatever its category
     ]
+
+
+def test_all_sizes_of_one_product_stay_together():
+    """Product above weight: the packer picks one product from one location.
+
+    Weight-above-product would group every 0.5kg pouch in the category together
+    and scatter each product down the page, which is a different sheet to work
+    from. This asserts the choice explicitly because both readings are plausible.
+    """
+    items = [
+        {"brand": "MF", "item": "Beetroot Sattu", "weight": 1.0, "asin": "B04"},
+        {"brand": "MF", "item": "ABC Sattu", "weight": 1.0, "asin": "B02"},
+        {"brand": "MF", "item": "Beetroot Sattu", "weight": 0.5, "asin": "B03"},
+        {"brand": "MF", "item": "ABC Sattu", "weight": 0.5, "asin": "B01"},
+    ]
+    ordered = [(i["item"], i["weight"]) for i in logic.sort_items(items)]
+    assert ordered == [
+        ("ABC Sattu", 0.5), ("ABC Sattu", 1.0),
+        ("Beetroot Sattu", 0.5), ("Beetroot Sattu", 1.0),
+    ], (
+        "sizes of one product are no longer contiguous — the sheet now groups by "
+        "weight across products, which is the other reading of the request"
+    )
+
+
+def test_precomputed_ranks_win_over_derived_ones():
+    """A category the owner edited must beat the keyword guess.
+
+    load_plan_items attaches `category_rank` from the product_categories table.
+    If sort_key re-derived it from the name, an owner's override would apply on
+    screen and be silently ignored in every download, or the reverse.
+    """
+    items = [
+        # Keyword would call this a sattu (P1); the owner has moved it to P6.
+        {"brand": "MF", "item": "Jau Sattu", "weight": 1.0, "asin": "B01",
+         "category_rank": 6},
+        {"brand": "MF", "item": "Roasted Chana", "weight": 1.0, "asin": "B02",
+         "category_rank": 2},
+    ]
+    assert [i["asin"] for i in logic.sort_items(items)] == ["B02", "B01"], (
+        "sort_key ignored the stored category_rank and re-derived it from the "
+        "name, so an owner's override would not reach the downloads"
+    )
 
 
 def test_sort_is_case_insensitive_on_product_name():
     """Otherwise 'Jau Sattu' and 'sattu' land in unrelated parts of the list."""
     items = [
-        {"item": "sattu", "weight": 1.0, "asin": "B01"},
-        {"item": "Chana", "weight": 1.0, "asin": "B02"},
-        {"item": "JAU", "weight": 1.0, "asin": "B03"},
+        {"brand": "MF", "item": "sattu", "weight": 1.0, "asin": "B01"},
+        {"brand": "MF", "item": "SATTU", "weight": 1.0, "asin": "B02"},
+        {"brand": "MF", "item": "Jau Sattu", "weight": 1.0, "asin": "B03"},
     ]
-    assert [i["item"] for i in logic.sort_items(items)] == ["Chana", "JAU", "sattu"]
+    # All three are P1; ordering within the category is by casefolded name, so
+    # 'Jau Sattu' precedes both spellings of 'sattu' and those two stay adjacent.
+    assert [i["item"] for i in logic.sort_items(items)] == ["Jau Sattu", "sattu", "SATTU"]
 
 
 def test_sort_prefers_sort_product_when_present():
@@ -150,13 +283,22 @@ def test_sort_tolerates_missing_weight(bad_weight):
 
 
 def test_sort_works_on_objects_not_just_dicts():
+    """ORM rows go through the same key, including the rank fallbacks.
+
+    `brand_rank`/`category_rank` are absent here — a row loaded outside
+    load_plan_items has neither — so both must be derived from `brand` and the
+    product name rather than raising or defaulting everything to equal.
+    """
     class Row:
-        def __init__(self, item, weight, asin):
-            self.item, self.weight, self.asin = item, weight, asin
+        def __init__(self, brand, item, weight, asin):
+            self.brand, self.item, self.weight, self.asin = brand, item, weight, asin
             self.sort_product = None
 
-    rows = [Row("Sattu", 2.0, "B01"), Row("Chana", 1.0, "B02")]
-    assert [r.asin for r in logic.sort_items(rows)] == ["B02", "B01"]
+    rows = [
+        Row("MF", "Roasted Chana", 1.0, "B02"),   # P2
+        Row("MF", "Jau Sattu", 2.0, "B01"),       # P1 -> first
+    ]
+    assert [r.asin for r in logic.sort_items(rows)] == ["B01", "B02"]
 
 
 def test_sort_is_stable_and_total_over_the_real_catalogue():
@@ -166,7 +308,12 @@ def test_sort_is_stable_and_total_over_the_real_catalogue():
         .read_text(encoding="utf-8")
     )
     items = [
-        {"item": info["parent_product"], "weight": info.get("weight"), "asin": asin}
+        {
+            "item": info["parent_product"],
+            "weight": info.get("weight"),
+            "asin": asin,
+            "brand": "MF" if info.get("brand") == "Mithila Foods" else "HF",
+        }
         for asin, info in families.items()
     ]
     once = logic.sort_items(items)
@@ -180,6 +327,39 @@ def test_sort_is_stable_and_total_over_the_real_catalogue():
             assert float(prev["weight"]) <= float(cur["weight"]), (
                 f"weights out of order within {cur['item']}"
             )
+
+    # Structural properties over the real catalogue, checked rather than a
+    # hardcoded 205-row sequence — a fixed list would be unreadable and would
+    # need rewriting whenever a product is added.
+    def key(row):
+        return (
+            logic.brand_rank_for(row["brand"]),
+            logic.category_for(row["item"]),
+        )
+
+    # 1. Brand and category are monotonic: MF entirely before HF, and within a
+    #    brand P1 … P6 in order, never revisited.
+    ranks = [key(r) for r in once]
+    assert ranks == sorted(ranks), "brand/category groups are interleaved"
+
+    # 2. Every product's rows are CONTIGUOUS. This is the property that makes the
+    #    sheet pickable — one product, one place, one visit. Weight-ordering alone
+    #    would still pass while a product was split across the page.
+    seen: dict[str, int] = {}
+    for index, row in enumerate(once):
+        name = row["item"].casefold()
+        if name in seen and seen[name] != index - 1:
+            raise AssertionError(
+                f"{row['item']} is split across the sheet (rows {seen[name]} and "
+                f"{index}) — the packer would visit it twice"
+            )
+        seen[name] = index
+
+    # 3. Mithila Foods really does come first, and both brands are present so
+    #    this assertion cannot pass vacuously.
+    brands = [logic.brand_rank_for(r["brand"]) for r in once]
+    assert 0 in brands and 1 in brands, "catalogue no longer has both brands"
+    assert brands.index(1) > brands.index(0), "Howrah Foods sorted before Mithila"
 
 
 # ─── Remaining ───────────────────────────────────────────────────────────────

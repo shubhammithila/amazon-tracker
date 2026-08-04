@@ -27,6 +27,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    ProductCategory,
     ShipmentPackingDay,
     ShipmentPackingEntry,
     ShipmentPlan,
@@ -41,19 +42,31 @@ logger = logging.getLogger(__name__)
 # plan was built from, so an edit cannot rewrite history.
 EDITABLE_ITEM_FIELDS = ("shipment_plan", "available", "s", "m", "b", "fba_sku")
 
+# Plan lifecycle. `draft` is owner-only; only `active` is visible to the packer,
+# and get_active_plan() matching `active` alone is what enforces that across every
+# pre-existing endpoint without touching them.
+STATUS_DRAFT = "draft"
+STATUS_ACTIVE = "active"
+STATUS_CLOSED = "closed"
+
 
 # ─── Plans ───────────────────────────────────────────────────────────────────
 
 async def get_active_plan(db: AsyncSession) -> ShipmentPlan | None:
     """The plan currently being packed, or None.
 
-    Ordered by id descending so that if two plans are somehow both active (a
-    crash between closing the old one and creating the new one), the newest wins
-    rather than the query returning an arbitrary row.
+    **Matches `active` and nothing else, and that is a load-bearing omission.**
+    Drafts are invisible here, which is what makes all eleven pre-existing packing
+    and download endpoints draft-safe without a single edit to any of them. Widen
+    this and the warehouse starts packing plans the owner has not finished.
+
+    Ordered by id descending so that if two plans are somehow both active (a crash
+    between closing the old one and activating the new one), the newest wins rather
+    than the query returning an arbitrary row.
     """
     result = await db.execute(
         select(ShipmentPlan)
-        .where(ShipmentPlan.status == "active")
+        .where(ShipmentPlan.status == STATUS_ACTIVE)
         .order_by(ShipmentPlan.id.desc())
         .limit(1)
     )
@@ -68,13 +81,16 @@ async def get_plan(db: AsyncSession, plan_id: int) -> ShipmentPlan | None:
 async def close_active_plans(db: AsyncSession) -> int:
     """Mark every active plan closed. Returns how many were closed.
 
-    Called before creating a new plan. Closed plans are kept, not deleted — they
-    carry the packing history the invoices were generated from.
+    Called by ``finalise_plan``, NOT by ``create_plan`` — see that function's
+    docstring for why. Closed plans are kept, not deleted: they carry the packing
+    history the invoices were generated from.
     """
-    result = await db.execute(select(ShipmentPlan).where(ShipmentPlan.status == "active"))
+    result = await db.execute(
+        select(ShipmentPlan).where(ShipmentPlan.status == STATUS_ACTIVE)
+    )
     plans = list(result.scalars())
     for plan in plans:
-        plan.status = "closed"
+        plan.status = STATUS_CLOSED
     return len(plans)
 
 
@@ -85,27 +101,36 @@ async def create_plan(
     label: str | None = None,
     min_cartons: int = logic.DEFAULT_MIN_CARTONS,
     min_units: int = logic.DEFAULT_MIN_UNITS,
+    status: str = STATUS_DRAFT,
 ) -> ShipmentPlan:
-    """Create a plan and its item rows, closing any previous active plan.
+    """Create a plan and its item rows. Does NOT touch the current active plan.
+
+    **It used to call ``close_active_plans()`` and must not.** With drafts, that
+    would mean uploading a CSV instantly closed the plan the warehouse was packing
+    — the packer's screen would empty mid-shift, with no warning and nothing to
+    explain it, while the replacement sat invisible in draft. Closing is now
+    ``finalise_plan``'s job, which is the moment the owner actually decides.
 
     ``items`` are plain dicts straight from the CSV parsing step. Rounding has
     already happened in the router (once, at generate time) — this function
     stores what it is given so a manual override of 437 survives verbatim.
     """
-    await close_active_plans(db)
-
     plan = ShipmentPlan(
         label=label or f"Plan {datetime.utcnow():%Y-%m-%d}",
         multiplier=multiplier,
-        status="active",
+        status=status,
         min_cartons=min_cartons,
         min_units=min_units,
     )
     db.add(plan)
     await db.flush()  # need plan.id before adding items
 
+    seen_products: dict[str, str] = {}
     for raw in items:
         product = str(raw.get("item") or "")
+        key = product.casefold()[:120]
+        if key:
+            seen_products.setdefault(key, product)
         db.add(
             ShipmentPlanItem(
                 plan_id=plan.id,
@@ -113,8 +138,11 @@ async def create_plan(
                 fba_sku=raw.get("fba_sku") or "",
                 brand=raw.get("brand") or "",
                 item=product,
-                # Persisted casefolded so ORDER BY matches logic.sort_key.
-                sort_product=product.casefold()[:120],
+                # Persisted casefolded so ORDER BY matches logic.sort_key, and
+                # doubles as the join key into product_categories.
+                sort_product=key,
+                # Persisted because 'MF'/'HF' cannot order alphabetically.
+                brand_rank=logic.brand_rank_for(raw.get("brand")),
                 weight=raw.get("weight") or 0,
                 sales_7d=int(raw.get("sales_7d") or 0),
                 projection=int(raw.get("projection") or 0),
@@ -130,7 +158,111 @@ async def create_plan(
 
     await db.commit()
     await db.refresh(plan)
+
+    # Seed keyword categories for any product not classified yet, AFTER the
+    # commit so a failure here cannot lose the plan. Existing rows are untouched,
+    # so a re-upload never reverts a priority the owner set by hand.
+    await ensure_categories(db, seen_products)
     return plan
+
+
+async def finalise_plan(db: AsyncSession, plan_id: int) -> ShipmentPlan | None:
+    """Promote a draft to active, closing whatever was active before.
+
+    The close lives HERE rather than in ``create_plan`` on purpose. This is the
+    single moment the owner decides the new plan replaces the old one, so it is
+    the only moment the warehouse's plan should change under them. Both writes
+    happen in one transaction: a crash between them would leave either two active
+    plans or none, and ``get_active_plan``'s ``id desc`` only papers over the
+    first of those.
+
+    Returns None if there is no such plan. An already-active plan is returned
+    unchanged, so a double-click is harmless.
+    """
+    plan = await get_plan(db, plan_id)
+    if plan is None:
+        return None
+    if plan.status == STATUS_ACTIVE:
+        return plan
+
+    result = await db.execute(
+        select(ShipmentPlan).where(
+            ShipmentPlan.status == STATUS_ACTIVE, ShipmentPlan.id != plan_id
+        )
+    )
+    for previous in result.scalars():
+        previous.status = STATUS_CLOSED
+
+    plan.status = STATUS_ACTIVE
+    await db.commit()
+    await db.refresh(plan)
+    return plan
+
+
+async def get_draft_plan(db: AsyncSession) -> ShipmentPlan | None:
+    """The plan being prepared, if any. Owner-only by construction.
+
+    Separate from ``get_active_plan`` deliberately: that function is unchanged and
+    still matches only `active`, which is what keeps every pre-existing packing
+    endpoint blind to drafts without touching any of them.
+    """
+    result = await db.execute(
+        select(ShipmentPlan)
+        .where(ShipmentPlan.status == STATUS_DRAFT)
+        .order_by(ShipmentPlan.id.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def delete_draft_plans(db: AsyncSession) -> int:
+    """Drop existing drafts before creating a new one.
+
+    Safe because no packing endpoint can reach a draft, so a draft can never
+    carry packing rows worth keeping. Without this, generating twice would leave
+    an orphan draft that `get_draft_plan` would then have to choose between.
+    """
+    result = await db.execute(
+        select(ShipmentPlan).where(ShipmentPlan.status == STATUS_DRAFT)
+    )
+    drafts = list(result.scalars())
+    for draft in drafts:
+        await db.delete(draft)
+    if drafts:
+        await db.commit()
+    return len(drafts)
+
+
+async def set_item_excluded(
+    db: AsyncSession, plan_id: int, asins: list[str], excluded: bool
+) -> list[str]:
+    """Exclude or restore plan rows. Returns the ASINs actually changed.
+
+    Reversible by design — ``excluded_at`` is set or cleared, nothing is deleted,
+    so an accidental multi-row exclude is one click back.
+    """
+    if not asins:
+        return []
+
+    result = await db.execute(
+        select(ShipmentPlanItem).where(
+            ShipmentPlanItem.plan_id == plan_id,
+            ShipmentPlanItem.asin.in_(list(asins)),
+        )
+    )
+    stamp = datetime.utcnow() if excluded else None
+    changed = []
+    for item in result.scalars():
+        if excluded and item.excluded_at is not None:
+            continue
+        if not excluded and item.excluded_at is None:
+            continue
+        item.excluded_at = stamp
+        changed.append(item.asin)
+
+    if changed:
+        await db.commit()
+    return changed
 
 
 async def delete_plan(db: AsyncSession, plan_id: int) -> bool:
@@ -163,28 +295,167 @@ async def update_thresholds(
 
 # ─── Plan items ──────────────────────────────────────────────────────────────
 
-async def load_plan_items(db: AsyncSession, plan_id: int) -> list[ShipmentPlanItem]:
-    """Every item in the plan, ordered product-then-weight-then-ASIN.
+async def load_plan_items(
+    db: AsyncSession, plan_id: int, *, include_excluded: bool = False
+) -> list[ShipmentPlanItem]:
+    """Every item in the plan, in canonical order.
+
+        brand → category priority → product → weight → ASIN
 
     THE single source of row order. Callers must render this list as-is; the
     frontend JS and every document builder rely on that, and
-    tests/test_shipment_documents.py asserts a downloaded sheet's row order
-    equals this order. Sorting anywhere else is how the screen and the download
-    drift apart.
+    tests/test_shipment_documents.py asserts a downloaded sheet's row order equals
+    this order. Sorting anywhere else is how the screen and the downloads drift
+    apart — which is the complaint that produced the sorting requirement.
+
+    **The category comes from a JOIN, not from a column on this row.** Priority
+    lives in ``product_categories`` keyed by product, so re-classifying a product
+    changes every plan's order immediately and needs no row rewrite. A
+    denormalised rank or a stored composite sort key would go stale the moment the
+    owner edited a category, and a stale sort key misorders silently.
+
+    ``COALESCE(priority, 6)`` is a safety net only: categories are materialised at
+    generate time by ``ensure_categories``. A product with no row still sorts,
+    into "Rest", rather than vanishing or raising.
+
+    Product sits ABOVE weight so every size of one product is contiguous — the
+    packer picks one product from one location and finishes it.
+
+    ``include_excluded`` defaults to False, and the default is the safety
+    property: forgetting the flag hides a row (cosmetic) rather than leaking an
+    excluded SKU onto the packer's sheet, the Amazon upload or a GST invoice. Only
+    two callers should ever pass True — the owner's "show excluded" toggle and the
+    invoice bridge's defensive check.
 
     ASIN is the last tiebreak only for determinism — without it two SKUs of the
     same product and weight could swap places between two requests.
     """
-    result = await db.execute(
-        select(ShipmentPlanItem)
+    priority = func.coalesce(ProductCategory.priority, logic.DEFAULT_CATEGORY)
+
+    query = (
+        select(ShipmentPlanItem, priority.label("category_rank"))
+        .outerjoin(
+            ProductCategory,
+            ProductCategory.product_key == ShipmentPlanItem.sort_product,
+        )
         .where(ShipmentPlanItem.plan_id == plan_id)
-        .order_by(
-            ShipmentPlanItem.sort_product,
-            ShipmentPlanItem.weight,
-            ShipmentPlanItem.asin,
+    )
+    if not include_excluded:
+        query = query.where(ShipmentPlanItem.excluded_at.is_(None))
+
+    query = query.order_by(
+        ShipmentPlanItem.brand_rank,
+        priority,
+        ShipmentPlanItem.sort_product,
+        ShipmentPlanItem.weight,
+        ShipmentPlanItem.asin,
+    )
+
+    items: list[ShipmentPlanItem] = []
+    for item, category_rank in await db.execute(query):
+        # Attached as a transient attribute so logic.sort_key reads the SAME rank
+        # SQL just ordered by. Without this the pure function would re-derive it
+        # from the product name and silently ignore the owner's override, and the
+        # two would disagree — which is exactly what
+        # tests/test_shipment_plan_db.py::test_the_sql_order_matches_the_pure_sort_function
+        # exists to catch.
+        item.category_rank = int(category_rank or logic.DEFAULT_CATEGORY)
+        items.append(item)
+    return items
+
+
+async def ensure_categories(db: AsyncSession, products: dict[str, str]) -> int:
+    """Seed keyword-default categories for products that have none yet.
+
+    ``products`` maps the casefolded key to the label as it should read on screen.
+    Existing rows are left completely alone — that is the point. A re-upload must
+    never quietly revert a priority the owner set by hand, so this only ever
+    INSERTs.
+
+    Returns how many were created.
+    """
+    if not products:
+        return 0
+
+    existing = set(
+        (
+            await db.execute(
+                select(ProductCategory.product_key).where(
+                    ProductCategory.product_key.in_(list(products))
+                )
+            )
+        ).scalars()
+    )
+
+    created = 0
+    for key, label in products.items():
+        if not key or key in existing:
+            continue
+        db.add(
+            ProductCategory(
+                product_key=key,
+                product_label=label or key,
+                priority=logic.category_for(label or key),
+                source="keyword",
+            )
+        )
+        created += 1
+
+    if created:
+        await db.commit()
+    return created
+
+
+async def load_categories(db: AsyncSession) -> list[ProductCategory]:
+    """Every known product category, for the priority editor."""
+    result = await db.execute(
+        select(ProductCategory).order_by(
+            ProductCategory.priority, ProductCategory.product_key
         )
     )
     return list(result.scalars())
+
+
+async def set_categories(db: AsyncSession, updates: dict[str, int]) -> int:
+    """Apply owner overrides. Marks them `manual` so the UI can show which.
+
+    Creates a row if the product has none, so a category can be set for a product
+    that predates the table.
+    """
+    changed = 0
+    for raw_key, raw_priority in (updates or {}).items():
+        key = str(raw_key or "").strip().casefold()
+        if not key:
+            continue
+        try:
+            priority = int(raw_priority)
+        except (TypeError, ValueError):
+            continue
+        if priority not in logic.CATEGORY_LABELS:
+            continue
+
+        row = (
+            await db.execute(
+                select(ProductCategory).where(ProductCategory.product_key == key)
+            )
+        ).scalar_one_or_none()
+
+        if row is None:
+            db.add(
+                ProductCategory(
+                    product_key=key, product_label=key,
+                    priority=priority, source="manual",
+                )
+            )
+            changed += 1
+        elif row.priority != priority:
+            row.priority = priority
+            row.source = "manual"
+            changed += 1
+
+    if changed:
+        await db.commit()
+    return changed
 
 
 async def update_plan_items(
@@ -255,6 +526,10 @@ async def count_items_missing_sku(db: AsyncSession, plan_id: int) -> int:
         .where(
             ShipmentPlanItem.plan_id == plan_id,
             ShipmentPlanItem.shipment_plan > 0,
+            # Excluded rows are not going to Amazon, so a missing SKU on one is
+            # not a problem to warn about. Counting them would nag the owner about
+            # rows he has deliberately removed.
+            ShipmentPlanItem.excluded_at.is_(None),
             (ShipmentPlanItem.fba_sku.is_(None)) | (ShipmentPlanItem.fba_sku == ""),
         )
     )

@@ -30,6 +30,7 @@ broken write look like it succeeded.
 import pytest
 
 from app.models import ShipmentPackingDay, ShipmentPackingEntry, ShipmentPlan, ShipmentPlanItem
+from tests.conftest import CANONICAL_ORDER
 from app.shipment import logic, repository
 
 pytestmark = pytest.mark.regression
@@ -305,28 +306,31 @@ async def test_ops_can_read_the_active_plan(ops_client, plan_factory):
     assert len(body["items"]) == 4
 
 
-# ─── Canonical ordering: one ORDER BY, product then weight then ASIN ──────────
+# ─── Canonical ordering: brand → category → product → weight → ASIN ───────────
 
-async def test_items_are_ordered_product_then_weight(plan_factory, db):
-    """The requested ordering, and it must be case-insensitive.
+async def test_items_are_ordered_brand_then_category_then_product_then_weight(
+    plan_factory, db
+):
+    """The requested ordering, with four properties in one assertion.
 
-    The fixture names one product 'aloe vera juice' in lowercase. SQLite's default
-    collation is binary, so a naive ORDER BY on the raw name puts every
-    capitalised name first and this row last — the reverse of where it belongs.
-    ``sort_product`` is stored casefolded to prevent that.
+    * **Brand first.** 'aloe vera juice' is the only HF row and must be last.
+    * **Category beats alphabet.** That row also sorts FIRST alphabetically, so if
+      the category rank were dropped it would jump to the front. It is P6 Rest.
+    * **Product above weight**, so the two chana sattu rows stay adjacent and in
+      weight order.
+    * **Case-insensitive.** SQLite's default collation is binary, so a naive ORDER
+      BY on the raw name puts every capitalised name before 'jau sattu'.
+      ``sort_product`` is stored casefolded to prevent that.
 
-    ``db`` rather than ``read_committed`` here because plan_factory writes through
-    that same session and nothing else has written since.
+    ``db`` rather than ``read_committed`` because plan_factory writes through that
+    same session and nothing else has written since.
     """
     plan = await plan_factory()
     items = await repository.load_plan_items(db, plan.id)
 
-    assert [i.asin for i in items] == [
-        "B0CCC00001",  # aloe vera juice  (lowercase, but sorts first)
-        "B0AAA00002",  # Chana Sattu 0.5kg
-        "B0AAA00001",  # Chana Sattu 1.0kg
-        "B0BBB00001",  # jau sattu
-    ], [(i.item, float(i.weight)) for i in items]
+    assert [i.asin for i in items] == CANONICAL_ORDER, [
+        (i.brand, i.item, float(i.weight)) for i in items
+    ]
 
 
 async def test_the_sql_order_matches_the_pure_sort_function(plan_factory, db):
@@ -334,10 +338,44 @@ async def test_the_sql_order_matches_the_pure_sort_function(plan_factory, db):
 
     Two implementations of one rule is the drift risk; this pins them together so
     a future index or column change that breaks the equivalence fails here.
+
+    This is also what makes the JOINed category safe: load_plan_items attaches the
+    rank SQL sorted by, and sort_key reads that same attached value rather than
+    re-deriving it from the product name. If it re-derived, an owner's override
+    would apply in SQL and be ignored in Python.
     """
     plan = await plan_factory()
     items = await repository.load_plan_items(db, plan.id)
     assert [i.asin for i in items] == [i.asin for i in logic.sort_items(items)]
+
+
+async def test_a_category_override_reorders_the_plan_with_no_row_rewrite(
+    plan_factory, db
+):
+    """Re-classifying a product must move it immediately, everywhere.
+
+    The reason the priority is JOINed rather than stored on the item row: there is
+    no copy to go stale. Moving 'chana sattu' from P1 to P6 must reorder this plan
+    without touching a single shipment_plan_items row — and SQL and Python must
+    still agree afterwards, which a stored composite sort key would not guarantee.
+    """
+    plan = await plan_factory()
+    before = [i.asin for i in await repository.load_plan_items(db, plan.id)]
+    assert before == CANONICAL_ORDER
+
+    await repository.set_categories(db, {"chana sattu": 6})
+
+    items = await repository.load_plan_items(db, plan.id)
+    after = [i.asin for i in items]
+    assert after != before, (
+        "a category override changed nothing — the priority is not being read at "
+        "query time, so overrides would not reach the screen or the downloads"
+    )
+    # jau sattu is still P1, so it now leads; the demoted chana rows follow.
+    assert after[0] == "B0BBB00001", after
+    assert [i.asin for i in logic.sort_items(items)] == after, (
+        "SQL and logic.sort_items disagree after an override"
+    )
 
 
 async def test_the_api_returns_items_in_canonical_order(auth_client, plan_factory):
@@ -345,9 +383,7 @@ async def test_the_api_returns_items_in_canonical_order(auth_client, plan_factor
     await plan_factory()
     r = await auth_client.get("/shipment/active")
     assert r.status_code == 200, r.text
-    assert [i["asin"] for i in r.json()["items"]] == [
-        "B0CCC00001", "B0AAA00002", "B0AAA00001", "B0BBB00001",
-    ]
+    assert [i["asin"] for i in r.json()["items"]] == CANONICAL_ORDER
 
 
 # ─── Generate: rounding is persisted, previous plan is closed ─────────────────
@@ -465,10 +501,19 @@ async def test_generate_reports_items_missing_a_merchant_sku(auth_client, real_a
     assert "warning" in body
 
 
-async def test_generate_closes_the_previous_plan(
+async def test_generate_does_not_disturb_the_plan_being_packed(
     auth_client, plan_factory, read_committed, count_rows, real_asins
 ):
-    """Exactly one plan may be active, or /active becomes ambiguous."""
+    """The trap this whole draft design exists to avoid.
+
+    ``create_plan`` used to call ``close_active_plans()``. With drafts that would
+    mean uploading a CSV instantly closed the plan the warehouse was packing: the
+    packer's screen empties mid-shift, with no warning and no explanation, while
+    the replacement sits invisible in draft.
+
+    So generate must leave the active plan completely alone, and the new plan must
+    NOT be active yet.
+    """
     old = await plan_factory()
     old_id = old.id
     first, _ = real_asins
@@ -480,8 +525,119 @@ async def test_generate_closes_the_previous_plan(
     )
     assert r.status_code == 200, r.text
 
+    assert (await read_committed(repository.get_plan, old_id)).status == "active", (
+        "generating a draft closed the plan the warehouse is packing — the "
+        "packer's screen would empty mid-shift with nothing to explain it"
+    )
+    assert await count_rows(ShipmentPlan, status="active") == 1, "more than one active plan"
+    assert await count_rows(ShipmentPlan, status="draft") == 1, "the new plan is not a draft"
+
+    assert r.json()["plan"]["status"] == "draft", (
+        "generate returned an active plan — the owner would have no chance to "
+        "remove rows before the packer saw them"
+    )
+
+
+async def test_the_packer_cannot_see_a_draft(ops_client, auth_client, plan_factory, real_asins):
+    """The point of the draft state, asserted from the packer's side.
+
+    get_active_plan() matches 'active' alone, which is what makes every
+    pre-existing packing endpoint draft-blind without touching any of them.
+    """
+    await plan_factory()          # active, 4 items
+    first, _ = real_asins
+    await auth_client.post(
+        "/shipment/generate",
+        files=_csvs([(first, 10, "SKU-1")]),
+        data={"multiplier": "5"},
+    )
+
+    r = await ops_client.get("/shipment/packing/2026-07-30")
+    assert r.status_code == 200, r.text
+    asins = {row["asin"] for row in r.json()["items"]}
+    assert first not in asins, "the packer can see a draft plan's rows"
+    assert "B0AAA00001" in asins, "the packer lost the plan he was working on"
+
+
+async def test_finalise_promotes_the_draft_and_closes_the_old_plan(
+    auth_client, plan_factory, read_committed, count_rows, real_asins
+):
+    """Exactly one plan may be active, or /active becomes ambiguous.
+
+    The close happens HERE — at the moment the owner decides — rather than at
+    generate.
+    """
+    old = await plan_factory()
+    old_id = old.id
+    first, _ = real_asins
+
+    r = await auth_client.post(
+        "/shipment/generate",
+        files=_csvs([(first, 10, "SKU-1")]),
+        data={"multiplier": "5"},
+    )
+    new_id = r.json()["plan"]["id"]
+
+    r = await auth_client.post(f"/shipment/plan/{new_id}/finalise")
+    assert r.status_code == 200, r.text
+    assert r.json()["plan"]["status"] == "active"
+
     assert await count_rows(ShipmentPlan, status="active") == 1, "more than one active plan"
     assert (await read_committed(repository.get_plan, old_id)).status == "closed"
+    assert (await read_committed(repository.get_plan, new_id)).status == "active"
+
+
+async def test_finalising_twice_is_harmless(auth_client, plan_factory, real_asins):
+    """A double-click must not close the plan it just activated."""
+    await plan_factory()
+    first, _ = real_asins
+    r = await auth_client.post(
+        "/shipment/generate",
+        files=_csvs([(first, 10, "SKU-1")]),
+        data={"multiplier": "5"},
+    )
+    new_id = r.json()["plan"]["id"]
+
+    for _ in range(2):
+        r = await auth_client.post(f"/shipment/plan/{new_id}/finalise")
+        assert r.status_code == 200, r.text
+        assert r.json()["plan"]["status"] == "active"
+
+
+async def test_ops_cannot_finalise_a_plan(ops_client, auth_client, plan_factory, real_asins):
+    """Deciding the warehouse's plan has changed is the owner's call."""
+    await plan_factory()
+    first, _ = real_asins
+    r = await auth_client.post(
+        "/shipment/generate",
+        files=_csvs([(first, 10, "SKU-1")]),
+        data={"multiplier": "5"},
+    )
+    new_id = r.json()["plan"]["id"]
+
+    r = await ops_client.post(f"/shipment/plan/{new_id}/finalise")
+    assert r.status_code == 403, r.text
+
+
+async def test_generating_twice_replaces_the_draft(
+    auth_client, plan_factory, count_rows, real_asins
+):
+    """Two uploads must not leave two drafts for get_draft_plan to choose between.
+
+    Safe to discard the first: no packing endpoint can reach a draft, so a draft
+    never carries packing rows worth keeping.
+    """
+    await plan_factory()
+    first, second = real_asins
+    for asin in (first, second):
+        r = await auth_client.post(
+            "/shipment/generate",
+            files=_csvs([(asin, 10, "SKU-1")]),
+            data={"multiplier": "5"},
+        )
+        assert r.status_code == 200, r.text
+
+    assert await count_rows(ShipmentPlan, status="draft") == 1, "an orphan draft was left"
 
 
 async def test_a_closed_plan_keeps_its_packing_history(
