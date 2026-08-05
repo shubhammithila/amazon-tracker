@@ -11,6 +11,17 @@ class Settings(BaseSettings):
     secret_key: str = "change-me-in-production-use-random-bytes"
     database_url: str = "sqlite+aiosqlite:///./tracker.db"
 
+    # The product master sheet. Column T ("Active", Y/N) decides which ASINs may
+    # appear in a shipment plan — a discontinued product must not reach the
+    # packer's sheet or an Amazon upload.
+    #
+    # Configurable rather than hardcoded because this id will change eventually (a
+    # copy of the sheet, a new year, a different account), and when it does the fix
+    # should be an env var and not a redeploy.
+    product_sheet_id: str = "11dBw92P7Bg0oFyfqramGqdAlLTGhcb2ScjmR_1wtiTM"
+    product_sheet_gid: str = "0"
+    product_sheet_timeout: int = 20
+
     scrape_concurrency: int = 10
     scrape_delay_min: float = 1.5
     scrape_delay_max: float = 3.5

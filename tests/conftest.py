@@ -251,6 +251,35 @@ async def plan_factory(db):
     return _make
 
 
+@pytest.fixture(autouse=True)
+def no_live_product_sheet(request, monkeypatch):
+    """Stop the test suite reading the real Google Sheet.
+
+    ``POST /shipment/generate`` filters out products marked inactive in column T
+    of the product master sheet. Left unmocked, every generate test would make a
+    live network call to a Google document — slow, flaky offline, and worst of all
+    it makes the suite's results depend on a spreadsheet somebody edits by hand: a
+    product deactivated on Tuesday would break unrelated tests on Wednesday.
+
+    Autouse and returning **no flags**, so the default is "filter nothing" and
+    every pre-existing generate test keeps asserting what it was written to
+    assert.
+
+    ``@pytest.mark.real_catalogue`` opts out. tests/test_shipment_catalogue.py
+    needs the genuine function — testing its fallbacks is the entire point of that
+    file — and only fakes httpx underneath it.
+    """
+    if request.node.get_closest_marker("real_catalogue"):
+        return
+
+    async def _no_flags():
+        return {}, None
+
+    monkeypatch.setattr(
+        "app.shipment.catalogue.load_active_flags", _no_flags, raising=True
+    )
+
+
 @pytest.fixture
 def valid_invoice_payload():
     """The minimum payload /invoice/save should accept.

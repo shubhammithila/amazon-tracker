@@ -222,10 +222,22 @@ def test_the_plan_sheet_shows_stock_on_hand_and_what_is_left_to_make(plan, items
     assert "To Make" in header, "the plan sheet does not say what is left to produce"
 
 
-def test_weight_label_trims_the_pointless_zero():
-    assert documents._weight_label(1.0) == "1kg"
-    assert documents._weight_label(0.5) == "0.5kg"
-    assert documents._weight_label(2.25) == "2.25kg"
+def test_weight_label_uses_grams_below_one_kilo():
+    """The unit a warehouse actually says out loud.
+
+    "0.5kg" is arithmetically identical and wrong on a picking sheet: the pouch
+    label says 500 g, and a packer scanning 100 rows should not be converting
+    units in his head. Kilos from 1 kg up, where the printed labels switch too.
+
+    Delegates to logic.weight_label — asserted through the documents alias as well
+    so the printed sheet and the screen cannot drift apart.
+    """
+    assert documents._weight_label(0.5) == "500 g"
+    assert documents._weight_label(0.25) == "250 g"
+    assert documents._weight_label(0.15) == "150 g"   # a real pack size here
+    assert documents._weight_label(1.0) == "1 kg"     # not "1.0 kg"
+    assert documents._weight_label(1.05) == "1.05 kg" # also real; keeps decimals
+    assert documents._weight_label(2.25) == "2.25 kg"
 
 
 @pytest.mark.parametrize("value", [None, 0, "", "abc", -1])

@@ -23,3 +23,8 @@ cookies.txt
 # file (or a re-run of an old build) cannot be committed by accident.
 shipment_plan.json
 projection_data.json
+
+# Runtime copy of the product sheet's Active column, refreshed on every
+# /shipment/generate. Not source: committing it would churn on every upload and
+# would let a stale copy override the sheet on a fresh deploy.
+app/invoice/active_products.json

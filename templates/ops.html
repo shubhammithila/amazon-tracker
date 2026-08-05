@@ -360,7 +360,7 @@ function renderRows(){
         <div class="sku-meta">
           <span class="sku-code">${esc(i.fba_sku) || '<span class="no-sku">NO SKU</span>'}</span>
           · <span class="sku-code">${esc(i.asin)}</span>
-          ${i.weight ? " · " + esc(i.weight) + " kg" : ""}
+          ${i.weight_label ? " · " + esc(i.weight_label) : ""}
         </div>
         <div class="sku-target">
           <span>Plan <b>${n(i.planned)}</b></span>

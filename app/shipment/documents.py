@@ -36,15 +36,14 @@ HEADER_HEX = "".join(f"{int(round(c * 255)):02X}" for c in HEADER_RGB)
 
 
 def _weight_label(weight) -> str:
-    """'1kg' / '0.5kg', trimming the pointless trailing zero on whole numbers."""
-    try:
-        value = float(weight or 0)
-    except (TypeError, ValueError):
-        return ""
-    if value <= 0:
-        return ""
-    text = f"{value:.2f}".rstrip("0").rstrip(".")
-    return f"{text}kg"
+    """Pack size as the warehouse says it — see logic.weight_label.
+
+    Kept as a thin alias because this module's builders call it in six places and
+    the name reads better in a row-building expression. The RULE lives in logic.py
+    with the other shared rules: grams under 1 kg, kilos above, and one
+    implementation so the printed sheet cannot disagree with the screen.
+    """
+    return logic.weight_label(weight)
 
 
 def _flags(item) -> str:

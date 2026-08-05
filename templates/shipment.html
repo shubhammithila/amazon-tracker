@@ -273,6 +273,10 @@ let missingSku = 0;
 // renderBanners would have nothing to derive it from and it would disappear the
 // instant it was rendered.
 let rollover = "";
+// How many discontinued products the sheet filtered out of this draft.
+// Shown because 205 products becoming 117 rows is otherwise unexplained,
+// and "did the upload work?" is the natural next thought.
+let skippedInactive = 0;
 let currentFilter = "deficit";
 
 // ASINs whose plan fields the owner has edited but not yet saved. Only these are
@@ -300,6 +304,7 @@ async function load(){
   // A fresh load means the owner has moved on from the last generate, so the
   // stranded-stock warning does not follow him around forever.
   rollover = "";
+  skippedInactive = 0;
   try{
     /* The DRAFT wins when one exists. That is the whole point of the state: the
        owner is preparing a replacement, so this screen must show him what he is
@@ -392,6 +397,7 @@ async function generate(){
        enough for stock that is about to become invisible. It stays until the
        next load, which is when he has had a chance to act on it. */
     rollover = data.warning && (data.abandoned_holds || []).length ? data.warning : "";
+    skippedInactive = data.skipped_inactive || 0;
     adopt(data);
     toast(items.length + " products loaded as a draft — review, then Finalise","success");
   }catch(e){ toast(e.message,"error"); }
@@ -412,11 +418,10 @@ function renderBanners(){
   if(isDraft()){
     const removed = excludedItems().length;
     out.push(`<div class="draft-strip">
-      <strong>DRAFT — the warehouse cannot see this yet.</strong>
-      Remove rows you do not want, fix quantities and fill in any missing SKUs,
-      then press <em>Finalise plan</em>. Until you do, the packer keeps working from
-      the previous plan.
-      ${removed ? ` <strong>${removed} row(s) removed.</strong>` : ""}
+      <strong>DRAFT — the packer can't see this yet.</strong>
+      Edit, then press <em>Finalise plan</em>.
+      ${removed ? ` ${removed} row(s) removed.` : ""}
+      ${skippedInactive ? ` ${skippedInactive} inactive product(s) skipped.` : ""}
     </div>`);
   }
 
@@ -427,9 +432,10 @@ function renderBanners(){
       ${esc(rollover)}</div>`);
   }
   if(missingSku){
-    out.push(`<div class="banner warn"><strong>${missingSku} item(s) have no merchant SKU.</strong>
-      Amazon's upload keys on the merchant SKU, not the ASIN, so those rows are rejected on their side.
-      They are written to the Amazon file with a blank SKU rather than a plausible-looking ASIN, so you can spot them before uploading.</div>`);
+    // Short, but it must still say WHY, or "no merchant SKU" reads as a cosmetic
+    // gap rather than "Amazon will reject these lines".
+    out.push(`<div class="banner warn"><strong>${missingSku} row(s) have no merchant SKU.</strong>
+      Amazon rejects those lines — type the SKUs in below.</div>`);
   }
   /* The carry-over banner answers the question "N days on hold" does not:
      whether the parked days have now ADDED UP to a shipment.
@@ -536,7 +542,7 @@ function renderHead(){
   document.getElementById("thead-row").innerHTML = `
     <th class="col-smb" title="Select all shown"><input type="checkbox" id="pick-all" onchange="pickAll(this.checked)"/></th>
     <th class="col-smb">S</th><th class="col-smb">M</th><th class="col-smb">B</th>
-    <th>Brand</th><th title="Amazon's upload keys on this, not the ASIN — click to fill a missing one">Merchant SKU</th><th>ASIN</th><th style="text-align:left">Item</th><th title="Sort priority: 1 Sattu, 2 Chana, 3 Flours, 4 Rice, 5 Seeds, 6 Rest">Cat</th><th>Wt</th>
+    <th>Brand</th><th title="Amazon's upload keys on this, not the ASIN — click to fill a missing one">Merchant SKU</th><th>ASIN</th><th style="text-align:left">Item</th><th>Wt</th>
     <th class="col-calc">Sales<br/>(7d)</th>
     <th class="col-calc">Proj</th>
     <th class="col-calc">FBA<br/>Stock</th>
@@ -579,7 +585,7 @@ function renderTable(){
   const total = showExcluded ? items.length : activeItems().length;
   document.getElementById("count-lbl").textContent = rows.length + " of " + total + " items";
   const tbody = document.getElementById("tbody");
-  const colspan = 19 + days.length;
+  const colspan = 18 + days.length;
   if(!rows.length){
     tbody.innerHTML = `<tr><td colspan="${colspan}" class="empty-state">No items match this filter.</td></tr>`;
     return;
@@ -614,8 +620,7 @@ function renderTable(){
           style="${i.fba_sku ? "" : "border-color:var(--red)"}"/></td>
       <td style="font-size:10px">${asin}</td>
       <td class="left"><strong>${esc(i.item)}</strong></td>
-      <td style="font-size:11px;color:var(--text-muted)" title="${esc(CAT_LABELS[i.category] || "")}">${Number(i.category) || 6}</td>
-      <td style="font-size:11px;color:var(--text-muted)">${i.weight ? esc(i.weight) + "kg" : ""}</td>
+      <td style="font-size:11px;color:var(--text-muted)">${esc(i.weight_label || "")}</td>
       <td>${i.sales_7d}</td>
       <td>${i.projection}</td>
       <td>${i.fba_stock}</td>

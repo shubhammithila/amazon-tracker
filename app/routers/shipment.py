@@ -34,7 +34,7 @@ from app.invoice.company_data import SUPPLIER_GSTIN
 from app.invoice.hsn_codes import lookup_hsn
 from app.invoice.parser import get_purchase_rate
 from app.routers.auth import ROLE_ADMIN, require_admin, require_ops_or_admin
-from app.shipment import documents, logic, repository
+from app.shipment import catalogue, documents, logic, repository
 
 router = APIRouter(prefix="/shipment")
 logger = logging.getLogger(__name__)
@@ -166,6 +166,11 @@ def _item_payload(item, packed: int, shippable: int) -> dict:
         "brand": item.brand or "",
         "item": item.item or "",
         "weight": float(item.weight or 0),
+        # The label is computed server-side and sent, rather than each template
+        # formatting the raw number itself. Three renderers were each doing it
+        # differently ("0.5kg", "0.5 kg", "500 g"), and a rule reimplemented in
+        # JavaScript is a rule that drifts from the printed sheet.
+        "weight_label": logic.weight_label(item.weight),
         "sales_7d": int(item.sales_7d or 0),
         "projection": int(item.projection or 0),
         "fba_stock": int(item.fba_stock or 0),
@@ -249,8 +254,22 @@ async def generate_plan(
 
     sku_map = parse_sku_map(stock_content)
 
+    # Column T of the product master sheet: only products the owner still sells
+    # may reach a plan. A discontinued SKU otherwise lands on the packer's morning
+    # sheet and in the Amazon upload — a wasted trip and a rejected line.
+    #
+    # Never raises: on a fetch failure this returns the last good list (or an
+    # empty one) plus a warning, because a Google outage must not stop the owner
+    # building a plan.
+    active_flags, sheet_warning = await catalogue.load_active_flags()
+
     items: list[dict] = []
+    skipped_inactive = 0
     for asin, info in FAMILIES.items():
+        if not catalogue.is_active(active_flags, asin):
+            skipped_inactive += 1
+            continue
+
         units_sold = sales.get(asin, 0)
         fba_stock = stock.get(asin, 0)
         projection = int(units_sold * multiplier)
@@ -308,8 +327,13 @@ async def generate_plan(
     payload = _plan_payload(plan, stored, [])
     payload["missing_sku_count"] = missing_sku
     payload["abandoned_holds"] = abandoned_holds
+    payload["skipped_inactive"] = skipped_inactive
 
     warnings = []
+    # First, because it explains the row count. Without it the owner sees 117 rows
+    # where he expected 205 and has no way to know why.
+    if sheet_warning:
+        warnings.append(sheet_warning)
     if missing_sku:
         warnings.append(
             f"{missing_sku} item(s) to ship have no merchant SKU. Amazon's upload "
@@ -644,6 +668,11 @@ async def get_packing(
                 "fba_sku": item.fba_sku or "",
                 "item": item.item or "",
                 "weight": float(item.weight or 0),
+                # Same label the owner's screen and the printed sheet show. The
+                # packer reads the morning PDF and this screen side by side, so
+                # "500 g" on paper and "0.5kg" on the phone is a needless
+                # translation for him to do on every row.
+                "weight_label": logic.weight_label(item.weight),
                 "planned": planned,
                 "packed_before": prior,
                 "remaining": logic.remaining_for(planned, prior),
