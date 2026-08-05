@@ -98,6 +98,47 @@ tbody tr.no-ship{opacity:.4}
 tbody tr.dirty{background:var(--accent-soft)}
 td{padding:5px;font-size:12px;text-align:center;white-space:nowrap}
 td.left{text-align:left}
+
+/* Frozen identity column.
+   The table is ~1450px wide, so by the time the eye reaches PACKED or TO PACK the
+   product name has scrolled off and the row is just numbers — which is how you
+   type a quantity against the wrong SKU. The tick box and the product name stay
+   put; everything between them scrolls.
+
+   Only two columns are pinned, not all seven: each frozen column costs width on
+   the visible area, and the name is what identifies a row. The ASIN and SKU are
+   for looking up, not for keeping your place.
+
+   Frozen cells need an opaque background of their own or the scrolling numbers
+   show through them, and a z-index above the body cells they overlap. The header
+   corner needs a higher one again, because it is sticky in both directions at
+   once. */
+th.freeze, td.freeze{position:sticky;background:var(--surface);z-index:2}
+th.freeze{z-index:5}
+td.freeze{background:var(--surface)}
+th.freeze-pick, td.freeze-pick{left:0;width:30px}
+th.freeze-name, td.freeze-name{left:30px;text-align:left;min-width:190px;
+  /* A shadow rather than a border: it reads as depth, so the join between the
+     frozen and scrolling halves is obvious while the numbers move. */
+  box-shadow:var(--shadow-freeze)}
+/* The row-state tints have to be repeated on the frozen cells: those cells carry
+   their own background to be opaque, which would otherwise hide the hover, dirty,
+   selected and excluded colouring exactly on the part of the row you are pointing
+   at. */
+tbody tr:hover td.freeze{background:var(--accent-soft)}
+tbody tr.dirty td.freeze{background:var(--accent-soft)}
+tbody tr.selected td.freeze{background:var(--accent-soft)}
+tbody tr.excluded td.freeze{background:var(--surface2)}
+
+/* Totals row, pinned to the bottom of the scroll area for the same reason the
+   header is pinned to the top: on a 200-row plan a total you have to scroll to
+   find is a total you stop checking. */
+tfoot td{position:sticky;bottom:0;background:var(--surface2);font-weight:700;
+  font-size:12px;text-align:center;white-space:nowrap;
+  border-top:2px solid var(--border-strong);padding:7px 5px;z-index:3}
+tfoot td.freeze{z-index:6}
+tfoot td.t-label{text-align:left;color:var(--text-muted);font-weight:600;
+  text-transform:uppercase;letter-spacing:.04em;font-size:10px}
 td.day-cell{color:var(--text-muted)}
 td.day-cell.has{color:var(--text)}
 td input[type="number"]{background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);padding:2px 4px;width:52px;font-size:11px;text-align:center}
@@ -216,20 +257,60 @@ td input[type="text"].sku-input{width:120px;font-size:11px}
   <button class="btn" id="finalise-btn" onclick="finalisePlan()" style="display:none">✓ Finalise plan</button>
   <button class="btn-outline" id="excluded-toggle" onclick="toggleExcluded()" style="display:none"></button>
   <button class="btn-outline" onclick="openCategories()">⚙ Sort priority</button>
-  <button class="btn-outline" onclick="dl('/shipment/download/packing-plan.xlsx')">⬇ Plan (Excel)</button>
-  <button class="btn-outline" onclick="dl('/shipment/download/packing-plan.pdf')">⬇ Plan (PDF)</button>
-  <button class="btn-outline" onclick="dl('/shipment/download/packed.xlsx')">⬇ Packed daily (Excel)</button>
-  <button class="btn-outline" onclick="dl('/shipment/download/remaining.pdf')">⬇ Still to pack (PDF)</button>
-  <button class="btn-outline" onclick="dl('/shipment/download/shipment-file.xlsx?mode=remaining')">⬇ Amazon file (remaining)</button>
-  <button class="btn-outline" onclick="dl('/shipment/download/shipment-file.xlsx?mode=all')">⬇ Amazon file (full)</button>
-  <button class="btn-outline" onclick="dl('/shipment/download/shipment-file.xlsx?mode=verified')">⬇ Amazon file (verified)</button>
   <button class="btn-danger" onclick="clearPlan()">Delete plan</button>
+</div>
+
+<!-- Downloads.
+     Three documents, each in both formats, all sharing one column layout:
+     S · M · B · Brand · ASIN · SKU · Product · quantity. Every one drops rows
+     with nothing to do — a sheet where half the rows read 0 is a sheet nobody
+     reads to the end.
+
+     The Amazon upload file sits apart on purpose: its columns are Amazon's, not
+     ours, and adding our layout to it would get the upload rejected. -->
+<div class="card" style="padding:14px 16px">
+  <div class="controls" style="margin-bottom:8px">
+    <strong style="font-size:12px;min-width:120px">Shipment plan</strong>
+    <button class="btn-outline" onclick="dl('/shipment/download/plan.xlsx')">⬇ Excel</button>
+    <button class="btn-outline" onclick="dl('/shipment/download/plan.pdf')">⬇ PDF</button>
+    <span style="font-size:11px;color:var(--text-muted)">only rows with something to ship</span>
+  </div>
+
+  <div class="controls" style="margin-bottom:8px">
+    <strong style="font-size:12px;min-width:120px">Packed data</strong>
+    <button class="btn-outline" onclick="dlPacked('xlsx')">⬇ Excel</button>
+    <button class="btn-outline" onclick="dlPacked('pdf')">⬇ PDF</button>
+    <label style="font-size:11px;color:var(--text-muted)">from
+      <input type="date" id="packed-from" style="font-size:12px;padding:4px 6px"/></label>
+    <label style="font-size:11px;color:var(--text-muted)">to
+      <input type="date" id="packed-to" style="font-size:12px;padding:4px 6px"/></label>
+    <span style="font-size:11px;color:var(--text-muted)">leave both blank for every day</span>
+  </div>
+
+  <div class="controls" style="margin-bottom:8px">
+    <strong style="font-size:12px;min-width:120px">Still to pack</strong>
+    <button class="btn-outline" onclick="dl('/shipment/download/remaining.xlsx')">⬇ Excel</button>
+    <button class="btn-outline" onclick="dl('/shipment/download/remaining.pdf')">⬇ PDF</button>
+    <span style="font-size:11px;color:var(--text-muted)">what is left against the finalised plan</span>
+  </div>
+
+  <div class="controls" style="margin-bottom:0;padding-top:8px;border-top:1px solid var(--border)">
+    <strong style="font-size:12px;min-width:120px">Amazon upload</strong>
+    <button class="btn-outline" onclick="dl('/shipment/download/shipment-file.xlsx?mode=remaining')">⬇ Remaining</button>
+    <button class="btn-outline" onclick="dl('/shipment/download/shipment-file.xlsx?mode=all')">⬇ Full plan</button>
+    <button class="btn-outline" onclick="dl('/shipment/download/shipment-file.xlsx?mode=verified')">⬇ Verified only</button>
+    <span style="font-size:11px;color:var(--text-muted)">Amazon's own columns — merchant SKU + quantity</span>
+  </div>
 </div>
 
 <div class="table-wrap">
 <table>
 <thead><tr id="thead-row"></tr></thead>
 <tbody id="tbody"></tbody>
+{# In <tfoot> and sticky to the bottom, so the totals stay visible while you
+   scroll a 200-row plan. A totals row that scrolls away with the rows is a row
+   you have to go and find. #}
+<tfoot><tr id="tfoot-row"></tr></tfoot>
 </table>
 </div>
 </div>
@@ -540,9 +621,10 @@ function renderHead(){
     `<th class="col-day ${d.status === 'held' ? 'held' : ''}" title="${esc(d.status)}">${esc(d.pack_date.slice(5))}<br/>u / c</th>`
   ).join("");
   document.getElementById("thead-row").innerHTML = `
-    <th class="col-smb" title="Select all shown"><input type="checkbox" id="pick-all" onchange="pickAll(this.checked)"/></th>
+    <th class="col-smb freeze freeze-pick" title="Select all shown"><input type="checkbox" id="pick-all" onchange="pickAll(this.checked)"/></th>
+    <th class="freeze freeze-name">Item</th><th>Wt</th>
     <th class="col-smb">S</th><th class="col-smb">M</th><th class="col-smb">B</th>
-    <th>Brand</th><th title="Amazon's upload keys on this, not the ASIN — click to fill a missing one">Merchant SKU</th><th>ASIN</th><th style="text-align:left">Item</th><th>Wt</th>
+    <th>Brand</th><th title="Amazon's upload keys on this, not the ASIN — click to fill a missing one">Merchant SKU</th><th>ASIN</th>
     <th class="col-calc">Sales<br/>(7d)</th>
     <th class="col-calc">Proj</th>
     <th class="col-calc">FBA<br/>Stock</th>
@@ -554,6 +636,52 @@ function renderHead(){
     <th class="col-calc" title="Excludes held days">Shippable</th>
     <th class="col-calc" title="Still to box: To Ship − Packed. Ignores warehouse stock, because stock on a shelf is not in a carton yet.">To pack</th>
     <th class="col-calc" title="Still to make or buy: To Ship − In stock − Packed">To make</th>
+  `;
+}
+
+/* Column totals for the VISIBLE rows.
+   Visible rather than all rows, because the filter chips and the search box are
+   how the owner asks a question — "how many units across the products still to
+   pack?" — and a total that ignored the filter would answer a different one. The
+   label says how many rows it covers, so the number is never ambiguous.
+
+   The cell order below must match renderHead() and the row builder exactly, and
+   all three build their day columns from the same `days` array, so a new packing
+   day appears in all of them at once. */
+function renderFootTotals(rows){
+  const sum = key => rows.reduce((t, i) => t + (Number(i[key]) || 0), 0);
+  const n = v => v.toLocaleString("en-IN");
+
+  // Day totals come from the day records rather than the rows, and are restricted
+  // to the ASINs on screen so the column agrees with the filter above it.
+  const shown = new Set(rows.map(i => i.asin));
+  const dayCells = days.map(d => {
+    let units = 0, cartons = 0;
+    for(const e of (d.entries || [])){
+      if(!shown.has(e.asin)) continue;
+      units += Number(e.units) || 0;
+      cartons += Number(e.cartons) || 0;
+    }
+    return `<td>${units || cartons ? n(units) + "/" + n(cartons) : "·"}</td>`;
+  }).join("");
+
+  document.getElementById("tfoot-row").innerHTML = `
+    <td class="freeze freeze-pick"></td>
+    <td class="freeze freeze-name t-label">Total · ${n(rows.length)} rows</td>
+    <td></td>
+    <td></td><td></td><td></td>
+    <td></td><td></td><td></td>
+    <td>${n(sum("sales_7d"))}</td>
+    <td>${n(sum("projection"))}</td>
+    <td>${n(sum("fba_stock"))}</td>
+    <td>${n(sum("deficit"))}</td>
+    <td>${n(sum("shipment_plan"))}</td>
+    <td>${n(sum("available"))}</td>
+    ${dayCells}
+    <td>${n(sum("packed"))}</td>
+    <td>${n(sum("shippable"))}</td>
+    <td>${n(sum("remaining"))}</td>
+    <td>${n(sum("to_source"))}</td>
   `;
 }
 
@@ -588,6 +716,9 @@ function renderTable(){
   const colspan = 18 + days.length;
   if(!rows.length){
     tbody.innerHTML = `<tr><td colspan="${colspan}" class="empty-state">No items match this filter.</td></tr>`;
+    // Zeroed, not left alone: a total from the PREVIOUS filter sitting under an
+    // empty table would read as the total of nothing.
+    renderFootTotals([]);
     return;
   }
   tbody.innerHTML = rows.map(i => {
@@ -608,8 +739,10 @@ function renderTable(){
       selected.has(i.asin) ? "selected" : "",
     ].filter(Boolean).join(" ");
     return `<tr class="${cls}" data-asin="${asin}">
-      <td class="pick no-strike"><input type="checkbox" ${selected.has(i.asin) ? "checked" : ""}
+      <td class="pick no-strike freeze freeze-pick"><input type="checkbox" ${selected.has(i.asin) ? "checked" : ""}
           onchange="pick('${asin}',this.checked)"/></td>
+      <td class="left freeze freeze-name"><strong>${esc(i.item)}</strong></td>
+      <td style="font-size:11px;color:var(--text-muted)">${esc(i.weight_label || "")}</td>
       <td><input type="checkbox" ${i.s ? "checked" : ""} onchange="edit('${asin}','s',this.checked)"/></td>
       <td><input type="checkbox" ${i.m ? "checked" : ""} onchange="edit('${asin}','m',this.checked)"/></td>
       <td><input type="checkbox" ${i.b ? "checked" : ""} onchange="edit('${asin}','b',this.checked)"/></td>
@@ -619,8 +752,6 @@ function renderTable(){
           onchange="edit('${asin}','fba_sku',this.value.trim())"
           style="${i.fba_sku ? "" : "border-color:var(--red)"}"/></td>
       <td style="font-size:10px">${asin}</td>
-      <td class="left"><strong>${esc(i.item)}</strong></td>
-      <td style="font-size:11px;color:var(--text-muted)">${esc(i.weight_label || "")}</td>
       <td>${i.sales_7d}</td>
       <td>${i.projection}</td>
       <td>${i.fba_stock}</td>
@@ -634,6 +765,7 @@ function renderTable(){
       <td class="cell-tomake ${i.to_source > 0 ? "remaining-pos" : "remaining-zero"}">${i.to_source}</td>
     </tr>`;
   }).join("");
+  renderFootTotals(rows);
   const all = document.getElementById("pick-all");
   if(all) all.checked = rows.length > 0 && rows.every(i => selected.has(i.asin));
 }
@@ -947,6 +1079,23 @@ function setFilter(f, el){
 }
 
 function dl(url){ window.location.href = url; }
+
+/* The packed download carries an optional date or range.
+   Blank fields are OMITTED from the query rather than sent empty, so the server
+   sees "no filter" and returns every packing day. A blank date box must not
+   silently narrow a report to nothing. */
+function dlPacked(fmt){
+  const from = document.getElementById("packed-from").value;
+  const to = document.getElementById("packed-to").value;
+  if(from && to && from > to){
+    toast("The 'from' date is after the 'to' date", "error");
+    return;
+  }
+  const query = [];
+  if(from) query.push("date_from=" + encodeURIComponent(from));
+  if(to) query.push("date_to=" + encodeURIComponent(to));
+  dl(`/shipment/download/packed.${fmt}` + (query.length ? "?" + query.join("&") : ""));
+}
 
 async function clearPlan(){
   if(!confirm("Delete this plan and all its packing history? This cannot be undone.")) return;

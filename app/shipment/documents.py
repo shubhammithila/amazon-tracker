@@ -277,6 +277,116 @@ def build_shipment_file_xlsx(
     return buffer
 
 
+# ─── The three working documents ─────────────────────────────────────────────
+#
+# One column layout, requested explicitly:
+#
+#     S · M · B · Brand · ASIN · SKU · Product · <quantity>
+#
+# The quantity column is the only thing that differs, because each sheet answers a
+# different question: the plan and the remaining sheet say what is still TO PACK,
+# while the packed sheet says what WAS packed — in units and cartons, because the
+# carton count is what prefills the invoice's Boxes field.
+#
+# All three drop rows with nothing to do. That is the point of them: a 205-row
+# sheet where 88 rows read 0 is a sheet nobody checks, and the owner asked for
+# "only the final rows".
+#
+# Both formats are generated from the SAME rows list by the same two functions
+# below, so the Excel and the PDF of one document cannot disagree.
+
+#: The shared header, minus the quantity column.
+IDENTITY_HEADERS = ["S", "M", "B", "Brand", "ASIN", "Merchant SKU", "Product"]
+IDENTITY_WIDTHS = [5, 5, 5, 8, 14, 22, 34]
+
+
+def _identity_cells(item: dict) -> list:
+    """The seven columns every one of the three documents starts with.
+
+    S/M/B are rendered as a tick or blank rather than TRUE/FALSE: they are carton
+    sizes being read off a page, and "S ✓" scans in a way "S TRUE" does not.
+    """
+    return [
+        "Y" if item.get("s") else "",
+        "Y" if item.get("m") else "",
+        "Y" if item.get("b") else "",
+        item.get("brand", ""),
+        item.get("asin", ""),
+        item.get("fba_sku", ""),
+        # Weight belongs with the product name here rather than in its own column:
+        # "Jau Sattu 500 g" is how the packer refers to the thing, and it saves a
+        # column on a page that is read on a clipboard.
+        f"{item.get('item', '')} {_weight_label(item.get('weight'))}".strip(),
+    ]
+
+
+def _rows_with_quantity(items: list[dict], quantity_key: str) -> list[list]:
+    """Identity columns + one quantity, keeping only rows with something to do."""
+    rows = []
+    for item in items:
+        quantity = int(item.get(quantity_key) or 0)
+        if quantity <= 0:
+            continue
+        rows.append(_identity_cells(item) + [quantity])
+    return rows
+
+
+def _totals_row(headers: list[str], rows: list[list]) -> list:
+    """A totals line under the data, summing every quantity column present.
+
+    Driven by the header count rather than a fixed position, so the packed sheet's
+    two quantity columns (units and cartons) total correctly without a second
+    implementation.
+    """
+    totals: list = ["", "", "", "", "", "", f"TOTAL · {len(rows)} rows"]
+    for offset in range(len(headers) - len(IDENTITY_HEADERS)):
+        column = len(IDENTITY_HEADERS) + offset
+        totals.append(sum(int(row[column] or 0) for row in rows))
+    return totals
+
+
+def build_simple_xlsx(
+    title: str, subtitle: str, headers: list[str], rows: list[list], widths: list[int]
+) -> io.BytesIO:
+    """A one-sheet workbook in the shared layout, with a totals row."""
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = title[:31]  # Excel's limit; a longer name makes the file invalid.
+
+    body = list(rows) + ([_totals_row(headers, rows)] if rows else [])
+    _write_sheet(sheet, headers, body, widths)
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+
+def build_simple_pdf(
+    title: str, subtitle: str, headers: list[str], rows: list[list]
+) -> io.BytesIO:
+    """The same rows as a portrait A4 PDF — a clipboard page, not a wide report."""
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Table
+
+    buffer = io.BytesIO()
+    doc, elements = _pdf_document(buffer, title, subtitle, landscape_mode=False)
+
+    body = list(rows) + ([_totals_row(headers, rows)] if rows else [])
+    data = [headers] + ([[str(c) for c in r] for r in body] or [["—"] * len(headers)])
+    quantity_columns = len(headers) - len(IDENTITY_HEADERS)
+    widths = [7 * mm, 7 * mm, 7 * mm, 13 * mm, 24 * mm, 34 * mm, 62 * mm]
+    widths += [20 * mm] * quantity_columns
+
+    table = Table(data, colWidths=widths, repeatRows=1)
+    table.setStyle(_pdf_table_style(len(headers)))
+    elements.append(table)
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
+
 # ─── PDF ─────────────────────────────────────────────────────────────────────
 
 def _pdf_table_style(column_count: int):

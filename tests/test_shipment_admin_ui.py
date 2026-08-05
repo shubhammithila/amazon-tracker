@@ -77,13 +77,25 @@ def _referenced_shipment_urls(source: str) -> set[str]:
 
 
 def _declared_shipment_routes() -> set[str]:
+    """Every /shipment route the app serves, plus the concrete forms of any
+    format-parameterised ones.
+
+    ``/download/plan.{fmt}`` is one route serving two real URLs. Normalising the
+    parameter to ``{}`` would compare "/download/plan.{}" against the literal
+    "/download/plan.xlsx" a template actually calls, and this guard would fail on
+    working links — so the concrete variants are expanded here instead.
+    """
     from app.main import app
 
     routes = set()
     for route in app.routes:
         path = getattr(route, "path", "")
-        if path.startswith("/shipment"):
-            routes.add(re.sub(r"\{[^}]*\}", "{}", path))
+        if not path.startswith("/shipment"):
+            continue
+        if path.endswith(".{fmt}"):
+            stem = path[: -len(".{fmt}")]
+            routes.update({f"{stem}.xlsx", f"{stem}.pdf"})
+        routes.add(re.sub(r"\{[^}]*\}", "{}", path))
     return routes
 
 
@@ -106,19 +118,30 @@ def test_every_url_the_page_calls_is_a_real_route(source):
 
 
 def test_the_page_uses_the_current_download_routes(source):
-    """All four documents must be reachable from the screen.
+    """Three documents in two formats each, plus the Amazon upload.
 
-    Building them and then not linking them is a silent half-delivery of
-    requirements 3, 5, 6 and 7.
+    Building a document and then not linking it is a silent half-delivery, and
+    offering only one format of a document that has two is the same thing in
+    miniature — so both formats of all three are required here.
     """
-    for path in (
-        "/shipment/download/packing-plan.xlsx",
-        "/shipment/download/packing-plan.pdf",
-        "/shipment/download/packed.xlsx",
-        "/shipment/download/remaining.pdf",
-        "/shipment/download/shipment-file.xlsx",
-    ):
-        assert path in source, f"the page offers no way to download {path}"
+    body = _without_comments(source)
+
+    # plan and remaining are linked as literal URLs.
+    for name in ("plan", "remaining"):
+        for fmt in ("xlsx", "pdf"):
+            path = f"/shipment/download/{name}.{fmt}"
+            assert path in body, f"the page offers no way to download {path}"
+
+    # packed is built by dlPacked(), which appends the optional date range, so the
+    # literal path is never in the source. Assert the pieces instead: the helper
+    # exists, both formats call it, and it targets the packed route.
+    assert "/shipment/download/packed." in body, "dlPacked does not target packed"
+    for fmt in ("xlsx", "pdf"):
+        assert f"dlPacked('{fmt}')" in body, f"no {fmt} button for the packed data"
+
+    assert "/shipment/download/shipment-file.xlsx" in body, (
+        "the Amazon upload file is not linked"
+    )
 
 
 @pytest.mark.parametrize("mode", ["remaining", "all", "verified"])

@@ -82,6 +82,9 @@
   /* Modal backdrop. Dimmed rather than blacked out, so the table behind stays
      legible enough to keep your place. */
   --backdrop: rgba(16, 24, 40, .45);
+  /* Edge of a frozen table column: depth, so the join between the pinned and
+     scrolling halves is visible while the numbers move past it. */
+  --shadow-freeze: 6px 0 6px -6px rgba(16, 24, 40, .18);
   --radius: 8px;
 }
 

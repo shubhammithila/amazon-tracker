@@ -955,55 +955,161 @@ def _attachment(buffer: io.BytesIO, filename: str, content_type: str) -> Streami
 XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-@router.get("/download/packing-plan.xlsx")
-async def download_packing_plan_xlsx(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    role: str = Depends(require_admin),
-):
-    """The full plan as Excel — requirement 3."""
-    loaded = await _document_rows(db)
-    if loaded is None:
-        return _no_plan()
-    plan, rows, _days = loaded
-    return _attachment(
-        documents.build_packing_plan_xlsx(plan, rows),
-        f"packing-plan-{date.today().isoformat()}.xlsx",
-        XLSX_TYPE,
-    )
+# The three documents the owner asked for, each in both formats, all sharing one
+# column layout: S · M · B · Brand · ASIN · SKU · Product · quantity.
+#
+# `fmt` is a path parameter rather than two routes per document, so the Excel and
+# the PDF of one document are guaranteed to be built from the same rows by the same
+# code. Two routes would be two places for a filter to drift.
 
 
-@router.get("/download/packing-plan.pdf")
-async def download_packing_plan_pdf(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    role: str = Depends(require_admin),
-):
-    """The full plan as PDF — requirement 3 asked for both formats."""
-    loaded = await _document_rows(db)
-    if loaded is None:
-        return _no_plan()
-    plan, rows, _days = loaded
+def _document(fmt: str, title: str, subtitle: str, headers, rows, widths, stem: str):
+    """Render rows as xlsx or pdf and return it as a download."""
+    if fmt == "xlsx":
+        return _attachment(
+            documents.build_simple_xlsx(title, subtitle, headers, rows, widths),
+            f"{stem}.xlsx",
+            XLSX_TYPE,
+        )
     return _attachment(
-        documents.build_packing_plan_pdf(plan, rows),
-        f"packing-plan-{date.today().isoformat()}.pdf",
+        documents.build_simple_pdf(title, subtitle, headers, rows),
+        f"{stem}.pdf",
         "application/pdf",
     )
 
 
-@router.get("/download/remaining.pdf")
-async def download_remaining_pdf(
+def _bad_format(fmt: str):
+    return JSONResponse(
+        {"error": f"Unknown format '{fmt}'. Use xlsx or pdf."}, status_code=404
+    )
+
+
+@router.get("/download/plan.{fmt}")
+async def download_plan(
+    fmt: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """The shipment plan: ONLY the rows with something to ship.
+
+    "not the entire list of skus" — a 205-row sheet where 88 rows read 0 is a
+    sheet nobody reads to the end. build_simple rows drop anything with a zero
+    quantity, so this is the working document.
+    """
+    if fmt not in ("xlsx", "pdf"):
+        return _bad_format(fmt)
+
+    loaded = await _document_rows(db)
+    if loaded is None:
+        return _no_plan()
+    plan, rows, _days = loaded
+
+    lines = documents._rows_with_quantity(rows, "shipment_plan")
+    today = date.today().isoformat()
+    return _document(
+        fmt,
+        "Shipment Plan",
+        f"{plan.get('label') or 'Plan'} · generated {today}",
+        documents.IDENTITY_HEADERS + ["To Pack"],
+        lines,
+        documents.IDENTITY_WIDTHS + [12],
+        f"shipment-plan-{today}",
+    )
+
+
+@router.get("/download/packed.{fmt}")
+async def download_packed(
+    fmt: str,
+    request: Request,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """What was actually packed, over a date or a range.
+
+    Both dates blank means every packing day on the plan, which is the safe
+    default: a blank field should not silently narrow a report.
+
+    Units AND cartons, because the carton count is what prefills the invoice's
+    Boxes field — a units-only sheet would send the owner back to the screen to
+    read the number he just downloaded a report about.
+    """
+    if fmt not in ("xlsx", "pdf"):
+        return _bad_format(fmt)
+    for value in (date_from, date_to):
+        if value and not _valid_date(value):
+            return JSONResponse({"error": "Dates must be YYYY-MM-DD"}, status_code=400)
+
+    loaded = await _document_rows(db)
+    if loaded is None:
+        return _no_plan()
+    plan, rows, days = loaded
+
+    chosen = [
+        d for d in days
+        if (not date_from or d["pack_date"] >= date_from)
+        and (not date_to or d["pack_date"] <= date_to)
+    ]
+    units = logic.units_by_asin(chosen)
+    cartons: dict[str, int] = {}
+    for day in chosen:
+        for entry in day.get("entries") or []:
+            asin = entry.get("asin") or ""
+            if asin:
+                cartons[asin] = cartons.get(asin, 0) + int(entry.get("cartons") or 0)
+
+    lines = []
+    for item in rows:
+        packed_units = int(units.get(item["asin"], 0))
+        packed_cartons = int(cartons.get(item["asin"], 0))
+        if packed_units <= 0 and packed_cartons <= 0:
+            continue
+        lines.append(
+            documents._identity_cells(item) + [packed_units, packed_cartons]
+        )
+
+    span = (
+        f"{date_from or 'start'} to {date_to or 'today'}"
+        if (date_from or date_to)
+        else f"all {len(chosen)} packing day(s)"
+    )
+    stamp = date_from or date.today().isoformat()
+    return _document(
+        fmt,
+        "Packed",
+        f"{plan.get('label') or 'Plan'} · {span}",
+        documents.IDENTITY_HEADERS + ["Units", "Cartons"],
+        lines,
+        documents.IDENTITY_WIDTHS + [12, 12],
+        f"packed-{stamp}",
+    )
+
+
+@router.get("/download/remaining.{fmt}")
+async def download_remaining(
+    fmt: str,
     request: Request,
     pack_date: str | None = None,
     db: AsyncSession = Depends(get_db),
     role: str = Depends(require_ops_or_admin),
 ):
-    """The morning clipboard sheet — requirement 5.
+    """What is still to pack against the finalised plan — the morning sheet.
 
-    Open to ops, unlike the other downloads: this is the one document the packer
-    actually needs, and making him ask the owner for it every morning would
-    defeat the point of giving him his own screen.
+    Open to ops, unlike the other two: this is the one document the packer needs
+    every morning, and making him ask for it would defeat the point of his own
+    screen. It carries no projections or purchase-driven numbers, so there is
+    nothing on it he should not see.
+
+    ``pack_date`` labels the sheet and its filename and nothing else. The packer
+    pulls it against the date he is working on, and a page headed "today" while he
+    is entering yesterday's counts gets filed wrongly. It deliberately does NOT
+    filter the rows: what is left to pack is a running total against the plan, not
+    a per-day figure.
     """
+    if fmt not in ("xlsx", "pdf"):
+        return _bad_format(fmt)
     if pack_date is not None and not _valid_date(pack_date):
         return JSONResponse({"error": "Date must be YYYY-MM-DD"}, status_code=400)
 
@@ -1011,33 +1117,17 @@ async def download_remaining_pdf(
     if loaded is None:
         return _no_plan()
     plan, rows, _days = loaded
+
+    lines = documents._rows_with_quantity(rows, "remaining")
     stamp = pack_date or date.today().isoformat()
-    return _attachment(
-        documents.build_remaining_pdf(plan, rows, pack_date=stamp),
-        f"still-to-pack-{stamp}.pdf",
-        "application/pdf",
-    )
-
-
-@router.get("/download/packed.xlsx")
-async def download_packed_xlsx(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    role: str = Depends(require_admin),
-):
-    """Daily packed units and cartons — requirements 6 and 7.
-
-    Admin only. This is the owner's input for building the actual shipment, and
-    it exposes every day including held ones.
-    """
-    loaded = await _document_rows(db)
-    if loaded is None:
-        return _no_plan()
-    plan, rows, days = loaded
-    return _attachment(
-        documents.build_packed_xlsx(plan, rows, days),
-        f"packed-daily-{date.today().isoformat()}.xlsx",
-        XLSX_TYPE,
+    return _document(
+        fmt,
+        "Still To Pack",
+        f"{plan.get('label') or 'Plan'} · as at {stamp}",
+        documents.IDENTITY_HEADERS + ["To Pack"],
+        lines,
+        documents.IDENTITY_WIDTHS + [12],
+        f"still-to-pack-{stamp}",
     )
 
 

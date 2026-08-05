@@ -67,13 +67,25 @@ def _referenced_shipment_urls(source: str) -> set[str]:
 
 
 def _declared_shipment_routes() -> set[str]:
+    """Every /shipment route the app serves, plus the concrete forms of any
+    format-parameterised ones.
+
+    ``/download/plan.{fmt}`` is one route serving two real URLs. Normalising the
+    parameter to ``{}`` would compare "/download/plan.{}" against the literal
+    "/download/plan.xlsx" a template actually calls, and this guard would fail on
+    working links — so the concrete variants are expanded here instead.
+    """
     from app.main import app
 
     routes = set()
     for route in app.routes:
         path = getattr(route, "path", "")
-        if path.startswith("/shipment"):
-            routes.add(re.sub(r"\{[^}]*\}", "{}", path))
+        if not path.startswith("/shipment"):
+            continue
+        if path.endswith(".{fmt}"):
+            stem = path[: -len(".{fmt}")]
+            routes.update({f"{stem}.xlsx", f"{stem}.pdf"})
+        routes.add(re.sub(r"\{[^}]*\}", "{}", path))
     return routes
 
 
@@ -122,8 +134,9 @@ ADMIN_ONLY = [
     "/shipment/packing/{}/verify",
     "/shipment/packing/{}/release",
     "/shipment/download/packed.xlsx",
-    "/shipment/download/packing-plan.xlsx",
-    "/shipment/download/packing-plan.pdf",
+    "/shipment/download/packed.pdf",
+    "/shipment/download/plan.xlsx",
+    "/shipment/download/plan.pdf",
     "/shipment/download/shipment-file.xlsx",
 ]
 

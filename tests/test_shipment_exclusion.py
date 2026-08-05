@@ -34,9 +34,11 @@ MONDAY = "2026-07-30"
 #: added later without the filter fails here rather than shipping a SKU the owner
 #: removed to Amazon.
 DOWNLOADS = [
-    "/shipment/download/packing-plan.xlsx",
-    "/shipment/download/packing-plan.pdf",
+    "/shipment/download/plan.xlsx",
+    "/shipment/download/plan.pdf",
     "/shipment/download/packed.xlsx",
+    "/shipment/download/packed.pdf",
+    "/shipment/download/remaining.xlsx",
     "/shipment/download/remaining.pdf",
     "/shipment/download/shipment-file.xlsx",
 ]

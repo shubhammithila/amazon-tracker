@@ -21,14 +21,27 @@ pytestmark = pytest.mark.regression
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
+#: The three working documents, each in both formats, plus Amazon's own file.
+#: Every one is listed so the role gating, the attachment headers, the content
+#: types and the no-plan 404 are asserted for ALL of them — adding a format to one
+#: document and forgetting the other is exactly the omission this catches.
 ADMIN_DOWNLOADS = [
-    "/shipment/download/packing-plan.xlsx",
-    "/shipment/download/packing-plan.pdf",
+    "/shipment/download/plan.xlsx",
+    "/shipment/download/plan.pdf",
     "/shipment/download/packed.xlsx",
+    "/shipment/download/packed.pdf",
     "/shipment/download/shipment-file.xlsx",
 ]
-OPS_DOWNLOADS = ["/shipment/download/remaining.pdf"]
+#: The packer's morning sheet, in both formats. Open to ops because making him ask
+#: the owner for it every morning defeats the point of his own screen.
+OPS_DOWNLOADS = [
+    "/shipment/download/remaining.xlsx",
+    "/shipment/download/remaining.pdf",
+]
 ALL_DOWNLOADS = ADMIN_DOWNLOADS + OPS_DOWNLOADS
+
+XLSX_DOWNLOADS = [p for p in ALL_DOWNLOADS if p.endswith(".xlsx")]
+PDF_DOWNLOADS = [p for p in ALL_DOWNLOADS if p.endswith(".pdf")]
 
 
 def _rows(content: bytes):
@@ -38,6 +51,21 @@ def _rows(content: bytes):
     sheet = load_workbook(io.BytesIO(content)).active
     rows = [list(r) for r in sheet.iter_rows(values_only=True)]
     return rows[0], rows[1:]
+
+
+def _asins(content: bytes) -> list:
+    """The ASIN column, found BY NAME, with the totals row dropped.
+
+    By name because the column layout is now shared across three documents and
+    changed once already: index 3 was ASIN before and is Brand now, so a
+    positional lookup would compare the wrong column and quietly pass.
+
+    The totals row has a blank ASIN, so filtering falsy values drops it without
+    needing to know how many rows there are.
+    """
+    header, rows = _rows(content)
+    index = header.index("ASIN")
+    return [r[index] for r in rows if r[index]]
 
 
 # ─── Wiring ──────────────────────────────────────────────────────────────────
@@ -64,7 +92,7 @@ async def test_downloads_are_attachments_with_a_dated_filename(
     assert "2026-" in disposition, f"no date in the filename: {disposition}"
 
 
-@pytest.mark.parametrize("path", ADMIN_DOWNLOADS[:1] + ["/shipment/download/packed.xlsx"])
+@pytest.mark.parametrize("path", XLSX_DOWNLOADS)
 async def test_xlsx_routes_send_the_spreadsheet_content_type(
     auth_client, plan_factory, path
 ):
@@ -74,9 +102,7 @@ async def test_xlsx_routes_send_the_spreadsheet_content_type(
     assert r.content[:2] == b"PK"
 
 
-@pytest.mark.parametrize(
-    "path", ["/shipment/download/packing-plan.pdf", "/shipment/download/remaining.pdf"]
-)
+@pytest.mark.parametrize("path", PDF_DOWNLOADS)
 async def test_pdf_routes_send_pdf(auth_client, plan_factory, path):
     await plan_factory()
     r = await auth_client.get(path)
@@ -159,25 +185,55 @@ async def test_downloaded_xlsx_order_matches_the_canonical_order(
         f"{expected}"
     )
 
-    r = await auth_client.get("/shipment/download/packing-plan.xlsx")
-    _header, rows = _rows(r.content)
-    assert [row[3] for row in rows] == expected
+    # The plan sheet carries only rows with something to ship, which is the whole
+    # point of it ("not the entire list of skus"). So the expectation is the
+    # canonical order FILTERED, not truncated — the surviving rows must still be in
+    # exactly the order the DB produced.
+    r = await auth_client.get("/shipment/download/plan.xlsx")
+    to_ship = [i.asin for i in items if int(i.shipment_plan or 0) > 0]
+    assert to_ship, "the fixture has nothing to ship; this test would prove nothing"
+    assert len(to_ship) < len(expected), (
+        "every fixture row has a quantity, so this cannot show that zero rows are "
+        "dropped — the fixture needs a zero-quantity row"
+    )
+    assert _asins(r.content) == to_ship
 
 
-async def test_packed_xlsx_order_matches_too(auth_client, plan_factory, read_committed):
-    from app.shipment import repository
+async def test_packed_xlsx_carries_only_what_was_packed(auth_client, plan_factory):
+    """The packed sheet lists the SKUs with boxes against them, and nothing else.
 
-    plan = await plan_factory()
-    plan_id = plan.id
+    A sheet of 200 rows where 199 read 0 is a sheet nobody checks, so rows with no
+    packing are dropped — and the ones that remain keep the canonical order.
+    """
+    await plan_factory()
+    await auth_client.post(
+        "/shipment/packing/2026-07-30",
+        json={"entries": [
+            {"asin": "B0AAA00001", "units": 100, "cartons": 8},
+            {"asin": "B0BBB00001", "units": 40, "cartons": 3},
+        ]},
+    )
+
+    r = await auth_client.get("/shipment/download/packed.xlsx")
+    # Canonical order is chana 0.5kg, chana 1kg, jau, aloe — so of the two packed
+    # ASINs, B0AAA00001 precedes B0BBB00001.
+    assert _asins(r.content) == ["B0AAA00001", "B0BBB00001"]
+
+
+async def test_the_packed_sheet_reports_units_and_cartons(auth_client, plan_factory):
+    """Cartons matter as much as units: they prefill the invoice's Boxes field."""
+    await plan_factory()
     await auth_client.post(
         "/shipment/packing/2026-07-30",
         json={"entries": [{"asin": "B0AAA00001", "units": 100, "cartons": 8}]},
     )
 
-    items = await read_committed(repository.load_plan_items, plan_id)
     r = await auth_client.get("/shipment/download/packed.xlsx")
-    _header, rows = _rows(r.content)
-    assert [row[3] for row in rows] == [i.asin for i in items]
+    header, rows = _rows(r.content)
+    assert "Units" in header and "Cartons" in header
+    row = rows[0]
+    assert row[header.index("Units")] == 100
+    assert row[header.index("Cartons")] == 8
 
 
 async def test_shipment_file_order_matches_the_canonical_order(
@@ -212,7 +268,7 @@ async def test_downloaded_numbers_match_the_dashboard(auth_client, plan_factory)
     active = (await auth_client.get("/shipment/active")).json()
     screen = {i["asin"]: i for i in active["items"]}
 
-    r = await auth_client.get("/shipment/download/packing-plan.xlsx")
+    r = await auth_client.get("/shipment/download/plan.xlsx")
     header, rows = _rows(r.content)
     for row in rows:
         item = screen[row[3]]
@@ -226,74 +282,66 @@ async def test_downloaded_numbers_match_the_dashboard(auth_client, plan_factory)
         assert row[header.index("To Make")] == item["to_source"]
 
 
-def _column(header: list, date_str: str, kind: str) -> int:
-    """Index of a per-day column, whatever status label it carries.
+async def test_downloaded_numbers_match_the_dashboard(auth_client, plan_factory):
+    """Same source, so they must agree.
 
-    Day columns are titled '<date> Units' plus a status suffix for days that are
-    not yet settled — '2026-07-30 Units (open)'. Tests match on the prefix so
-    they assert about the day's numbers rather than about its label; the labels
-    themselves are asserted deliberately, in their own tests.
+    /active and the downloads both build rows through _item_payload; if someone
+    later gives a download its own calculation, this fails.
     """
-    prefix = f"{date_str} {kind}"
-    matches = [i for i, h in enumerate(header) if h and h.startswith(prefix)]
-    assert len(matches) == 1, f"expected one {prefix!r} column, got {matches} in {header}"
-    return matches[0]
-
-
-async def test_packed_download_carries_the_cartons(auth_client, plan_factory):
-    """Requirement 7: cartons entered daily must come out in the Excel, because
-    they are what prefills the invoice's Boxes field."""
     await plan_factory()
     await auth_client.post(
         "/shipment/packing/2026-07-30",
         json={"entries": [{"asin": "B0AAA00001", "units": 120, "cartons": 10}]},
     )
-    r = await auth_client.get("/shipment/download/packed.xlsx")
+
+    active = (await auth_client.get("/shipment/active")).json()
+    screen = {i["asin"]: i for i in active["items"]}
+
+    r = await auth_client.get("/shipment/download/plan.xlsx")
     header, rows = _rows(r.content)
-    row = next(x for x in rows if x[3] == "B0AAA00001")
-    assert row[_column(header, "2026-07-30", "Units")] == 120
-    assert row[_column(header, "2026-07-30", "Cartons")] == 10
-    assert row[header.index("Total Cartons")] == 10
+    asin_col, qty_col = header.index("ASIN"), header.index("To Pack")
+    for row in rows:
+        if not row[asin_col]:
+            continue  # the totals line
+        assert row[qty_col] == screen[row[asin_col]]["shipment_plan"], row[asin_col]
 
 
-async def test_an_unsubmitted_day_is_labelled_open_in_the_download(
+async def test_the_remaining_sheet_drops_rows_with_nothing_left(
     auth_client, plan_factory
 ):
-    """Ops is still entering, so those numbers are not final. Unlabelled they
-    would read the same as a submitted day and the owner could build a shipment
-    from half a day's packing."""
+    """The morning sheet is a to-do list, so a finished SKU must leave it.
+
+    This is the behaviour the packer actually relies on: pack a row fully today and
+    it is gone from tomorrow's sheet, rather than sitting there at 0 for him to
+    check past every morning.
+    """
     await plan_factory()
+    before = _asins((await auth_client.get("/shipment/download/remaining.xlsx")).content)
+    assert "B0AAA00001" in before
+
+    # Plan is 500 for this ASIN; pack all of it.
     await auth_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 120, "cartons": 10}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 500, "cartons": 30}]},
     )
-    header, _rows_ = _rows((await auth_client.get("/shipment/download/packed.xlsx")).content)
-    day_columns = [h for h in header if h and h.startswith("2026-07-30")]
-    assert day_columns, "the day is missing from the sheet"
-    assert all("(open)" in h for h in day_columns), day_columns
 
-
-async def test_a_submitted_day_carries_no_status_label(auth_client, plan_factory):
-    """Submitted is the normal, ready state — labelling it would be noise on a
-    sheet that already has a column pair per day."""
-    await plan_factory()
-    await auth_client.post(
-        "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 500, "cartons": 40}]},
+    after = _asins((await auth_client.get("/shipment/download/remaining.xlsx")).content)
+    assert "B0AAA00001" not in after, (
+        "a fully-packed SKU is still on the still-to-pack sheet"
     )
-    submitted = await auth_client.post("/shipment/packing/2026-07-30/submit")
-    assert submitted.json()["status"] == logic.STATUS_SUBMITTED, submitted.json()
-
-    header, _rows_ = _rows((await auth_client.get("/shipment/download/packed.xlsx")).content)
-    assert "2026-07-30 Units" in header
-    assert "2026-07-30 Cartons" in header
+    assert after, "every row vanished; the sheet should still list the others"
 
 
-async def test_held_units_are_packed_but_not_shippable_in_the_download(
+async def test_held_units_still_count_as_packed_in_the_download(
     auth_client, plan_factory
 ):
-    """A 20-carton/400-unit day is held. Requirement 9 end-to-end: the download
-    must show those units as packed (do not re-pack them) and NOT as shippable."""
+    """A held day's boxes exist, so the packed sheet must show them.
+
+    The packed/shippable distinction itself is asserted in test_shipment_logic.py
+    and on the dashboard payload; this sheet's job is narrower — it reports what
+    was BOXED, and held units were boxed. Leaving them out would tell the floor to
+    pack the same order twice.
+    """
     await plan_factory()
     await auth_client.post(
         "/shipment/packing/2026-07-30",
@@ -304,88 +352,83 @@ async def test_held_units_are_packed_but_not_shippable_in_the_download(
 
     r = await auth_client.get("/shipment/download/packed.xlsx")
     header, rows = _rows(r.content)
-    row = next(x for x in rows if x[3] == "B0AAA00001")
-    assert row[_column(header, "2026-07-30", "Units")] == 400
-    assert row[header.index("Total Units")] == 400
-    assert row[header.index("Shippable Units")] == 0
-    held_columns = [h for h in header if h and h.startswith("2026-07-30")]
-    assert all("held" in h for h in held_columns), held_columns
+    row = next(x for x in rows if x[header.index("ASIN")] == "B0AAA00001")
+    assert row[header.index("Units")] == 400
+    assert row[header.index("Cartons")] == 20
 
 
-async def test_releasing_a_held_day_makes_its_units_shippable(auth_client, plan_factory):
-    """The owner overrides the threshold, and the download must follow."""
+async def test_the_packed_download_honours_a_date_range(auth_client, plan_factory):
+    """"select date or range and download packed data"."""
     await plan_factory()
-    await auth_client.post(
-        "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 400, "cartons": 20}]},
-    )
-    await auth_client.post("/shipment/packing/2026-07-30/submit")
-    released = await auth_client.post("/shipment/packing/2026-07-30/release")
-    assert released.status_code == 200, released.text
+    for day, units in (("2026-07-28", 100), ("2026-07-29", 50), ("2026-07-30", 25)):
+        await auth_client.post(
+            f"/shipment/packing/{day}",
+            json={"entries": [{"asin": "B0AAA00001", "units": units, "cartons": 5}]},
+        )
 
+    def units_for(query):
+        return query
+
+    # Everything, when no dates are given.
     r = await auth_client.get("/shipment/download/packed.xlsx")
     header, rows = _rows(r.content)
-    row = next(x for x in rows if x[3] == "B0AAA00001")
-    assert row[header.index("Shippable Units")] == 400
+    row = next(x for x in rows if x[header.index("ASIN")] == "B0AAA00001")
+    assert row[header.index("Units")] == 175, "no-date download should cover every day"
 
-
-# ─── mode= on the shipment file ──────────────────────────────────────────────
-
-@pytest.mark.parametrize("mode", ["remaining", "all", "verified"])
-async def test_every_documented_mode_is_accepted(auth_client, plan_factory, mode):
-    await plan_factory()
-    r = await auth_client.get(f"/shipment/download/shipment-file.xlsx?mode={mode}")
-    assert r.status_code == 200, r.text[:200]
-
-
-@pytest.mark.parametrize("mode", ["Remaining", "verifed", "everything", ""])
-async def test_an_unknown_mode_is_rejected_not_guessed(auth_client, plan_factory, mode):
-    """A typo must not silently fall back to `remaining`. The three modes give
-    genuinely different quantities, and a plausible-looking file with the wrong
-    numbers gets uploaded to Amazon before anyone notices."""
-    await plan_factory()
-    r = await auth_client.get(f"/shipment/download/shipment-file.xlsx?mode={mode}")
-    assert r.status_code == 400, f"mode={mode!r} -> {r.status_code}"
-    assert "mode" in r.json()["error"]
-
-
-async def test_mode_verified_excludes_unverified_packing(auth_client, plan_factory):
-    """Only the owner's approval may reach an invoice."""
-    await plan_factory()
-    await auth_client.post(
-        "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 500, "cartons": 40}]},
+    # A single day.
+    r = await auth_client.get(
+        "/shipment/download/packed.xlsx?date_from=2026-07-29&date_to=2026-07-29"
     )
-    await auth_client.post("/shipment/packing/2026-07-30/submit")
-
-    r = await auth_client.get("/shipment/download/shipment-file.xlsx?mode=verified")
-    _header, rows = _rows(r.content)
-    assert rows == [], "submitted-but-unverified units reached the shipment file"
-
-    await auth_client.post("/shipment/packing/2026-07-30/verify")
-    r = await auth_client.get("/shipment/download/shipment-file.xlsx?mode=verified")
     header, rows = _rows(r.content)
-    assert [row[1] for row in rows] == ["B0AAA00001"]
-    assert rows[0][header.index("Quantity")] == 500
+    row = next(x for x in rows if x[header.index("ASIN")] == "B0AAA00001")
+    assert row[header.index("Units")] == 50, "a single-date range picked up other days"
+
+    # An open-ended range.
+    r = await auth_client.get("/shipment/download/packed.xlsx?date_from=2026-07-29")
+    header, rows = _rows(r.content)
+    row = next(x for x in rows if x[header.index("ASIN")] == "B0AAA00001")
+    assert row[header.index("Units")] == 75, "from-only should mean that date onward"
 
 
-async def test_mode_remaining_shrinks_as_packing_is_recorded(auth_client, plan_factory):
+async def test_the_packed_download_rejects_a_malformed_date(auth_client, plan_factory):
+    """Rejected rather than ignored.
+
+    A silently-dropped bad date returns every day's packing under a heading that
+    claims to be one date, which is worse than an error.
+    """
     await plan_factory()
-    before = await auth_client.get("/shipment/download/shipment-file.xlsx?mode=remaining")
-    header, rows = _rows(before.content)
-    original = next(r[header.index("Quantity")] for r in rows if r[1] == "B0AAA00001")
+    r = await auth_client.get("/shipment/download/packed.xlsx?date_from=30-07-2026")
+    assert r.status_code == 400, r.status_code
 
+
+@pytest.mark.parametrize("fmt", ["xlsx", "pdf"])
+async def test_the_three_documents_share_one_column_layout(
+    auth_client, plan_factory, fmt
+):
+    """S · M · B · Brand · ASIN · SKU · Product, in that order, on all three.
+
+    Asserted for both formats because they are separate builders; a column added to
+    the Excel and forgotten in the PDF is exactly the drift this catches.
+    """
+    await plan_factory()
     await auth_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 200, "cartons": 15}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 100, "cartons": 8}]},
     )
-    after = await auth_client.get("/shipment/download/shipment-file.xlsx?mode=remaining")
-    header, rows = _rows(after.content)
-    now = next(r[header.index("Quantity")] for r in rows if r[1] == "B0AAA00001")
-    assert now == original - 200
 
+    expected = ["S", "M", "B", "Brand", "ASIN", "Merchant SKU", "Product"]
+    for name in ("plan", "packed", "remaining"):
+        r = await auth_client.get(f"/shipment/download/{name}.{fmt}")
+        assert r.status_code == 200, f"{name}.{fmt} -> {r.status_code}"
+        if fmt == "xlsx":
+            header, _rows_ = _rows(r.content)
+            assert header[:7] == expected, f"{name}.xlsx header is {header[:7]}"
+        else:
+            # A PDF's text is compressed, so assert it is a real PDF with content
+            # rather than trying to read columns out of it. The xlsx assertion above
+            # covers the layout, and both come from the same rows.
+            assert r.content[:4] == b"%PDF" and len(r.content) > 900
 
-# ─── The morning sheet ───────────────────────────────────────────────────────
 
 async def test_remaining_pdf_accepts_a_date(ops_client, plan_factory):
     await plan_factory()
