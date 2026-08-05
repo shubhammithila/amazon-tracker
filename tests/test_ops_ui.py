@@ -192,18 +192,65 @@ def test_rows_are_addressed_by_index_not_by_escaped_asin(source):
     into `&amp;`, so for any such ASIN the lookup misses, the assignment never
     happens, and the packer's count is discarded with no error on screen. Using
     the integer index removes the class of bug and needs no inline handler.
+
+    Scanned with comments blanked, for the same reason the sort guard is: a
+    comment *explaining* this rule must not be able to break it. That happened —
+    a comment quoting the banned pattern to say why it is banned failed the test,
+    which teaches the next person to delete the explanation rather than keep the
+    rule.
     """
-    assert 'data-index="${index}"' in source, (
+    body = _without_comments(source)
+
+    assert 'data-index="${index}"' in body, (
         "inputs no longer carry data-index — rows must not be addressed by an "
         "escaped ASIN, which silently drops counts for ASINs containing '&'"
     )
-    assert "oninput=" not in source, (
+    assert "oninput=" not in body, (
         "an inline oninput handler is back; interpolating a CSV-derived string "
         "into an attribute is what data-index exists to avoid"
     )
-    assert "i.asin ===" not in source, (
+    assert "i.asin ===" not in body, (
         "a row is being looked up by ASIN equality again — if that ASIN came "
         "from esc() the comparison silently fails and the count is lost"
+    )
+
+
+def test_a_dropped_entry_is_explained_to_the_packer(source):
+    """The owner removed a row while it was still on this phone.
+
+    The server drops those entries rather than storing units against a row that
+    is on no plan, no document and no invoice — see the 409 in
+    tests/test_shipment_exclusion.py. But the server refusing quietly is only half
+    a fix: if this screen ignored the `dropped` list, the packer would watch his
+    count vanish on the next refresh with no explanation, which is exactly the
+    silent data loss the guard was built to prevent.
+
+    So the message must name the items, and the list must reload so the removed
+    rows stop inviting him to type the same count again.
+    """
+    body = _without_comments(source)
+    assert "data.dropped" in body or "dropped" in body, (
+        "the save response's `dropped` list is ignored — the packer's count would "
+        "disappear on the next refresh with nothing on screen explaining why"
+    )
+    assert "banner warn" in body, "a dropped entry produces no visible warning"
+
+
+def test_the_empty_state_accounts_for_an_unreleased_draft(source):
+    """"No plan exists" became wrong once drafts arrived.
+
+    The owner can be sitting on a finished-looking plan this screen cannot see, so
+    telling the packer no plan exists sends him to ask for something that is
+    already there. The message names the actual missing step instead.
+    """
+    body = _without_comments(source)
+    assert "released" in body.lower(), (
+        "the empty state still claims no plan exists, which is misleading while a "
+        "draft is waiting to be finalised"
+    )
+    assert "Finalise" in body, (
+        "the packer is not told which action unblocks him, so he cannot ask for it "
+        "by name"
     )
 
 

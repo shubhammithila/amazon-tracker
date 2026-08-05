@@ -204,10 +204,16 @@ async function load(){
     $("totals").innerHTML = "";
     $("dayBadge").innerHTML = "";
     rows = [];
+    /* Draft plans made this message misleading. The owner can be sitting on a
+       finished-looking plan that this screen cannot see, so "no plan exists" would
+       be wrong and would send the packer to ask for something that is already
+       there. Say what is actually true — nothing is released yet — and name the
+       one action that fixes it, so he asks the right question. */
     $("packingArea").innerHTML =
       '<div class="card"><div class="empty-state">'
-      + '<strong>No shipment plan is active.</strong><br/>'
-      + 'The plan has to be created before packing can be recorded against it.'
+      + '<strong>No plan has been released for packing yet.</strong><br/>'
+      + 'The owner may still be preparing one. Ask him to press '
+      + '<em>Finalise plan</em> on the Shipment screen, then reload this page.'
       + '</div></div>';
     return;
   }
@@ -452,6 +458,39 @@ async function save(){
     }
     dirty.clear();
     dayStatus = data.day_status || dayStatus;
+
+    /* The owner removed a row while it was still on this phone.
+
+       The server drops those entries rather than storing units against a row that
+       appears on no plan, no document and no invoice — but if this screen stayed
+       quiet about it, the packer would watch his count disappear on the next
+       refresh with no explanation, which is the silent data loss the whole guard
+       exists to prevent. So it is said plainly and the list is reloaded.
+
+       Deliberately not a toast: he needs to know WHICH item, and a toast is gone
+       before he has looked up from the boxes. */
+    if((data.dropped || []).length){
+      /* Built from a Map rather than `rows.find(i => i.asin === a)`. The ban on
+         ASIN-equality lookups in this file is absolute for a reason: an escaped
+         ASIN never matches a raw one, and the failure is silent. These particular
+         ASINs come from the server's JSON and would match — but a rule a grep can
+         only enforce absolutely is worth more here than one clever exception. */
+      const byAsin = new Map(rows.map(i => [i.asin, i]));
+      const names = data.dropped
+        .map(a => (byAsin.get(a) || {}).item || a)
+        .map(esc);
+      $("messages").innerHTML =
+        '<div class="banner warn"><strong>Saved, but ' + data.dropped.length
+        + ' item(s) were not:</strong> ' + names.join(", ")
+        + '. The owner removed them from the plan, so there is nothing to pack '
+        + 'against. Everything else you entered is saved. Reloading the list…</div>';
+      /* Reload so the removed rows leave the screen instead of sitting there
+         inviting him to type the same count again. The delay is so the message is
+         readable first — load() clears #messages, so reloading immediately would
+         wipe the explanation before he had read it. */
+      setTimeout(() => load(), 4000);
+      return true;
+    }
     return true;
   }catch(err){
     // Keep `dirty` populated: the numbers are still on screen and still unsaved,
