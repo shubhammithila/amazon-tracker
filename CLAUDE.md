@@ -268,6 +268,27 @@ again would double the order — but not shippable until the day is released or
 verified. Collapsing them into one number is the subtle bug this feature is
 built around.
 
+### Units are per SKU. Cartons are per DAY.
+Everything else in this feature is per-SKU; this one thing is not, and the
+asymmetry is deliberate. "carton is not item wise. it is random. like 500 units
+packed today in 20 cartons." A carton is filled with whatever is being packed at
+the time, so a mixed box belongs to several ASINs and to none of them.
+
+It used to be `ShipmentPackingEntry.cartons`, summed onto the day. That asked the
+packer a question with no answer, so he guessed or skipped it — and the guess
+prefilled the **Boxes field on a GST invoice**. It is now entered directly on
+`ShipmentPackingDay.total_cartons`, and `logic.day_cartons` reads it off the day.
+`_recompute_day_units` must never touch it: recomputing from the entries would
+zero the count on every save, silently.
+
+`POST /packing/{date}` treats a **missing** `cartons` key as "leave it alone" and
+**0** as "no cartons". The packer counts boxes last, so a units-only save posted
+before then must not wipe a count he entered earlier.
+
+The packed sheet reports cartons **per day, in its heading** — not as a column. A
+per-row carton figure would put a guess in front of the accounts team as though it
+were a measurement.
+
 ### Carry-over
 `is_held` judges one day in isolation, which is right. `logic.carry_over` judges
 the accumulated held days together, which is the other half of what was asked:
@@ -283,22 +304,43 @@ held days: `/shipment/active` only ever returns the active plan, so those boxes
 would otherwise drop off every screen while still sitting in the warehouse.
 
 ### Documents
+Three working documents in both formats, plus Amazon's own file:
+
 | Route | Who | What |
 |---|---|---|
-| `download/packing-plan.xlsx` / `.pdf` | admin | the full plan, both formats |
-| `download/remaining.pdf` | ops + admin | the morning clipboard sheet, portrait A4 |
-| `download/packed.xlsx` | admin | daily packed units + cartons |
+| `download/plan.{xlsx,pdf}` | admin | what to pack this week |
+| `download/packed.{xlsx,pdf}?date_from=&date_to=` | ops + admin | what was boxed; ops prints this for accounts |
+| `download/remaining.{xlsx,pdf}` | ops + admin | the morning clipboard sheet |
 | `download/shipment-file.xlsx?mode=` | admin | Amazon upload; `remaining\|all\|verified` |
 
-All go through `_document_rows()`, so a download cannot disagree with the screen
-about order or any computed number — one code path produces both.
+The first three share ONE column layout, asked for verbatim: `S · M · B · Brand ·
+ASIN · Merchant SKU · Product · Pack Size · <quantity>`. Only the quantity column
+differs. All go through `_document_rows()`, so a download cannot disagree with the
+screen about order or any computed number — one code path produces both.
+
+`packed` is open to ops because printing it for accounts is the packer's job. The
+plan sheet and the Amazon upload are not: those carry projections and are the
+owner's decisions.
+
+**The PDFs build every cell as a `Paragraph`, never a bare string.** reportlab
+draws a plain string at full width and lets it run over the gridline into the next
+column, so a 48-character merchant SKU printed on top of the product name on most
+rows of a real plan — with the whole suite green, because the bytes were a valid
+PDF of a plausible size. Column widths are *measured* from the rows being rendered
+(`_pdf_column_widths`); two earlier hardcoded attempts were each wrong about data
+they could not see. `tests/test_shipment_documents.py` asserts table HEIGHT for
+this, since an overflowing cell is the same height as a fitting one — which is
+exactly why the bug was invisible.
+
+Product, pack size and quantity are set large and bold; ASIN and merchant SKU
+small and grey. Those three cells are what decide what gets packed.
 
 ### Invoice bridge
 `POST /shipment/invoice-payload` turns **verified** days into the payload
 `templates/invoice.html` already consumes, aggregating units per ASIN across the
-selected dates (which is how combined held days become one invoice) and summing
-cartons to prefill Boxes. It refuses anything unverified with a 400 and anything
-already invoiced with a 409.
+selected dates (which is how combined held days become one invoice) and summing the
+selected days' `total_cartons` to prefill Boxes. It refuses anything unverified with
+a 400 and anything already invoiced with a 409.
 
 It does **not** allocate an invoice number. `POST /invoice/save` remains the only
 writer of the GST series. See "Known gaps" below for the one window this leaves.
