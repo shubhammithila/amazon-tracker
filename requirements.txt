@@ -19,3 +19,8 @@ reportlab==4.2.5
 pytest==9.1.1
 pytest-asyncio==1.4.0
 pytest-cov==7.1.0
+# Reads the text back out of a generated PDF. Test-only, and it earns its place: a
+# PDF's text streams are compressed, so without it the download tests can only assert
+# "these bytes are a PDF of a plausible size" — which is exactly how the merchant SKU
+# came to print on top of the product name with the whole suite green.
+pypdfium2==5.12.1

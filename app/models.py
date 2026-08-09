@@ -323,9 +323,20 @@ class ShipmentPackingDay(Base):
     pack_date = Column(String(10), nullable=False)
     status = Column(String(12), default="open")
     hold_reason = Column(Text)
-    # Denormalised totals, recomputed on every write so the day list and the
-    # hold check never have to load every entry.
+    # Denormalised from the entry rows, recomputed on every write so the day list
+    # and the hold check never have to load every entry.
     total_units = Column(Integer, default=0)
+
+    # **Cartons are a property of the DAY, not of a SKU.** Entered directly here,
+    # not summed from anything.
+    #
+    # The owner's words: "carton is not item wise. it is random. like 500 units
+    # packed today in 20 cartons." A carton on this floor is filled with whatever
+    # is being packed at the time, so a mixed box belongs to several ASINs and to
+    # none of them. It was previously recorded per (day, ASIN) and summed here,
+    # which asked the packer a question he could not answer — so he either guessed
+    # or left it blank, and the number that prefills a GST invoice's Boxes field
+    # was a guess.
     total_cartons = Column(Integer, default=0)
     submitted_by = Column(String(20))  # 'ops' / 'admin'
     submitted_at = Column(DateTime)
@@ -340,7 +351,13 @@ class ShipmentPackingDay(Base):
 
 
 class ShipmentPackingEntry(Base):
-    """Units and cartons packed for one SKU on one day. Only ops writes these."""
+    """Units packed for one SKU on one day. Only ops writes these.
+
+    Units only. Cartons live on the DAY — see
+    ``ShipmentPackingDay.total_cartons``. A carton here holds whatever was being
+    packed when it was filled, so it cannot be attributed to a single ASIN, and
+    asking for a per-SKU count produced guesses.
+    """
     __tablename__ = "shipment_packing_entries"
     __table_args__ = (
         # Unique so a double-save upserts rather than double-counting the units.
@@ -351,7 +368,6 @@ class ShipmentPackingEntry(Base):
     day_id = Column(Integer, ForeignKey("shipment_packing_days.id"), nullable=False)
     asin = Column(String(10), nullable=False)
     units = Column(Integer, default=0)
-    cartons = Column(Integer, default=0)
     note = Column(Text)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

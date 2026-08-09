@@ -36,10 +36,26 @@ MONDAY = "2026-07-30"
 TUESDAY = "2026-07-31"
 
 
-async def _packed_and_verified(auth_client, ops_client, pack_date, entries):
-    """Record, submit and verify a day. Returns the verify response."""
+async def _packed_and_verified(
+    auth_client, ops_client, pack_date, entries, cartons=None
+):
+    """Record, submit and verify a day. Returns the verify response.
+
+    ``cartons`` is the DAY's box count, posted at the top level of the body — a
+    carton holds whatever was being packed when it was filled, so it belongs to no
+    single ASIN. Left as None it is derived from the entries below, which keeps the
+    twenty-odd call sites that only care about units unchanged and readable.
+    """
+    if cartons is None:
+        # One carton per 20 units, floored at 1 for a non-empty day: an arbitrary but
+        # plausible ratio, so a day with units always has boxes and the hold rule
+        # behaves the way these tests were written to expect.
+        units = sum(int(e.get("units") or 0) for e in entries)
+        cartons = max(1, units // 20) if units else 0
+
     r = await ops_client.post(
-        f"/shipment/packing/{pack_date}", json={"entries": entries}
+        f"/shipment/packing/{pack_date}",
+        json={"entries": entries, "cartons": cartons},
     )
     assert r.status_code == 200, r.text
     r = await ops_client.post(f"/shipment/packing/{pack_date}/submit")
@@ -64,7 +80,7 @@ async def test_a_verified_day_becomes_an_invoice_payload(
     await plan_factory()
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
-        [{"asin": ASIN, "units": 600, "cartons": 30}],
+        [{"asin": ASIN, "units": 600}],
     )
 
     r = await _payload(auth_client, MONDAY)
@@ -88,7 +104,7 @@ async def test_ops_may_build_the_payload(auth_client, ops_client, plan_factory):
     await plan_factory()
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
-        [{"asin": ASIN, "units": 600, "cartons": 30}],
+        [{"asin": ASIN, "units": 600}],
     )
 
     r = await _payload(ops_client, MONDAY)
@@ -109,7 +125,7 @@ async def test_the_payload_keys_match_what_the_invoice_screen_consumes(
     await plan_factory()
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
-        [{"asin": ASIN, "units": 600, "cartons": 30}],
+        [{"asin": ASIN, "units": 600}],
     )
 
     body = (await _payload(auth_client, MONDAY)).json()
@@ -139,7 +155,7 @@ async def test_amazon_only_fields_are_left_blank_not_guessed(
     await plan_factory()
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
-        [{"asin": ASIN, "units": 600, "cartons": 30}],
+        [{"asin": ASIN, "units": 600}],
     )
 
     meta = (await _payload(auth_client, MONDAY)).json()["metadata"]
@@ -164,7 +180,7 @@ async def test_the_cartons_ops_counted_prefill_the_boxes_field(
     await plan_factory()
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
-        [{"asin": ASIN, "units": 600, "cartons": 30}],
+        [{"asin": ASIN, "units": 600}],
     )
 
     assert (await _payload(auth_client, MONDAY)).json()["boxes"] == 30
@@ -182,8 +198,8 @@ async def test_lines_come_out_in_the_canonical_order(
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
         [
-            {"asin": ASIN, "units": 300, "cartons": 20},
-            {"asin": SECOND, "units": 300, "cartons": 15},
+            {"asin": ASIN, "units": 300},
+            {"asin": SECOND, "units": 300},
         ],
     )
 
@@ -228,7 +244,7 @@ async def test_the_purchase_rate_is_actually_looked_up(
     }])
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
-        [{"asin": asin, "units": 600, "cartons": 30}],
+        [{"asin": asin, "units": 600}],
     )
 
     line = (await _payload(auth_client, MONDAY)).json()["items"][0]
@@ -254,7 +270,7 @@ async def test_a_missing_purchase_rate_is_reported_not_silently_zero(
     }])
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
-        [{"asin": "B0ZZZ99999", "units": 600, "cartons": 30}],
+        [{"asin": "B0ZZZ99999", "units": 600}],
     )
 
     body = (await _payload(auth_client, MONDAY)).json()
@@ -280,11 +296,11 @@ async def test_two_days_aggregate_into_one_invoice_line_per_sku(
     await plan_factory()
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
-        [{"asin": ASIN, "units": 400, "cartons": 20}],
+        [{"asin": ASIN, "units": 400}],
     )
     await _packed_and_verified(
         auth_client, ops_client, TUESDAY,
-        [{"asin": ASIN, "units": 200, "cartons": 10}],
+        [{"asin": ASIN, "units": 200}],
     )
 
     body = (await _payload(auth_client, MONDAY, TUESDAY)).json()
@@ -305,11 +321,11 @@ async def test_only_the_selected_days_are_invoiced(
     await plan_factory()
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
-        [{"asin": ASIN, "units": 400, "cartons": 20}],
+        [{"asin": ASIN, "units": 400}],
     )
     await _packed_and_verified(
         auth_client, ops_client, TUESDAY,
-        [{"asin": ASIN, "units": 200, "cartons": 10}],
+        [{"asin": ASIN, "units": 200}],
     )
 
     body = (await _payload(auth_client, MONDAY)).json()
@@ -338,7 +354,7 @@ async def test_a_repeated_date_does_not_double_the_quantity(
     await plan_factory()
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
-        [{"asin": ASIN, "units": 400, "cartons": 20}],
+        [{"asin": ASIN, "units": 400}],
     )
 
     body = (await _payload(auth_client, MONDAY, MONDAY)).json()
@@ -360,9 +376,9 @@ async def test_an_unverified_day_is_refused(
     """
     await plan_factory()
     entries = (
-        [{"asin": ASIN, "units": 400, "cartons": 20}]  # small -> held on submit
+        [{"asin": ASIN, "units": 400}]  # small -> held on submit
         if stop_at == "held"
-        else [{"asin": ASIN, "units": 600, "cartons": 30}]
+        else [{"asin": ASIN, "units": 600}]
     )
     r = await ops_client.post(f"/shipment/packing/{MONDAY}", json={"entries": entries})
     assert r.status_code == 200, r.text
@@ -387,12 +403,12 @@ async def test_one_unverified_day_blocks_the_whole_request(
     await plan_factory()
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
-        [{"asin": ASIN, "units": 400, "cartons": 20}],
+        [{"asin": ASIN, "units": 400}],
     )
     # Tuesday is submitted but NOT verified.
     await ops_client.post(
         f"/shipment/packing/{TUESDAY}",
-        json={"entries": [{"asin": ASIN, "units": 600, "cartons": 30}]},
+        json={"entries": [{"asin": ASIN, "units": 600}]},
     )
     await ops_client.post(f"/shipment/packing/{TUESDAY}/submit")
 
@@ -419,7 +435,7 @@ async def test_the_bridge_creates_no_invoice_row(
     # A rejected request.
     await ops_client.post(
         f"/shipment/packing/{MONDAY}",
-        json={"entries": [{"asin": ASIN, "units": 600, "cartons": 30}]},
+        json={"entries": [{"asin": ASIN, "units": 600}]},
     )
     r = await _payload(auth_client, MONDAY)
     assert r.status_code == 400, r.text
@@ -469,7 +485,7 @@ async def test_attaching_an_invoice_marks_the_days_shipped(
     plan_id = plan.id
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
-        [{"asin": ASIN, "units": 600, "cartons": 30}],
+        [{"asin": ASIN, "units": 600}],
     )
 
     r = await auth_client.post(
@@ -490,7 +506,7 @@ async def test_an_invoiced_day_cannot_be_invoiced_again(
     await plan_factory()
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
-        [{"asin": ASIN, "units": 600, "cartons": 30}],
+        [{"asin": ASIN, "units": 600}],
     )
     await auth_client.post(
         "/shipment/attach-invoice",
@@ -517,7 +533,7 @@ async def test_the_already_invoiced_error_wins_over_not_verified(
     await plan_factory()
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
-        [{"asin": ASIN, "units": 600, "cartons": 30}],
+        [{"asin": ASIN, "units": 600}],
     )
     await auth_client.post(
         "/shipment/attach-invoice",
@@ -543,7 +559,7 @@ async def test_re_attaching_the_same_invoice_is_harmless(
     await plan_factory()
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
-        [{"asin": ASIN, "units": 600, "cartons": 30}],
+        [{"asin": ASIN, "units": 600}],
     )
     for _ in range(2):
         r = await auth_client.post(
@@ -562,7 +578,7 @@ async def test_attaching_a_different_invoice_is_refused(
     plan_id = plan.id
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
-        [{"asin": ASIN, "units": 600, "cartons": 30}],
+        [{"asin": ASIN, "units": 600}],
     )
     await auth_client.post(
         "/shipment/attach-invoice",
@@ -588,7 +604,7 @@ async def test_attach_needs_an_invoice_id(auth_client, ops_client, plan_factory)
     await plan_factory()
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
-        [{"asin": ASIN, "units": 600, "cartons": 30}],
+        [{"asin": ASIN, "units": 600}],
     )
     r = await auth_client.post(
         "/shipment/attach-invoice", json={"pack_dates": [MONDAY]}
@@ -608,7 +624,7 @@ async def test_shipped_units_still_count_as_packed_and_shippable(
     await plan_factory()
     await _packed_and_verified(
         auth_client, ops_client, MONDAY,
-        [{"asin": ASIN, "units": 600, "cartons": 30}],
+        [{"asin": ASIN, "units": 600}],
     )
     await auth_client.post(
         "/shipment/attach-invoice",

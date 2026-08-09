@@ -617,15 +617,22 @@ async def save_packing_entries(
     pack_date: str,
     entries: list[dict],
     submitted_by: str = "ops",
+    cartons: int | None = None,
 ) -> ShipmentPackingDay:
-    """Upsert units and cartons for a day. The only write ops performs.
+    """Upsert per-SKU units, and the day's carton count. The only write ops performs.
 
-    A zero-unit, zero-carton entry is deleted rather than stored, so correcting a
-    mistyped row actually removes it from the totals instead of leaving a 0 that
-    still counts as "this SKU was touched".
+    ``cartons`` is the number of boxes packed that DAY, in total — not per SKU. A
+    carton on this floor is filled with whatever is being packed at the time, so it
+    belongs to no single ASIN. ``None`` means "leave it alone", which is what lets
+    the screen save unit counts without the packer having reached the carton box
+    yet; passing 0 explicitly does clear it.
 
-    Totals are denormalised onto the day so the hold check and the day list never
-    have to load every entry.
+    A zero-unit entry is deleted rather than stored, so correcting a mistyped row
+    removes it from the total instead of leaving a 0 that still counts as "this SKU
+    was touched".
+
+    Unit totals are denormalised onto the day so the hold check and the day list
+    never have to load every entry.
     """
     day = await get_or_create_day(db, plan_id, pack_date)
 
@@ -645,50 +652,49 @@ async def save_packing_entries(
 
     for asin, raw in by_asin.items():
         units = max(0, _as_int(raw.get("units")))
-        cartons = max(0, _as_int(raw.get("cartons")))
         note = raw.get("note") or None
         row = existing.get(asin)
 
-        if units == 0 and cartons == 0:
+        if units == 0:
             if row is not None:
                 await db.delete(row)
             continue
 
         if row is None:
             db.add(
-                ShipmentPackingEntry(
-                    day_id=day.id, asin=asin, units=units, cartons=cartons, note=note
-                )
+                ShipmentPackingEntry(day_id=day.id, asin=asin, units=units, note=note)
             )
         else:
             row.units = units
-            row.cartons = cartons
             row.note = note
 
     await db.flush()
-    await _recompute_day_totals(db, day)
+    await _recompute_day_units(db, day)
+    if cartons is not None:
+        day.total_cartons = max(0, _as_int(cartons))
     day.submitted_by = submitted_by
     await db.commit()
     await db.refresh(day)
     return day
 
 
-async def _recompute_day_totals(db: AsyncSession, day: ShipmentPackingDay) -> None:
-    """Recompute the denormalised totals from the entry rows.
+async def _recompute_day_units(db: AsyncSession, day: ShipmentPackingDay) -> None:
+    """Recompute the denormalised unit total from the entry rows.
 
     Deliberately a fresh SUM rather than incremental arithmetic: an incremental
-    counter drifts the moment any write path forgets to adjust it, and these
-    totals decide whether a day is held.
+    counter drifts the moment any write path forgets to adjust it, and this total
+    decides whether a day is held.
+
+    **It must not touch total_cartons.** That is now entered directly rather than
+    summed, so recomputing it from the entries would zero the packer's carton count
+    on every save — silently, and the number feeds a GST invoice's Boxes field.
     """
     result = await db.execute(
-        select(
-            func.coalesce(func.sum(ShipmentPackingEntry.units), 0),
-            func.coalesce(func.sum(ShipmentPackingEntry.cartons), 0),
-        ).where(ShipmentPackingEntry.day_id == day.id)
+        select(func.coalesce(func.sum(ShipmentPackingEntry.units), 0)).where(
+            ShipmentPackingEntry.day_id == day.id
+        )
     )
-    units, cartons = result.one()
-    day.total_units = int(units or 0)
-    day.total_cartons = int(cartons or 0)
+    day.total_units = int(result.scalar() or 0)
 
 
 async def load_entries(db: AsyncSession, day_id: int) -> list[ShipmentPackingEntry]:
@@ -722,13 +728,11 @@ async def load_days_with_entries(db: AsyncSession, plan_id: int) -> list[dict]:
                 "submitted_at": day.submitted_at.isoformat() if day.submitted_at else None,
                 "verified_at": day.verified_at.isoformat() if day.verified_at else None,
                 "invoice_id": day.invoice_id,
+                # Units only. Cartons are a day-level fact and are already above as
+                # `total_cartons`; a per-entry key here would invite summing it back
+                # up into a number that means nothing.
                 "entries": [
-                    {
-                        "asin": e.asin,
-                        "units": int(e.units or 0),
-                        "cartons": int(e.cartons or 0),
-                        "note": e.note,
-                    }
+                    {"asin": e.asin, "units": int(e.units or 0), "note": e.note}
                     for e in entries
                 ],
             }

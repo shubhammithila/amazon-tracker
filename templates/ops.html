@@ -6,24 +6,37 @@
 {#
   The operations employee's only screen. Requirement 5.
 
-  Four things about this page are deliberate, and each one is load-bearing:
+  Five things about this page are deliberate, and each one is load-bearing:
 
   1. It does NOT include nav.html. Every link in that partial goes to an
      admin-only page, and advertising a tab that answers 403 makes the app look
      broken. tests/test_shipment_auth_roles.py asserts no admin href appears
      here, so adding the partial "for consistency" fails the suite.
 
-  2. Cards, not a table. This is used on a phone held in one hand in a
-     warehouse. A row of narrow cells needs horizontal scrolling to reach the
-     cartons box, which is where mis-entry comes from. One SKU per block, two
-     large number inputs, no sideways movement anywhere on the page.
+  2. A TABLE, and only the columns ops needs. Asked for directly: "for ops team
+     also give the same tabular view but with only options relevant to them."
+     One row per SKU, one number to type. The columns the owner's screen carries
+     — 7d sales, projection, FBA stock, deficit, In stock, To make — are all
+     planning figures, and none of them changes what gets boxed today.
 
-  3. Saving is explicit, never per-keystroke. Warehouse wifi drops, and an
+     It was cards before, on the reasoning that a phone in a warehouse cannot
+     scroll sideways. That was right about the constraint and wrong about the
+     fix: 117 cards is a very long page to find one product in. The table stays
+     scroll-free instead by pinning the product name and having exactly ONE
+     input, so nothing the packer must reach is ever off-screen.
+
+  3. CARTONS ARE ONE NUMBER FOR THE WHOLE DAY, not a column. "carton is not item
+     wise. it is random. like 500 units packed today in 20 cartons." A carton
+     holds whatever was being packed when it was filled, so a per-SKU box asked
+     a question with no answer — and the guess fed the Boxes field on a GST
+     invoice. It lives in the save bar, next to the day's unit total.
+
+  4. Saving is explicit, never per-keystroke. Warehouse wifi drops, and an
      autosave that fails silently mid-list loses an hour of counting with no
      sign it happened. The button reports what it did, and leaving with unsaved
      work asks first.
 
-  4. NEVER sort the rows here. Order arrives from /shipment/packing/{date},
+  5. NEVER sort the rows here. Order arrives from /shipment/packing/{date},
      which is repository.load_plan_items' ORDER BY, which is logic.sort_items —
      the same order the morning PDF prints in. The packer works down the paper
      and down the screen together, so if this page reordered them he would be
@@ -31,14 +44,14 @@
 #}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px;padding-bottom:96px}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px;padding-bottom:104px}
 header{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
 header h1{font-size:16px;font-weight:600}
 .nav-links{display:flex;gap:16px;margin-left:24px}
 .nav-links a{color:var(--text-muted);text-decoration:none;font-size:14px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
 .nav-links a.active{color:var(--text);border-color:var(--accent)}
 .header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:14px;text-decoration:none}
-main{max-width:760px;margin:0 auto;padding:18px}
+main{max-width:1100px;margin:0 auto;padding:18px}
 h2{font-size:21px;font-weight:600;margin-bottom:4px}
 .subtitle{color:var(--text-muted);font-size:13px;margin-bottom:16px}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:14px}
@@ -72,41 +85,64 @@ input[type="date"]{background:var(--bg);border:1px solid var(--border);border-ra
 .tot.low{border-color:var(--yellow)}.tot.low .num{color:var(--yellow)}
 .tot.ok .num{color:var(--green)}
 
-/* One SKU per block — the whole point of the layout */
-.sku{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px}
-.sku.done{border-color:var(--green-soft)}
-.sku.touched{border-color:var(--accent)}
-.sku-name{font-size:15px;font-weight:600;line-height:1.35;margin-bottom:3px}
-.sku-meta{font-size:12px;color:var(--text-muted);margin-bottom:10px}
-.sku-meta .sku-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-.sku-target{display:flex;gap:14px;font-size:12.5px;margin-bottom:11px;flex-wrap:wrap}
-.sku-target b{font-weight:700}
-.t-remaining{color:var(--orange)}
-.t-remaining.zero{color:var(--green)}
-.entry{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.entry label{display:block;font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px}
+/* ── The table ──────────────────────────────────────────────────────────────
+   Sized for a phone held in one hand. The product name is pinned left and the
+   Packed input is the last column, so the two things that matter are at the two
+   edges and the eye never has to hold a row in memory across a scroll.
+
+   Font sizes are larger than the owner's grid throughout: this is read at arm's
+   length in warehouse lighting, not at a desk. */
+.table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+table{width:100%;border-collapse:collapse;min-width:560px}
+thead th{background:var(--surface2);color:var(--text-muted);padding:9px 8px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:center;white-space:nowrap;border-bottom:1px solid var(--border-strong);position:sticky;top:56px;z-index:3}
+thead th.col-input{background:var(--accent-soft);color:var(--accent)}
+tbody tr{border-bottom:1px solid var(--border)}
+tbody tr.done{background:var(--green-soft)}
+tbody tr.dirty{background:var(--yellow-soft)}
+td{padding:7px 8px;font-size:14px;text-align:center;white-space:nowrap}
+td.name{text-align:left;white-space:normal;min-width:150px}
+.p-name{font-weight:600;font-size:15px;line-height:1.3}
+.p-meta{font-size:11px;color:var(--text-dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:2px}
+.p-size{font-weight:700}
+.t-left{font-weight:700}
+.t-left.zero{color:var(--green)}
+.t-left.pos{color:var(--orange)}
+.no-sku{color:var(--red);font-weight:700;font-size:11px}
+
+/* The product name stays put while the row scrolls. Needs its own opaque
+   background or the numbers show through, and a z-index above the body cells it
+   overlaps; the header corner needs a higher one again because it is sticky in
+   both directions at once. */
+th.freeze,td.freeze{position:sticky;left:0;background:var(--surface);z-index:2}
+th.freeze{z-index:6;background:var(--surface2)}
+tbody tr.done td.freeze{background:var(--green-soft)}
+tbody tr.dirty td.freeze{background:var(--yellow-soft)}
+
 /* 17px: iOS silently zooms the whole page in on focus for anything under 16px,
    which on a phone means the packer loses his place in the list every time he
    taps a box. */
-.entry input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:13px 12px;font-size:17px;font-weight:600;text-align:center;min-height:48px}
-.entry input:focus{outline:none;border-color:var(--accent)}
-.entry input:disabled{opacity:.5}
-.no-sku{color:var(--red);font-size:11px;font-weight:700}
+input.qty{width:86px;background:var(--bg);border:1px solid var(--border-strong);border-radius:8px;color:var(--text);padding:11px 8px;font-size:17px;font-weight:700;text-align:center;min-height:46px}
+input.qty:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent)}
+input.qty:disabled{opacity:.5}
 
-.search-input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:12px;font-size:15px;min-height:44px;margin-bottom:12px}
+.search-input{width:100%;background:var(--surface);border:1px solid var(--border-strong);border-radius:8px;color:var(--text);padding:12px;font-size:15px;min-height:44px;margin-bottom:12px}
 .search-input:focus{outline:none;border-color:var(--accent)}
 
 /* Save bar pinned to the bottom: reachable by thumb, and it is the only way
-   entered numbers leave the phone. */
-.savebar{position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);padding:12px 18px;display:flex;gap:10px;align-items:center;z-index:200}
-.savebar .status{font-size:12.5px;color:var(--text-muted);flex:1;line-height:1.4}
+   entered numbers leave the phone. The carton box lives here rather than in the
+   table because it belongs to the DAY — putting it in a column would be the
+   per-SKU question all over again. */
+.savebar{position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);padding:10px 18px;display:flex;gap:10px;align-items:center;z-index:200;flex-wrap:wrap;box-shadow:var(--shadow)}
+.cartonbox{display:flex;align-items:center;gap:8px}
+.cartonbox label{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;font-weight:700;line-height:1.2;max-width:74px}
+.savebar .status{font-size:12.5px;color:var(--text-muted);flex:1;line-height:1.4;min-width:150px}
 .savebar .status.dirty{color:var(--yellow)}
 .savebar .status.saved{color:var(--green)}
-@media (max-width:420px){
+@media (max-width:520px){
   .totals{grid-template-columns:1fr 1fr}
-  .savebar{flex-wrap:wrap}
   .savebar .status{flex-basis:100%;order:-1;margin-bottom:2px}
-  .savebar .btn{flex:1}
+  main{padding:12px}
+  td{padding:6px 5px}
 }
 </style>
 <link rel="stylesheet" href="/static/theme.css"/>
@@ -121,14 +157,16 @@ input[type="date"]{background:var(--bg);border:1px solid var(--border);border-ra
 </header>
 <main>
 <h2>📦 Today's Packing</h2>
-<p class="subtitle">Enter units and cartons packed for each SKU, then submit the day.</p>
+<p class="subtitle">Type the units packed against each product, enter the day's total
+  cartons at the bottom, then submit the day.</p>
 
 <div class="card">
   <div class="date-row">
     <label for="packDate" style="color:var(--text-muted);font-size:13px">Packing date</label>
     <input type="date" id="packDate"/>
     <span id="dayBadge"></span>
-    <button class="btn-outline" id="pdfBtn" style="margin-left:auto">Still to pack (PDF)</button>
+    <button class="btn-outline" id="pdfBtn">Still to pack (PDF)</button>
+    <button class="btn-outline" id="packedBtn">Packed sheet (PDF)</button>
   </div>
 </div>
 
@@ -136,9 +174,9 @@ input[type="date"]{background:var(--bg);border:1px solid var(--border);border-ra
 <div id="totals"></div>
 
 <!-- Outside #packingArea on purpose: renderRows() replaces that element's
-     contents on every keystroke, so a search box inside it would be destroyed
-     mid-typing and lose focus and the caret. -->
-<input class="search-input" id="search" type="search" placeholder="Search SKU…"
+     contents, so a search box inside it would be destroyed mid-typing and lose
+     focus and the caret. -->
+<input class="search-input" id="search" type="search" placeholder="Search product, SKU or ASIN…"
        style="display:none"/>
 
 <div id="packingArea">
@@ -147,6 +185,11 @@ input[type="date"]{background:var(--bg);border:1px solid var(--border);border-ra
 </main>
 
 <div class="savebar" id="savebar" style="display:none">
+  <div class="cartonbox">
+    <label for="cartonInput">Cartons today</label>
+    <input class="qty" id="cartonInput" type="number" min="0" inputmode="numeric"
+           placeholder="0"/>
+  </div>
   <span class="status" id="saveStatus">No changes yet.</span>
   <button class="btn" id="saveBtn">Save</button>
   <button class="btn btn-green" id="submitBtn">Submit day</button>
@@ -154,12 +197,16 @@ input[type="date"]{background:var(--bg);border:1px solid var(--border);border-ra
 
 <script>
 /* ── State ─────────────────────────────────────────────────────────────────
-   `rows` is kept in server order and never re-sorted (see note 4 at the top).
+   `rows` is kept in server order and never re-sorted (see note 5 at the top).
    `dirty` holds only the ASINs actually touched, so a save posts the counts
-   this packer entered and cannot overwrite another device's untouched rows. */
+   this packer entered and cannot overwrite another device's untouched rows.
+   `cartons` is one number for the whole day, tracked separately for the same
+   reason it is stored on the day: it is not a property of any SKU. */
 let rows = [];
 let dayStatus = "open";
 let minCartons = 0, minUnits = 0;
+let cartons = 0;
+let cartonsDirty = false;
 const dirty = new Set();
 let saving = false;
 
@@ -177,6 +224,8 @@ function n(v){ return Number(v || 0).toLocaleString("en-IN"); }
    409s on a write either way; disabling the inputs means the packer finds out
    before he types fifty numbers rather than after. */
 function isLocked(){ return dayStatus === "verified" || dayStatus === "shipped"; }
+
+function unitsTotal(){ return rows.reduce((s, i) => s + Number(i.units || 0), 0); }
 
 /* ── Loading ───────────────────────────────────────────────────────────── */
 
@@ -227,6 +276,8 @@ async function load(){
   dayStatus = data.status || "open";
   minCartons = Number(data.min_cartons || 0);
   minUnits = Number(data.min_units || 0);
+  cartons = Number(data.cartons || 0);
+  cartonsDirty = false;
   dirty.clear();
 
   render();
@@ -275,7 +326,7 @@ function renderMessages(){
   const missing = rows.filter(i => !i.fba_sku).length;
   if(missing){
     parts.push(
-      `<div class="banner warn">${missing} SKU${missing === 1 ? " has" : "s have"} `
+      `<div class="banner warn">${missing} product${missing === 1 ? " has" : "s have"} `
       + 'no merchant SKU recorded. Pack them as normal — just tell the owner, '
       + 'because Amazon will reject those lines on the upload.</div>'
     );
@@ -287,8 +338,7 @@ function renderMessages(){
 function renderTotals(){
   if(!rows.length){ $("totals").innerHTML = ""; return; }
 
-  const units = rows.reduce((s, i) => s + Number(i.units || 0), 0);
-  const cartons = rows.reduce((s, i) => s + Number(i.cartons || 0), 0);
+  const units = unitsTotal();
   const done = rows.filter(i => Number(i.units || 0) > 0).length;
 
   /* The same AND rule the server applies in logic.is_held, shown live so the
@@ -304,7 +354,7 @@ function renderTotals(){
       <div class="tot ${wouldHold ? "low" : (cartons ? "ok" : "")}">
         <div class="num">${n(cartons)}</div><div class="lbl">Cartons today</div></div>
       <div class="tot"><div class="num">${done}/${rows.length}</div>
-        <div class="lbl">SKUs entered</div></div>
+        <div class="lbl">Products entered</div></div>
     </div>
     ${wouldHold ? '<div class="banner warn">Below the minimum for a shipment ('
       + n(minCartons) + ' cartons or ' + n(minUnits) + ' units). Submitting now will '
@@ -315,7 +365,7 @@ function renderTotals(){
 function visibleRows(){
   const q = $("search").value.trim().toLowerCase();
   if(!q) return rows;
-  // filter() preserves order. Do not sort — see note 4 at the top of the file.
+  // filter() preserves order. Do not sort — see note 5 at the top of the file.
   return rows.filter(i =>
     (i.item || "").toLowerCase().includes(q)
     || (i.asin || "").toLowerCase().includes(q)
@@ -326,14 +376,14 @@ function renderRows(){
   if(!rows.length){
     $("packingArea").innerHTML =
       '<div class="card"><div class="empty-state">Nothing to pack against this '
-      + 'plan — every SKU is already covered.</div></div>';
+      + 'plan — every product is already covered.</div></div>';
     return;
   }
 
   const locked = isLocked() ? " disabled" : "";
   const shown = visibleRows();
 
-  const cards = shown.map(i => {
+  const body = shown.map(i => {
     /* Rows are addressed by their integer index in `rows`, carried in
        data-index and read by one delegated listener. Two reasons, and the
        second is the one that bit:
@@ -349,44 +399,45 @@ function renderRows(){
        escaped. */
     const index = rows.indexOf(i);
     const units = Number(i.units || 0);
-    const remaining = Number(i.remaining || 0);
-    const cls = units > 0
-      ? (dirty.has(i.asin) ? "sku touched" : "sku done")
-      : "sku";
+    const left = Number(i.remaining || 0);
+    const cls = dirty.has(i.asin) ? "dirty" : (units > 0 ? "done" : "");
 
     return `
-      <div class="${cls}">
-        <div class="sku-name">${esc(i.item) || "(unnamed)"}</div>
-        <div class="sku-meta">
-          <span class="sku-code">${esc(i.fba_sku) || '<span class="no-sku">NO SKU</span>'}</span>
-          · <span class="sku-code">${esc(i.asin)}</span>
-          ${i.weight_label ? " · " + esc(i.weight_label) : ""}
-        </div>
-        <div class="sku-target">
-          <span>Plan <b>${n(i.planned)}</b></span>
-          <span>Packed earlier <b>${n(i.packed_before)}</b></span>
-          <span class="t-remaining ${remaining === 0 ? "zero" : ""}">Still needed
-            <b>${n(remaining)}</b></span>
-        </div>
-        <div class="entry">
-          <div>
-            <label for="u-${index}">Units</label>
-            <input id="u-${index}" type="number" min="0" inputmode="numeric"
+      <tr class="${cls}">
+        <td class="freeze name">
+          <div class="p-name">${esc(i.item) || "(unnamed)"}</div>
+          <div class="p-meta">${esc(i.fba_sku) || '<span class="no-sku">NO SKU</span>'}
+            · ${esc(i.asin)}</div>
+        </td>
+        <td class="p-size">${esc(i.weight_label)}</td>
+        <td>${n(i.planned)}</td>
+        <td>${n(i.packed_before)}</td>
+        <td class="t-left ${left === 0 ? "zero" : "pos"}">${n(left)}</td>
+        <td><input class="qty" type="number" min="0" inputmode="numeric"
                    value="${units || ""}" placeholder="0"${locked}
-                   data-index="${index}" data-field="units"/>
-          </div>
-          <div>
-            <label for="c-${index}">Cartons</label>
-            <input id="c-${index}" type="number" min="0" inputmode="numeric"
-                   value="${Number(i.cartons || 0) || ""}" placeholder="0"${locked}
-                   data-index="${index}" data-field="cartons"/>
-          </div>
-        </div>
-      </div>`;
+                   aria-label="Units packed"
+                   data-index="${index}" data-field="units"/></td>
+      </tr>`;
   }).join("");
 
-  $("packingArea").innerHTML = shown.length ? cards
-    : '<div class="card"><div class="empty-state">No SKU matches that search.</div></div>';
+  /* "Plan" and "Packed earlier" are here because "Still needed" is a subtraction
+     of them, and a lone target number invites a call to the owner to check it.
+     Nothing else from the owner's 20-column grid appears: 7d sales, projection,
+     FBA stock, deficit, In stock and To make are all planning figures, and none
+     of them changes what gets boxed today. */
+  $("packingArea").innerHTML = shown.length
+    ? `<div class="table-wrap"><table>
+         <thead><tr>
+           <th class="freeze">Product</th>
+           <th>Size</th>
+           <th>Plan</th>
+           <th>Packed earlier</th>
+           <th>Still needed</th>
+           <th class="col-input">Packed now</th>
+         </tr></thead>
+         <tbody>${body}</tbody>
+       </table></div>`
+    : '<div class="card"><div class="empty-state">No product matches that search.</div></div>';
 }
 
 function renderSaveBar(){
@@ -394,26 +445,35 @@ function renderSaveBar(){
   if(!rows.length || isLocked()){ bar.style.display = "none"; return; }
   bar.style.display = "flex";
 
+  // Only overwrite the box when the packer is not mid-edit, or typing "20" would
+  // be rewritten to "2" under the caret on the first keystroke.
+  const box = $("cartonInput");
+  if(document.activeElement !== box) box.value = cartons || "";
+
+  const pending = dirty.size + (cartonsDirty ? 1 : 0);
   const status = $("saveStatus");
   if(saving){
     status.className = "status";
     status.textContent = "Saving…";
-  }else if(dirty.size){
+  }else if(pending){
     status.className = "status dirty";
-    status.textContent = `${dirty.size} SKU${dirty.size === 1 ? "" : "s"} not saved yet.`;
+    const bits = [];
+    if(dirty.size) bits.push(`${dirty.size} product${dirty.size === 1 ? "" : "s"}`);
+    if(cartonsDirty) bits.push("the carton count");
+    status.textContent = `${bits.join(" and ")} not saved yet.`;
   }else{
     status.className = "status saved";
     status.textContent = "All changes saved.";
   }
-  $("saveBtn").disabled = saving || dirty.size === 0;
+  $("saveBtn").disabled = saving || pending === 0;
   $("submitBtn").disabled = saving;
 }
 
 /* ── Editing ───────────────────────────────────────────────────────────── */
 
-/* One delegated listener for every number box on the page, so re-rendering the
-   cards never leaves handlers behind. Updates the in-memory row and the totals
-   but deliberately does NOT re-render the cards: doing so would rebuild the
+/* One delegated listener for every number box in the table, so re-rendering the
+   rows never leaves handlers behind. Updates the in-memory row and the totals
+   but deliberately does NOT re-render the table: doing so would rebuild the
    input the packer is typing into and drop the caret. */
 $("packingArea").addEventListener("input", e => {
   const box = e.target;
@@ -429,26 +489,39 @@ $("packingArea").addEventListener("input", e => {
   renderSaveBar();
 });
 
+/* The day's carton count. Outside the table, and outside `dirty`, because it
+   belongs to the day rather than to any SKU. */
+$("cartonInput").addEventListener("input", e => {
+  cartons = Math.max(0, Math.floor(Number(e.target.value) || 0));
+  cartonsDirty = true;
+  renderTotals();
+  renderSaveBar();
+});
+
 /* ── Saving and submitting ─────────────────────────────────────────────── */
 
 async function save(){
-  if(!dirty.size || saving) return true;
+  const pending = dirty.size + (cartonsDirty ? 1 : 0);
+  if(!pending || saving) return true;
   const packDate = $("packDate").value;
   const entries = rows
     .filter(i => dirty.has(i.asin))
-    .map(i => ({
-      asin: i.asin,
-      units: Number(i.units || 0),
-      cartons: Number(i.cartons || 0),
-      note: i.note || "",
-    }));
+    .map(i => ({asin: i.asin, units: Number(i.units || 0), note: i.note || ""}));
+
+  /* `cartons` is sent only when it was actually touched. The server treats a
+     missing key as "leave it alone" and 0 as "no cartons", and that distinction
+     matters: a save of unit counts posted before the packer reaches the carton
+     box must not wipe a number he entered earlier — it prefills a GST
+     invoice's Boxes field. */
+  const payload = {entries};
+  if(cartonsDirty) payload.cartons = cartons;
 
   saving = true; renderSaveBar();
   try{
     const r = await fetch(`/shipment/packing/${packDate}`, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({entries}),
+      body: JSON.stringify(payload),
     });
     const data = await r.json();
     if(!r.ok){
@@ -457,7 +530,9 @@ async function save(){
       return false;
     }
     dirty.clear();
+    cartonsDirty = false;
     dayStatus = data.day_status || dayStatus;
+    if(typeof data.total_cartons === "number") cartons = data.total_cartons;
 
     /* The owner removed a row while it was still on this phone.
 
@@ -509,10 +584,16 @@ async function submitDay(){
   const packDate = $("packDate").value;
   // Submit anything typed but not yet saved, otherwise the day would be closed
   // against numbers the server has never seen.
-  if(dirty.size && !(await save())) return;
+  if((dirty.size || cartonsDirty) && !(await save())) return;
 
-  const units = rows.reduce((s, i) => s + Number(i.units || 0), 0);
+  const units = unitsTotal();
   if(!units && !confirm("Nothing has been entered for this day. Submit anyway?")) return;
+  /* Asked, not blocked. The carton count prefills the Boxes field on a GST
+     invoice, so submitting without it means someone recounts the boxes later —
+     but the packer may genuinely not have them stacked yet, and refusing would
+     leave him unable to close a day of real work. */
+  if(units && !cartons && !confirm(
+      "No carton count entered for today. The invoice needs it — submit anyway?")) return;
   if(!confirm(`Submit ${packDate}? The owner will review and verify it.`)) return;
 
   saving = true; renderSaveBar();
@@ -533,7 +614,8 @@ async function submitDay(){
     }else{
       $("messages").innerHTML =
         `<div class="banner good"><strong>Submitted.</strong> ${n(data.total_units)} units `
-        + `in ${n(data.total_cartons)} cartons. The owner will verify it.</div>`;
+        + `in ${n(data.total_cartons)} cartons. The owner will verify it.<br/>`
+        + 'Print the <em>Packed sheet</em> above and hand it to accounts.</div>';
     }
   }catch(err){
     $("messages").innerHTML =
@@ -554,13 +636,23 @@ $("pdfBtn").addEventListener("click", () => {
   window.location = `/shipment/download/remaining.pdf?pack_date=${$("packDate").value}`;
 });
 
+/* "then print the final packed data and submit to the accounts team."
+   Scoped to the day on screen, not the whole plan: accounts reconciles one
+   shipment at a time, and a sheet covering every day of the week cannot be
+   checked against the boxes going out today. */
+$("packedBtn").addEventListener("click", () => {
+  const d = $("packDate").value;
+  window.location = `/shipment/download/packed.pdf?date_from=${d}&date_to=${d}`;
+});
+
 $("packDate").addEventListener("change", async () => {
-  if(dirty.size && !confirm("You have unsaved numbers. Change date and lose them?")) return;
+  if((dirty.size || cartonsDirty)
+     && !confirm("You have unsaved numbers. Change date and lose them?")) return;
   await load();
 });
 
 window.addEventListener("beforeunload", e => {
-  if(dirty.size){ e.preventDefault(); e.returnValue = ""; }
+  if(dirty.size || cartonsDirty){ e.preventDefault(); e.returnValue = ""; }
 });
 
 // Default the date picker to today in LOCAL time. toISOString() would convert to

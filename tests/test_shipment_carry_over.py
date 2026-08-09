@@ -49,10 +49,15 @@ WEDNESDAY = "2026-08-01"
 
 
 async def _pack(client, pack_date, units, cartons, asin=ASIN):
-    """Record and submit a day. Returns the submit response body."""
+    """Record and submit a day. Returns the submit response body.
+
+    ``cartons`` is posted at the top level of the body, not inside the entry: it is
+    the whole day's box count. A carton holds whatever was being packed when it was
+    filled, so it cannot be attributed to one ASIN.
+    """
     r = await client.post(
         f"/shipment/packing/{pack_date}",
-        json={"entries": [{"asin": asin, "units": units, "cartons": cartons}]},
+        json={"entries": [{"asin": asin, "units": units}], "cartons": cartons},
     )
     assert r.status_code == 200, r.text
     r = await client.post(f"/shipment/packing/{pack_date}/submit")

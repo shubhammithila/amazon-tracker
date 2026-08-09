@@ -216,7 +216,7 @@ async def test_excluding_a_packed_row_is_refused(
     plan = await plan_factory()
     await ops_client.post(
         f"/shipment/packing/{MONDAY}",
-        json={"entries": [{"asin": ASIN, "units": 240, "cartons": 12}]},
+        json={"entries": [{"asin": ASIN, "units": 240}], "cartons": 12},
     )
 
     r = await _exclude(auth_client, plan.id, [ASIN])
@@ -242,7 +242,7 @@ async def test_the_suggested_alternative_actually_works(
     plan = await plan_factory()
     await ops_client.post(
         f"/shipment/packing/{MONDAY}",
-        json={"entries": [{"asin": ASIN, "units": 240, "cartons": 12}]},
+        json={"entries": [{"asin": ASIN, "units": 240}], "cartons": 12},
     )
 
     r = await auth_client.post(
@@ -268,7 +268,7 @@ async def test_a_row_with_no_packing_can_still_be_excluded(
     plan = await plan_factory()
     await ops_client.post(
         f"/shipment/packing/{MONDAY}",
-        json={"entries": [{"asin": OTHER, "units": 100, "cartons": 6}]},
+        json={"entries": [{"asin": OTHER, "units": 100}], "cartons": 6},
     )
 
     r = await _exclude(auth_client, plan.id, [ASIN])
@@ -286,7 +286,7 @@ async def test_a_mixed_selection_is_refused_entirely(
     plan = await plan_factory()
     await ops_client.post(
         f"/shipment/packing/{MONDAY}",
-        json={"entries": [{"asin": ASIN, "units": 240, "cartons": 12}]},
+        json={"entries": [{"asin": ASIN, "units": 240}], "cartons": 12},
     )
 
     r = await _exclude(auth_client, plan.id, [ASIN, OTHER])
@@ -312,7 +312,7 @@ async def test_restoring_a_row_is_never_blocked(
     # Pack something against a DIFFERENT row so the day exists.
     await ops_client.post(
         f"/shipment/packing/{MONDAY}",
-        json={"entries": [{"asin": OTHER, "units": 100, "cartons": 6}]},
+        json={"entries": [{"asin": OTHER, "units": 100}], "cartons": 6},
     )
 
     r = await _exclude(auth_client, plan.id, [ASIN], excluded=False)

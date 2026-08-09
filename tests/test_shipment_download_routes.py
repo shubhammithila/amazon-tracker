@@ -28,15 +28,18 @@ XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 ADMIN_DOWNLOADS = [
     "/shipment/download/plan.xlsx",
     "/shipment/download/plan.pdf",
-    "/shipment/download/packed.xlsx",
-    "/shipment/download/packed.pdf",
     "/shipment/download/shipment-file.xlsx",
 ]
-#: The packer's morning sheet, in both formats. Open to ops because making him ask
-#: the owner for it every morning defeats the point of his own screen.
+#: Open to ops, in both formats. The morning sheet because making him ask the owner
+#: for it every day defeats the point of his own screen, and the packed sheet because
+#: printing it is his job — "then print the final packed data and submit to the
+#: accounts team". Neither carries a projection or a purchase-driven figure, which is
+#: the line between these two lists.
 OPS_DOWNLOADS = [
     "/shipment/download/remaining.xlsx",
     "/shipment/download/remaining.pdf",
+    "/shipment/download/packed.xlsx",
+    "/shipment/download/packed.pdf",
 ]
 ALL_DOWNLOADS = ADMIN_DOWNLOADS + OPS_DOWNLOADS
 
@@ -209,9 +212,9 @@ async def test_packed_xlsx_carries_only_what_was_packed(auth_client, plan_factor
     await auth_client.post(
         "/shipment/packing/2026-07-30",
         json={"entries": [
-            {"asin": "B0AAA00001", "units": 100, "cartons": 8},
-            {"asin": "B0BBB00001", "units": 40, "cartons": 3},
-        ]},
+            {"asin": "B0AAA00001", "units": 100},
+            {"asin": "B0BBB00001", "units": 40},
+        ], "cartons": 11},
     )
 
     r = await auth_client.get("/shipment/download/packed.xlsx")
@@ -220,20 +223,108 @@ async def test_packed_xlsx_carries_only_what_was_packed(auth_client, plan_factor
     assert _asins(r.content) == ["B0AAA00001", "B0BBB00001"]
 
 
-async def test_the_packed_sheet_reports_units_and_cartons(auth_client, plan_factory):
-    """Cartons matter as much as units: they prefill the invoice's Boxes field."""
+async def test_the_packed_sheet_reports_units_per_sku(auth_client, plan_factory):
+    """Units are the per-SKU number, so they are the column."""
     await plan_factory()
     await auth_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 100, "cartons": 8}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 100}], "cartons": 8},
     )
 
     r = await auth_client.get("/shipment/download/packed.xlsx")
     header, rows = _rows(r.content)
-    assert "Units" in header and "Cartons" in header
-    row = rows[0]
-    assert row[header.index("Units")] == 100
-    assert row[header.index("Cartons")] == 8
+    assert "Units" in header
+    assert rows[0][header.index("Units")] == 100
+
+
+async def test_the_packed_sheet_has_no_per_sku_carton_column(auth_client, plan_factory):
+    """"carton is not item wise. it is random."
+
+    The sheet used to carry a Cartons column per row, and it was reporting a number
+    the packer had guessed: a carton holds whatever was being packed when it was
+    filled, so it belongs to no single SKU. A column here would put that guess in
+    front of the accounts team as though it were a measurement.
+    """
+    await plan_factory()
+    await auth_client.post(
+        "/shipment/packing/2026-07-30",
+        json={"entries": [{"asin": "B0AAA00001", "units": 100}], "cartons": 8},
+    )
+
+    header, _rows_ = _rows((await auth_client.get("/shipment/download/packed.xlsx")).content)
+    assert not any("carton" in str(h).lower() for h in header), (
+        f"a per-SKU carton column is back on the packed sheet: {header}"
+    )
+
+
+def _pdf_text(content: bytes) -> str:
+    """The visible text of a PDF, so an assertion can be made on what is printed.
+
+    A PDF's text streams are compressed, which is why most of the tests here settle
+    for "it is a real PDF of a plausible size". That is not good enough for the carton
+    count: it is the number the accounts team reconciles a shipment against, and it
+    would be entirely invisible if it silently stopped being rendered.
+    """
+    import pypdfium2
+
+    document = pypdfium2.PdfDocument(io.BytesIO(content))
+    return "\n".join(page.get_textpage().get_text_range() for page in document)
+
+
+async def test_the_packed_sheet_still_reports_the_cartons_for_each_day(
+    auth_client, plan_factory
+):
+    """The count must still travel, because it prefills the invoice's Boxes field.
+
+    Named per day rather than only totalled: accounts reconciles a shipment against
+    the days that went into it, and a bare "13 cartons" cannot be checked against
+    anything. The heading is the one place a day-level fact can sit on a per-SKU table
+    without pretending to be per-SKU.
+
+    Asserted on the rendered text of the PDF, not on a string the route built, so this
+    fails if the heading stops being printed for any reason at all.
+    """
+    await plan_factory()
+    for day, units, cartons in (("2026-07-29", 100, 8), ("2026-07-30", 60, 5)):
+        await auth_client.post(
+            f"/shipment/packing/{day}",
+            json={"entries": [{"asin": "B0AAA00001", "units": units}], "cartons": cartons},
+        )
+
+    text = _pdf_text((await auth_client.get("/shipment/download/packed.pdf")).content)
+
+    assert "13 cartons" in text, (
+        f"the total carton count is not on the packed sheet: {text[:400]!r}"
+    )
+    for day, cartons in (("2026-07-29", 8), ("2026-07-30", 5)):
+        assert f"{day}: {cartons}" in text, (
+            f"the packed sheet does not break the cartons down by day ({day}): "
+            f"{text[:400]!r}"
+        )
+
+
+async def test_a_day_with_no_cartons_is_not_listed_as_zero(auth_client, plan_factory):
+    """"2026-07-30: 0" reads as a day that was packed into no boxes.
+
+    The real meaning is that the count has not been entered yet, and printing a
+    confident 0 next to a real 8 invites accounts to total them.
+    """
+    await plan_factory()
+    await auth_client.post(
+        "/shipment/packing/2026-07-29",
+        json={"entries": [{"asin": "B0AAA00001", "units": 100}], "cartons": 8},
+    )
+    # Units, but the boxes are not stacked yet.
+    await auth_client.post(
+        "/shipment/packing/2026-07-30",
+        json={"entries": [{"asin": "B0AAA00001", "units": 60}], "cartons": 0},
+    )
+
+    text = _pdf_text((await auth_client.get("/shipment/download/packed.pdf")).content)
+    assert "2026-07-29: 8" in text
+    assert "2026-07-30: 0" not in text, (
+        "a day with no carton count entered is printed as zero cartons"
+    )
 
 
 async def test_shipment_file_order_matches_the_canonical_order(
@@ -262,7 +353,7 @@ async def test_downloaded_numbers_match_the_dashboard(auth_client, plan_factory)
     await plan_factory()
     await auth_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 120, "cartons": 10}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 120}], "cartons": 10},
     )
 
     active = (await auth_client.get("/shipment/active")).json()
@@ -291,7 +382,7 @@ async def test_downloaded_numbers_match_the_dashboard(auth_client, plan_factory)
     await plan_factory()
     await auth_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 120, "cartons": 10}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 120}], "cartons": 10},
     )
 
     active = (await auth_client.get("/shipment/active")).json()
@@ -322,7 +413,7 @@ async def test_the_remaining_sheet_drops_rows_with_nothing_left(
     # Plan is 500 for this ASIN; pack all of it.
     await auth_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 500, "cartons": 30}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 500}], "cartons": 30},
     )
 
     after = _asins((await auth_client.get("/shipment/download/remaining.xlsx")).content)
@@ -345,7 +436,7 @@ async def test_held_units_still_count_as_packed_in_the_download(
     await plan_factory()
     await auth_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 400, "cartons": 20}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 400}], "cartons": 20},
     )
     submit = await auth_client.post("/shipment/packing/2026-07-30/submit")
     assert submit.json()["status"] == logic.STATUS_HELD, submit.json()
@@ -354,7 +445,6 @@ async def test_held_units_still_count_as_packed_in_the_download(
     header, rows = _rows(r.content)
     row = next(x for x in rows if x[header.index("ASIN")] == "B0AAA00001")
     assert row[header.index("Units")] == 400
-    assert row[header.index("Cartons")] == 20
 
 
 async def test_the_packed_download_honours_a_date_range(auth_client, plan_factory):
@@ -363,7 +453,7 @@ async def test_the_packed_download_honours_a_date_range(auth_client, plan_factor
     for day, units in (("2026-07-28", 100), ("2026-07-29", 50), ("2026-07-30", 25)):
         await auth_client.post(
             f"/shipment/packing/{day}",
-            json={"entries": [{"asin": "B0AAA00001", "units": units, "cartons": 5}]},
+            json={"entries": [{"asin": "B0AAA00001", "units": units}], "cartons": 5},
         )
 
     def units_for(query):
@@ -413,7 +503,7 @@ async def test_the_three_documents_share_one_column_layout(
     await plan_factory()
     await auth_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 100, "cartons": 8}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 100}], "cartons": 8},
     )
 
     expected = ["S", "M", "B", "Brand", "ASIN", "Merchant SKU", "Product"]
@@ -455,7 +545,7 @@ async def test_remaining_pdf_shrinks_once_a_sku_is_fully_packed(
 
     await auth_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 500, "cartons": 40}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 500}], "cartons": 40},
     )
     after = await ops_client.get("/shipment/download/remaining.pdf")
 

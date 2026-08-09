@@ -115,26 +115,107 @@ def test_the_page_can_read_save_and_submit_a_day(source):
 def test_the_morning_pdf_is_reachable_from_the_page(source):
     """Requirement 5's "next morning he can download the remaining ones in a pdf".
 
-    It is the one document ops is allowed to pull, and making him ask the owner
-    for it every morning would defeat the point of giving him his own screen.
+    Making him ask the owner for it every morning would defeat the point of giving
+    him his own screen.
     """
     assert "/shipment/download/remaining.pdf" in source, (
         "the packer has no way to get the still-to-pack sheet"
     )
 
 
+def test_the_packed_sheet_can_be_printed_for_accounts(source):
+    """"then print the final packed data and submit to the accounts team."
+
+    Scoped to the day on screen, not the whole plan: accounts reconciles one
+    shipment at a time, and a sheet covering every day of the week cannot be checked
+    against the boxes going out today. The date range is what makes it that scope, so
+    it is asserted rather than just the path.
+    """
+    body = _without_comments(source)
+    assert "/shipment/download/packed.pdf" in body, (
+        "ops has no way to print the packed data, so it goes to accounts by hand"
+    )
+    assert re.search(r"date_from=\$\{[^}]*\}&date_to=\$\{[^}]*\}", body), (
+        "the packed sheet is not scoped to the day on screen — accounts would get "
+        "every packing day on the plan in one document"
+    )
+
+
+# ─── A table, not cards ──────────────────────────────────────────────────────
+
+def test_the_page_is_a_table(source):
+    """"for ops team also give the same tabular view but with only options
+    relevant to them. not this."
+
+    It was one card per SKU, on the reasoning that a phone cannot scroll sideways.
+    That was right about the constraint and wrong about the fix — 117 cards is a very
+    long page to find one product in.
+    """
+    body = _without_comments(source)
+    assert "<table" in body and "<tbody" in body, "the page is not a table"
+    assert "<tr" in body, "no rows are rendered"
+
+
+def test_the_product_name_stays_visible_while_the_row_scrolls(source):
+    """The reason cards were chosen in the first place, solved differently.
+
+    If the name scrolls off, the row is just numbers — which is how a count gets
+    typed against the wrong product. One pinned column plus exactly one input means
+    nothing the packer must reach is ever off-screen.
+    """
+    body = _without_comments(source)
+    assert "position:sticky;left:0" in body.replace(" ", ""), (
+        "no column is pinned, so the product name scrolls away from its input"
+    )
+    assert 'class="freeze' in body, "the pinned cells carry no class to style"
+
+
+#: Columns from the owner's grid that must NOT appear on the packer's screen.
+#: Every one is a planning figure — none of them changes what gets boxed today, and
+#: several are commercially sensitive (projections, purchase-driven stock levels).
+OWNER_ONLY_COLUMNS = ["7d", "Projection", "FBA Stock", "Deficit", "In stock", "To make"]
+
+
+@pytest.mark.parametrize("label", OWNER_ONLY_COLUMNS)
+def test_the_packer_is_not_shown_the_owners_planning_columns(source, label):
+    """"only options relevant to them". The relevance test is whether it changes
+    what gets packed today, and none of these do."""
+    headers = re.findall(r"<th[^>]*>(.*?)</th>", _without_comments(source), flags=re.S)
+    joined = " ".join(h.strip().lower() for h in headers)
+    assert label.lower() not in joined, (
+        f"the ops table carries the owner's {label!r} column: {headers}"
+    )
+
+
+def test_the_packer_gets_the_numbers_he_needs_to_do_the_count(source):
+    """The other half of the same judgement: too few columns is also wrong.
+
+    "Still needed" is a subtraction of Plan and Packed earlier, so a lone target
+    number invites a phone call to the owner to check it.
+    """
+    headers = " ".join(
+        re.findall(r"<th[^>]*>(.*?)</th>", _without_comments(source), flags=re.S)
+    ).lower()
+    for needed in ("product", "size", "plan", "packed earlier", "still needed"):
+        assert needed in headers, f"the table has no {needed!r} column: {headers}"
+
+
 # ─── Ops must not be offered admin actions ───────────────────────────────────
 
 #: Admin-only endpoints. A button here would 403 — and a page of buttons that
 #: fail reads as a broken app, which is why the ops nav was kept separate too.
+#:
+#: ``download/packed`` is deliberately NOT on this list any more. It is what ops
+#: prints for the accounts team ("then print the final packed data and submit to the
+#: accounts team"), and it carries only what was boxed — no projections, no
+#: purchase-driven figures, nothing the warehouse should not see. The plan sheet and
+#: the Amazon upload stay closed: those are the owner's decisions.
 ADMIN_ONLY = [
     "/shipment/generate",
     "/shipment/items",
     "/shipment/plan/",
     "/shipment/packing/{}/verify",
     "/shipment/packing/{}/release",
-    "/shipment/download/packed.xlsx",
-    "/shipment/download/packed.pdf",
     "/shipment/download/plan.xlsx",
     "/shipment/download/plan.pdf",
     "/shipment/download/shipment-file.xlsx",
@@ -187,14 +268,50 @@ def test_the_page_never_sorts_rows_itself(source):
 
 # ─── The packing entry surface ───────────────────────────────────────────────
 
-def test_both_units_and_cartons_can_be_entered(source):
-    """Requirement 7: cartons are entered daily, alongside units.
-
-    Cartons prefill the invoice's Boxes field, so a units-only screen quietly
-    removes the entire point of that requirement.
-    """
+def test_units_are_entered_per_product(source):
+    """One input per row, and it is the units packed."""
     assert 'data-field="units"' in source, "no units input"
-    assert 'data-field="cartons"' in source, "no cartons input"
+
+
+def test_cartons_are_entered_once_for_the_day_not_per_product(source):
+    """"carton is not item wise. it is random. like 500 units packed today in 20
+    cartons."
+
+    A carton holds whatever was being packed when it was filled, so it belongs to
+    several ASINs at once and to none of them. The per-SKU box asked a question with
+    no answer, so it was guessed or skipped — and the guess prefilled the Boxes field
+    on a GST invoice.
+
+    Asserted from both directions, because only the second half catches a
+    reintroduction: the day-level box existing does not stop someone adding a column
+    back "for detail".
+    """
+    body = _without_comments(source)
+    assert 'id="cartonInput"' in body, "there is no carton input at all"
+    assert 'data-field="cartons"' not in body, (
+        "cartons are back as a per-row field — that number cannot be answered per "
+        "SKU, and it feeds a GST invoice's Boxes field"
+    )
+    # The table's header row must not offer a Cartons column either.
+    assert "<th" in body, "the page is no longer a table"
+    headers = re.findall(r"<th[^>]*>(.*?)</th>", body, flags=re.S)
+    assert not any("carton" in h.lower() for h in headers), (
+        f"a Cartons column is back in the table: {headers}"
+    )
+
+
+def test_the_carton_count_is_only_sent_when_it_was_touched(source):
+    """A missing key means "leave it alone"; 0 means "no cartons".
+
+    Without that distinction, saving unit counts before the boxes are stacked would
+    silently zero a carton count entered earlier in the day — and that number ends up
+    on a tax document. The server honours the difference; this is the client half.
+    """
+    body = _without_comments(source)
+    assert "cartonsDirty" in body, "the page does not track whether cartons changed"
+    assert re.search(r"if\s*\(\s*cartonsDirty\s*\)\s*payload\.cartons", body), (
+        "cartons are sent unconditionally, so a partial save would clear them"
+    )
 
 
 def test_rows_are_addressed_by_index_not_by_escaped_asin(source):

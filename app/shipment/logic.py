@@ -13,6 +13,10 @@ Vocabulary, because two of these are easy to conflate:
   remaining   planned - packed            (still to BOX — the packer's number)
   to source   planned - available - packed (still to MAKE — the owner's number)
   carry-over  the accumulated held days, judged together rather than singly
+  cartons     boxes packed on a DAY. Not per SKU — a carton holds whatever was
+              being packed when it was filled, so it belongs to several ASINs at
+              once. Everything else in this list is per-SKU; this one is not, and
+              that asymmetry is deliberate rather than an oversight.
 
 `packed` and `shippable` must stay separate. A held day's units exist in the
 warehouse — telling the floor to pack them again would double-pack the order —
@@ -309,13 +313,24 @@ def packed_units(entries: Iterable) -> int:
     return total
 
 
-def packed_cartons(entries: Iterable) -> int:
-    """Total cartons boxed across the given packing entries."""
-    total = 0
-    for entry in entries:
-        raw = entry.get("cartons") if isinstance(entry, Mapping) else getattr(entry, "cartons", 0)
-        total += int(raw or 0)
-    return total
+def day_cartons(day) -> int:
+    """The cartons packed on one day.
+
+    **Read off the DAY, never summed from its entries.** A carton is filled with
+    whatever is being packed at the time, so a mixed box belongs to several ASINs
+    and to none of them — "carton is not item wise. it is random. like 500 units
+    packed today in 20 cartons."
+
+    This replaced ``packed_cartons(entries)``, which summed a per-entry field. That
+    field asked the packer a question he could not answer, so it was guessed or left
+    blank, and the guess prefilled the Boxes field on a GST invoice.
+    """
+    raw = (
+        day.get("total_cartons")
+        if isinstance(day, Mapping)
+        else getattr(day, "total_cartons", 0)
+    )
+    return _as_count(raw)
 
 
 def _as_count(value) -> int:
@@ -474,13 +489,18 @@ def held_days(days: Sequence) -> list:
 
 
 def held_totals(days: Sequence) -> dict[str, int]:
-    """Summary of what is parked, so a held day cannot quietly become lost stock."""
+    """Summary of what is parked, so a held day cannot quietly become lost stock.
+
+    Units come from the entries (they are per-SKU and must agree with what the packer
+    typed against each row); cartons come from the day (they are not per-SKU at all).
+    Two different sources on purpose — see ``day_cartons``.
+    """
     units = cartons = 0
     parked = held_days(days)
     for day in parked:
         entries = day.get("entries") if isinstance(day, Mapping) else getattr(day, "entries", [])
         units += packed_units(entries or [])
-        cartons += packed_cartons(entries or [])
+        cartons += day_cartons(day)
     return {"days": len(parked), "units": units, "cartons": cartons}
 
 

@@ -677,7 +677,6 @@ async def get_packing(
                 "packed_before": prior,
                 "remaining": logic.remaining_for(planned, prior),
                 "units": int(mine.get("units") or 0),
-                "cartons": int(mine.get("cartons") or 0),
                 "note": mine.get("note") or "",
             }
         )
@@ -691,6 +690,8 @@ async def get_packing(
             "status": (today or {}).get("status", logic.STATUS_OPEN),
             "min_cartons": int(plan.min_cartons or 0),
             "min_units": int(plan.min_units or 0),
+            # One number for the whole day, not a column on every row.
+            "cartons": int((today or {}).get("total_cartons") or 0),
             "items": rows,
         }
     )
@@ -703,7 +704,13 @@ async def save_packing(
     db: AsyncSession = Depends(get_db),
     role: str = Depends(require_ops_or_admin),
 ):
-    """Upsert units and cartons for a date. The only write ops performs.
+    """Upsert per-SKU units and the day's carton count. The only write ops performs.
+
+    Body: ``{"entries": [{"asin": ..., "units": ...}], "cartons": 20}``.
+
+    ``cartons`` is the whole day's box count, not a per-SKU figure — "500 units
+    packed today in 20 cartons". Omitting the key leaves the stored count untouched,
+    which is what lets a partial save of unit counts not wipe it; sending 0 clears it.
 
     Refuses once the day is verified or shipped: an invoice may already carry
     those numbers, and silently editing them would put the GST document and the
@@ -724,6 +731,18 @@ async def save_packing(
 
     body = await request.json()
     entries = body.get("entries") or []
+
+    # `None` means "not sent", which must not be confused with 0 ("no cartons"). A
+    # save posted before the packer reaches the carton box would otherwise clear a
+    # count he entered earlier — and that number ends up on a GST document.
+    cartons = body.get("cartons")
+    if cartons is not None:
+        try:
+            cartons = max(0, int(cartons))
+        except (TypeError, ValueError):
+            return JSONResponse(
+                {"error": "cartons must be a whole number."}, status_code=400
+            )
 
     plan = await repository.get_active_plan(db)
     if plan is None:
@@ -754,7 +773,7 @@ async def save_packing(
         kept.append(raw)
 
     day = await repository.save_packing_entries(
-        db, plan.id, pack_date, kept, submitted_by=role
+        db, plan.id, pack_date, kept, submitted_by=role, cartons=cartons
     )
     payload = {
         "status": "saved",
@@ -1025,16 +1044,23 @@ async def download_packed(
     date_from: str | None = None,
     date_to: str | None = None,
     db: AsyncSession = Depends(get_db),
-    role: str = Depends(require_admin),
+    role: str = Depends(require_ops_or_admin),
 ):
     """What was actually packed, over a date or a range.
 
     Both dates blank means every packing day on the plan, which is the safe
     default: a blank field should not silently narrow a report.
 
-    Units AND cartons, because the carton count is what prefills the invoice's
-    Boxes field — a units-only sheet would send the owner back to the screen to
-    read the number he just downloaded a report about.
+    **Units per SKU; cartons per day, in the heading.** There is no per-row carton
+    column, and there cannot be a meaningful one: a carton holds whatever was being
+    packed when it was filled, so the boxes belong to the day rather than to any
+    single ASIN. The sheet used to carry a per-SKU Cartons column and it was
+    reporting a number the packer had guessed. The carton count still travels,
+    because it is what prefills a GST invoice's Boxes field — it travels as the fact
+    it actually is.
+
+    This is the document ops prints for the accounts team, so it is open to ops. It
+    carries only what was packed: no projections, no purchase-driven figures.
     """
     if fmt not in ("xlsx", "pdf"):
         return _bad_format(fmt)
@@ -1053,36 +1079,39 @@ async def download_packed(
         and (not date_to or d["pack_date"] <= date_to)
     ]
     units = logic.units_by_asin(chosen)
-    cartons: dict[str, int] = {}
-    for day in chosen:
-        for entry in day.get("entries") or []:
-            asin = entry.get("asin") or ""
-            if asin:
-                cartons[asin] = cartons.get(asin, 0) + int(entry.get("cartons") or 0)
 
     lines = []
     for item in rows:
         packed_units = int(units.get(item["asin"], 0))
-        packed_cartons = int(cartons.get(item["asin"], 0))
-        if packed_units <= 0 and packed_cartons <= 0:
+        if packed_units <= 0:
             continue
-        lines.append(
-            documents._identity_cells(item) + [packed_units, packed_cartons]
-        )
+        lines.append(documents._identity_cells(item) + [packed_units])
 
     span = (
         f"{date_from or 'start'} to {date_to or 'today'}"
         if (date_from or date_to)
         else f"all {len(chosen)} packing day(s)"
     )
+    # Named per day rather than only totalled, because the accounts team reconciles
+    # a shipment against the days that went into it, and "38 cartons" alone cannot be
+    # checked against anything.
+    per_day = " · ".join(
+        f"{d['pack_date']}: {logic.day_cartons(d)}"
+        for d in chosen
+        if logic.day_cartons(d)
+    )
+    total_cartons = sum(logic.day_cartons(d) for d in chosen)
+    cartons_note = (
+        f" · {total_cartons} cartons ({per_day})" if per_day else ""
+    )
     stamp = date_from or date.today().isoformat()
     return _document(
         fmt,
         "Packed",
-        f"{plan.get('label') or 'Plan'} · {span}",
-        documents.IDENTITY_HEADERS + ["Units", "Cartons"],
+        f"{plan.get('label') or 'Plan'} · {span}{cartons_note}",
+        documents.IDENTITY_HEADERS + ["Units"],
         lines,
-        documents.IDENTITY_WIDTHS + [12, 12],
+        documents.IDENTITY_WIDTHS + [12],
         f"packed-{stamp}",
     )
 
@@ -1544,7 +1573,7 @@ async def import_legacy(
     days_created = 0
     for offset in range(1, 7):
         entries = [
-            {"asin": row["asin"], "units": int(row.get(f"day{offset}") or 0), "cartons": 0}
+            {"asin": row["asin"], "units": int(row.get(f"day{offset}") or 0)}
             for row in legacy_items
             if row.get("asin") and int(row.get(f"day{offset}") or 0) > 0
         ]

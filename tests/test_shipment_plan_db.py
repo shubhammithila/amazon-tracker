@@ -53,7 +53,7 @@ async def test_admin_edit_then_ops_packing_both_survive(
 
     r = await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 120, "cartons": 6}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 120}], "cartons": 6},
     )
     assert r.status_code == 200, r.text
 
@@ -79,7 +79,7 @@ async def test_ops_packing_then_admin_edit_both_survive(
 
     r = await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 90, "cartons": 5}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 90}], "cartons": 5},
     )
     assert r.status_code == 200, r.text
 
@@ -110,7 +110,7 @@ async def test_admin_cannot_write_packing_through_the_items_route(
     plan_id = plan.id
     await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 150, "cartons": 8}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 150}], "cartons": 8},
     )
 
     await auth_client.post(
@@ -148,7 +148,7 @@ async def test_repeated_packing_save_upserts_one_row(
     for _ in range(3):
         r = await ops_client.post(
             "/shipment/packing/2026-07-30",
-            json={"entries": [{"asin": "B0AAA00001", "units": 100, "cartons": 5}]},
+            json={"entries": [{"asin": "B0AAA00001", "units": 100}], "cartons": 5},
         )
         assert r.status_code == 200, r.text
 
@@ -172,11 +172,11 @@ async def test_a_later_save_corrects_rather_than_adds(
     plan_id = plan.id
     await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 1000, "cartons": 50}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 1000}], "cartons": 50},
     )
     await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 100, "cartons": 5}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 100}], "cartons": 5},
     )
 
     day = await read_committed(repository.get_day, plan_id, "2026-07-30")
@@ -194,14 +194,15 @@ async def test_zeroing_an_entry_removes_it_from_the_totals(
         "/shipment/packing/2026-07-30",
         json={
             "entries": [
-                {"asin": "B0AAA00001", "units": 100, "cartons": 5},
-                {"asin": "B0AAA00002", "units": 60, "cartons": 3},
-            ]
+                {"asin": "B0AAA00001", "units": 100},
+                {"asin": "B0AAA00002", "units": 60},
+            ],
+            "cartons": 8,
         },
     )
     await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00002", "units": 0, "cartons": 0}]},
+        json={"entries": [{"asin": "B0AAA00002", "units": 0}], "cartons": 5},
     )
 
     day = await read_committed(repository.get_day, plan_id, "2026-07-30")
@@ -211,17 +212,102 @@ async def test_zeroing_an_entry_removes_it_from_the_totals(
     assert day.total_cartons == 5
 
 
+async def test_a_save_without_cartons_leaves_the_carton_count_alone(
+    ops_client, plan_factory, read_committed
+):
+    """A missing key means "not sent", which is not the same as 0.
+
+    The packer counts boxes at the end, after the units are already in. If a save
+    that omitted the key were treated as zero, every unit correction he made
+    afterwards would silently wipe the carton count — and that number prefills the
+    Boxes field on a GST invoice, so the loss surfaces on a tax document rather than
+    on his screen.
+    """
+    plan = await plan_factory()
+    plan_id = plan.id
+    await ops_client.post(
+        "/shipment/packing/2026-07-30",
+        json={"entries": [{"asin": "B0AAA00001", "units": 100}], "cartons": 12},
+    )
+    # A later save of units only — exactly what the screen posts when the carton box
+    # was not touched.
+    await ops_client.post(
+        "/shipment/packing/2026-07-30",
+        json={"entries": [{"asin": "B0AAA00001", "units": 150}]},
+    )
+
+    day = await read_committed(repository.get_day, plan_id, "2026-07-30")
+    assert day.total_units == 150, "the unit correction did not land"
+    assert day.total_cartons == 12, (
+        "the carton count was wiped by a save that never mentioned it"
+    )
+
+
+async def test_sending_zero_cartons_does_clear_them(
+    ops_client, plan_factory, read_committed
+):
+    """The other half of the rule above: 0 is a real value and must be honoured.
+
+    Otherwise a miskeyed count could never be corrected back down to nothing.
+    """
+    plan = await plan_factory()
+    plan_id = plan.id
+    await ops_client.post(
+        "/shipment/packing/2026-07-30",
+        json={"entries": [{"asin": "B0AAA00001", "units": 100}], "cartons": 12},
+    )
+    await ops_client.post(
+        "/shipment/packing/2026-07-30",
+        json={"entries": [{"asin": "B0AAA00001", "units": 100}], "cartons": 0},
+    )
+
+    day = await read_committed(repository.get_day, plan_id, "2026-07-30")
+    assert day.total_cartons == 0
+
+
+async def test_the_carton_count_is_not_summed_from_the_entries(
+    ops_client, plan_factory, read_committed
+):
+    """Cartons are entered, not derived. Asserted because the old code SUMMED them.
+
+    ``_recompute_day_units`` runs on every save and used to recompute cartons too. If
+    that came back, the day's own count would be overwritten with a sum over a column
+    that no longer exists — i.e. zeroed on every save.
+    """
+    plan = await plan_factory()
+    plan_id = plan.id
+    # Two SKUs, 20 cartons for the day. Nothing about 20 can be derived from the
+    # entries, so a summing implementation cannot accidentally agree.
+    await ops_client.post(
+        "/shipment/packing/2026-07-30",
+        json={
+            "entries": [
+                {"asin": "B0AAA00001", "units": 300},
+                {"asin": "B0AAA00002", "units": 200},
+            ],
+            "cartons": 20,
+        },
+    )
+
+    day = await read_committed(repository.get_day, plan_id, "2026-07-30")
+    assert day.total_units == 500, "units are still summed from the entries"
+    assert day.total_cartons == 20, (
+        "the day's carton count did not survive the save — it is being derived from "
+        "the entries again"
+    )
+
+
 async def test_two_dates_are_separate_days(ops_client, plan_factory, read_committed):
     """Dated entries are the point of the new model (requirement 9 needs them)."""
     plan = await plan_factory()
     plan_id = plan.id
     await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 100, "cartons": 5}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 100}], "cartons": 5},
     )
     await ops_client.post(
         "/shipment/packing/2026-07-31",
-        json={"entries": [{"asin": "B0AAA00001", "units": 80, "cartons": 4}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 80}], "cartons": 4},
     )
 
     days = await read_committed(repository.load_days, plan_id)
@@ -265,7 +351,7 @@ async def test_ops_cannot_verify_a_day(ops_client, plan_factory, read_committed)
     plan_id = plan.id
     await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 900, "cartons": 40}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 900}], "cartons": 40},
     )
     await ops_client.post("/shipment/packing/2026-07-30/submit")
 
@@ -648,7 +734,7 @@ async def test_a_closed_plan_keeps_its_packing_history(
     old_id = old.id
     await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 100, "cartons": 5}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 100}], "cartons": 5},
     )
 
     first, _ = real_asins
@@ -670,7 +756,7 @@ async def test_a_small_day_is_held_on_submit(ops_client, plan_factory, read_comm
     plan_id = plan.id
     await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 400, "cartons": 20}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 400}], "cartons": 20},
     )
     r = await ops_client.post("/shipment/packing/2026-07-30/submit")
     assert r.status_code == 200, r.text
@@ -696,7 +782,7 @@ async def test_a_day_over_either_threshold_ships(ops_client, plan_factory, units
     await plan_factory()
     await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": units, "cartons": cartons}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": units}], "cartons": cartons},
     )
     r = await ops_client.post("/shipment/packing/2026-07-30/submit")
     assert r.status_code == 200, r.text
@@ -715,7 +801,7 @@ async def test_held_units_count_as_packed_but_not_shippable(
     await plan_factory()
     await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 400, "cartons": 20}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 400}], "cartons": 20},
     )
     await ops_client.post("/shipment/packing/2026-07-30/submit")  # -> held
 
@@ -736,7 +822,7 @@ async def test_release_makes_a_held_day_shippable(
     plan_id = plan.id
     await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 400, "cartons": 20}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 400}], "cartons": 20},
     )
     await ops_client.post("/shipment/packing/2026-07-30/submit")
 
@@ -758,7 +844,7 @@ async def test_ops_cannot_release_a_held_day(ops_client, plan_factory, read_comm
     plan_id = plan.id
     await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 400, "cartons": 20}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 400}], "cartons": 20},
     )
     await ops_client.post("/shipment/packing/2026-07-30/submit")
 
@@ -781,7 +867,7 @@ async def test_two_held_days_combine_into_one_shippable_total(
     for pack_date in ("2026-07-30", "2026-07-31"):
         await ops_client.post(
             f"/shipment/packing/{pack_date}",
-            json={"entries": [{"asin": "B0AAA00001", "units": 200, "cartons": 10}]},
+            json={"entries": [{"asin": "B0AAA00001", "units": 200}], "cartons": 10},
         )
         r = await ops_client.post(f"/shipment/packing/{pack_date}/submit")
         assert r.json()["status"] == logic.STATUS_HELD
@@ -814,7 +900,7 @@ async def test_a_verified_day_cannot_be_edited(
     plan_id = plan.id
     await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 900, "cartons": 40}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 900}], "cartons": 40},
     )
     await ops_client.post("/shipment/packing/2026-07-30/submit")
     r = await auth_client.post("/shipment/packing/2026-07-30/verify")
@@ -822,7 +908,7 @@ async def test_a_verified_day_cannot_be_edited(
 
     r = await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 1, "cartons": 1}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 1}], "cartons": 1},
     )
     assert r.status_code == 409, r.status_code
 
@@ -835,7 +921,7 @@ async def test_an_unsubmitted_day_cannot_be_verified(auth_client, ops_client, pl
     await plan_factory()
     await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 900, "cartons": 40}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 900}], "cartons": 40},
     )
     r = await auth_client.post("/shipment/packing/2026-07-30/verify")
     assert r.status_code == 400, r.status_code
@@ -875,11 +961,11 @@ async def test_packing_view_remaining_excludes_only_other_days(ops_client, plan_
     await plan_factory()
     await ops_client.post(
         "/shipment/packing/2026-07-29",
-        json={"entries": [{"asin": "B0AAA00001", "units": 200, "cartons": 10}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 200}], "cartons": 10},
     )
     await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 150, "cartons": 8}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 150}], "cartons": 8},
     )
 
     r = await ops_client.get("/shipment/packing/2026-07-30")
@@ -931,7 +1017,7 @@ async def test_admin_can_change_the_thresholds_and_they_take_effect(
     # 400 units / 20 cartons was held at the defaults; now it clears both.
     await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 400, "cartons": 20}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 400}], "cartons": 20},
     )
     r = await ops_client.post("/shipment/packing/2026-07-30/submit")
     assert r.json()["status"] == logic.STATUS_SUBMITTED
@@ -944,7 +1030,7 @@ async def test_deleting_a_plan_removes_its_items_and_packing(
     plan = await plan_factory()
     await ops_client.post(
         "/shipment/packing/2026-07-30",
-        json={"entries": [{"asin": "B0AAA00001", "units": 100, "cartons": 5}]},
+        json={"entries": [{"asin": "B0AAA00001", "units": 100}], "cartons": 5},
     )
 
     r = await auth_client.delete(f"/shipment/plan/{plan.id}")

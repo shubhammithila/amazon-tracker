@@ -477,15 +477,26 @@ def test_hold_reason_names_the_actual_numbers():
 
 # ─── packed vs shippable (the crux of requirement 9) ─────────────────────────
 
-def _day(status, entries, pack_date=""):
-    return {"status": status, "entries": entries, "pack_date": pack_date}
+def _day(status, entries, pack_date="", cartons=0):
+    """One packing day in the shape repository.load_days_with_entries returns.
+
+    ``cartons`` is a DAY-level keyword, not a field on the entries, because that is
+    where the number lives: a carton holds whatever was being packed when it was
+    filled, so it belongs to several ASINs at once. See logic.day_cartons.
+    """
+    return {
+        "status": status,
+        "entries": entries,
+        "pack_date": pack_date,
+        "total_cartons": cartons,
+    }
 
 
 def test_held_units_count_as_packed_but_not_as_shippable():
     """The distinction that stops the warehouse double-packing held stock."""
     days = [
-        _day(logic.STATUS_VERIFIED, [{"asin": "B01", "units": 100, "cartons": 30}]),
-        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 40, "cartons": 5}]),
+        _day(logic.STATUS_VERIFIED, [{"asin": "B01", "units": 100}], cartons=30),
+        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 40}], cartons=5),
     ]
     assert logic.packed_units_by_asin(days) == {"B01": 140}, "held units must count as packed"
     assert logic.shippable_units_by_asin(days) == {"B01": 100}, "held units must not ship"
@@ -493,7 +504,7 @@ def test_held_units_count_as_packed_but_not_as_shippable():
 
 def test_open_days_are_packed_but_not_shippable():
     """Ops has not finished the day, so it must not go into a shipment yet."""
-    days = [_day(logic.STATUS_OPEN, [{"asin": "B01", "units": 60, "cartons": 4}])]
+    days = [_day(logic.STATUS_OPEN, [{"asin": "B01", "units": 60}], cartons=4)]
     assert logic.packed_units_by_asin(days) == {"B01": 60}
     assert logic.shippable_units_by_asin(days) == {}
 
@@ -509,13 +520,13 @@ def test_open_days_are_packed_but_not_shippable():
     ],
 )
 def test_which_statuses_are_shippable(status, shippable):
-    days = [_day(status, [{"asin": "B01", "units": 10, "cartons": 1}])]
+    days = [_day(status, [{"asin": "B01", "units": 10}], cartons=1)]
     assert bool(logic.shippable_units_by_asin(days)) is shippable
 
 
 def test_releasing_a_held_day_makes_its_units_shippable():
     """Force-ship: flipping held -> submitted is all it takes."""
-    day = _day(logic.STATUS_HELD, [{"asin": "B01", "units": 40, "cartons": 5}])
+    day = _day(logic.STATUS_HELD, [{"asin": "B01", "units": 40}], cartons=5)
     assert logic.shippable_units_by_asin([day]) == {}
     day["status"] = logic.STATUS_SUBMITTED
     assert logic.shippable_units_by_asin([day]) == {"B01": 40}
@@ -523,21 +534,22 @@ def test_releasing_a_held_day_makes_its_units_shippable():
 
 def test_two_small_days_combine_into_one_shipment():
     """Requirement 9 end to end: neither day ships alone, together they do."""
-    monday = [{"asin": "B01", "units": 400, "cartons": 20}]
-    tuesday = [{"asin": "B01", "units": 300, "cartons": 18}]
+    monday = _day(logic.STATUS_SUBMITTED, [{"asin": "B01", "units": 400}], cartons=20)
+    tuesday = _day(logic.STATUS_SUBMITTED, [{"asin": "B01", "units": 300}], cartons=18)
 
     assert logic.is_held(20, 400, 25, 500) is True
     assert logic.is_held(18, 300, 25, 500) is True
 
-    # Combined, the same packing clears the thresholds.
-    combined_cartons = logic.packed_cartons(monday + tuesday)
-    combined_units = logic.packed_units(monday + tuesday)
+    # Combined, the same packing clears the thresholds. Units add up from the
+    # entries; cartons add up from the DAYS, which is the asymmetry day_cartons
+    # exists for.
+    combined_cartons = sum(logic.day_cartons(d) for d in (monday, tuesday))
+    combined_units = logic.packed_units(monday["entries"] + tuesday["entries"])
     assert (combined_cartons, combined_units) == (38, 700)
     assert logic.is_held(combined_cartons, combined_units, 25, 500) is False
 
     # And once released, the aggregation picks up both days with no extra state.
-    days = [_day(logic.STATUS_SUBMITTED, monday), _day(logic.STATUS_SUBMITTED, tuesday)]
-    assert logic.shippable_units_by_asin(days) == {"B01": 700}
+    assert logic.shippable_units_by_asin([monday, tuesday]) == {"B01": 700}
 
 
 def test_units_aggregate_per_asin_across_days():
@@ -556,15 +568,15 @@ def test_entries_without_an_asin_are_ignored():
 def test_held_totals_summarises_parked_stock():
     """Surfaced in the UI so a held day cannot become forgotten inventory."""
     days = [
-        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 400, "cartons": 20}]),
-        _day(logic.STATUS_HELD, [{"asin": "B02", "units": 100, "cartons": 6}]),
-        _day(logic.STATUS_VERIFIED, [{"asin": "B03", "units": 900, "cartons": 40}]),
+        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 400}], cartons=20),
+        _day(logic.STATUS_HELD, [{"asin": "B02", "units": 100}], cartons=6),
+        _day(logic.STATUS_VERIFIED, [{"asin": "B03", "units": 900}], cartons=40),
     ]
     assert logic.held_totals(days) == {"days": 2, "units": 500, "cartons": 26}
 
 
 def test_held_totals_is_zero_when_nothing_is_parked():
-    days = [_day(logic.STATUS_VERIFIED, [{"asin": "B01", "units": 10, "cartons": 1}])]
+    days = [_day(logic.STATUS_VERIFIED, [{"asin": "B01", "units": 10}], cartons=1)]
     assert logic.held_totals(days) == {"days": 0, "units": 0, "cartons": 0}
 
 
@@ -586,8 +598,8 @@ def test_two_held_days_together_clear_the_threshold():
     something has to say so or the stock just sits there.
     """
     days = [
-        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 400, "cartons": 20}], "2026-07-30"),
-        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 200, "cartons": 10}], "2026-07-31"),
+        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 400}], "2026-07-30", cartons=20),
+        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 200}], "2026-07-31", cartons=10),
     ]
     assert logic.is_held(20, 400) is True, "Monday alone should still be held"
     assert logic.is_held(10, 200) is True, "Tuesday alone should still be held"
@@ -604,8 +616,8 @@ def test_two_held_days_together_clear_the_threshold():
 def test_a_backlog_that_is_still_too_small_does_not_clear():
     """Two tiny days are still one tiny shipment. No false prompt."""
     days = [
-        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 400, "cartons": 20}], "2026-07-30"),
-        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 40, "cartons": 2}], "2026-07-31"),
+        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 400}], "2026-07-30", cartons=20),
+        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 40}], "2026-07-31", cartons=2),
     ]
     result = logic.carry_over(days)
     assert result["clears"] is False
@@ -618,14 +630,14 @@ def test_carry_over_reports_what_is_still_needed():
     A bare "still too small" tells the owner nothing about whether to wait one
     more day or five.
     """
-    days = [_day(logic.STATUS_HELD, [{"asin": "B01", "units": 440, "cartons": 22}], "2026-07-30")]
+    days = [_day(logic.STATUS_HELD, [{"asin": "B01", "units": 440}], "2026-07-30", cartons=22)]
     result = logic.carry_over(days, min_cartons=25, min_units=500)
     assert result["shortfall_cartons"] == 3
     assert result["shortfall_units"] == 60
 
 
 def test_a_cleared_backlog_reports_no_shortfall():
-    days = [_day(logic.STATUS_HELD, [{"asin": "B01", "units": 900, "cartons": 40}], "2026-07-30")]
+    days = [_day(logic.STATUS_HELD, [{"asin": "B01", "units": 900}], "2026-07-30", cartons=40)]
     result = logic.carry_over(days)
     assert result["clears"] is True
     assert result["shortfall_cartons"] == 0
@@ -639,8 +651,8 @@ def test_carry_over_obeys_the_and_rule_like_is_held():
     owner to ship a backlog the server would then refuse to treat as shippable —
     the two would be disagreeing about the same question.
     """
-    heavy = [_day(logic.STATUS_HELD, [{"asin": "B01", "units": 300, "cartons": 30}], "d1")]
-    pouches = [_day(logic.STATUS_HELD, [{"asin": "B01", "units": 900, "cartons": 15}], "d2")]
+    heavy = [_day(logic.STATUS_HELD, [{"asin": "B01", "units": 300}], "d1", cartons=30)]
+    pouches = [_day(logic.STATUS_HELD, [{"asin": "B01", "units": 900}], "d2", cartons=15)]
     assert logic.carry_over(heavy)["clears"] is True, "30 cartons of heavy bags is a shipment"
     assert logic.carry_over(pouches)["clears"] is True, "900 units of pouches is a shipment"
 
@@ -655,7 +667,7 @@ def test_nothing_parked_never_reads_as_a_shipment_ready_to_go():
     """
     assert logic.is_held(0, 0) is False, "premise of this test changed"
 
-    for days in ([], [_day(logic.STATUS_VERIFIED, [{"asin": "B01", "units": 900, "cartons": 40}])]):
+    for days in ([], [_day(logic.STATUS_VERIFIED, [{"asin": "B01", "units": 900}], cartons=40)]):
         result = logic.carry_over(days)
         assert result["clears"] is False, "an empty backlog must not prompt a release"
         assert result["days"] == 0
@@ -670,16 +682,16 @@ def test_carry_over_names_the_held_dates():
     repository.load_days.
     """
     days = [
-        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 10, "cartons": 1}], "2026-07-29"),
-        _day(logic.STATUS_SUBMITTED, [{"asin": "B01", "units": 900, "cartons": 40}], "2026-07-30"),
-        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 20, "cartons": 2}], "2026-07-31"),
+        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 10}], "2026-07-29", cartons=1),
+        _day(logic.STATUS_SUBMITTED, [{"asin": "B01", "units": 900}], "2026-07-30", cartons=40),
+        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 20}], "2026-07-31", cartons=2),
     ]
     assert logic.carry_over(days)["dates"] == ["2026-07-29", "2026-07-31"]
 
 
 def test_carry_over_uses_the_plans_own_thresholds():
     """The owner can move the minimum, and the backlog check must move with it."""
-    days = [_day(logic.STATUS_HELD, [{"asin": "B01", "units": 400, "cartons": 20}], "d1")]
+    days = [_day(logic.STATUS_HELD, [{"asin": "B01", "units": 400}], "d1", cartons=20)]
     assert logic.carry_over(days, min_cartons=25, min_units=500)["clears"] is False
     assert logic.carry_over(days, min_cartons=10, min_units=100)["clears"] is True
     assert logic.carry_over(days, min_cartons=10, min_units=100)["min_cartons"] == 10
@@ -688,11 +700,11 @@ def test_carry_over_uses_the_plans_own_thresholds():
 def test_carry_over_ignores_days_that_are_not_held():
     """Only parked stock is carry-over. A submitted day is already going out."""
     days = [
-        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 100, "cartons": 5}], "d1"),
-        _day(logic.STATUS_SUBMITTED, [{"asin": "B01", "units": 900, "cartons": 40}], "d2"),
-        _day(logic.STATUS_OPEN, [{"asin": "B01", "units": 800, "cartons": 35}], "d3"),
-        _day(logic.STATUS_VERIFIED, [{"asin": "B01", "units": 700, "cartons": 30}], "d4"),
-        _day(logic.STATUS_SHIPPED, [{"asin": "B01", "units": 600, "cartons": 25}], "d5"),
+        _day(logic.STATUS_HELD, [{"asin": "B01", "units": 100}], "d1", cartons=5),
+        _day(logic.STATUS_SUBMITTED, [{"asin": "B01", "units": 900}], "d2", cartons=40),
+        _day(logic.STATUS_OPEN, [{"asin": "B01", "units": 800}], "d3", cartons=35),
+        _day(logic.STATUS_VERIFIED, [{"asin": "B01", "units": 700}], "d4", cartons=30),
+        _day(logic.STATUS_SHIPPED, [{"asin": "B01", "units": 600}], "d5", cartons=25),
     ]
     result = logic.carry_over(days)
     assert (result["cartons"], result["units"], result["days"]) == (5, 100, 1), (
@@ -718,6 +730,37 @@ def test_only_verified_days_are_invoiceable():
 
 
 def test_packed_helpers_tolerate_missing_fields():
-    entries = [{"asin": "B01"}, {"asin": "B02", "units": None, "cartons": None}]
+    entries = [{"asin": "B01"}, {"asin": "B02", "units": None}]
     assert logic.packed_units(entries) == 0
-    assert logic.packed_cartons(entries) == 0
+
+
+@pytest.mark.parametrize("day", [
+    {},                            # a day dict from before cartons existed
+    {"total_cartons": None},       # the column is nullable
+    {"total_cartons": ""},         # straight from a blank number input
+    {"total_cartons": "20"},       # a string from JSON
+    {"total_cartons": -5},         # nonsense
+])
+def test_day_cartons_survives_whatever_the_day_carries(day):
+    """It reads a nullable column that a form can post as a blank string, and the
+    result is compared against a threshold in logic.is_held — where a None would
+    raise rather than hold the day."""
+    result = logic.day_cartons(day)
+    assert isinstance(result, int) and result >= 0
+
+
+def test_day_cartons_reads_the_day_not_its_entries():
+    """The whole point of the change, asserted directly.
+
+    A day whose entries happen to carry a stale ``cartons`` key must still report the
+    day's own count. Summing the entries back up is the mistake this replaced, and it
+    would be an easy "fix" for someone who found the key still lying around in old
+    JSON.
+    """
+    day = {
+        "total_cartons": 20,
+        "entries": [{"asin": "B01", "units": 500, "cartons": 999}],
+    }
+    assert logic.day_cartons(day) == 20, (
+        "day_cartons summed the entries instead of reading the day"
+    )
