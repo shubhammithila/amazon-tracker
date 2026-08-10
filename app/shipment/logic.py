@@ -122,27 +122,32 @@ def category_for(name) -> int:
 def weight_label(weight) -> str:
     """Pack size as the warehouse says it: grams under 1 kg, kilos at 1 kg and up.
 
-        0.25 -> "250 g"      1.0  -> "1 kg"
-        0.5  -> "500 g"      1.05 -> "1.05 kg"
-        0.15 -> "150 g"      2.0  -> "2 kg"
+        0.25 -> "250g"       1.0  -> "1 kg"
+        0.5  -> "500g"       1.05 -> "1.05 kg"
+        0.15 -> "150g"       2.0  -> "2 kg"
 
     "0.5kg" is arithmetically identical and wrong on a picking sheet — nobody in a
     warehouse says "zero point five kilo", they say "five hundred gram", and the
-    label on the pouch says 500 g. A packer scanning 100 rows should not be doing
+    label on the pouch says 500g. A packer scanning 100 rows should not be doing
     unit conversion in his head.
+
+    **The spacing differs between the two units on purpose, because it is what the
+    owner reads as correct**: grams close up ("500g"), kilos spaced ("1 kg"). It
+    matches how the pouches are labelled, and a column of "500 g" had the unit
+    floating far enough from its number to scan as a separate cell.
 
     The threshold is at 1 kg and not, say, 250 g because that is the boundary the
     printed labels use.
 
     Grams are shown as integers where they are whole (they always are in this
-    catalogue — 0.1 to 0.9 in 50 g steps) but a stray 0.125 would render "125 g"
+    catalogue — 0.1 to 0.9 in 50 g steps) but a stray 0.125 would render "125g"
     rather than being silently rounded. Kilos keep up to two decimals because 1.05
     is a real pack size here, and trailing zeros are trimmed so a 1 kg bag does
     not read "1.00 kg".
 
     Lives here rather than in documents.py or a template because three places
-    render weight — the owner's table, the packer's cards and the four documents —
-    and they were each doing it differently.
+    render weight — the owner's table, the packer's screen and the documents — and
+    they were each doing it differently.
     """
     try:
         value = float(weight or 0)
@@ -156,7 +161,7 @@ def weight_label(weight) -> str:
     if value < 1:
         grams = value * 1000
         text = f"{grams:.2f}".rstrip("0").rstrip(".")
-        return f"{text} g"
+        return f"{text}g"
 
     text = f"{value:.2f}".rstrip("0").rstrip(".")
     return f"{text} kg"

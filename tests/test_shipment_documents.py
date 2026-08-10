@@ -203,14 +203,14 @@ def test_the_requested_column_order_is_the_first_seven(headers):
     """"columns of all these downloads will be as follows in the below order
     S M B Brand, Asin, sku, Product" — verbatim, and asserted as a prefix.
 
-    A prefix rather than the whole list, so ``Pack Size`` could be appended without
+    A prefix rather than the whole list, so ``Size`` could be appended without
     disturbing what was actually asked for.
     """
     assert headers[:7] == ["S", "M", "B", "Brand", "ASIN", "Merchant SKU", "Product"]
 
 
-def test_pack_size_is_its_own_column_not_glued_to_the_product_name(items):
-    """It used to be "Jau Sattu 500 g" in one cell, and that was wrong on paper.
+def test_size_is_its_own_column_not_glued_to_the_product_name(items):
+    """It used to be "Jau Sattu 500g" in one cell, and that was wrong on paper.
 
     All sizes of one product are adjacent (sort_key puts product above weight), so
     the packer's actual scan is down a column of sizes — and a size buried at the end
@@ -218,11 +218,22 @@ def test_pack_size_is_its_own_column_not_glued_to_the_product_name(items):
     """
     cells = documents._identity_cells(items[0])
     product = cells[documents.IDENTITY_HEADERS.index("Product")]
-    size = cells[documents.IDENTITY_HEADERS.index("Pack Size")]
+    size = cells[documents.IDENTITY_HEADERS.index("Size")]
 
     assert product == "Chana Sattu", f"the product cell is not just the name: {product!r}"
-    assert size == "500 g", f"the pack size is not in its own cell: {size!r}"
+    assert size == "500g", f"the pack size is not in its own cell: {size!r}"
     assert size not in product, "the weight is still concatenated onto the name"
+
+
+def test_the_size_column_is_headed_just_size(headers):
+    """Asked for directly: "just write size".
+
+    "Pack Size" was two words for a column of "500g" and "1 kg", and the heading was
+    wider than every value under it — which makes the column look like it is carrying
+    more than it is.
+    """
+    assert "Size" in headers
+    assert "Pack Size" not in headers, "the column heading is back to two words"
 
 
 def test_widths_are_supplied_for_every_column(headers, widths):
@@ -273,9 +284,9 @@ def test_the_totals_row_sums_every_quantity_column(items):
 def test_the_totals_label_sits_under_the_product_column(items):
     """Derived from IDENTITY_HEADERS, not a hand-counted run of blanks.
 
-    It WAS six hardcoded empty strings, and adding Pack Size shifted the label one
+    It WAS six hardcoded empty strings, and adding Size shifted the label one
     column right — onto a quantity heading, where a totals line reading
-    "TOTAL · 205 rows" in the Pack Size column looks like a rendering bug.
+    "TOTAL · 205 rows" in the Size column looks like a rendering bug.
     """
     headers = documents.IDENTITY_HEADERS + ["To Pack"]
     rows = [documents._identity_cells(i) + [10] for i in items]
@@ -402,7 +413,7 @@ def _widest_content_mm(rows, column: int, heading: str) -> float:
 
 #: Columns whose content is unreadable when broken across two lines. A wrapped ASIN
 #: cannot be typed into a search box; "1.75" over "kg" reads as two separate facts.
-NO_WRAP_COLUMNS = ["ASIN", "Pack Size", "Brand"]
+NO_WRAP_COLUMNS = ["ASIN", "Size", "Brand"]
 
 
 @pytest.mark.parametrize("heading", NO_WRAP_COLUMNS)
@@ -540,7 +551,7 @@ def test_the_instruction_is_set_larger_than_the_identifiers():
         ("ASIN", "quiet"),
         ("Merchant SKU", "quiet"),
         ("Product", "loud"),
-        ("Pack Size", "loud"),
+        ("Size", "loud"),
         ("Brand", "plain"),
         ("S", "flag"),
     ],
@@ -584,7 +595,7 @@ def test_the_excel_mirrors_the_pdf_emphasis(headers, rows, widths):
     assert first["ASIN"].font.size < first["Product"].font.size, (
         "the ASIN is not de-emphasised relative to the product name"
     )
-    assert first["Product"].font.bold and first["Pack Size"].font.bold
+    assert first["Product"].font.bold and first["Size"].font.bold
     assert first["To Pack"].font.bold, "the quantity is not emphasised"
 
 
@@ -770,18 +781,31 @@ def test_weight_label_uses_grams_below_one_kilo():
     """The unit a warehouse actually says out loud.
 
     "0.5kg" is arithmetically identical and wrong on a picking sheet: the pouch label
-    says 500 g, and a packer scanning 100 rows should not be converting units in his
+    says 500g, and a packer scanning 100 rows should not be converting units in his
     head. Kilos from 1 kg up, where the printed labels switch too.
 
     Delegates to logic.weight_label — asserted through the documents alias as well so
     the printed sheet and the screen cannot drift apart.
     """
-    assert documents._weight_label(0.5) == "500 g"
-    assert documents._weight_label(0.25) == "250 g"
-    assert documents._weight_label(0.15) == "150 g"   # a real pack size here
+    assert documents._weight_label(0.5) == "500g"
+    assert documents._weight_label(0.25) == "250g"
+    assert documents._weight_label(0.15) == "150g"    # a real pack size here
     assert documents._weight_label(1.0) == "1 kg"     # not "1.0 kg"
     assert documents._weight_label(1.05) == "1.05 kg"  # also real; keeps decimals
     assert documents._weight_label(2.25) == "2.25 kg"
+
+
+def test_grams_close_up_and_kilos_spaced():
+    """The spacing differs between the units, and that is the owner's call.
+
+    Asserted as an explicit pair rather than left implicit in the values above,
+    because it looks exactly like an inconsistency someone would tidy up: "500g" and
+    "1 kg" in one column reads as a bug unless you know it matches the pouch labels.
+    """
+    assert documents._weight_label(0.5) == "500g", "grams must sit against the number"
+    assert " g" not in documents._weight_label(0.5)
+    assert documents._weight_label(2.0) == "2 kg", "kilos keep their space"
+    assert "2kg" != documents._weight_label(2.0)
 
 
 @pytest.mark.parametrize("value", [None, 0, "", "abc", -1])

@@ -160,7 +160,7 @@ def build_shipment_file_xlsx(
 #
 # One column layout, requested explicitly:
 #
-#     S · M · B · Brand · ASIN · SKU · Product · Pack Size · <quantity>
+#     S · M · B · Brand · ASIN · SKU · Product · Size · <quantity>
 #
 # The quantity column is the only thing that differs, because each sheet answers a
 # different question: the plan and the remaining sheet say what is still TO PACK,
@@ -182,15 +182,15 @@ def build_shipment_file_xlsx(
 
 #: The shared header, minus the quantity column.
 #:
-#: ``Pack Size`` is its own column rather than being glued onto the product name.
+#: ``Size`` is its own column rather than being glued onto the product name.
 #: They were combined to save width on a portrait page, and it was wrong: the eye
 #: cannot scan a column of sizes that are buried at the end of names of different
 #: lengths, which is exactly the scan the packer makes when he has all sizes of one
 #: product in front of him. Separated, the sizes line up.
 #:
 #: The first seven are unchanged and in the order the owner asked for; a test pins
-#: that prefix, so ``Pack Size`` is appended rather than inserted.
-IDENTITY_HEADERS = ["S", "M", "B", "Brand", "ASIN", "Merchant SKU", "Product", "Pack Size"]
+#: that prefix, so ``Size`` is appended rather than inserted.
+IDENTITY_HEADERS = ["S", "M", "B", "Brand", "ASIN", "Merchant SKU", "Product", "Size"]
 IDENTITY_WIDTHS = [4, 4, 4, 7, 15, 24, 32, 11]
 
 #: Column headings whose cells are identifiers: needed to resolve a query, never
@@ -198,7 +198,7 @@ IDENTITY_WIDTHS = [4, 4, 4, 7, 15, 24, 32, 11]
 QUIET_HEADERS = frozenset({"ASIN", "Merchant SKU"})
 
 #: The headings that carry the actual instruction. Rendered large and bold.
-LOUD_HEADERS = frozenset({"Product", "Pack Size"})
+LOUD_HEADERS = frozenset({"Product", "Size"})
 
 
 def _identity_cells(item: dict) -> list:
@@ -241,7 +241,7 @@ def _totals_row(headers: list[str], rows: list[list]) -> list:
     Driven by the header count rather than a fixed position, so the packed sheet's
     two quantity columns (units and cartons) total correctly without a second
     implementation. The label position is derived from IDENTITY_HEADERS too — it
-    was a hand-counted run of blanks, which silently shifted when Pack Size was
+    was a hand-counted run of blanks, which silently shifted when Size was
     added and put the label under a quantity heading.
     """
     totals: list = [""] * len(IDENTITY_HEADERS)
@@ -368,7 +368,7 @@ _SLACK_MM = 0.8
 #: pack size broken across two lines is unreadable rather than merely ugly — "B0GW3
 #: 88QP6" cannot be typed into a search box, and "1.75" over "kg" reads as two
 #: facts. Every one of these has bounded content, so a ceiling is safe.
-_NO_WRAP_CEILING_MM = {"S": 8, "M": 8, "B": 8, "Brand": 14, "ASIN": 24, "Pack Size": 20}
+_NO_WRAP_CEILING_MM = {"S": 8, "M": 8, "B": 8, "Brand": 14, "ASIN": 24, "Size": 20}
 
 #: Columns allowed to wrap when their content is genuinely long, and the width past
 #: which they will. The Merchant SKU's longest real value is 68 mm — giving it that
