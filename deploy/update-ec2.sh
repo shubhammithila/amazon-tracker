@@ -98,39 +98,70 @@ cd "$APP_DIR"
 command -v sudo >/dev/null || die "sudo is required to restart $SERVICE"
 ok "app dir, venv and git checkout all present"
 
-# Uncommitted changes on the server usually mean somebody edited a file in place. The
-# checkout below would overwrite them without saying so.
+# Uncommitted changes on the server usually mean somebody edited a file in place, and
+# the checkout below would overwrite them silently.
+#
+# On this box that is not hypothetical: app/invoice/hsn_master.json is a TRACKED file
+# that the app WRITES TO at runtime (verified HSN codes are appended after each
+# invoice). It had grown from 15 entries in git to 87 on the server — 72 hand-verified
+# GST classifications that a plain checkout would have thrown away.
+#
+# So local changes are stashed rather than discarded, and the stash reference is printed.
+# A stash is recoverable; `checkout -f` is not.
 if ! git diff --quiet || ! git diff --cached --quiet; then
   warn "There are uncommitted changes in $APP_DIR:"
   git status --short | sed 's/^/      /'
-  read -r -p "    Discard them and continue? [y/N] " reply
+  echo
+  warn "These will be STASHED (not deleted) so the checkout cannot lose them."
+  read -r -p "    Continue? [y/N] " reply
   [ "$reply" = "y" ] || [ "$reply" = "Y" ] || die "Stopped. Nothing was changed."
+  git stash push --include-untracked -m "update-ec2 $STAMP" >/dev/null \
+    && ok "stashed as: git stash list | head -1   (restore a file with: git checkout stash@{0} -- <path>)" \
+    || warn "nothing to stash"
+  STASHED=1
 fi
+
+# Runtime data files the APP writes into its own tracked tree. After the checkout these
+# are restored from the stash, because git's copy is a stale snapshot and the server's is
+# the live record. Listed explicitly rather than guessed: each one is a deliberate
+# decision, and a wrong entry here silently reverts real data.
+RUNTIME_DATA_FILES="app/invoice/hsn_master.json"
 
 # ── 1. Back up the database FIRST ───────────────────────────────────────────
 say "Backing up the database"
 mkdir -p "$BACKUP_DIR"
 if [ -f tracker.db ]; then
-  # sqlite3 .backup rather than cp when available: cp of a live database can capture a
-  # torn write if the app happens to be mid-transaction. .backup takes a consistent
-  # snapshot of a database that is in use.
-  if command -v sqlite3 >/dev/null; then
-    sqlite3 tracker.db ".backup '$BACKUP_FILE'" || die "sqlite3 backup failed"
-  else
-    cp tracker.db "$BACKUP_FILE" || die "could not copy tracker.db"
-    warn "sqlite3 not installed; used cp (install with: sudo apt install -y sqlite3)"
-  fi
+  # Python's sqlite3.backup(), not `cp`, and not the sqlite3 CLI.
+  #
+  # `cp` of a live database can capture a torn write if the app is mid-transaction — and
+  # the scheduler on this box writes at 06:00 daily, so "the app is idle" is an
+  # assumption, not a fact. The backup API takes a consistent snapshot of a database
+  # that is in use.
+  #
+  # The sqlite3 CLI is NOT installed on this server (checked), so relying on it would
+  # have silently downgraded every backup to `cp`. Python is guaranteed present — it is
+  # what runs the app.
+  venv/bin/python - "$BACKUP_FILE" <<'PY' || die "backup failed — stopping. Nothing was changed."
+import sqlite3, sys
+source = sqlite3.connect("tracker.db")
+target = sqlite3.connect(sys.argv[1])
+with target:
+    source.backup(target)
+# Verify BEFORE anything relies on it: an unreadable backup is worse than none,
+# because it is trusted.
+check = target.execute("pragma integrity_check").fetchone()[0]
+if check != "ok":
+    print(f"    integrity_check said: {check}")
+    sys.exit(1)
+tables = target.execute(
+    "select count(*) from sqlite_master where type='table'"
+).fetchone()[0]
+rows = 0
+for (name,) in target.execute("select name from sqlite_master where type='table'"):
+    rows += target.execute(f'select count(*) from "{name}"').fetchone()[0]
+print(f"    verified: {tables} tables, {rows} rows, integrity_check ok")
+PY
   ok "saved $BACKUP_FILE ($(du -h "$BACKUP_FILE" | cut -f1))"
-
-  # Verify the backup is readable BEFORE relying on it. An unreadable backup is worse
-  # than no backup, because it is trusted.
-  if command -v sqlite3 >/dev/null; then
-    sqlite3 "$BACKUP_FILE" "pragma integrity_check;" | grep -q '^ok$' \
-      || die "the backup failed its integrity check — stopping. Nothing was changed."
-    ok "backup passes integrity_check"
-    printf '    tables: '
-    sqlite3 "$BACKUP_FILE" "select count(*) from sqlite_master where type='table';"
-  fi
 else
   warn "no tracker.db yet — nothing to back up (first deploy?)"
 fi
@@ -155,6 +186,17 @@ git checkout --quiet -B deploy-current "origin/$BRANCH" \
   || die "could not check out origin/$BRANCH"
 ok "now on $(git rev-parse --short HEAD) ($(git log -1 --format=%s | cut -c1-60))"
 
+# Put the live runtime data back over git's stale snapshot.
+if [ "${STASHED:-0}" -eq 1 ]; then
+  for f in $RUNTIME_DATA_FILES; do
+    if git cat-file -e "stash@{0}:$f" 2>/dev/null; then
+      git checkout "stash@{0}" -- "$f" 2>/dev/null \
+        && ok "restored live $f from the stash" \
+        || warn "could not restore $f — check: git checkout stash@{0} -- $f"
+    fi
+  done
+fi
+
 # ── 4. Dependencies ─────────────────────────────────────────────────────────
 say "Installing dependencies"
 venv/bin/pip install --quiet --upgrade pip
@@ -164,6 +206,58 @@ ok "dependencies up to date"
 # ── 5. Migrate ──────────────────────────────────────────────────────────────
 # The step that must not be skipped. Safe to re-run: a no-op when already current.
 say "Applying database migrations"
+
+# alembic/env.py does `from app.models import Base`, and the CLI does not put the
+# project root on sys.path. Running it from a shell therefore fails with
+# ModuleNotFoundError even though the app itself imports fine under uvicorn.
+export PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
+# **The database predates Alembic**, so it has no alembic_version table: this app was
+# first deployed when app.main's create_all() built the schema directly. `upgrade head`
+# then starts from the very first revision and dies on "table churn_reports already
+# exists" — verified by replaying it against a copy of this exact database.
+#
+# The fix is to STAMP the revision whose schema production already matches, so Alembic
+# skips it and applies only what is genuinely new. `products.use_by` is the marker: it
+# is what 68e373db239a adds, and it is present, so that revision is the true baseline.
+#
+# A stamp writes one row and touches no table, so it cannot lose data. Getting the
+# baseline WRONG could, which is why it is detected rather than assumed.
+if ! venv/bin/python - <<'PY'
+import sqlite3, sys
+try:
+    con = sqlite3.connect("tracker.db")
+    con.execute("select version_num from alembic_version").fetchone()
+except Exception:
+    sys.exit(1)
+sys.exit(0)
+PY
+then
+  warn "this database has no alembic_version table (it predates Alembic)"
+  BASELINE="$(venv/bin/python - <<'PY'
+import sqlite3
+con = sqlite3.connect("tracker.db")
+tables = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+if not tables:
+    print("")                     # empty database: migrate from scratch
+elif "shipment_plans" in tables:
+    print("469bf49dd801")         # already has the shipment tables
+elif "use_by" in {r[1] for r in con.execute("PRAGMA table_info(products)")}:
+    print("68e373db239a")         # initial schema + use_by
+else:
+    print("da6e9b47821c")         # initial schema only
+PY
+)"
+  if [ -n "$BASELINE" ]; then
+    printf '    detected baseline: %s\n' "$BASELINE"
+    RESTORE_NEEDED=1
+    venv/bin/alembic stamp "$BASELINE" || die "could not stamp the baseline revision"
+    ok "stamped at $BASELINE — only newer migrations will run"
+  else
+    ok "empty database; migrating from scratch"
+  fi
+fi
+
 BEFORE_REV="$(venv/bin/alembic current 2>/dev/null | tail -1 || echo 'unknown')"
 printf '    before: %s\n' "$BEFORE_REV"
 RESTORE_NEEDED=1
@@ -171,6 +265,20 @@ venv/bin/alembic upgrade head || die "alembic upgrade failed — the schema may 
     partially migrated. The backup is at $BACKUP_FILE"
 printf '    after:  %s\n' "$(venv/bin/alembic current 2>/dev/null | tail -1)"
 ok "schema is at head"
+
+# Prove the new tables exist rather than trusting the exit code.
+venv/bin/python - <<'PY' || die "the migration reported success but the tables are missing"
+import sqlite3, sys
+con = sqlite3.connect("tracker.db")
+have = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+need = {"shipment_plans", "shipment_plan_items", "shipment_packing_days",
+        "shipment_packing_entries", "product_categories", "users"}
+missing = sorted(need - have)
+if missing:
+    print("    missing tables:", missing)
+    sys.exit(1)
+print("    all shipment and user tables present")
+PY
 
 # ── 6. Restart and verify ───────────────────────────────────────────────────
 say "Restarting $SERVICE"
@@ -211,6 +319,19 @@ check_route /static/theme.css 200 "light theme stylesheet" || FAILED=1
 check_route /ops-page 303 "packing screen (redirects when signed out)" || FAILED=1
 check_route /users-page 303 "users panel (redirects when signed out)"  || FAILED=1
 [ "$FAILED" -eq 0 ] || die "the app is running but is not serving the new build"
+
+# ── 7. Configuration the new features need ──────────────────────────────────
+# Not fatal — the app runs fine without these — but silent absence is what makes a
+# feature look broken rather than unconfigured.
+say "Checking configuration"
+if grep -q '^OPS_PASSWORD=..*' .env 2>/dev/null; then
+  ok "OPS_PASSWORD is set (the shared packing login works)"
+else
+  warn "OPS_PASSWORD is not set in .env."
+  warn "  The warehouse cannot use the shared packing login until it is. Either add it:"
+  warn "      echo 'OPS_PASSWORD=choose-something' >> $APP_DIR/.env && sudo systemctl restart $SERVICE"
+  warn "  ...or create a named Packer account from the Users screen, which is better."
+fi
 
 trap - EXIT
 cat <<EOF
