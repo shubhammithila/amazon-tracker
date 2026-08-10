@@ -25,6 +25,13 @@
      scroll-free instead by pinning the product name and having exactly ONE
      input, so nothing the packer must reach is ever off-screen.
 
+     Column order is PRODUCT · SIZE · PACKED NOW, then the reference figures.
+     Size and the input were originally separated from the name by three numbers,
+     so entering a count meant reading a name at the left edge and typing at the
+     right edge — which is how a count lands on the wrong row. Size is set as
+     large as the name, because "Chana Sattu" identifies nothing on its own: every
+     product here comes in three or four sizes.
+
   3. CARTONS ARE ONE NUMBER FOR THE WHOLE DAY, not a column. "carton is not item
      wise. it is random. like 500 units packed today in 20 cartons." A carton
      holds whatever was being packed when it was filled, so a per-SKU box asked
@@ -86,25 +93,57 @@ input[type="date"]{background:var(--bg);border:1px solid var(--border);border-ra
 .tot.ok .num{color:var(--green)}
 
 /* ── The table ──────────────────────────────────────────────────────────────
-   Sized for a phone held in one hand. The product name is pinned left and the
-   Packed input is the last column, so the two things that matter are at the two
-   edges and the eye never has to hold a row in memory across a scroll.
+   Sized for a phone held in one hand.
+
+   The three columns that decide what happens — PRODUCT, SIZE, PACKED NOW — are
+   adjacent and leftmost, in that order. Size sat two columns from the name and
+   the input sat at the far right, which meant reading a name, jumping the eye
+   across four reference numbers, and typing. That is how a count lands on the
+   wrong row. The reference figures (Plan, Packed earlier, Still needed) now come
+   after: they are consulted, not acted on.
 
    Font sizes are larger than the owner's grid throughout: this is read at arm's
    length in warehouse lighting, not at a desk. */
+
+/* NO `top` on the sticky header, and that is the whole fix for a bug that hid a
+   product row.
+
+   `overflow-x:auto` makes this element a scroll container on BOTH axes — the y
+   axis computes to `auto` whatever you write, so `overflow-y:visible` here is
+   inert (measured: it still computes to `auto`). A sticky thead inside therefore
+   positions against THIS box, not the page. `top:56px`, meant to clear the page
+   header, parked the header 56px *down inside the table* — exactly on top of the
+   first row, hiding it completely.
+
+   So the header simply is not offset. It is not sticky either: the offset was the
+   only thing making it so, and a header that scrolls away is a far smaller problem
+   than one that eats a row. Re-add a `top` here and it comes straight back;
+   tests/test_ops_ui.py fails if you do. */
 .table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
 table{width:100%;border-collapse:collapse;min-width:560px}
-thead th{background:var(--surface2);color:var(--text-muted);padding:9px 8px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:center;white-space:nowrap;border-bottom:1px solid var(--border-strong);position:sticky;top:56px;z-index:3}
+thead th{background:var(--surface2);color:var(--text-muted);padding:9px 8px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:center;white-space:nowrap;border-bottom:1px solid var(--border-strong)}
 thead th.col-input{background:var(--accent-soft);color:var(--accent)}
 tbody tr{border-bottom:1px solid var(--border)}
 tbody tr.done{background:var(--green-soft)}
 tbody tr.dirty{background:var(--yellow-soft)}
 td{padding:7px 8px;font-size:14px;text-align:center;white-space:nowrap}
-td.name{text-align:left;white-space:normal;min-width:150px}
-.p-name{font-weight:600;font-size:15px;line-height:1.3}
+/* Capped, not just floored. Left to size itself the product column took 405px of a
+   1280px page, which put a 200px gap between "Chana Sattu" and the "1 kg" that
+   completes it — the two read as unrelated cells. The reference columns to the
+   right take the width instead; they are the ones it costs nothing to spread. */
+td.name,th.freeze{text-align:left;white-space:normal;min-width:150px;max-width:250px;width:250px}
+.p-name{font-weight:600;font-size:16px;line-height:1.3}
 .p-meta{font-size:11px;color:var(--text-dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:2px}
-.p-size{font-weight:700}
-.t-left{font-weight:700}
+/* Size reads as loudly as the product name, because "Chana Sattu" alone does not
+   identify anything to pack — every product here comes in three or four sizes, so
+   the name and the size together are the smallest useful unit of instruction.
+   Left-aligned and tight against the name for the same reason. */
+.p-size{font-weight:700;font-size:16px;text-align:left;padding-left:0}
+th.col-size{text-align:left}
+/* The reference numbers. Present so "Still needed" is checkable, deliberately
+   quieter than the three columns to their left. */
+td.ref{color:var(--text-muted);font-size:13px}
+.t-left{font-weight:700;font-size:14px}
 .t-left.zero{color:var(--green)}
 .t-left.pos{color:var(--orange)}
 .no-sku{color:var(--red);font-weight:700;font-size:11px}
@@ -410,30 +449,34 @@ function renderRows(){
             · ${esc(i.asin)}</div>
         </td>
         <td class="p-size">${esc(i.weight_label)}</td>
-        <td>${n(i.planned)}</td>
-        <td>${n(i.packed_before)}</td>
-        <td class="t-left ${left === 0 ? "zero" : "pos"}">${n(left)}</td>
         <td><input class="qty" type="number" min="0" inputmode="numeric"
                    value="${units || ""}" placeholder="0"${locked}
                    aria-label="Units packed"
                    data-index="${index}" data-field="units"/></td>
+        <td class="t-left ${left === 0 ? "zero" : "pos"}">${n(left)}</td>
+        <td class="ref">${n(i.planned)}</td>
+        <td class="ref">${n(i.packed_before)}</td>
       </tr>`;
   }).join("");
 
-  /* "Plan" and "Packed earlier" are here because "Still needed" is a subtraction
-     of them, and a lone target number invites a call to the owner to check it.
-     Nothing else from the owner's 20-column grid appears: 7d sales, projection,
-     FBA stock, deficit, In stock and To make are all planning figures, and none
-     of them changes what gets boxed today. */
+  /* Column order is the work order: WHAT (product), WHICH SIZE, HOW MANY — the
+     three cells that decide what happens, adjacent and leftmost.
+
+     "Still needed" comes straight after, because it is the number he is working
+     towards. "Plan" and "Packed earlier" trail at the end: they only exist so
+     "Still needed" is checkable rather than a figure to be taken on trust, which
+     otherwise prompts a call to the owner. Nothing else from the owner's grid
+     appears — 7d sales, projection, FBA stock, deficit, In stock and To make are
+     planning figures and none of them changes what gets boxed today. */
   $("packingArea").innerHTML = shown.length
     ? `<div class="table-wrap"><table>
          <thead><tr>
            <th class="freeze">Product</th>
-           <th>Size</th>
+           <th class="col-size">Size</th>
+           <th class="col-input">Packed now</th>
+           <th>Still needed</th>
            <th>Plan</th>
            <th>Packed earlier</th>
-           <th>Still needed</th>
-           <th class="col-input">Packed now</th>
          </tr></thead>
          <tbody>${body}</tbody>
        </table></div>`

@@ -200,6 +200,89 @@ def test_the_packer_gets_the_numbers_he_needs_to_do_the_count(source):
         assert needed in headers, f"the table has no {needed!r} column: {headers}"
 
 
+def _header_order(source: str) -> list[str]:
+    return [
+        re.sub(r"<[^>]+>", "", h).strip().lower()
+        for h in re.findall(r"<th[^>]*>(.*?)</th>", _without_comments(source), flags=re.S)
+    ]
+
+
+def test_the_three_columns_that_matter_are_adjacent_and_first(source):
+    """Product, size, then the input — in that order, with nothing between them.
+
+    The input started at the far right, four columns from the name. Entering a count
+    then meant reading a product at the left edge and typing at the right edge, with
+    three reference numbers in between; that is how a count lands on the wrong row.
+    The reference figures are consulted, not acted on, so they come after.
+    """
+    order = _header_order(source)
+    assert order[:3] == ["product", "size", "packed now"], (
+        f"the work columns are not adjacent and leftmost: {order}"
+    )
+
+
+def test_the_size_is_as_prominent_as_the_product_name(source):
+    """"make the size font bigger. and closer to the product name."
+
+    Not decoration: "Chana Sattu" identifies nothing to pack, because every product
+    here comes in three or four sizes. The name and the size together are the
+    smallest useful unit of instruction, so they are set to match.
+
+    Asserted as a relation between the two rules rather than a literal size, so the
+    type scale can be tuned without rewriting the test as a copy of the CSS.
+    """
+    body = _without_comments(source)
+
+    def font_px(selector: str) -> float:
+        match = re.search(
+            re.escape(selector) + r"\{[^}]*font-size:\s*([\d.]+)px", body
+        )
+        assert match, f"no font-size found for {selector}"
+        return float(match.group(1))
+
+    assert font_px(".p-size") >= font_px(".p-name"), (
+        "the size is set smaller than the product name, so it reads as a footnote "
+        "to a name that cannot identify a product on its own"
+    )
+    # And it sits against the name rather than centred in a wide column.
+    assert re.search(r"\.p-size\{[^}]*text-align:\s*left", body), (
+        "the size is centred in its column, which puts a gap between it and the "
+        "product name it belongs to"
+    )
+
+
+# ─── The sticky header must not cover the first row ──────────────────────────
+
+def test_the_table_header_is_not_offset_into_the_first_row(source):
+    """A real bug that hid a product row, and a genuinely surprising one.
+
+    `overflow-x:auto` on the wrapper makes it a scroll container on BOTH axes — the
+    y axis computes to `auto` no matter what you write, so `overflow-y:visible` is
+    inert there (measured in a browser: still `auto`). A sticky thead inside it
+    therefore positions against THAT box rather than the page, and `top:56px` —
+    added to clear the page header — parked the header 56px *down inside the table*,
+    directly on top of the first row. The row was rendered, present in the DOM, and
+    invisible.
+
+    The guard is on the offset, because that is what was load-bearing. Verified by
+    re-adding `top:56px` in a live page and measuring a 56px overlap between the
+    header's bottom and the first row's top.
+    """
+    body = _without_comments(source)
+
+    thead = re.search(r"thead th\{([^}]*)\}", body)
+    assert thead, "no thead th rule"
+    rules = thead.group(1).replace(" ", "")
+
+    offset = re.search(r"top:(-?[\d.]+)(px)?", rules)
+    if offset:
+        assert float(offset.group(1)) == 0, (
+            f"the table header carries top:{offset.group(1)}px. Inside .table-wrap "
+            "that offset is measured from the wrapper, not the page, so the header "
+            "lands on the first product row and hides it."
+        )
+
+
 # ─── Ops must not be offered admin actions ───────────────────────────────────
 
 #: Admin-only endpoints. A button here would 403 — and a page of buttons that
