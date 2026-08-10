@@ -83,16 +83,36 @@ async def invoice_history(request: Request, _=Depends(require_auth), db: AsyncSe
     ])
 
 
-@router.post("/save")
-async def save_invoice(request: Request, _=Depends(require_auth), db: AsyncSession = Depends(get_db)):
-    """Save a finalized invoice to database."""
+async def _json_object(request: Request):
+    """The body as a dict, or (None, 400). Same contract as the shipment router's.
+
+    Extracted from ``/save``, which had this guard, so the two ``/generate-*`` routes
+    could stop being the only ones without it — they read ``data.get(...)`` straight
+    after ``request.json()`` and 500'd on ``null``, ``[]``, ``"str"`` and a truncated
+    body. Found by QA.
+
+    A 500 here is worse than untidy: the owner is at the last step of raising a real
+    invoice, and an opaque failure tells him nothing about what to correct.
+    """
     try:
         data = await request.json()
     except Exception:
-        return JSONResponse({"error": "Request body must be valid JSON"}, status_code=400)
-
+        return None, JSONResponse(
+            {"error": "Request body must be valid JSON"}, status_code=400
+        )
     if not isinstance(data, dict):
-        return JSONResponse({"error": "Request body must be a JSON object"}, status_code=400)
+        return None, JSONResponse(
+            {"error": "Request body must be a JSON object"}, status_code=400
+        )
+    return data, None
+
+
+@router.post("/save")
+async def save_invoice(request: Request, _=Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    """Save a finalized invoice to database."""
+    data, error = await _json_object(request)
+    if error:
+        return error
 
     # GST invoice numbers are a legally sequential series. An empty or itemless
     # payload used to be accepted, which persisted a zero-value invoice and
@@ -203,8 +223,14 @@ async def save_invoice(request: Request, _=Depends(require_auth), db: AsyncSessi
 
 @router.post("/generate-excel")
 async def generate_excel(request: Request, _=Depends(require_auth)):
-    """Generate Excel invoice from submitted invoice data."""
-    data = await request.json()
+    """Generate Excel invoice from submitted invoice data.
+
+    Allocates NO invoice number — that is ``/save``'s job alone, and it is what makes
+    this route safe to retry after a failed download.
+    """
+    data, error = await _json_object(request)
+    if error:
+        return error
     buffer = generate_excel_invoice(data)
     shipment_id = data.get("details", {}).get("shipment_id", "invoice")
     filename = f"FBA_Invoice_{shipment_id}.xlsx"
@@ -218,8 +244,10 @@ async def generate_excel(request: Request, _=Depends(require_auth)):
 
 @router.post("/generate-pdf")
 async def generate_pdf(request: Request, _=Depends(require_auth)):
-    """Generate PDF invoice from submitted invoice data."""
-    data = await request.json()
+    """Generate PDF invoice from submitted invoice data. Allocates no number."""
+    data, error = await _json_object(request)
+    if error:
+        return error
     buffer = generate_pdf_invoice(data)
     shipment_id = data.get("details", {}).get("shipment_id", "invoice")
     filename = f"FBA_Invoice_{shipment_id}.pdf"

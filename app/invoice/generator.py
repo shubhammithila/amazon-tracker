@@ -5,7 +5,26 @@ from datetime import datetime
 from typing import Optional
 
 import pandas as pd
+from app.invoice.hsn_codes import DEFAULT_HSN
 from openpyxl import Workbook
+
+
+def _as_number(value, default=0):
+    """A quantity or rate as a number, whatever the browser sent.
+
+    Both documents multiply these, so a missing key or a string "100" from a
+    hand-edited row is a 500 on the download rather than a wrong figure. Returning
+    the default keeps the line on the document with a visible 0, which the owner can
+    see and correct before sending — the failure mode a tax document should have.
+
+    `float` rather than `int`: rates carry paise.
+    """
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -149,9 +168,13 @@ def generate_excel_invoice(invoice_data: dict) -> io.BytesIO:
 
     for i, item in enumerate(items, 1):
         row += 1
-        qty = item["quantity"]
-        rate = item.get("rate", 0)
-        gst_rate = item.get("gst_rate", 5)
+        # `.get()` with a numeric coercion, because these three are multiplied. A
+        # missing `quantity` raised KeyError (a 500 download), and a string "100" from
+        # a hand-edited row would raise TypeError on the multiply — both at the moment
+        # the owner is trying to produce a real invoice.
+        qty = _as_number(item.get("quantity"))
+        rate = _as_number(item.get("rate"))
+        gst_rate = _as_number(item.get("gst_rate"), default=5)
         taxable = round(qty * rate, 2)
         igst = round(taxable * gst_rate / 100, 2)
         total = round(taxable + igst, 2)
@@ -161,9 +184,19 @@ def generate_excel_invoice(invoice_data: dict) -> io.BytesIO:
         grand_total += total
         total_qty += qty
 
+        # `.get()` throughout, like every other field on this row. These three were
+        # hard lookups, so an item missing `sku`, `title` or `hsn_code` raised
+        # KeyError and the download became a 500 — indistinguishable from the app
+        # being down, at the moment the owner is trying to raise an invoice.
+        #
+        # A blank cell is the right failure: it is visible on the document before it
+        # is sent, whereas a 500 tells him nothing about which line is wrong. HSN
+        # falls back to the module default rather than blank, because a GST invoice
+        # with an empty HSN column is rejected outright.
         values = [
-            i, item["sku"], item.get("short_title", item["title"]),
-            item["hsn_code"], f"{gst_rate}%", item.get("asin", ""),
+            i, item.get("sku", ""),
+            item.get("short_title") or item.get("title", ""),
+            item.get("hsn_code") or DEFAULT_HSN, f"{gst_rate}%", item.get("asin", ""),
             item.get("fnsku", ""), rate, qty, taxable,
             f"{gst_rate}%", igst, total
         ]
@@ -308,9 +341,10 @@ def _generate_pdf_reportlab(invoice_data: dict) -> io.BytesIO:
     total_qty = 0
 
     for i, item in enumerate(items, 1):
-        qty = item["quantity"]
-        rate = item.get("rate", 0)
-        gst_rate = item.get("gst_rate", 5)
+        # Same coercion as the Excel path, for the same reason.
+        qty = _as_number(item.get("quantity"))
+        rate = _as_number(item.get("rate"))
+        gst_rate = _as_number(item.get("gst_rate"), default=5)
         taxable = round(qty * rate, 2)
         igst = round(taxable * gst_rate / 100, 2)
         total = round(taxable + igst, 2)
@@ -319,14 +353,16 @@ def _generate_pdf_reportlab(invoice_data: dict) -> io.BytesIO:
         grand_total += total
         total_qty += qty
 
-        # Title: 12 words for better readability
-        short_title = " ".join(item["title"].split()[:12])
+        # Title: 12 words for better readability. `.get()` for the same reason as the
+        # Excel path — a missing key here 500'd the download rather than producing a
+        # document with a visibly blank cell.
+        short_title = " ".join(str(item.get("title") or "").split()[:12])
 
         table_data.append([
             str(i),
-            Paragraph(item["sku"], tiny),
+            Paragraph(item.get("sku", ""), tiny),
             Paragraph(short_title, small),
-            item["hsn_code"],
+            item.get("hsn_code") or DEFAULT_HSN,
             f"{gst_rate}%",
             item.get("asin", ""),
             item.get("fnsku", ""),
