@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Users — Amazon Tracker</title>
+{#
+  Create logins and decide what each person may see. Administrators only.
+
+  Four things about this page are deliberate:
+
+  1. **The generated password is shown ONCE.** It is returned by the create/reset
+     request and never stored in readable form, so there is no endpoint that could show
+     it again. The panel says so plainly, because "I'll look it up later" is the
+     natural assumption and it is wrong.
+
+  2. **The area list is rendered from the server's own list**, not hardcoded here.
+     Adding an area to app/permissions.py makes it appear on this screen with the same
+     key, label and order the server uses. A duplicated list would drift, and drift in
+     a permissions UI means ticking a box that grants nothing.
+
+  3. **Admin is a separate switch from the tick list**, matching the model. It is
+     described as what it is — can change other people's access — because "admin" alone
+     reads like a seniority label rather than a capability.
+
+  4. **Disable is offered before Delete.** A departed packer's username is stamped on
+     the packing days he submitted; deleting the row makes that history unattributable.
+#}
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px}
+header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
+header h1{font-size:16px;font-weight:600}
+.nav-links{display:flex;gap:16px;margin-left:32px}
+.nav-links a{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
+.nav-links a:hover,.nav-links a.active{color:var(--text);border-color:var(--accent)}
+.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:13px;text-decoration:none}
+main{max-width:1080px;margin:0 auto;padding:20px}
+h2{font-size:20px;font-weight:600;margin-bottom:4px}
+.subtitle{color:var(--text-muted);font-size:13px;margin-bottom:16px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px;box-shadow:var(--shadow)}
+.card h3{font-size:14px;margin-bottom:4px}
+.card p.help{color:var(--text-muted);font-size:12.5px;margin-bottom:12px;line-height:1.55}
+
+.banner{border-radius:8px;padding:11px 14px;font-size:13px;margin-bottom:14px;line-height:1.55}
+.banner.warn{background:var(--yellow-soft);border:1px solid var(--yellow);color:var(--yellow)}
+.banner.info{background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue)}
+.banner.error{background:var(--red-soft);border:1px solid var(--red);color:var(--red)}
+.banner.good{background:var(--green-soft);border:1px solid var(--green);color:var(--green)}
+
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
+.field{display:flex;flex-direction:column;gap:4px}
+.field label{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;font-weight:700}
+.field input,.field select{background:var(--surface);border:1px solid var(--border-strong);border-radius:7px;color:var(--text);padding:9px 11px;font-size:14px;min-height:40px}
+.field input:focus,.field select:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent)}
+.field input[type=text]{min-width:190px}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:7px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;min-height:40px}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border-strong);border-radius:7px;padding:8px 14px;font-size:13px;cursor:pointer}
+.btn-outline:hover{border-color:var(--accent)}
+.btn-danger{background:transparent;color:var(--red);border:1px solid var(--red);border-radius:7px;padding:8px 14px;font-size:13px;cursor:pointer}
+.btn-danger:hover{background:var(--red-soft)}
+
+/* The tick list. A grid so the labels line up and the help text can sit under each
+   without the rows jumping about. */
+.areas{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;margin-top:12px}
+.area{display:flex;gap:9px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);cursor:pointer}
+.area:hover{border-color:var(--accent)}
+.area input{margin-top:2px;width:17px;height:17px;flex:none;cursor:pointer}
+.area .a-label{font-size:13.5px;font-weight:600}
+.area .a-help{font-size:11.5px;color:var(--text-muted);line-height:1.45;margin-top:2px}
+.area.implied{opacity:.75}
+.area.implied .a-help{color:var(--accent)}
+
+table{width:100%;border-collapse:separate;border-spacing:0}
+thead th{background:var(--surface2);color:var(--text-muted);padding:9px 10px;text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--border-strong);white-space:nowrap}
+tbody td{padding:11px 10px;font-size:13.5px;border-bottom:1px solid var(--border);vertical-align:top}
+tbody tr.disabled{opacity:.55}
+tbody tr:hover{background:var(--accent-soft)}
+.u-name{font-weight:600;font-size:14.5px}
+.u-meta{font-size:11.5px;color:var(--text-dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:2px}
+.pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.pill.admin{background:var(--accent-soft);color:var(--accent)}
+.pill.off{background:var(--surface2);color:var(--text-muted)}
+.pill.new{background:var(--yellow-soft);color:var(--yellow)}
+.tags{display:flex;gap:5px;flex-wrap:wrap}
+.tag{background:var(--surface2);color:var(--text-muted);border-radius:5px;padding:2px 7px;font-size:11.5px}
+.acts{display:flex;gap:6px;flex-wrap:wrap}
+
+/* The one-time credential display. Loud on purpose: it cannot be recovered. */
+.creds{background:var(--green-soft);border:2px solid var(--green);border-radius:10px;padding:16px;margin-bottom:16px}
+.creds h3{font-size:14px;color:var(--green);margin-bottom:8px}
+.creds .pair{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.creds code{background:var(--surface);border:1px solid var(--border-strong);border-radius:6px;padding:8px 12px;font-size:16px;font-weight:700;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;user-select:all}
+.creds .once{font-size:12.5px;color:var(--green);line-height:1.5}
+.empty{text-align:center;padding:28px;color:var(--text-muted);font-size:13.5px;line-height:1.6}
+</style>
+<link rel="stylesheet" href="/static/theme.css"/>
+</head>
+<body>
+<header>
+  <span>📦</span><h1>Amazon Tracker v2</h1>
+  {% include "nav.html" %}
+  <div class="header-right"><a href="/logout">Logout</a></div>
+</header>
+<main>
+<h2>👤 Users &amp; access</h2>
+<p class="subtitle">Create a login for someone and tick the sections they need. Only
+  administrators can see this screen.</p>
+
+<div id="messages"></div>
+<div id="creds"></div>
+
+<div class="card">
+  <h3>Add a person</h3>
+  <p class="help">Type their name and press Create — the username and password are
+    generated for you. Give them the password once; it cannot be shown again
+    afterwards, only reset.</p>
+  <div class="row">
+    <div class="field">
+      <label for="fullName">Full name</label>
+      <input type="text" id="fullName" placeholder="e.g. Ravi Kumar" autocomplete="off"/>
+    </div>
+    <div class="field">
+      <label for="username">Username</label>
+      <input type="text" id="username" placeholder="generated from the name"
+             autocomplete="off" autocapitalize="none" spellcheck="false"/>
+    </div>
+    <div class="field">
+      <label for="preset">Access</label>
+      <select id="preset"></select>
+    </div>
+    <button class="btn" id="createBtn">Create login</button>
+  </div>
+
+  <div class="areas" id="createAreas"></div>
+
+  <label class="area" style="margin-top:10px;max-width:420px">
+    <input type="checkbox" id="createAdmin"/>
+    <div>
+      <div class="a-label">Administrator</div>
+      <div class="a-help">Can add people and change what everyone else may see.
+        Also sees every section.</div>
+    </div>
+  </label>
+</div>
+
+<div class="card">
+  <h3>People</h3>
+  <p class="help">Changes save immediately and take effect on their next click — a
+    signed-in user loses access straight away, without waiting for their session to
+    expire.</p>
+  <div id="userList"><div class="empty">Loading…</div></div>
+</div>
+</main>
+
+<script>
+/* ── State ─────────────────────────────────────────────────────────────────
+   `areas` and `presets` come from the server so this page cannot disagree with
+   app/permissions.py about what exists or what a preset means. */
+let areas = [], presets = [], implied = {}, users = [];
+let sharedPasswordActive = false, sharedOpsActive = false;
+
+const $ = id => document.getElementById(id);
+
+function esc(s){
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function say(kind, html){
+  $("messages").innerHTML = `<div class="banner ${kind}">${html}</div>`;
+}
+
+/* ── Loading ───────────────────────────────────────────────────────────── */
+
+async function load(){
+  let r, data;
+  try{
+    r = await fetch("/admin/users");
+    data = await r.json();
+  }catch(err){
+    $("userList").innerHTML = '<div class="empty">Could not reach the server.</div>';
+    return;
+  }
+  if(!r.ok){
+    $("userList").innerHTML =
+      `<div class="empty">${esc(data.error || "Could not load users.")}</div>`;
+    return;
+  }
+
+  areas = data.areas || [];
+  presets = data.presets || [];
+  implied = data.implied || {};
+  users = data.users || [];
+  sharedPasswordActive = !!data.shared_password_active;
+  sharedOpsActive = !!data.shared_ops_password_active;
+
+  /* Order matters: the boxes must EXIST before a preset can tick them.
+     renderPresets() used to call applyPreset() itself, which ran before
+     renderCreateAreas() had built anything — so the dropdown said "Packer" above six
+     empty boxes, and the next Create would have made an account with no access at all.
+     applyPreset() is called once here, last, when both halves are on the page. */
+  renderPresets();
+  renderCreateAreas();
+  applyPreset();
+  renderWarnings();
+  renderUsers();
+}
+
+function renderPresets(){
+  $("preset").innerHTML = presets
+    .map(p => `<option value="${esc(p.key)}">${esc(p.label)}</option>`)
+    .join("") + '<option value="custom">Custom — tick below</option>';
+  // Packer is the common case for a new login, so it is the default rather than
+  // Owner: a mis-click on the safest option costs nothing.
+  $("preset").value = presets.some(p => p.key === "packer") ? "packer" : "custom";
+}
+
+/** One tick box per area, built from the server's list. */
+function areaBoxes(prefix, granted){
+  const chosen = new Set(granted || []);
+  return areas.map(a => `
+    <label class="area" for="${prefix}-${esc(a.key)}">
+      <input type="checkbox" id="${prefix}-${esc(a.key)}" data-area="${esc(a.key)}"
+             ${chosen.has(a.key) ? "checked" : ""}/>
+      <div>
+        <div class="a-label">${esc(a.label)}</div>
+        <div class="a-help">${esc(a.help)}</div>
+      </div>
+    </label>`).join("");
+}
+
+function renderCreateAreas(){
+  $("createAreas").innerHTML = areaBoxes("new", []);
+  markImplied("createAreas");
+}
+
+/* Some areas are granted automatically by another (Shipment includes Daily packing).
+   Showing that, rather than silently ticking a box the user did not tick, is the
+   difference between the screen explaining itself and appearing to have a mind of its
+   own. */
+function markImplied(containerId){
+  const box = $(containerId);
+  const checked = new Set(
+    Array.from(box.querySelectorAll("input[data-area]"))
+      .filter(i => i.checked).map(i => i.dataset.area)
+  );
+  const impliedNow = new Set();
+  for(const [source, targets] of Object.entries(implied)){
+    if(checked.has(source)) (targets || []).forEach(t => impliedNow.add(t));
+  }
+  box.querySelectorAll("input[data-area]").forEach(input => {
+    const label = input.closest(".area");
+    const help = label.querySelector(".a-help");
+    const auto = impliedNow.has(input.dataset.area) && !checked.has(input.dataset.area);
+    label.classList.toggle("implied", auto);
+    if(auto && !help.dataset.original){
+      help.dataset.original = help.textContent;
+      help.textContent = "Included automatically with Shipment.";
+    }else if(!auto && help.dataset.original){
+      help.textContent = help.dataset.original;
+      delete help.dataset.original;
+    }
+  });
+}
+
+function applyPreset(){
+  const key = $("preset").value;
+  const preset = presets.find(p => p.key === key);
+  const chosen = new Set(preset ? preset.areas : []);
+  $("createAreas").querySelectorAll("input[data-area]").forEach(i => {
+    if(preset) i.checked = chosen.has(i.dataset.area);
+  });
+  $("createAdmin").checked = key === "owner";
+  markImplied("createAreas");
+}
+
+function renderWarnings(){
+  const parts = [];
+  /* While APP_PASSWORD still works, anyone who knows it is a full administrator
+     regardless of what is on this screen. Said plainly, because the natural
+     assumption after creating named logins is that they replaced it — and it is
+     also the recovery path, so it should be retired knowingly, not by surprise. */
+  if(sharedPasswordActive){
+    parts.push(
+      '<div class="banner warn"><strong>The shared owner password still works.</strong> '
+      + 'Anyone who knows <code>APP_PASSWORD</code> can sign in as a full administrator '
+      + 'with no username. Keep it while you set these accounts up — it is how you get '
+      + 'back in if something goes wrong — then clear it on the server and restart.</div>'
+    );
+  }
+  if(sharedOpsActive){
+    parts.push(
+      '<div class="banner info">The shared packing password (<code>OPS_PASSWORD</code>) '
+      + 'also still works and grants the Daily packing screen.</div>'
+    );
+  }
+  $("messages").innerHTML = parts.join("");
+}
+
+/* ── The user list ─────────────────────────────────────────────────────── */
+
+function renderUsers(){
+  if(!users.length){
+    $("userList").innerHTML =
+      '<div class="empty">No logins yet. Add one above.</div>';
+    return;
+  }
+
+  /* Every value interpolated into a row below is either escaped through esc() or an
+     integer id from the server's JSON. The inline handlers pass ONLY ids — never a
+     username — for the reason spelled out in showCredentials(): an HTML attribute is
+     decoded before its JavaScript is parsed, so escaping cannot make a string safe
+     there. The functions look the user up by id from `users` instead. */
+  const rows = users.map(u => {
+    const pills = [];
+    if(u.is_admin) pills.push('<span class="pill admin">Admin</span>');
+    if(!u.is_active) pills.push('<span class="pill off">Disabled</span>');
+    if(u.never_signed_in) pills.push('<span class="pill new">Not signed in yet</span>');
+
+    const tags = u.is_admin
+      ? '<span class="tag">Everything</span>'
+      : (u.describe || []).map(d => `<span class="tag">${esc(d)}</span>`).join("");
+
+    return `
+      <tr class="${u.is_active ? "" : "disabled"}">
+        <td>
+          <div class="u-name">${esc(u.full_name || u.username)} ${pills.join(" ")}</div>
+          <div class="u-meta">${esc(u.username)}</div>
+        </td>
+        <td><div class="tags">${tags}</div></td>
+        <td>
+          <div class="acts">
+            <button class="btn-outline" onclick="editUser(${u.id})">Change access</button>
+            <button class="btn-outline" onclick="resetPassword(${u.id})">Reset password</button>
+            <button class="btn-outline" onclick="toggleActive(${u.id}, ${u.is_active ? "false" : "true"})">
+              ${u.is_active ? "Disable" : "Enable"}</button>
+            <button class="btn-danger" onclick="removeUser(${u.id})">Delete</button>
+          </div>
+          <div id="edit-${u.id}"></div>
+        </td>
+      </tr>`;
+  }).join("");
+
+  $("userList").innerHTML = `
+    <table><thead><tr>
+      <th>Person</th><th>Can see</th><th>Actions</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function editUser(id){
+  const user = users.find(u => u.id === id);
+  if(!user) return;
+  const box = $(`edit-${id}`);
+  if(box.innerHTML){ box.innerHTML = ""; return; }  // second click closes
+
+  box.innerHTML = `
+    <div style="margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg)">
+      <div class="areas" id="areas-${id}">${areaBoxes("u" + id, user.areas)}</div>
+      <label class="area" style="margin-top:10px">
+        <input type="checkbox" id="admin-${id}" ${user.is_admin ? "checked" : ""}/>
+        <div>
+          <div class="a-label">Administrator</div>
+          <div class="a-help">Can add people and change what everyone else may see.</div>
+        </div>
+      </label>
+      <div style="margin-top:10px;display:flex;gap:8px">
+        <button class="btn" onclick="saveUser(${id})">Save access</button>
+        <button class="btn-outline" onclick="editUser(${id})">Cancel</button>
+      </div>
+    </div>`;
+  const container = $(`areas-${id}`);
+  container.addEventListener("change", () => markImplied(`areas-${id}`));
+  markImplied(`areas-${id}`);
+}
+
+function chosenAreas(containerId){
+  return Array.from($(containerId).querySelectorAll("input[data-area]"))
+    .filter(i => i.checked).map(i => i.dataset.area);
+}
+
+async function saveUser(id){
+  const body = {
+    areas: chosenAreas(`areas-${id}`),
+    is_admin: $(`admin-${id}`).checked,
+  };
+  const r = await fetch(`/admin/users/${id}`, {
+    method: "PATCH",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  const data = await r.json();
+  if(!r.ok){ say("error", esc(data.error || "Could not save.")); return; }
+  say("good", "Access updated.");
+  await load();
+}
+
+async function toggleActive(id, active){
+  const user = users.find(u => u.id === id);
+  if(active === false && !confirm(
+      `Disable ${user.username}? They will not be able to sign in. Their name stays on `
+      + "the packing days they already submitted.")) return;
+
+  const r = await fetch(`/admin/users/${id}`, {
+    method: "PATCH",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({is_active: active}),
+  });
+  const data = await r.json();
+  if(!r.ok){ say("error", esc(data.error || "Could not change that.")); return; }
+  await load();
+}
+
+async function removeUser(id){
+  const user = users.find(u => u.id === id);
+  if(!confirm(
+      `Delete ${user.username} permanently?\n\nDisabling is usually better — a deleted `
+      + "account's name can no longer be matched to the packing days it submitted.")) return;
+
+  const r = await fetch(`/admin/users/${id}`, {method: "DELETE"});
+  if(!r.ok){
+    const data = await r.json();
+    say("error", esc(data.error || "Could not delete."));
+    return;
+  }
+  say("good", "Login deleted.");
+  await load();
+}
+
+/* ── Credentials, shown once ───────────────────────────────────────────── */
+
+function showCredentials(username, password, what){
+  /* Rendered into its own region rather than an alert(), so it can be read, copied and
+     photographed. `user-select:all` on the code element makes one tap select the whole
+     password — these get typed on a warehouse phone.
+
+     **The password is never interpolated into an inline handler.** It would be the
+     obvious way to wire up Copy, and it is unsafe: an HTML attribute is HTML-decoded
+     BEFORE the JavaScript in it is parsed, so `esc()` turning `'` into `&#39;` does not
+     protect the JS string — the browser turns it back into a quote first and the
+     argument list breaks. Generated passwords and validated usernames happen to contain
+     no quotes today, which is exactly the kind of accident that stops being true later.
+     The values are set with textContent and read back from the DOM instead, so they are
+     never parsed as code at all. Same rule as templates/ops.html. */
+  const box = $("creds");
+  box.innerHTML = `
+    <div class="creds">
+      <h3></h3>
+      <div class="pair"><strong>Username</strong> <code id="cred-user"></code></div>
+      <div class="pair"><strong>Password</strong> <code id="cred-pass"></code></div>
+      <div class="once"><strong>Write this down now.</strong> The password is stored
+        scrambled and cannot be shown again — if it is lost, use
+        <em>Reset password</em> to make a new one.</div>
+      <div style="margin-top:10px">
+        <button class="btn-outline" id="cred-copy">Copy both</button>
+        <button class="btn-outline" id="cred-done">I have saved it</button>
+      </div>
+    </div>`;
+  box.querySelector("h3").textContent = "✅ " + what;
+  $("cred-user").textContent = username;
+  $("cred-pass").textContent = password;
+  $("cred-copy").addEventListener("click", () => copyCreds(username, password));
+  $("cred-done").addEventListener("click", () => { box.innerHTML = ""; });
+  window.scrollTo({top: 0, behavior: "smooth"});
+}
+
+async function copyCreds(username, password){
+  const text = `Username: ${username}\nPassword: ${password}`;
+  try{
+    await navigator.clipboard.writeText(text);
+    say("good", "Copied. Paste it somewhere safe before closing this page.");
+  }catch(err){
+    // Clipboard access needs HTTPS or localhost; this app runs on plain HTTP on an
+    // EC2 IP, so it will genuinely fail there. Say so instead of appearing to work.
+    say("warn", "Could not copy automatically — select the password and copy it by hand.");
+  }
+}
+
+/* ── Creating ──────────────────────────────────────────────────────────── */
+
+$("createBtn").addEventListener("click", async () => {
+  const btn = $("createBtn");
+  btn.disabled = true;
+  try{
+    const body = {
+      full_name: $("fullName").value.trim(),
+      username: $("username").value.trim(),
+      areas: chosenAreas("createAreas"),
+      is_admin: $("createAdmin").checked,
+    };
+    if(!body.full_name && !body.username){
+      say("error", "Type a name, or a username.");
+      return;
+    }
+    const r = await fetch("/admin/users", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if(!r.ok){ say("error", esc(data.error || "Could not create the login.")); return; }
+
+    showCredentials(data.user.username, data.password, "Login created");
+    $("fullName").value = "";
+    $("username").value = "";
+    await load();  // rebuilds the form, and re-ticks it to match the reset dropdown
+  }finally{
+    btn.disabled = false;
+  }
+});
+
+async function resetPassword(id){
+  const user = users.find(u => u.id === id);
+  if(!confirm(`Give ${user.username} a new password? Their current one stops working.`))
+    return;
+
+  const r = await fetch(`/admin/users/${id}/password`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({}),
+  });
+  const data = await r.json();
+  if(!r.ok){ say("error", esc(data.error || "Could not reset it.")); return; }
+  showCredentials(data.user.username, data.password, "New password set");
+  await load();
+}
+
+$("preset").addEventListener("change", applyPreset);
+$("createAreas").addEventListener("change", () => {
+  // Any manual tick means this is no longer a preset.
+  const key = $("preset").value;
+  const preset = presets.find(p => p.key === key);
+  if(preset){
+    const chosen = new Set(chosenAreas("createAreas"));
+    const same = preset.areas.length === chosen.size
+                 && preset.areas.every(a => chosen.has(a));
+    if(!same) $("preset").value = "custom";
+  }
+  markImplied("createAreas");
+});
+
+load();
+</script>
+</body>
+</html>

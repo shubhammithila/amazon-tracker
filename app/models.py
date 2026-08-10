@@ -374,6 +374,47 @@ class ShipmentPackingEntry(Base):
     day = relationship("ShipmentPackingDay", back_populates="entries")
 
 
+class User(Base):
+    """A named login with per-area permissions.
+
+    Replaces the two shared passwords (``APP_PASSWORD`` / ``OPS_PASSWORD``) as the way
+    people sign in. Those still work — see ``app/routers/auth.py`` — because removing
+    them in the same change that adds this table would mean a deploy where nobody can
+    log in if anything about the table is wrong.
+
+    ``permissions`` is a comma-separated list of area keys, read through
+    ``app.permissions.parse``. Not a join table: six possible values per user, and a
+    join would be extra queries on every request for a set that fits in a column. Not
+    JSON either — neither is indexable, and a plain string is the one a human can read
+    in a sqlite3 shell when something has gone wrong.
+
+    ``is_admin`` is a separate flag rather than an area, because "can change what other
+    people see" is a different kind of power from "can see the invoice tab". Keeping
+    them apart is what stops a user granting themselves the rest.
+    """
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True)
+    # Stored lowercased (see credentials.normalise_username) so `Ravi` and `ravi`
+    # cannot become two accounts with different permissions.
+    username = Column(String(32), unique=True, nullable=False, index=True)
+    full_name = Column(String(120))
+    password_hash = Column(String(255), nullable=False)
+    permissions = Column(String(255), default="")
+    is_admin = Column(Boolean, default=False, nullable=False)
+    # Disabled rather than deleted: a departed packer's name still appears on the
+    # packing days he submitted, and deleting the row would orphan that history.
+    is_active = Column(Boolean, default=True, nullable=False)
+    # Who created whom, for the case where two people share the owner login and
+    # neither remembers adding an account.
+    created_by = Column(String(32))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_login_at = Column(DateTime)
+    # Set when the owner generates or resets a password, cleared on first successful
+    # login. Lets the panel show "has not signed in yet" honestly.
+    must_change_password = Column(Boolean, default=False, nullable=False)
+
+
 class Invoice(Base):
     __tablename__ = "invoices"
 

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>No access — Amazon Tracker</title>
+{#
+  Where a signed-in user with no areas granted lands.
+
+  Reachable only when the owner created an account and ticked nothing. Without this
+  page they would hit a 403 or bounce back to /login, either of which reads as a broken
+  account — and the natural response is to try the password again, repeatedly.
+
+  No nav, deliberately: every link would be a dead end.
+#}
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow-lg);padding:32px;max-width:460px;text-align:center}
+h1{font-size:19px;margin-bottom:10px}
+p{color:var(--text-muted);font-size:14px;line-height:1.65;margin-bottom:8px}
+.who{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;color:var(--text);background:var(--surface2);border-radius:6px;padding:3px 8px}
+a{display:inline-block;margin-top:18px;color:var(--accent);font-size:14px;text-decoration:none}
+</style>
+<link rel="stylesheet" href="/static/theme.css"/>
+</head>
+<body>
+<div class="card">
+  <div style="font-size:34px;margin-bottom:10px">🔒</div>
+  <h1>Your account has no sections yet</h1>
+  <p>You are signed in, so your username and password are correct — nobody has
+     granted you access to any part of the app yet.</p>
+  <p>Ask the owner to open the <strong>Users</strong> screen and tick the sections
+     you need.</p>
+  <a href="/logout">Sign out</a>
+</div>
+</body>
+</html>

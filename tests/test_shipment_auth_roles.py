@@ -121,10 +121,34 @@ async def test_ops_password_logs_in_as_ops_and_lands_on_ops_page(client):
 
 
 async def test_wrong_password_still_fails(client):
+    """401, not 200.
+
+    It re-renders the same form either way, so the change is invisible in a browser —
+    but a 200 on a rejected login means every log, monitor and rate-limiter sees a
+    failed attempt as success. Named accounts make that worth fixing: a password-only
+    app has one credential to guess, and a username field turns the login into
+    something worth counting failures on.
+    """
     r = await client.post("/login", data={"password": "neither-password"})
-    assert r.status_code == 200  # re-renders login with error
-    assert "Invalid password" in r.text
+    assert r.status_code == 401, r.status_code
     assert SESSION_COOKIE not in r.cookies
+
+
+async def test_a_failed_login_does_not_say_which_part_was_wrong(client):
+    """One message for every failure.
+
+    "No such user" tells whoever is probing the form which usernames exist, which is
+    the first half of guessing a password. Asserted as an absence, because the helpful
+    version of this message is exactly what a well-meaning edit would add.
+    """
+    r = await client.post(
+        "/login", data={"username": "nobody-here", "password": "whatever"}
+    )
+    assert r.status_code == 401
+    text = r.text.lower()
+    for leak in ("no such user", "unknown user", "user not found", "wrong password",
+                 "incorrect password", "disabled"):
+        assert leak not in text, f"the login form leaks {leak!r}"
 
 
 async def test_admin_password_wins_when_both_passwords_are_identical(client, monkeypatch):

@@ -40,14 +40,16 @@
     .logo p  { font-size: 12px; color:var(--text-muted); margin-top: 1px; }
     label { display: block; font-size: 12px; font-weight: 600; color:var(--text-muted);
             text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; }
-    input[type=password] {
+    input[type=password], input[type=text] {
       width: 100%; padding: 10px 12px;
       border: 1px solid var(--border-strong); border-radius: 8px;
       background: var(--surface); color: var(--text);
-      font-size: 14px; outline: none;
+      font-size: 15px; outline: none;
       transition: border-color .2s;
     }
-    input[type=password]:focus { border-color: var(--accent); }
+    input[type=password]:focus, input[type=text]:focus { border-color: var(--accent); }
+    .field + .field { margin-top: 14px; }
+    .hint { margin-top: 12px; font-size: 11.5px; color: var(--text-dim); line-height: 1.5; }
     button {
       width: 100%; margin-top: 16px;
       padding: 11px; background: var(--accent); color:var(--on-accent);
@@ -75,15 +77,43 @@
       </div>
     </div>
 
-    <form method="POST">
-      <label for="password">Password</label>
-      <input type="password" id="password" name="password"
-             placeholder="Enter your password" autofocus autocomplete="current-password" />
+    {#
+      The username field appears only once named accounts exist (`show_username`).
+      Before then the only credential that works is the shared password, and an empty
+      username box is a puzzle — it invites the owner to invent one and then wonder why
+      it is rejected.
+
+      Left BLANK rather than pre-filled even when shown, because a blank username is
+      what routes the submission to the shared-password path. That is the recovery
+      route if anything is wrong with the users table, so it has to stay reachable.
+    #}
+    <form method="POST" autocomplete="on">
+      {% if show_username %}
+      <div class="field">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username"
+               placeholder="e.g. ravi.kumar" autofocus autocomplete="username"
+               autocapitalize="none" spellcheck="false" />
+      </div>
+      {% endif %}
+      <div class="field">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password"
+               placeholder="Enter your password"
+               {% if not show_username %}autofocus{% endif %}
+               autocomplete="current-password" />
+      </div>
       <button type="submit">Sign In</button>
     </form>
 
     {% if error %}
     <div class="error">{{ error }}</div>
+    {% endif %}
+
+    {% if show_username %}
+    <div class="hint">
+      Leave the username empty to sign in with the shared owner password.
+    </div>
     {% endif %}
   </div>
   <div class="footer">Amazon Tracker v2 &nbsp;·&nbsp; httpx + FastAPI + PostgreSQL</div>

@@ -13,13 +13,43 @@
   Pass `active` from the route to highlight the current tab, e.g.
       templates.TemplateResponse(request, "shipment.html", {"active": "shipment"})
 
+  ── Per-area filtering ──────────────────────────────────────────────────────
+
+  Each link is shown only when the signed-in person can actually open it. Drawing a
+  tab that answers 403 is how an app earns "it's broken" — a user cannot tell a
+  permission boundary from a bug, and their first instinct is to report the working
+  app as faulty.
+
+  `grant` comes from require_area (app/routers/auth.py) and supports `in`, so the test
+  reads as English. **When `grant` is absent or None, every link is shown.** That
+  default is deliberate and load-bearing: it preserves the pre-permissions behaviour
+  for any page or test that renders this partial without one, so a route that forgets
+  to pass it degrades to "an admin sees a link twice" rather than "everybody silently
+  loses the whole nav".
+
   Do NOT add links here without also adding the key to CANONICAL_NAV in
   tests/test_nav_consistency.py — that test is what actually stops the drift.
 #}
+{% set can = grant if grant is defined else None %}
 <nav class="nav-links">
+  {% if can is none or 'dashboard' in can %}
   <a href="/" class="{{ 'active' if active == 'dashboard' else '' }}">Dashboard</a>
+  {% endif %}
+  {% if can is none or 'invoice' in can %}
   <a href="/invoice-page" class="{{ 'active' if active == 'invoice' else '' }}">Invoice</a>
+  {% endif %}
+  {% if can is none or 'portfolio' in can %}
   <a href="/churn-page" class="{{ 'active' if active == 'churn' else '' }}">Portfolio</a>
+  {% endif %}
+  {% if can is none or 'projections' in can %}
   <a href="/projections-page" class="{{ 'active' if active == 'projections' else '' }}">Projections</a>
+  {% endif %}
+  {% if can is none or 'shipment' in can %}
   <a href="/shipment-page" class="{{ 'active' if active == 'shipment' else '' }}">Shipment</a>
+  {% endif %}
+  {# Users is administrator-only and is not an area, so it is gated on the flag
+     itself. Last, because it is a setup task rather than a daily one. #}
+  {% if can is not none and can.is_admin %}
+  <a href="/users-page" class="{{ 'active' if active == 'users' else '' }}">Users</a>
+  {% endif %}
 </nav>

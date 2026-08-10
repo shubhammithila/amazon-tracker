@@ -8,11 +8,16 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import get_settings
 from app.database import engine, Base
-from app.routers import auth, scrape, products, keywords, ws, invoice, churn, projections, shipment
+from app import permissions
+from app.routers import (
+    admin_users, auth, churn, invoice, keywords, products, projections, scrape,
+    shipment, ws,
+)
 from app.routers.auth import (
     ForbiddenException,
     RedirectException,
-    require_admin,
+    require_admin_grant,
+    require_area,
     require_ops_or_admin,
 )
 from app.scheduler import setup_scheduler
@@ -65,6 +70,7 @@ app.include_router(invoice.router)
 app.include_router(churn.router)
 app.include_router(projections.router)
 app.include_router(shipment.router)
+app.include_router(admin_users.router)
 
 
 @app.exception_handler(RedirectException)
@@ -76,11 +82,22 @@ async def auth_redirect_handler(request: Request, exc: RedirectException):
 async def forbidden_handler(request: Request, exc: ForbiddenException):
     """403, deliberately not a redirect to /login.
 
-    Bouncing an authenticated ops user to the login page would look like their
-    session had expired, and they would just log in again and loop. A 403 says
-    'you are signed in, this part is not yours'.
+    Bouncing an authenticated user to the login page would look like their session had
+    expired, and they would just log in again and loop. A 403 says 'you are signed in,
+    this part is not yours'.
+
+    The message no longer says "Admin only". With per-area permissions that is usually
+    the wrong remedy: the accounts user refused the Projections tab does not need to
+    become an administrator, they need that one area granted. Naming the wrong fix sends
+    them to ask for the wrong thing.
     """
-    return JSONResponse({"error": "Admin only"}, status_code=403)
+    return JSONResponse(
+        {
+            "error": "You do not have access to this section. Ask the owner to grant it "
+            "from the Users screen."
+        },
+        status_code=403,
+    )
 
 
 # Page routes. Each passes `active` so templates/nav.html can highlight the
@@ -88,43 +105,90 @@ async def forbidden_handler(request: Request, exc: ForbiddenException):
 # copy-pasted into every template and drifted (projections.html had no Shipment
 # link, so opening Projections made the Shipment tab vanish).
 #
-# Auth is a dependency rather than an inline check so the role rule lives in one
-# place. The five admin pages take require_admin — plan editing, verification
-# and GST invoicing are owner-only. Only /ops-page admits the ops role.
+# Auth is a dependency rather than an inline check so the rule lives in one place.
+#
+# Each page is gated on its AREA rather than on a role. That is what lets the owner
+# grant the accounts person Invoice without also handing over Projections, which the
+# two shared passwords could not express. `require_area` re-reads the grant from the
+# database on every request, so revoking access takes effect immediately instead of
+# whenever a week-long session cookie expires.
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request, role: str = Depends(require_admin)):
-    return templates.TemplateResponse(request, "index.html", {"active": "dashboard"})
+async def index(request: Request, grant=Depends(require_area(permissions.DASHBOARD))):
+    return templates.TemplateResponse(
+        request, "index.html", {"active": "dashboard", "grant": grant}
+    )
 
 
 @app.get("/invoice-page", response_class=HTMLResponse)
-async def invoice_page(request: Request, role: str = Depends(require_admin)):
-    return templates.TemplateResponse(request, "invoice.html", {"active": "invoice"})
+async def invoice_page(request: Request, grant=Depends(require_area(permissions.INVOICE))):
+    return templates.TemplateResponse(
+        request, "invoice.html", {"active": "invoice", "grant": grant}
+    )
 
 
 @app.get("/churn-page", response_class=HTMLResponse)
-async def churn_page(request: Request, role: str = Depends(require_admin)):
-    return templates.TemplateResponse(request, "churn.html", {"active": "churn"})
+async def churn_page(request: Request, grant=Depends(require_area(permissions.PORTFOLIO))):
+    return templates.TemplateResponse(
+        request, "churn.html", {"active": "churn", "grant": grant}
+    )
 
 
 @app.get("/projections-page", response_class=HTMLResponse)
-async def projections_page(request: Request, role: str = Depends(require_admin)):
-    return templates.TemplateResponse(request, "projections.html", {"active": "projections"})
+async def projections_page(
+    request: Request, grant=Depends(require_area(permissions.PROJECTIONS))
+):
+    return templates.TemplateResponse(
+        request, "projections.html", {"active": "projections", "grant": grant}
+    )
 
 
 @app.get("/shipment-page", response_class=HTMLResponse)
-async def shipment_page(request: Request, role: str = Depends(require_admin)):
-    return templates.TemplateResponse(request, "shipment.html", {"active": "shipment"})
+async def shipment_page(
+    request: Request, grant=Depends(require_area(permissions.SHIPMENT))
+):
+    return templates.TemplateResponse(
+        request, "shipment.html", {"active": "shipment", "grant": grant}
+    )
 
 
 @app.get("/ops-page", response_class=HTMLResponse)
 async def ops_page(request: Request, role: str = Depends(require_ops_or_admin)):
     """The operations employee's only screen: record what was packed today.
 
-    Admin passes too — the owner supervises packing, and being unable to see the
-    screen he is verifying would be absurd. `role` is handed to the template so
-    it can show admin-only affordances without a second round trip.
+    Kept on `require_ops_or_admin` rather than moved to `require_area(PACKING)`, and
+    that is deliberate: OPS_PASSWORD must keep working here even if the users table is
+    missing or the migration has not run. This screen is the one the warehouse depends
+    on daily, so it gets the loosest guard in the app on purpose. Everything it can
+    write is already per-route gated inside the shipment router.
+
+    `role` is handed to the template so it can show admin-only affordances without a
+    second round trip.
     """
     return templates.TemplateResponse(request, "ops.html", {"active": "ops", "role": role})
+
+
+@app.get("/users-page", response_class=HTMLResponse)
+async def users_page(request: Request, grant=Depends(require_admin_grant)):
+    """Create logins and decide what each person may see. Administrators only.
+
+    Takes the Grant rather than just the username so nav.html can render its own tab —
+    passing None left this page as the one screen with no Users link, reachable only by
+    typing the URL.
+    """
+    return templates.TemplateResponse(
+        request, "users.html", {"active": "users", "grant": grant}
+    )
+
+
+@app.get("/no-access", response_class=HTMLResponse)
+async def no_access(request: Request):
+    """Where a signed-in user with no areas at all lands.
+
+    Reachable only if the owner created an account and granted nothing. A 403 loop or a
+    redirect to /login would look like a broken account; this says what happened and who
+    to ask.
+    """
+    return templates.TemplateResponse(request, "no_access.html", {"active": ""})
 
 
 @app.get("/health")
