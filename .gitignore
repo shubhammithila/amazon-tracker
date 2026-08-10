@@ -28,3 +28,4 @@ projection_data.json
 # /shipment/generate. Not source: committing it would churn on every upload and
 # would let a stale copy override the sheet on a fresh deploy.
 app/invoice/active_products.json
+.tmp-shots/
