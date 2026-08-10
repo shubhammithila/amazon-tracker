@@ -269,39 +269,66 @@ export PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}"
 #
 # A stamp writes one row and touches no table, so it cannot lose data. Getting the
 # baseline WRONG could, which is why it is detected rather than assumed.
-if ! venv/bin/python - <<'PY'
-import sqlite3, sys
-try:
-    con = sqlite3.connect("tracker.db")
-    con.execute("select version_num from alembic_version").fetchone()
-except Exception:
-    sys.exit(1)
-sys.exit(0)
-PY
-then
-  warn "this database has no alembic_version table (it predates Alembic)"
-  BASELINE="$(venv/bin/python - <<'PY'
+# The baseline is detected by INSPECTING THE SCHEMA, never by assuming. Two independent
+# reasons the recorded revision can disagree with reality on this box:
+#
+#   a) The database predates Alembic — it was first built by app.main's create_all(), so
+#      there is no alembic_version row at all.
+#   b) **create_all() ran again on the NEW code during a restart.** This is the one that
+#      actually bit, twice. The lifespan hook calls create_all() on every boot; when the
+#      service restarts while the new models are on disk, SQLAlchemy creates every
+#      missing table at its FINAL shape. The stamp then still points at an older revision,
+#      so `upgrade head` tries to CREATE tables that already exist and dies.
+#
+# So: compare the live columns against what each revision is known to add, newest first,
+# and stamp the newest revision the schema already satisfies. A stamp writes one row and
+# emits no DDL, so it cannot lose data — but stamping too NEW would skip a real migration,
+# which is why each marker below is a column or table that revision specifically adds.
+BASELINE="$(venv/bin/python - <<'PY'
 import sqlite3
+
 con = sqlite3.connect("tracker.db")
 tables = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+
+
+def cols(table):
+    return {r[1] for r in con.execute(f'PRAGMA table_info("{table}")')}
+
+
 if not tables:
-    print("")                     # empty database: migrate from scratch
+    print("")                                       # empty: migrate from scratch
+elif "users" in tables:
+    print("394fc6f28429")                           # head
+elif "shipment_packing_entries" in tables and "cartons" not in cols("shipment_packing_entries"):
+    print("0f85fa400957")                           # per-entry cartons dropped
+elif "shipment_plan_items" in tables and "brand_rank" in cols("shipment_plan_items"):
+    print("e886574dd5f5")                           # sort priority, drafts, exclusion
 elif "shipment_plans" in tables:
-    print("469bf49dd801")         # already has the shipment tables
-elif "use_by" in {r[1] for r in con.execute("PRAGMA table_info(products)")}:
-    print("68e373db239a")         # initial schema + use_by
+    print("469bf49dd801")                           # shipment tables exist
+elif "use_by" in cols("products"):
+    print("68e373db239a")                           # initial + use_by
 else:
-    print("da6e9b47821c")         # initial schema only
+    print("da6e9b47821c")                           # initial only
 PY
 )"
-  if [ -n "$BASELINE" ]; then
-    printf '    detected baseline: %s\n' "$BASELINE"
-    RESTORE_NEEDED=1
-    venv/bin/alembic stamp "$BASELINE" || die "could not stamp the baseline revision"
-    ok "stamped at $BASELINE — only newer migrations will run"
+
+CURRENT_REV="$(venv/bin/alembic current 2>/dev/null | grep -oE '^[0-9a-f]{12}' | head -1 || true)"
+if [ -z "$BASELINE" ]; then
+  ok "empty database; migrating from scratch"
+elif [ "$CURRENT_REV" = "$BASELINE" ]; then
+  ok "recorded revision ($CURRENT_REV) already matches the schema"
+else
+  if [ -z "$CURRENT_REV" ]; then
+    warn "no alembic_version row — this database predates Alembic"
   else
-    ok "empty database; migrating from scratch"
+    warn "recorded revision is $CURRENT_REV but the schema is actually at $BASELINE"
+    warn "  (create_all() on a restart builds missing tables at their final shape,"
+    warn "   which leaves the stamp behind the reality)"
   fi
+  printf '    detected baseline: %s\n' "$BASELINE"
+  RESTORE_NEEDED=1
+  venv/bin/alembic stamp "$BASELINE" || die "could not stamp the baseline revision"
+  ok "stamped at $BASELINE — only genuinely-new migrations will run"
 fi
 
 BEFORE_REV="$(venv/bin/alembic current 2>/dev/null | tail -1 || echo 'unknown')"

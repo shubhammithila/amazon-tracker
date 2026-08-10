@@ -6,6 +6,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from sqlalchemy import inspect as sa_inspect
+
 from app.config import get_settings
 from app.database import engine, Base
 from app import permissions
@@ -29,14 +31,33 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # create_all() only ever CREATEs missing tables — it never ALTERs an
-    # existing one. Relying on it silently skipped new columns (products.use_by),
-    # which 500'd the whole /products router. Alembic owns the schema now;
-    # run `alembic upgrade head` before starting. This call is kept only so a
-    # brand-new empty database still boots, and it is a no-op once migrated.
+    # create_all() only ever CREATEs missing tables — it never ALTERs an existing one.
+    # Relying on it silently skipped new columns (products.use_by), which 500'd the whole
+    # /products router. Alembic owns the schema; run `alembic upgrade head` before start.
+    #
+    # **It now runs only on a genuinely EMPTY database, and that restriction fixes a real
+    # production failure.** On a populated database it would create any table the new
+    # models define but the schema lacks — at the models' FINAL shape, skipping every
+    # migration in between. Alembic's recorded revision stays where it was, so the next
+    # `upgrade head` tries to CREATE tables that already exist and dies with "table
+    # product_categories already exists". That is exactly what happened on the EC2 box:
+    # two deploys failed and rolled back, and the stamp had to be repaired by hand.
+    #
+    # Restricting it to an empty database removes the divergence entirely: either Alembic
+    # built the schema, or there is no schema yet.
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database ready (run 'alembic upgrade head' to apply migrations)")
+        existing = await conn.run_sync(
+            lambda sync_conn: sa_inspect(sync_conn).get_table_names()
+        )
+        if not existing:
+            await conn.run_sync(Base.metadata.create_all)
+            logger.info("Empty database — schema created. Run 'alembic stamp head' next.")
+        else:
+            logger.info(
+                "Database has %d tables; the schema belongs to Alembic "
+                "(run 'alembic upgrade head' if a migration is pending)",
+                len(existing),
+            )
     setup_scheduler()
     try:
         yield
