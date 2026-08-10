@@ -7,18 +7,62 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (569 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (818 tests; random order by default)
 
-### Two logins
-| Env var | Role | Gets |
-|---|---|---|
-| `APP_PASSWORD` (`admin123`) | admin | everything |
-| `OPS_PASSWORD` | ops | `/ops-page`, daily packing, the morning PDF |
+### Logins: named accounts, plus two shared passwords
+Three ways in, checked in this order:
 
-`APP_PASSWORD` is checked **first**, so setting `OPS_PASSWORD` to the same value
-cannot demote you. A session cookie with no role at all means admin — that is
-deliberate, because the old cookie was exactly `{"authenticated": True}` and
-every existing session and test would otherwise break.
+1. **A named account** from the `users` table (username + password). The only one
+   with per-area permissions. Created from `/users-page`.
+2. **`APP_PASSWORD`** — password only, full admin.
+3. **`OPS_PASSWORD`** — password only, packing screen only.
+
+`APP_PASSWORD` is checked before `OPS_PASSWORD`, so setting them to the same value
+cannot demote you. A session cookie with no role or username means admin — the old
+cookie was exactly `{"authenticated": True}`, and every pre-existing session and
+test fixture would otherwise break. Privilege can only ever be *reduced* by an
+explicit role/username, never escalated, because forging either needs the signing key.
+
+> **The shared passwords stay on purpose.** They are the recovery path: this app has
+> no password-reset email and no console, so if anything is wrong with the `users`
+> table after a deploy they are the only way back in. The Users panel warns while
+> `APP_PASSWORD` is live so it gets retired knowingly rather than by accident.
+
+### Permissions are per AREA, not per role
+`app/permissions.py` owns one list: Dashboard · Invoice · Portfolio · Projections ·
+Shipment · Daily packing. A "role" is only a preset that fills that set in
+(Owner / Packer / Accounts), and nothing stores which preset was used — a user who
+was a Packer and then gained Invoice is not a Packer, and a stored label would drift
+from the truth.
+
+Two shared passwords could not express the case that actually exists: the accounts
+person who prints the packed sheet and raises invoices but must not see projections
+or purchase costs.
+
+- **Deny by default.** `has()` returns False for anything unrecognised, so a new area
+  is invisible to everyone until granted. The opposite default widens access on deploy.
+- **`shipment` implies `packing`**, expanded on READ so changing an implication needs
+  no data migration.
+- **`is_admin` is a flag, not an area.** "Can change what other people see" is a
+  different kind of power, and keeping them apart stops a user granting themselves the
+  rest. An admin always passes every area check, so the owner cannot mis-tick himself
+  out of a tab he has no other way to recover.
+
+**The grant is read from the database on every request** (`require_area`), never
+carried in the cookie. Sessions last a week, so a cookie-carried grant would make
+"I removed his access" untrue for up to seven days. That immediacy *is* the feature.
+
+> **`/ops-page` was the exception that broke.** It sat on `require_ops_or_admin`,
+> which reads only the cookie — so a *disabled* named account kept the packing screen
+> for a week while every other page cut it off at once. Found by testing the loop on
+> production, not by reading the code. It now uses `require_packing`, which re-checks
+> named accounts against the DB and still lets a shared-password session through on
+> the cookie alone. The ~11 packing **API** routes deliberately keep the looser guard,
+> because the warehouse must be able to work even if the users table is missing.
+
+Passwords are `hashlib.scrypt` (stdlib — no wheel to fail building on a t2.micro),
+with the cost parameters stored in the hash so they can be raised later without
+locking everyone out. A generated password is shown **once** and is unrecoverable.
 
 ## Project Location
 - Working dir: `C:\Users\LENOVO\Desktop\Claude\Amazon Tracker\.claude\worktrees\stoic-allen-bb3a55`
@@ -393,16 +437,39 @@ writer of the GST series. See "Known gaps" below for the one window this leaves.
 - SQLite database (`tracker.db`)
 - `Start Amazon Tracker.bat` on desktop
 
-### Production (AWS Free Tier)
-- EC2 t2.micro + RDS PostgreSQL
-- Caddy for HTTPS reverse proxy
-- systemd service for auto-restart
-- Setup script: `deploy/setup-ec2.sh`
-- For PostgreSQL: add `asyncpg` to requirements, set `DATABASE_URL` env var
+### Production — **http://13.233.144.148** (live)
+- EC2 t2.micro (951 MB, no swap), Ubuntu, **Python 3.14**, SQLite on disk
+- Caddy in front of uvicorn on `127.0.0.1:8000`; `systemd` unit `tracker`
+- `/opt/amazon-tracker` is a **git checkout** on branch `claude/stoic-allen-bb3a55`
+- Key: `C:\Users\LENOVO\Desktop\old downloads\amazon-tracker-key.pem`
+- Deploy: `ssh ubuntu@13.233.144.148`, then
+  `cd /opt/amazon-tracker && ./deploy/update-ec2.sh`
 
-> **Before this deploys:** run `alembic upgrade head` on EC2. Production is still
-> on the old schema, so the four shipment tables do not exist there yet. Also set
-> `OPS_PASSWORD` in the environment, or the warehouse login will not work.
+`deploy/update-ec2.sh` backs up and integrity-checks the DB first, installs only
+missing packages, migrates, restarts, verifies over HTTP, and rolls the code back on
+any failure. Four things it knows that cost two failed deploys to learn:
+
+1. **`master` is not what runs here.** GitHub's `master` still holds the original
+   *Flask* app; production was never deployed from it. Pushing to master deploys
+   nothing. The `pre-v2-rebuild-backup` tag preserves that old master.
+2. **Never `pip install -r requirements.txt` on this box.** It runs Python 3.14 with
+   *newer* libraries than the pins (pandas 3.0.3 vs 2.2.3), so `-r` tries to
+   downgrade, pandas 2.2.3 has no 3.14 wheel, pip compiles from source, and 951 MB
+   OOM-kills it. The pins are a floor for a fresh install, not a target. The script
+   installs only what is absent, `--only-binary=:all:`.
+3. **`app/invoice/hsn_master.json` is tracked *and* written at runtime.** Git has 15
+   entries; production has 87 hand-verified GST classifications. A plain checkout
+   destroys them, so local changes are stashed and this file restored afterwards.
+4. **The recorded Alembic revision can be behind the real schema.** `create_all()`
+   used to run on every boot and would create missing tables at their *final* shape,
+   skipping the migrations in between — then `upgrade head` died on "table
+   product_categories already exists". Fixed at both ends: `create_all()` now runs
+   only on an empty database, and the script detects the baseline by inspecting
+   columns and stamps it.
+
+`OPS_PASSWORD` is **not set** in the server's `.env`, so the shared packing login does
+not work there. Either add it, or create a named Packer account from `/users-page` —
+the latter is better, because it can be revoked per person.
 
 ---
 
