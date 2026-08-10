@@ -20,7 +20,7 @@ from app.routers.auth import (
     RedirectException,
     require_admin_grant,
     require_area,
-    require_ops_or_admin,
+    require_packing,
 )
 from app.scheduler import setup_scheduler
 
@@ -173,14 +173,17 @@ async def shipment_page(
 
 
 @app.get("/ops-page", response_class=HTMLResponse)
-async def ops_page(request: Request, role: str = Depends(require_ops_or_admin)):
+async def ops_page(request: Request, role: str = Depends(require_packing)):
     """The operations employee's only screen: record what was packed today.
 
-    Kept on `require_ops_or_admin` rather than moved to `require_area(PACKING)`, and
-    that is deliberate: OPS_PASSWORD must keep working here even if the users table is
-    missing or the migration has not run. This screen is the one the warehouse depends
-    on daily, so it gets the loosest guard in the app on purpose. Everything it can
-    write is already per-route gated inside the shipment router.
+    `require_packing`, not `require_ops_or_admin`. The difference was a real bug caught on
+    production: `require_ops_or_admin` reads only the cookie, so a named account that had
+    been DISABLED still opened this page for up to a week, while every other page cut it
+    off immediately.
+
+    `require_packing` re-checks a named account against the database and leaves
+    shared-password sessions on the cookie alone — so OPS_PASSWORD still works even if the
+    users table is missing, which is why the API routes keep the looser guard.
 
     `role` is handed to the template so it can show admin-only affordances without a
     second round trip.

@@ -504,6 +504,70 @@ async def test_disabling_an_account_ends_the_session_immediately(
     assert r.status_code == 303, "a disabled account kept working from its live session"
 
 
+async def test_disabling_a_packer_ends_their_session_on_the_packing_screen(
+    auth_client, client, db_schema
+):
+    """Found on PRODUCTION by testing the loop, not by reading the code.
+
+    /ops-page was on `require_ops_or_admin`, which reads only the cookie — so a named
+    account that had been disabled kept the packing screen for up to a week, while every
+    other page cut it off immediately. The most privileged-feeling revocation ("this
+    person no longer works here") was the one that did not take effect.
+
+    Asserted separately from the other pages precisely because this route is the
+    exception: it deliberately keeps a looser guard for the shared password, and that is
+    exactly how the gap opened.
+    """
+    created = (await auth_client.post(
+        "/admin/users", json={"full_name": "Ravi Kumar", "preset": "packer"}
+    )).json()
+    await client.post(
+        "/login",
+        data={"username": created["user"]["username"], "password": created["password"]},
+    )
+    assert (await client.get("/ops-page")).status_code == 200
+
+    await auth_client.patch(
+        f"/admin/users/{created['user']['id']}", json={"is_active": False}
+    )
+    assert (await client.get("/ops-page")).status_code == 303, (
+        "a disabled packer still has the packing screen from their live session"
+    )
+
+
+async def test_revoking_the_packing_area_closes_the_packing_screen(
+    auth_client, client, db_schema
+):
+    """The same route, the narrower case: still enabled, but no longer a packer."""
+    created = (await auth_client.post(
+        "/admin/users", json={"full_name": "Ravi Kumar", "preset": "packer"}
+    )).json()
+    await client.post(
+        "/login",
+        data={"username": created["user"]["username"], "password": created["password"]},
+    )
+    assert (await client.get("/ops-page")).status_code == 200
+
+    await auth_client.patch(
+        f"/admin/users/{created['user']['id']}", json={"areas": ["invoice"]}
+    )
+    assert (await client.get("/ops-page")).status_code == 403
+
+
+async def test_the_shared_packing_password_still_opens_the_packing_screen(
+    client, db_schema
+):
+    """The reason that route keeps a looser guard than the rest.
+
+    OPS_PASSWORD must work even if the users table is missing or a migration has not run —
+    the warehouse depends on this screen daily. So a shared-password session is accepted
+    on the cookie alone; only NAMED accounts are re-checked against the database.
+    """
+    r = await client.post("/login", data={"password": "test-ops-password"})
+    assert r.status_code == 303
+    assert (await client.get("/ops-page")).status_code == 200
+
+
 async def test_a_disabled_account_cannot_sign_in(auth_client, client, db_schema):
     created = (await auth_client.post(
         "/admin/users", json={"full_name": "Ravi Kumar", "preset": "packer"}

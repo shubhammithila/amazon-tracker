@@ -126,11 +126,51 @@ def require_admin(request: Request) -> str:
 
 
 def require_ops_or_admin(request: Request) -> str:
-    """Packing entry and the ops screen. Admin supervises, so both roles pass."""
+    """Packing entry and the ops screen. Admin supervises, so both roles pass.
+
+    Cookie-only by design, and that is now a deliberately narrow exception: this is the
+    guard on the ~11 packing API routes, and it must keep working when the users table is
+    missing or a migration has not run. The warehouse depends on those daily.
+
+    It does NOT notice a disabled account — see ``require_packing`` below, which is what
+    the ops PAGE uses.
+    """
     role = get_current_role(request)
     if role is None:
         raise RedirectException()
     return role
+
+
+async def require_packing(
+    request: Request, db: AsyncSession = Depends(get_db)
+) -> str:
+    """The ops PAGE: signed in, not disabled, and granted the packing area.
+
+    Exists because of a bug found on production, by testing rather than by reading: a
+    named account was disabled while signed in, and ``/ops-page`` still returned 200. The
+    reason is that ``require_ops_or_admin`` reads only the cookie, so a revoked or
+    disabled user kept the screen for up to a week — while every other page cut them off
+    immediately.
+
+    A shared-password session (no username) is still accepted on the cookie alone, so
+    OPS_PASSWORD keeps working even if the users table is missing. Only NAMED accounts are
+    re-checked against the database, which is exactly where the stale-session risk lives.
+    """
+    data = _session(request)
+    if data is None:
+        raise RedirectException()
+
+    if not data.get("username"):
+        return data.get("role") or ROLE_ADMIN  # shared password: unchanged behaviour
+
+    grant, is_admin = await resolve_grant(request, db)
+    if grant is None and not is_admin:
+        # Account disabled or deleted mid-session. Sending them to /login is right: their
+        # session is genuinely over, not merely insufficient.
+        raise RedirectException()
+    if not permissions.has(grant, permissions.PACKING, is_admin=is_admin):
+        raise ForbiddenException()
+    return ROLE_ADMIN if is_admin else ROLE_OPS
 
 
 # ─── The fine-grained guard ──────────────────────────────────────────────────
