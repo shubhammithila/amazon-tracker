@@ -198,10 +198,56 @@ if [ "${STASHED:-0}" -eq 1 ]; then
 fi
 
 # ── 4. Dependencies ─────────────────────────────────────────────────────────
-say "Installing dependencies"
-venv/bin/pip install --quiet --upgrade pip
-venv/bin/pip install --quiet -r requirements.txt || die "pip install failed"
-ok "dependencies up to date"
+# **Only install what is MISSING. Never force a version.**
+#
+# This box runs Python 3.14 and already has newer versions than requirements.txt pins
+# (pandas 3.0.3 vs 2.2.3, fastapi 0.136 vs 0.115, and so on). `pip install -r` therefore
+# tried to DOWNGRADE pandas — and pandas 2.2.3 has no wheel for 3.14, so pip compiled it
+# from source and the 951 MB box OOM-killed the compile ("code=137, Killed"). The deploy
+# failed and rolled back, having achieved nothing.
+#
+# The pins in requirements.txt are a floor for a fresh install, not a target for an
+# existing one. Downgrading a working server to match a lockfile is the wrong direction:
+# it risks breaking what already runs in order to satisfy a number in a file.
+#
+# So: import-check each dependency, install only the absent ones, and never build from
+# source on this box. --only-binary=:all: makes a missing wheel a clear failure instead
+# of a 20-minute compile that ends in an OOM kill.
+say "Checking dependencies"
+MISSING="$(venv/bin/python - <<'PY'
+import importlib.util
+# (import name, pip name). They differ often enough that guessing gets it wrong.
+required = [
+    ("fastapi", "fastapi"), ("uvicorn", "uvicorn[standard]"),
+    ("sqlalchemy", "sqlalchemy[asyncio]"), ("aiosqlite", "aiosqlite"),
+    ("alembic", "alembic"), ("pydantic_settings", "pydantic-settings"),
+    ("httpx", "httpx"), ("lxml", "lxml"), ("pandas", "pandas"),
+    ("openpyxl", "openpyxl"), ("apscheduler", "apscheduler"),
+    ("multipart", "python-multipart"), ("itsdangerous", "itsdangerous"),
+    ("jinja2", "jinja2"), ("aiofiles", "aiofiles"), ("reportlab", "reportlab"),
+]
+print(" ".join(pip for mod, pip in required if importlib.util.find_spec(mod) is None))
+PY
+)"
+
+if [ -n "$MISSING" ]; then
+  warn "installing missing package(s): $MISSING"
+  # shellcheck disable=SC2086
+  venv/bin/pip install --quiet --only-binary=:all: $MISSING || die "could not install: $MISSING
+    (--only-binary is deliberate: building from source on a 951 MB box gets OOM-killed.
+     If a package genuinely has no wheel for this Python, install it by hand and re-run.)"
+  ok "installed: $MISSING"
+else
+  ok "every dependency is already present — nothing to install"
+fi
+
+# The app must actually import with what is installed. A newer library than the pin can
+# have removed something the code uses, and finding that out from a 500 after the restart
+# is worse than finding it out here, where the rollback still works.
+venv/bin/python -c "import app.main" 2>/dev/null \
+  || die "the app does not import with the installed dependency versions.
+    Check:  cd $APP_DIR && venv/bin/python -c 'import app.main'"
+ok "app imports cleanly"
 
 # ── 5. Migrate ──────────────────────────────────────────────────────────────
 # The step that must not be skipped. Safe to re-run: a no-op when already current.
