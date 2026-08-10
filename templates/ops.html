@@ -105,25 +105,33 @@ input[type="date"]{background:var(--bg);border:1px solid var(--border);border-ra
    Font sizes are larger than the owner's grid throughout: this is read at arm's
    length in warehouse lighting, not at a desk. */
 
-/* NO `top` on the sticky header, and that is the whole fix for a bug that hid a
-   product row.
+/* The table scrolls INSIDE this box, and the header freezes against it.
+   `top:0`, never a positive value — that distinction hid a product row once.
 
-   `overflow-x:auto` makes this element a scroll container on BOTH axes — the y
-   axis computes to `auto` whatever you write, so `overflow-y:visible` here is
-   inert (measured: it still computes to `auto`). A sticky thead inside therefore
-   positions against THIS box, not the page. `top:56px`, meant to clear the page
-   header, parked the header 56px *down inside the table* — exactly on top of the
-   first row, hiding it completely.
+   `overflow-x:auto` alone already makes this element a scroll container on both
+   axes (the y axis computes to `auto` whatever you write). A sticky thead therefore
+   positions against THIS box rather than the page, so the earlier `top:56px` — added
+   to clear the page header — parked the header 56px *down inside the table*, sitting
+   exactly on the first row and hiding it completely.
 
-   So the header simply is not offset. It is not sticky either: the offset was the
-   only thing making it so, and a header that scrolls away is a far smaller problem
-   than one that eats a row. Re-add a `top` here and it comes straight back;
-   tests/test_ops_ui.py fails if you do. */
-.table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
-table{width:100%;border-collapse:collapse;min-width:560px}
-thead th{background:var(--surface2);color:var(--text-muted);padding:9px 8px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:center;white-space:nowrap;border-bottom:1px solid var(--border-strong)}
+   The fix is not to avoid sticky, it is to make the container honest: a max-height
+   so the wrapper is a real scroll region, and `top:0` so the header pins to its own
+   top edge. Now the headings stay put while 62 rows go past, which is the point —
+   "PACKED NOW" and "STILL NEEDED" are indistinguishable columns of numbers without
+   them. Any non-zero `top` here brings the bug straight back; a test enforces it.
+
+   max-height, not height: a 4-row day should not leave an empty scroll well. */
+.table-wrap{overflow:auto;max-height:calc(100vh - 300px);min-height:180px;border:1px solid var(--border);border-radius:10px;background:var(--surface);overscroll-behavior:contain}
+table{width:100%;border-collapse:separate;border-spacing:0;min-width:560px}
+/* border-collapse:separate above is required, not cosmetic: with `collapse` the
+   browser paints borders on the TABLE rather than the cells, so a sticky header's
+   bottom border scrolls away from it and the rows slide under a naked edge. The
+   per-cell borders below replace the collapsed ones. */
+thead th{background:var(--surface2);color:var(--text-muted);padding:9px 8px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:center;white-space:nowrap;border-bottom:2px solid var(--border-strong);position:sticky;top:0;z-index:4}
 thead th.col-input{background:var(--accent-soft);color:var(--accent)}
-tbody tr{border-bottom:1px solid var(--border)}
+/* On the cells, not the row: border-collapse is `separate` (see thead above), and a
+   row-level border is not painted in that mode. */
+tbody td{border-bottom:1px solid var(--border)}
 tbody tr.done{background:var(--green-soft)}
 tbody tr.dirty{background:var(--yellow-soft)}
 /* More boxed than the plan asked for. Red, and it outranks `dirty` and `done` in
@@ -153,12 +161,16 @@ td.ref{color:var(--text-muted);font-size:13px}
 .t-left.pos{color:var(--orange)}
 .no-sku{color:var(--red);font-weight:700;font-size:11px}
 
-/* The product name stays put while the row scrolls. Needs its own opaque
+/* The product name stays put while the row scrolls sideways. Needs its own opaque
    background or the numbers show through, and a z-index above the body cells it
-   overlaps; the header corner needs a higher one again because it is sticky in
-   both directions at once. */
-th.freeze,td.freeze{position:sticky;left:0;background:var(--surface);z-index:2}
-th.freeze{z-index:6;background:var(--surface2)}
+   overlaps.
+
+   The Product HEADING is sticky in both directions at once — left with its column,
+   top with the header row — so it sits at the intersection and needs to outrank both
+   (5 > 4 on thead th, > 3 on the body cells). Get this wrong and the corner cell
+   either slides under the header or is scrolled over by the first row's name. */
+th.freeze,td.freeze{position:sticky;left:0;background:var(--surface);z-index:3}
+th.freeze{z-index:5;background:var(--surface2)}
 tbody tr.done td.freeze{background:var(--green-soft)}
 tbody tr.dirty td.freeze{background:var(--yellow-soft)}
 
@@ -179,13 +191,16 @@ input.qty.over{border-color:var(--red);color:var(--red);background:var(--surface
    per-SKU question all over again. */
 .savebar{position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);padding:10px 18px;display:flex;gap:14px;align-items:center;z-index:200;flex-wrap:wrap;box-shadow:var(--shadow)}
 
-/* The carton entry, centred and boxed.
-   It sat unlabelled-looking in the far corner and read as a stray field — but it
-   is a REQUIRED daily entry, not an option, and the number prefills the Boxes
-   field on a GST invoice. So it gets its own bordered panel in the middle of the
-   bar, with the accent tint the table uses for "type here", and the amber warning
-   state below when it is still empty. */
-.cartonbox{display:flex;align-items:center;gap:10px;margin:0 auto;padding:6px 14px;border:2px solid var(--accent);border-radius:10px;background:var(--accent-soft)}
+/* The carton entry: left of the bar, bordered and tinted.
+   It began as a bare field in the corner and read as a stray input, so it gained a
+   panel — but centring it left it floating between the status text and the buttons,
+   belonging to neither. Left-aligned it anchors to an edge, which is what made the
+   totals tiles and the table headers readable too.
+
+   The panel itself stays. This is a REQUIRED daily entry, not an option, and the
+   number prefills the Boxes field on a GST invoice — hence the accent tint the table
+   uses for "type here", and the amber state below while it is still empty. */
+.cartonbox{display:flex;align-items:center;gap:10px;margin-right:auto;padding:6px 14px;border:2px solid var(--accent);border-radius:10px;background:var(--accent-soft)}
 .cartonbox label{font-size:12px;color:var(--accent);text-transform:uppercase;letter-spacing:.04em;font-weight:700;line-height:1.25;text-align:right}
 .cartonbox input{background:var(--surface);border-color:var(--accent)}
 /* Empty is the state worth flagging: a submitted day with no carton count sends
@@ -193,7 +208,9 @@ input.qty.over{border-color:var(--red);color:var(--red);background:var(--surface
 .cartonbox.empty{border-color:var(--yellow);background:var(--yellow-soft)}
 .cartonbox.empty label{color:var(--yellow)}
 .cartonbox.empty input{border-color:var(--yellow)}
-.savebar .status{font-size:12.5px;color:var(--text-muted);line-height:1.4;min-width:130px;flex:0 1 auto}
+/* Pushed to the right, beside the buttons it describes. `margin-right:auto` on the
+   carton panel above takes all the slack, so this and the buttons sit together. */
+.savebar .status{font-size:12.5px;color:var(--text-muted);line-height:1.4;min-width:130px;flex:0 1 auto;text-align:right}
 .savebar .status.dirty{color:var(--yellow)}
 .savebar .status.saved{color:var(--green)}
 @media (max-width:560px){
@@ -201,8 +218,10 @@ input.qty.over{border-color:var(--red);color:var(--red);background:var(--surface
   /* On a phone the carton panel takes the full width on its own line, above the
      buttons, so it cannot be mistaken for a spacer between them. */
   .savebar{gap:8px;padding:8px 12px}
-  .savebar .status{flex-basis:100%;order:-1;margin-bottom:0}
-  .cartonbox{order:0;flex-basis:100%;margin:0;justify-content:center}
+  .savebar .status{flex-basis:100%;order:-1;margin-bottom:0;text-align:left}
+  /* Full width on a phone: there is no room for it to sit beside anything, and a
+     narrow panel next to two buttons reads as a third button. */
+  .cartonbox{order:0;flex-basis:100%;margin:0;justify-content:flex-start}
   .savebar .btn{flex:1}
   main{padding:12px}
   td{padding:6px 5px}

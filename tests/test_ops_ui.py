@@ -251,7 +251,81 @@ def test_the_size_is_as_prominent_as_the_product_name(source):
     )
 
 
-# ─── The sticky header must not cover the first row ──────────────────────────
+# ─── The frozen header ───────────────────────────────────────────────────────
+
+def test_the_column_headings_stay_visible_while_the_rows_scroll(source):
+    """62 rows, and PACKED NOW / STILL NEEDED / PLAN / PACKED EARLIER are four
+    columns of similar-looking numbers. Without the headings in view, the packer is
+    counting columns from the left to find the box he types in.
+
+    The wrapper has to be a real scroll region for this to work — a sticky header
+    pins to its nearest scrolling ancestor, so without a height constraint here it
+    would pin to the page and the whole table would scroll away as one block.
+    """
+    body = _without_comments(source)
+
+    wrapper = re.search(r"\.table-wrap\{([^}]*)\}", body)
+    assert wrapper, "no .table-wrap rule"
+    rules = wrapper.group(1).replace(" ", "")
+    assert "max-height" in rules, (
+        "the table wrapper has no height limit, so it is not a vertical scroll "
+        "region and a sticky header inside it has nothing to stick to"
+    )
+    assert "overflow:auto" in rules or "overflow-y" in rules, (
+        "the wrapper does not scroll vertically"
+    )
+
+    thead = re.search(r"thead th\{([^}]*)\}", body)
+    assert thead, "no thead th rule"
+    assert "position:sticky" in thead.group(1).replace(" ", ""), (
+        "the column headings are not frozen"
+    )
+
+
+def test_the_frozen_header_and_frozen_column_do_not_fight(source):
+    """The Product heading is sticky on BOTH axes, so it sits at the intersection.
+
+    It has to outrank the header row it is part of AND the body cells that slide
+    under it. Get the order wrong and the corner cell either disappears beneath the
+    header or is painted over by the first row's product name — both of which look
+    like a rendering glitch rather than a z-index mistake.
+    """
+    body = _without_comments(source)
+
+    def z(selector: str) -> int:
+        match = re.search(re.escape(selector) + r"\{[^}]*z-index:\s*(\d+)", body)
+        assert match, f"no z-index on {selector}"
+        return int(match.group(1))
+
+    corner = z("th.freeze")
+    assert corner > z("thead th"), (
+        "the frozen Product heading sits below the header row it belongs to, so it "
+        "vanishes under the other headings when scrolled sideways"
+    )
+    assert corner > z("th.freeze,td.freeze"), (
+        "the frozen Product heading sits below the body's frozen cells, so the first "
+        "row's product name scrolls over the heading"
+    )
+
+
+def test_the_table_borders_survive_the_frozen_header(source):
+    """A subtle one that looks like a styling nit and is not.
+
+    With `border-collapse:collapse` the browser paints borders on the TABLE, not the
+    cells — so a sticky header's bottom border stays behind with the table and the
+    rows slide under a naked edge. `separate` plus per-cell borders is what keeps the
+    line attached to the header that is moving.
+    """
+    body = _without_comments(source)
+    assert "border-collapse:separate" in body.replace(" ", ""), (
+        "the table collapses its borders, so the frozen header loses its bottom "
+        "edge and rows appear to slide under nothing"
+    )
+    assert re.search(r"tbody td\{[^}]*border-bottom", body), (
+        "row separators are set on the row, which is not painted when borders are "
+        "separate — the rows will have no lines between them"
+    )
+
 
 def test_the_table_header_is_not_offset_into_the_first_row(source):
     """A real bug that hid a product row, and a genuinely surprising one.
@@ -386,9 +460,14 @@ def test_cartons_are_entered_once_for_the_day_not_per_product(source):
 def test_the_carton_entry_is_visually_prominent(source):
     """"this cartons today entry tab at the bottom is not clearly visible."
 
-    It sat unlabelled-looking in the corner of the save bar and read as a stray
-    field. It is a REQUIRED daily entry — the number prefills the Boxes field on a
-    GST invoice — so it gets its own bordered, tinted panel, centred in the bar.
+    It began as a bare field and read as a stray input. It is a REQUIRED daily entry
+    — the number prefills the Boxes field on a GST invoice — so it gets its own
+    bordered, tinted panel.
+
+    Asserted as "it has edges and a fill", not as a position. Centring it was the
+    first attempt and was wrong: it then floated between the status text and the
+    buttons, belonging to neither. It is left-aligned now, and the alignment is a
+    judgement that may change again — the panel is the part that must not.
     """
     body = _without_comments(source)
     panel = re.search(r"\.cartonbox\{([^}]*)\}", body)
@@ -397,10 +476,7 @@ def test_the_carton_entry_is_visually_prominent(source):
 
     assert "border:" in rules, "the carton entry has no border, so it has no edges"
     assert "background:" in rules, "the carton entry has no fill to lift it off the bar"
-    assert "margin:0auto" in rules, (
-        "the carton entry is not centred in the save bar; it reads as a stray field "
-        "in the corner"
-    )
+    assert "padding:" in rules, "the panel has no padding, so the border sits on the text"
 
 
 def test_an_empty_carton_count_is_flagged_while_units_exist(source):
