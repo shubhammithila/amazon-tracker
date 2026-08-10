@@ -396,7 +396,9 @@ async def update_items(
     repository whitelists which columns this may touch. That is what stops the
     old clobbering bug from returning in a new shape.
     """
-    body = await request.json()
+    body, error = await _json_object(request)
+    if error:
+        return error
     plan_id = body.get("plan_id")
     updates = body.get("items") or []
 
@@ -420,9 +422,27 @@ async def patch_thresholds(
     role: str = Depends(require_admin),
 ):
     """Adjust the carry-over thresholds for this plan."""
-    body = await request.json()
+    body, error = await _json_object(request)
+    if error:
+        return error
+
+    # Rejected here rather than in the repository, which does `int(value)` and would
+    # raise a 500 on "abc" — these two numbers decide whether a day is HELD, so a
+    # value that cannot be parsed must not be guessed at.
+    values = {}
+    for field in ("min_cartons", "min_units"):
+        if body.get(field) is None:
+            values[field] = None
+            continue
+        try:
+            values[field] = int(body[field])
+        except (TypeError, ValueError):
+            return JSONResponse(
+                {"error": f"{field} must be a whole number."}, status_code=400
+            )
+
     plan = await repository.update_thresholds(
-        db, plan_id, body.get("min_cartons"), body.get("min_units")
+        db, plan_id, values["min_cartons"], values["min_units"]
     )
     if plan is None:
         return JSONResponse({"error": "Plan not found"}, status_code=404)
@@ -518,7 +538,9 @@ async def exclude_items(
     The owner is pointed at the correct move instead: set To Ship to 0, which
     stops further packing while keeping the row, its history and its invoice line.
     """
-    body = await request.json()
+    body, error = await _json_object(request)
+    if error:
+        return error
     asins = [str(a).strip() for a in (body.get("asins") or []) if str(a).strip()]
     excluded = bool(body.get("excluded", True))
 
@@ -615,8 +637,20 @@ async def patch_categories(
     load_plan_items reads the priority at query time rather than from a copy
     stored on the row.
     """
-    body = await request.json()
-    changed = await repository.set_categories(db, body.get("categories") or {})
+    body, error = await _json_object(request)
+    if error:
+        return error
+
+    # A mapping, or nothing. `set_categories` calls `.items()`, which a list or a
+    # string does not have — that was a 500 on valid-but-wrong-shaped JSON.
+    categories = body.get("categories") or {}
+    if not isinstance(categories, dict):
+        return JSONResponse(
+            {"error": 'categories must be an object like {"chana sattu": 2}.'},
+            status_code=400,
+        )
+
+    changed = await repository.set_categories(db, categories)
     return JSONResponse({"status": "saved", "changed": changed})
 
 
@@ -628,6 +662,34 @@ def _valid_date(value: str) -> bool:
         return True
     except (TypeError, ValueError):
         return False
+
+
+async def _json_object(request: Request) -> tuple[dict | None, JSONResponse | None]:
+    """The request body as a dict, or (None, 400 response).
+
+    Every mutating route here reads ``body.get(...)``, which raises AttributeError on
+    a body that is not a JSON object — and an unhandled AttributeError is a 500. QA
+    found that `null`, `[]` and `"str"` each 500'd on **six** endpoints: valid JSON,
+    wrong shape, no validation between them.
+
+    A 500 is not merely untidy here. It is indistinguishable from the server being
+    broken, so the packer's real reaction is to retry, and on a flaky warehouse
+    connection a retry against a route that half-committed is how duplicate packing
+    rows appear. A 400 says "your request was wrong" and ends it.
+
+    Returns a tuple rather than raising so each caller stays a plain `return`, which
+    is how every other error path in this file already reads.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return None, JSONResponse({"error": "Body must be JSON."}, status_code=400)
+    if not isinstance(body, dict):
+        return None, JSONResponse(
+            {"error": "Body must be a JSON object, for example {\"items\": [...]}."},
+            status_code=400,
+        )
+    return body, None
 
 
 @router.get("/packing/{pack_date}")
@@ -742,8 +804,20 @@ async def save_packing(
     if not _valid_date(pack_date):
         return JSONResponse({"error": "Date must be YYYY-MM-DD"}, status_code=400)
 
-    body = await request.json()
+    body, error = await _json_object(request)
+    if error:
+        return error
+
+    # A 400 rather than tolerating it, because a non-list `entries` means the caller
+    # is confused about the shape, and silently treating it as "no entries" would
+    # answer 200 "saved" to a request that saved nothing. Found by QA: posting
+    # `"entries": "oops"` used to reach `raw.get()` below and 500.
     entries = body.get("entries") or []
+    if not isinstance(entries, list):
+        return JSONResponse(
+            {"error": "entries must be a list of {asin, units} objects."},
+            status_code=400,
+        )
 
     # `None` means "not sent", which must not be confused with 0 ("no cartons"). A
     # save posted before the packer reaches the carton box would otherwise clear a
@@ -779,7 +853,12 @@ async def save_packing(
     }
     kept, dropped = [], []
     for raw in entries:
-        asin = str((raw or {}).get("asin") or "").strip()
+        # isinstance, not `(raw or {})` — that guards None and nothing else, so a
+        # bare string in the list reached .get() and 500'd. The repository skips
+        # non-dicts too, but this loop runs first, so the check has to be here.
+        if not isinstance(raw, dict):
+            continue
+        asin = str(raw.get("asin") or "").strip()
         if asin and asin not in included:
             dropped.append(asin)
             continue
@@ -1260,7 +1339,9 @@ async def build_invoice_payload(
     those come from Amazon *after* the shipment exists, and guessing them would
     put a wrong FC on a tax document.
     """
-    body = await request.json()
+    body, error = await _json_object(request)
+    if error:
+        return error
     raw_dates = body.get("pack_dates") or []
     if isinstance(raw_dates, str):
         raw_dates = [raw_dates]
@@ -1462,7 +1543,9 @@ async def attach_invoice(
     harmless. Attaching a *different* invoice to an already-invoiced day is
     refused: that is two GST documents against one set of boxes.
     """
-    body = await request.json()
+    body, error = await _json_object(request)
+    if error:
+        return error
     raw_dates = body.get("pack_dates") or []
     if isinstance(raw_dates, str):
         raw_dates = [raw_dates]
