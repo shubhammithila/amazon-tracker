@@ -147,6 +147,12 @@ td input[type="checkbox"]{width:14px;height:14px;cursor:pointer}
 .no-sku{color:var(--red);font-size:10px;font-weight:700}
 .deficit-pos{color:var(--red);font-weight:700}.deficit-neg{color:var(--green)}
 .remaining-pos{color:var(--orange);font-weight:600}.remaining-zero{color:var(--green);font-weight:600}
+/* Packed beyond the plan. Tinted on the row so the named banner above is
+   actionable in a 205-row table, and red on the Packed cell so it is clear WHICH
+   number is the problem. */
+tbody tr.over-packed-row{background:var(--red-soft)}
+tbody tr.over-packed-row td.freeze{background:var(--red-soft)}
+td.over-packed{color:var(--red);font-weight:700}
 .shippable-lt{color:var(--yellow);font-weight:600}
 .empty-state{text-align:center;padding:40px;color:var(--text-muted)}
 
@@ -518,6 +524,33 @@ function renderBanners(){
     out.push(`<div class="banner warn"><strong>${missingSku} row(s) have no merchant SKU.</strong>
       Amazon rejects those lines — type the SKUs in below.</div>`);
   }
+
+  /* More boxed than the plan asked for.
+     "also see in beetroot sattu 1 kg. plan was 50. but Ops team packed 100. It
+     should show warning to them also. and in the shipment dashboard warning to me
+     also."
+
+     An error banner, not a warning: this is stock and a tax document. The invoice
+     bridge bills what was PACKED, so 100 boxed against a plan of 50 invoices 100 —
+     and `To pack` clamps at 0, so before this the row read exactly like one that
+     was neatly finished. Neither screen said anything at all.
+
+     There are only two ways out and both are the owner's call: raise To Ship to
+     match the boxes that physically exist, or have the surplus unpacked. So this
+     names the rows and the excess and then leaves the decision alone. */
+  const over = items
+    .filter(i => !i.excluded_at && Number(i.over_packed || 0) > 0)
+    .map(i => `<strong>${esc(i.item)} ${esc(i.weight_label || "")}</strong> `
+              + `planned ${Number(i.shipment_plan || 0).toLocaleString("en-IN")}, `
+              + `packed ${Number(i.packed || 0).toLocaleString("en-IN")} `
+              + `(+${Number(i.over_packed).toLocaleString("en-IN")})`);
+  if(over.length){
+    out.push(`<div class="banner error"><strong>More packed than planned on
+      ${over.length} row(s).</strong> ${over.join(" · ")}.
+      The invoice bills what was packed, not what was planned — either raise
+      <em>To Ship</em> to match the boxes, or have the extra unpacked.</div>`);
+  }
+
   /* The carry-over banner answers the question "N days on hold" does not:
      whether the parked days have now ADDED UP to a shipment.
 
@@ -573,6 +606,24 @@ function renderSummary(){
   `;
 }
 
+/* "2026-08-10" -> "10 Aug". Asked for directly, and it is not only cosmetic: the
+   column heading used to be `pack_date.slice(5)`, i.e. "08-10", which is ambiguous
+   to anyone who reads dates day-first — and everyone here does. A named month
+   cannot be misread.
+
+   Parsed by splitting the ISO string rather than `new Date(...)`: that constructor
+   treats a bare "2026-08-10" as UTC midnight and then renders it in local time, so
+   in IST it would print the 10th correctly but "2026-08-10" in a negative-offset
+   zone shows the 9th. Splitting the string cannot drift. */
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function dayLabel(iso){
+  const parts = String(iso || "").split("-");
+  if(parts.length !== 3) return esc(iso || "");
+  const month = MONTHS[Number(parts[1]) - 1];
+  if(!month) return esc(iso);
+  return `${Number(parts[2])} ${month}`;
+}
+
 function renderDays(){
   const box = document.getElementById("days");
   if(!days.length){
@@ -606,7 +657,7 @@ function renderDays(){
       actions.push(`<span class="d-invoiced">On invoice #${Number(d.invoice_id)}</span>`);
     }
     return `<div class="day ${st}">
-      <div class="d-date">${dt} <span class="badge ${st}">${st}</span></div>
+      <div class="d-date" title="${dt}">${dayLabel(d.pack_date)} <span class="badge ${st}">${st}</span></div>
       <div class="d-nums">${d.total_units.toLocaleString("en-IN")} units · ${d.total_cartons.toLocaleString("en-IN")} cartons${d.submitted_by ? " · by " + esc(d.submitted_by) : ""}</div>
       ${d.hold_reason ? `<div class="d-reason">${esc(d.hold_reason)}</div>` : ""}
       <div class="d-actions">${actions.join("")}</div>
@@ -617,8 +668,12 @@ function renderDays(){
 // ─── Table ──────────────────────────────────────────────────────────────────
 
 function renderHead(){
+  /* Units only. Cartons are a property of the DAY, not of a SKU, so there is no
+     per-row carton figure to show — this column read "100/undefined" because it was
+     still summing a per-entry field that no longer exists. The day's carton count
+     is on the day cards above, where it belongs. */
   const dayCols = days.map(d =>
-    `<th class="col-day ${d.status === 'held' ? 'held' : ''}" title="${esc(d.status)}">${esc(d.pack_date.slice(5))}<br/>u / c</th>`
+    `<th class="col-day ${d.status === 'held' ? 'held' : ''}" title="${esc(d.status)} · ${esc(d.pack_date)} · ${Number(d.total_cartons || 0)} cartons that day">${dayLabel(d.pack_date)}<br/>units</th>`
   ).join("");
   document.getElementById("thead-row").innerHTML = `
     <th class="col-smb freeze freeze-pick" title="Select all shown"><input type="checkbox" id="pick-all" onchange="pickAll(this.checked)"/></th>
@@ -656,13 +711,14 @@ function renderFootTotals(rows){
   // to the ASINs on screen so the column agrees with the filter above it.
   const shown = new Set(rows.map(i => i.asin));
   const dayCells = days.map(d => {
-    let units = 0, cartons = 0;
+    // Units only, matching the column. A carton total is not summable per ASIN, so
+    // it cannot be filtered down to the rows on screen the way units can.
+    let units = 0;
     for(const e of (d.entries || [])){
       if(!shown.has(e.asin)) continue;
       units += Number(e.units) || 0;
-      cartons += Number(e.cartons) || 0;
     }
-    return `<td>${units || cartons ? n(units) + "/" + n(cartons) : "·"}</td>`;
+    return `<td>${units ? n(units) : "·"}</td>`;
   }).join("");
 
   document.getElementById("tfoot-row").innerHTML = `
@@ -685,11 +741,12 @@ function renderFootTotals(rows){
   `;
 }
 
-/** Units+cartons for one ASIN on one day, as "120/10". */
+/** Units packed for one ASIN on one day. Cartons are a day-level fact, not a
+    per-SKU one, so there is nothing to pair the number with here. */
 function dayCell(day, asin){
   const e = (day.entries || []).find(x => x.asin === asin);
-  if(!e || (!e.units && !e.cartons)) return {text:"·", has:false};
-  return {text:`${e.units}/${e.cartons}`, has:true};
+  if(!e || !e.units) return {text:"·", has:false};
+  return {text:`${Number(e.units).toLocaleString("en-IN")}`, has:true};
 }
 
 function visibleItems(){
@@ -735,6 +792,9 @@ function renderTable(){
     const cls = [
       i.shipment_plan <= 0 && !gone ? "no-ship" : "",
       dirty.has(i.asin) ? "dirty" : "",
+      // Over-packed rows are tinted so the banner above can be acted on: it names
+      // the products, and this is what lets the owner find them in 205 rows.
+      Number(i.over_packed || 0) > 0 && !gone ? "over-packed-row" : "",
       gone ? "excluded" : "",
       selected.has(i.asin) ? "selected" : "",
     ].filter(Boolean).join(" ");
@@ -759,7 +819,8 @@ function renderTable(){
       <td class="no-strike"><input type="number" value="${i.shipment_plan}" min="0" onchange="edit('${asin}','shipment_plan',+this.value)"/></td>
       <td class="no-strike"><input type="number" value="${i.available}" min="0" style="width:44px" onchange="edit('${asin}','available',+this.value)"/></td>
       ${dayCells}
-      <td>${i.packed}</td>
+      <td class="${i.over_packed > 0 ? "over-packed" : ""}"
+          title="${i.over_packed > 0 ? "+" + Number(i.over_packed) + " more than the plan asked for" : ""}">${i.packed}</td>
       <td class="${i.shippable < i.packed ? "shippable-lt" : ""}">${i.shippable}</td>
       <td class="cell-topack ${i.remaining > 0 ? "remaining-pos" : "remaining-zero"}">${i.remaining}</td>
       <td class="cell-tomake ${i.to_source > 0 ? "remaining-pos" : "remaining-zero"}">${i.to_source}</td>

@@ -268,11 +268,32 @@ again would double the order — but not shippable until the day is released or
 verified. Collapsing them into one number is the subtle bug this feature is
 built around.
 
+### Two "left to do" numbers need a third: over-packing
+`logic.remaining_for` clamps at 0, which is right — it reaches the printed morning
+sheet and the Amazon upload quantity, where "-50 to pack" is not a quantity. The
+cost is that *planned 50 / packed 50* and *planned 50 / packed 100* both read "0 to
+pack", so a doubled row looked exactly like a finished one on both screens.
+
+`logic.over_packed` reports the excess separately. It matters because
+`/shipment/invoice-payload` bills what was **packed**: the surplus boxes ship and
+appear on a GST invoice at the packed quantity, discovered at reconciliation.
+
+It warns and never blocks — the boxes physically exist, and refusing the entry would
+leave real stock unrecorded. Only the owner can resolve it, and only two ways: raise
+To Ship to match, or have the surplus unpacked. The packer's warning is computed in
+the browser as he types, because a server figure would arrive only after a save, by
+which point he has boxed more of it.
+
 ### Units are per SKU. Cartons are per DAY.
 Everything else in this feature is per-SKU; this one thing is not, and the
 asymmetry is deliberate. "carton is not item wise. it is random. like 500 units
 packed today in 20 cartons." A carton is filled with whatever is being packed at
 the time, so a mixed box belongs to several ASINs and to none of them.
+
+> **Never read `cartons` off a packing entry.** The field is gone, and JavaScript
+> prints `undefined` rather than complaining — the owner's day columns showed
+> "100/undefined" for exactly that reason. `tests/test_shipment_admin_ui.py` greps
+> for `e.cartons`.
 
 It used to be `ShipmentPackingEntry.cartons`, summed onto the day. That asked the
 packer a question with no answer, so he guessed or skipped it — and the guess

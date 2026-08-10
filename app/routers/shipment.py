@@ -188,6 +188,11 @@ def _item_payload(item, packed: int, shippable: int) -> dict:
         # the one that reacts when the owner types into the In-stock column.
         "remaining": logic.remaining_for(planned, packed),
         "to_source": logic.still_to_source(planned, packed, available),
+        # Units boxed beyond the plan. Sent as its own number because `remaining`
+        # clamps at 0, so an over-pack is otherwise indistinguishable from a row
+        # that is exactly finished — and the invoice bills what was PACKED, not
+        # what was planned.
+        "over_packed": logic.over_packed(planned, packed),
         # Only ever non-null on the owner's draft view, which is the single caller
         # that asks for excluded rows. Everywhere else they are filtered out in
         # SQL, so this is None and the frontend renders nothing special.
@@ -677,6 +682,14 @@ async def get_packing(
                 "packed_before": prior,
                 "remaining": logic.remaining_for(planned, prior),
                 "units": int(mine.get("units") or 0),
+                # Beyond the plan across ALL days including this one, so the packer
+                # is warned by the total that exists rather than only by what he
+                # typed just now. `remaining` above excludes today deliberately (so
+                # the target does not appear to move as he types); this must not,
+                # because 40 over on Monday plus 40 today is 80 over.
+                "over_packed": logic.over_packed(
+                    planned, prior + int(mine.get("units") or 0)
+                ),
                 "note": mine.get("note") or "",
             }
         )

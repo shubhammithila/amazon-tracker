@@ -443,6 +443,61 @@ def test_still_to_source_survives_junk_available(junk):
     assert logic.still_to_source(100, 0, junk) == 100
 
 
+# ─── Over-packing: the error remaining_for's clamp hides ─────────────────────
+#
+# "in beetroot sattu 1 kg. plan was 50. but Ops team packed 100."
+#
+# remaining_for clamps at 0, which is right for a to-do number and means an
+# over-pack is indistinguishable from a finished row. Both screens read "0 to pack"
+# and said nothing. The excess therefore gets its own function rather than being
+# exposed by un-clamping the other one.
+
+@pytest.mark.parametrize(
+    "planned,packed,expected,why",
+    [
+        (50, 100, 50, "the reported case: double-packed against a plan of 50"),
+        (50, 50, 0, "exactly finished is not over"),
+        (50, 49, 0, "under is not over"),
+        (0, 40, 40, "packed against a row with nothing planned at all"),
+        (500, 5000, 4500, "a trailing-zero typo, the common cause"),
+    ],
+)
+def test_over_packed_reports_the_excess(planned, packed, expected, why):
+    assert logic.over_packed(planned, packed) == expected, why
+
+
+def test_over_packed_is_the_complement_remaining_for_cannot_show():
+    """The pair, stated as one assertion because the relationship is the point.
+
+    Exactly one of them is non-zero at a time, and `remaining_for` returning 0 is
+    ambiguous on its own — 50/50 and 100/50 both give 0.
+    """
+    assert logic.remaining_for(50, 100) == 0
+    assert logic.remaining_for(50, 50) == 0
+    # ...and only over_packed can tell those two apart.
+    assert logic.over_packed(50, 100) == 50
+    assert logic.over_packed(50, 50) == 0
+
+
+def test_remaining_for_still_clamps():
+    """Guarding the guard. The temptation, once over-packing is visible, is to make
+    `remaining_for` return a negative and delete `over_packed`.
+
+    It must not: this number goes on the packer's printed morning sheet and into the
+    Amazon upload quantity, where "-50 to pack" is not a quantity. That is why the
+    excess is a separate figure and not a sign change.
+    """
+    assert logic.remaining_for(50, 100) == 0
+
+
+@pytest.mark.parametrize("junk", [None, "", "abc"])
+def test_over_packed_survives_junk(junk):
+    """Both arguments arrive from JSON that a browser assembled."""
+    assert logic.over_packed(junk, junk) == 0
+    assert logic.over_packed(junk, 40) == 40
+    assert logic.over_packed(40, junk) == 0
+
+
 # ─── The hold rule (requirement 9) ───────────────────────────────────────────
 
 @pytest.mark.parametrize(

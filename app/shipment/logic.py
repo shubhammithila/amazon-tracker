@@ -356,8 +356,34 @@ def remaining_for(planned, packed: int) -> int:
 
     Over-packing clamps to 0 rather than showing a negative: the warehouse sheet
     should read "nothing left to do", not "-40 to pack".
+
+    **That clamp is why ``over_packed`` exists.** Clamping is right for this number
+    and it also makes an over-pack invisible here, so the excess is reported
+    separately rather than by un-clamping this one.
     """
     return max(0, _as_count(planned) - _as_count(packed))
+
+
+def over_packed(planned, packed: int) -> int:
+    """Units boxed BEYOND the plan, or 0. The complement of ``remaining_for``.
+
+    Exists because ``remaining_for`` clamps at 0, which is correct for a to-do
+    number and silently hides the opposite error: a plan of 50 with 100 packed reads
+    exactly like a plan of 50 fully finished. Both screens showed "0 to pack" and
+    nothing else.
+
+    It is worth a number of its own rather than a negative "to pack", because the
+    two are acted on differently and by different people:
+
+    * the packer needs to stop and be told, before he boxes more of it;
+    * the owner needs to decide, because the surplus is real stock and the invoice
+      will bill the packed quantity, not the planned one — the boxes exist and they
+      are going to Amazon, so the choice is to raise To Ship to match or to unpack.
+
+    A typo is the common cause (500 for 50), and it reaches a GST invoice through
+    the invoice bridge, which aggregates what was PACKED.
+    """
+    return max(0, _as_count(packed) - _as_count(planned))
 
 
 def still_to_source(planned, packed: int, available=0) -> int:

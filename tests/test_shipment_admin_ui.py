@@ -197,6 +197,112 @@ def test_the_page_never_sorts_items_itself(source):
     )
 
 
+# ─── The per-day columns ─────────────────────────────────────────────────────
+
+def test_the_day_column_does_not_read_a_per_entry_carton_field(source):
+    """The "100/undefined" bug, and its shape is worth remembering.
+
+    The day columns rendered `${e.units}/${e.cartons}` per ASIN. When cartons moved
+    to the day (a carton holds whatever was being packed, so it belongs to no single
+    SKU) that field stopped existing — and JavaScript does not complain about reading
+    a missing property, it prints `undefined`. Every day cell read "100/undefined".
+
+    So: no `.cartons` read off a packing ENTRY anywhere in this file. The day's own
+    `total_cartons` is fine, and is what the day cards show.
+    """
+    body = _without_comments(source)
+    offenders = [
+        f"line {number}: {line.strip()}"
+        for number, line in enumerate(body.splitlines(), 1)
+        # e.cartons / entry.cartons / x.cartons are per-entry reads. d.total_cartons
+        # and carryOver.cartons are day-level and legitimate.
+        if re.search(r"\b(e|entry|x)\.cartons\b", line)
+    ]
+    assert not offenders, (
+        "a per-entry carton field is being read again:\n" + "\n".join(offenders)
+        + "\n\nCartons live on the DAY (total_cartons). Reading them off an entry "
+        "prints 'undefined', which is exactly what shipped."
+    )
+
+
+def test_the_day_column_says_what_its_number_is(source):
+    """It used to promise "u / c" for a pair that no longer exists, which is how the
+    undefined went unnoticed: the heading agreed with the bug."""
+    body = _without_comments(source)
+    assert "u / c" not in body, (
+        'the day column still promises "u / c" — there is no per-SKU carton figure'
+    )
+    assert "dayLabel(d.pack_date)" in body, (
+        "the day heading is not built through dayLabel"
+    )
+
+
+def test_the_day_heading_names_the_month(source):
+    """Asked for: "keep it 10th aug, 11th Aug like this."
+
+    It was `pack_date.slice(5)` — "08-10" — genuinely ambiguous to anyone who reads
+    dates day-first, and everyone in this business does. A named month cannot be
+    misread as the 8th of October.
+    """
+    body = _without_comments(source)
+    assert "pack_date.slice(5)" not in body, (
+        "the day heading is back to a numeric month, which reads as either 8 Oct or "
+        "10 Aug depending on the reader"
+    )
+    assert '"Aug"' in body or "'Aug'" in body, (
+        "there is no month-name table, so the heading cannot say Aug"
+    )
+
+
+def test_the_date_is_not_parsed_with_the_date_constructor(source):
+    """`new Date("2026-08-10")` is UTC midnight, then rendered in local time.
+
+    Harmless in IST, off by one in any negative-offset zone — the same class of bug
+    the packing-date picker already avoids by building its default from local parts.
+    Splitting the ISO string cannot drift.
+    """
+    body = _without_comments(source)
+    start = body.find("function dayLabel(")
+    assert start != -1, "dayLabel is gone"
+    label = body[start:]
+    label = label[:label.find("\nfunction ", 10)]
+    assert "new Date" not in label, (
+        "dayLabel parses with new Date(), which shifts the day by one in "
+        "negative-offset timezones"
+    )
+    assert ".split(" in label, "dayLabel does not split the ISO string"
+
+
+# ─── Over-packing must be visible to the owner ───────────────────────────────
+
+def test_the_owner_is_warned_when_more_was_packed_than_planned(source):
+    """"in beetroot sattu 1 kg. plan was 50. but Ops team packed 100... and in the
+    shipment dashboard warning to me also."
+
+    `To pack` clamps at 0, so before this a doubled row read exactly like a finished
+    one. The invoice bridge bills what was PACKED, so the surplus reaches a GST
+    document — hence an error banner and not a quiet tint.
+    """
+    body = _without_comments(source)
+    assert "over_packed" in body, (
+        "the page never reads over_packed, so a row packed to double the plan looks "
+        "identical to one that is exactly finished"
+    )
+    assert re.search(r"banner error[\s\S]{0,200}More packed than planned", body), (
+        "the over-pack is not raised as an error banner"
+    )
+
+
+def test_the_over_packed_rows_can_be_found_in_the_table(source):
+    """A banner naming products is only actionable if they can be located.
+
+    205 rows, and the two that matter must be findable without searching for them.
+    """
+    body = _without_comments(source)
+    assert "over-packed-row" in body, "over-packed rows carry no class to tint them"
+    assert "over-packed" in body, "the Packed cell is not marked"
+
+
 # ─── Packed vs shippable must both be visible: requirement 9 ─────────────────
 
 def test_packed_and_shippable_are_both_shown(source):

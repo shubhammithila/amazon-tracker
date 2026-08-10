@@ -383,6 +383,131 @@ def test_cartons_are_entered_once_for_the_day_not_per_product(source):
     )
 
 
+def test_the_carton_entry_is_visually_prominent(source):
+    """"this cartons today entry tab at the bottom is not clearly visible."
+
+    It sat unlabelled-looking in the corner of the save bar and read as a stray
+    field. It is a REQUIRED daily entry — the number prefills the Boxes field on a
+    GST invoice — so it gets its own bordered, tinted panel, centred in the bar.
+    """
+    body = _without_comments(source)
+    panel = re.search(r"\.cartonbox\{([^}]*)\}", body)
+    assert panel, "no .cartonbox rule"
+    rules = panel.group(1).replace(" ", "")
+
+    assert "border:" in rules, "the carton entry has no border, so it has no edges"
+    assert "background:" in rules, "the carton entry has no fill to lift it off the bar"
+    assert "margin:0auto" in rules, (
+        "the carton entry is not centred in the save bar; it reads as a stray field "
+        "in the corner"
+    )
+
+
+def test_an_empty_carton_count_is_flagged_while_units_exist(source):
+    """The state worth warning about, and only in the state where it applies.
+
+    A submitted day with no carton count sends someone back to recount boxes that
+    have already gone out. But on a day with no units it is not outstanding, it is
+    simply not applicable yet — so the amber is conditional on there being units.
+    """
+    body = _without_comments(source)
+    assert ".cartonbox.empty" in body, "an empty carton count looks the same as a filled one"
+    assert re.search(
+        r'classList\.toggle\("empty",\s*!cartons\s*&&\s*unitsTotal\(\)\s*>\s*0\)', body
+    ), (
+        "the empty-carton warning is not gated on there being units, so a fresh "
+        "untouched day would nag about boxes that nobody has packed yet"
+    )
+
+
+# ─── Over-packing: the packer must be told before he boxes more ──────────────
+
+def test_the_packer_is_warned_when_he_packs_more_than_planned(source):
+    """"in beetroot sattu 1 kg. plan was 50. but Ops team packed 100. It should show
+    warning to them also."
+
+    Him first: he is the one who can still stop, and the one holding the boxes.
+    "Still needed" clamps at 0, so before this a doubled row read exactly like a
+    finished one.
+    """
+    body = _without_comments(source)
+    assert re.search(r"banner error[\s\S]{0,200}More packed than planned", body), (
+        "the packer gets no warning that he has boxed more than the plan asked for"
+    )
+    assert "over-tag" in body or 'class="over' in body, (
+        "the offending row is not marked, so the banner cannot be acted on"
+    )
+
+
+def test_the_over_pack_warning_is_computed_live_not_from_the_payload(source):
+    """It must appear as he types, not after a save.
+
+    A server-side figure would only refresh on the next load, by which point he has
+    moved on down the list and boxed more of it. So the row totals are recomputed in
+    the browser, from `packed_before + units` against `planned`.
+    """
+    body = _without_comments(source)
+    assert "markOverPack" in body, (
+        "there is no live recompute, so the warning waits for a save"
+    )
+    assert re.search(r"packed_before[\s\S]{0,80}planned", body), (
+        "the live check does not compare the day's total against the plan"
+    )
+
+
+def test_the_live_recompute_does_not_rebuild_the_input_being_typed_into(source):
+    """Why markOverPack exists at all rather than a plain renderRows().
+
+    Re-rendering the table would replace the very input under the caret and drop it
+    mid-number — the same reason the totals are repainted rather than the rows. So
+    the row's marking is updated in place.
+    """
+    body = _without_comments(source)
+    start = body.find("function markOverPack(")
+    assert start != -1, "markOverPack is gone"
+
+    # Slice to the closing brace by counting braces, not by looking for the next
+    # `function` — markOverPack is the last declaration in its block, so a naive
+    # search runs on into unrelated code and the assertion below reads whatever it
+    # happens to find there.
+    depth, end = 0, None
+    for offset, char in enumerate(body[start:], start):
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = offset + 1
+                break
+    assert end, "markOverPack has unbalanced braces"
+    fn = body[start:end]
+
+    assert "renderRows" not in fn, (
+        "markOverPack re-renders the whole table, which destroys the input the "
+        "packer is typing into and drops the caret"
+    )
+    assert "classList.toggle" in fn, "the marking is not updated in place"
+
+
+def test_over_packing_is_warned_about_and_not_blocked(source):
+    """The boxes physically exist.
+
+    Refusing the entry would leave the packer unable to record real stock, and only
+    the owner can resolve it — by raising To Ship or having the surplus unpacked. So
+    the message tells him to report it, rather than the input rejecting the number.
+    """
+    body = _without_comments(source)
+    assert "min=\"0\"" in body, "the input lost its floor"
+    # No max attribute pinned to the plan, and no early return that skips the save.
+    assert not re.search(r'max="\$\{[^}]*planned', body), (
+        "the input caps at the plan, which would make it impossible to record boxes "
+        "that actually exist"
+    )
+    assert re.search(r"tell the owner", body), (
+        "the warning does not tell the packer what to do about it"
+    )
+
+
 def test_the_carton_count_is_only_sent_when_it_was_touched(source):
     """A missing key means "leave it alone"; 0 means "no cartons".
 

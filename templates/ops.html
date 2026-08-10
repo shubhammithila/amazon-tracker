@@ -126,6 +126,11 @@ thead th.col-input{background:var(--accent-soft);color:var(--accent)}
 tbody tr{border-bottom:1px solid var(--border)}
 tbody tr.done{background:var(--green-soft)}
 tbody tr.dirty{background:var(--yellow-soft)}
+/* More boxed than the plan asked for. Red, and it outranks `dirty` and `done` in
+   the class logic: it is the one row state the packer must not scroll past. */
+tbody tr.over{background:var(--red-soft)}
+tbody tr.over td.freeze{background:var(--red-soft)}
+.over-tag{color:var(--red);font-weight:700;white-space:nowrap}
 td{padding:7px 8px;font-size:14px;text-align:center;white-space:nowrap}
 /* Capped, not just floored. Left to size itself the product column took 405px of a
    1280px page, which put a 200px gap between "Chana Sattu" and the "1 kg" that
@@ -163,6 +168,7 @@ tbody tr.dirty td.freeze{background:var(--yellow-soft)}
 input.qty{width:86px;background:var(--bg);border:1px solid var(--border-strong);border-radius:8px;color:var(--text);padding:11px 8px;font-size:17px;font-weight:700;text-align:center;min-height:46px}
 input.qty:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent)}
 input.qty:disabled{opacity:.5}
+input.qty.over{border-color:var(--red);color:var(--red);background:var(--surface)}
 
 .search-input{width:100%;background:var(--surface);border:1px solid var(--border-strong);border-radius:8px;color:var(--text);padding:12px;font-size:15px;min-height:44px;margin-bottom:12px}
 .search-input:focus{outline:none;border-color:var(--accent)}
@@ -171,15 +177,33 @@ input.qty:disabled{opacity:.5}
    entered numbers leave the phone. The carton box lives here rather than in the
    table because it belongs to the DAY — putting it in a column would be the
    per-SKU question all over again. */
-.savebar{position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);padding:10px 18px;display:flex;gap:10px;align-items:center;z-index:200;flex-wrap:wrap;box-shadow:var(--shadow)}
-.cartonbox{display:flex;align-items:center;gap:8px}
-.cartonbox label{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;font-weight:700;line-height:1.2;max-width:74px}
-.savebar .status{font-size:12.5px;color:var(--text-muted);flex:1;line-height:1.4;min-width:150px}
+.savebar{position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);padding:10px 18px;display:flex;gap:14px;align-items:center;z-index:200;flex-wrap:wrap;box-shadow:var(--shadow)}
+
+/* The carton entry, centred and boxed.
+   It sat unlabelled-looking in the far corner and read as a stray field — but it
+   is a REQUIRED daily entry, not an option, and the number prefills the Boxes
+   field on a GST invoice. So it gets its own bordered panel in the middle of the
+   bar, with the accent tint the table uses for "type here", and the amber warning
+   state below when it is still empty. */
+.cartonbox{display:flex;align-items:center;gap:10px;margin:0 auto;padding:6px 14px;border:2px solid var(--accent);border-radius:10px;background:var(--accent-soft)}
+.cartonbox label{font-size:12px;color:var(--accent);text-transform:uppercase;letter-spacing:.04em;font-weight:700;line-height:1.25;text-align:right}
+.cartonbox input{background:var(--surface);border-color:var(--accent)}
+/* Empty is the state worth flagging: a submitted day with no carton count sends
+   someone back to the warehouse to recount boxes that have already gone. */
+.cartonbox.empty{border-color:var(--yellow);background:var(--yellow-soft)}
+.cartonbox.empty label{color:var(--yellow)}
+.cartonbox.empty input{border-color:var(--yellow)}
+.savebar .status{font-size:12.5px;color:var(--text-muted);line-height:1.4;min-width:130px;flex:0 1 auto}
 .savebar .status.dirty{color:var(--yellow)}
 .savebar .status.saved{color:var(--green)}
-@media (max-width:520px){
+@media (max-width:560px){
   .totals{grid-template-columns:1fr 1fr}
-  .savebar .status{flex-basis:100%;order:-1;margin-bottom:2px}
+  /* On a phone the carton panel takes the full width on its own line, above the
+     buttons, so it cannot be mistaken for a spacer between them. */
+  .savebar{gap:8px;padding:8px 12px}
+  .savebar .status{flex-basis:100%;order:-1;margin-bottom:0}
+  .cartonbox{order:0;flex-basis:100%;margin:0;justify-content:center}
+  .savebar .btn{flex:1}
   main{padding:12px}
   td{padding:6px 5px}
 }
@@ -371,6 +395,35 @@ function renderMessages(){
     );
   }
 
+  /* More boxed than the plan asked for.
+     "in beetroot sattu 1 kg. plan was 50. but Ops team packed 100. It should show
+     warning to them also."
+
+     Computed live from what is on screen rather than from the payload's
+     `over_packed`, because the number that matters is the one he is typing right
+     now — a server figure would only appear after a save, by which point he has
+     moved on down the list. The row is also outlined in the table.
+
+     A warning and not a block: he may genuinely have boxed 100, and refusing the
+     entry would leave him unable to record stock that physically exists. The owner
+     decides whether to raise To Ship or unpack. */
+  const over = rows
+    .map(i => ({item: i.item, size: i.weight_label,
+                by: Math.max(0, Number(i.packed_before || 0) + Number(i.units || 0)
+                                - Number(i.planned || 0))}))
+    .filter(o => o.by > 0);
+  if(over.length){
+    const list = over
+      .map(o => `<strong>${esc(o.item)} ${esc(o.size)}</strong> +${n(o.by)}`)
+      .join(", ");
+    parts.push(
+      '<div class="banner error"><strong>More packed than planned:</strong> ' + list
+      + '. Check the count — if the boxes really are that many, tell the owner, '
+      + 'because the invoice bills what was packed and he may need to raise the '
+      + 'plan.</div>'
+    );
+  }
+
   $("messages").innerHTML = parts.join("");
 }
 
@@ -439,7 +492,15 @@ function renderRows(){
     const index = rows.indexOf(i);
     const units = Number(i.units || 0);
     const left = Number(i.remaining || 0);
-    const cls = dirty.has(i.asin) ? "dirty" : (units > 0 ? "done" : "");
+    // Live, not from the payload: the packer must see it as he types, not after a
+    // save. Counts every day, so 40 over on Monday plus 40 today reads as 80.
+    const over = Math.max(
+      0,
+      Number(i.packed_before || 0) + units - Number(i.planned || 0)
+    );
+    const cls = over > 0
+      ? "over"
+      : (dirty.has(i.asin) ? "dirty" : (units > 0 ? "done" : ""));
 
     return `
       <tr class="${cls}">
@@ -449,11 +510,14 @@ function renderRows(){
             · ${esc(i.asin)}</div>
         </td>
         <td class="p-size">${esc(i.weight_label)}</td>
-        <td><input class="qty" type="number" min="0" inputmode="numeric"
+        <td><input class="qty ${over > 0 ? "over" : ""}" type="number" min="0"
+                   inputmode="numeric"
                    value="${units || ""}" placeholder="0"${locked}
                    aria-label="Units packed"
                    data-index="${index}" data-field="units"/></td>
-        <td class="t-left ${left === 0 ? "zero" : "pos"}">${n(left)}</td>
+        <td class="t-left ${left === 0 ? "zero" : "pos"}">${
+          over > 0 ? `<span class="over-tag">+${n(over)} over</span>` : n(left)
+        }</td>
         <td class="ref">${n(i.planned)}</td>
         <td class="ref">${n(i.packed_before)}</td>
       </tr>`;
@@ -493,6 +557,10 @@ function renderSaveBar(){
   const box = $("cartonInput");
   if(document.activeElement !== box) box.value = cartons || "";
 
+  // Amber while it is still empty AND there is something to count boxes for. On a
+  // day with no units it is not outstanding, it is simply not applicable yet.
+  box.closest(".cartonbox").classList.toggle("empty", !cartons && unitsTotal() > 0);
+
   const pending = dirty.size + (cartonsDirty ? 1 : 0);
   const status = $("saveStatus");
   if(saving){
@@ -529,8 +597,38 @@ $("packingArea").addEventListener("input", e => {
   row[field] = Math.max(0, Math.floor(Number(box.value) || 0));
   dirty.add(row.asin);
   renderTotals();
+  /* The over-pack warning, live. Deliberately not a full renderRows(): that would
+     rebuild the very input being typed into and drop the caret. So the row's own
+     marking is updated in place instead, which is also why the row and the input
+     carry the `over` class rather than the table being re-rendered. */
+  markOverPack(row, box);
+  renderMessages();
   renderSaveBar();
 });
+
+/** Update one row's over-pack marking without re-rendering the table. */
+function markOverPack(row, box){
+  const over = Math.max(
+    0,
+    Number(row.packed_before || 0) + Number(row.units || 0) - Number(row.planned || 0)
+  );
+  const tr = box.closest("tr");
+  if(!tr) return;
+
+  tr.classList.toggle("over", over > 0);
+  box.classList.toggle("over", over > 0);
+  if(over === 0) tr.classList.toggle("dirty", dirty.has(row.asin));
+
+  const cell = tr.querySelector(".t-left");
+  if(cell){
+    const left = Math.max(
+      0, Number(row.planned || 0) - Number(row.packed_before || 0)
+    );
+    cell.innerHTML = over > 0
+      ? `<span class="over-tag">+${n(over)} over</span>`
+      : n(left);
+  }
+}
 
 /* The day's carton count. Outside the table, and outside `dirty`, because it
    belongs to the day rather than to any SKU. */
