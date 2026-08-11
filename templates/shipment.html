@@ -72,6 +72,13 @@ h2{font-size:20px;font-weight:600;margin-bottom:4px}
 .day .d-reason{font-size:11px;color:var(--yellow);margin-bottom:8px;line-height:1.45}
 .day .d-invoiced{font-size:11px;color:var(--accent);font-weight:600;align-self:center}
 .day .d-actions{display:flex;gap:6px;flex-wrap:wrap}
+/* A ticked day is tinted, so the selection is visible without reading each box. */
+.day.picked{border-color:var(--accent);background:var(--accent-soft)}
+.day .d-pick{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--accent);font-weight:600;margin-bottom:8px;cursor:pointer}
+.day .d-pick input{width:15px;height:15px;cursor:pointer}
+.invoice-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:var(--bg)}
+.invoice-bar .ib-summary{font-size:12.5px;line-height:1.5;flex:1;min-width:200px}
+.invoice-bar .ib-actions{display:flex;gap:8px;flex-wrap:wrap}
 .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
 .badge.open{background:var(--surface2);color:var(--text-muted)}
 .badge.submitted{background:var(--blue-soft);color:var(--blue)}
@@ -227,6 +234,10 @@ td input[type="text"].sku-input{width:120px;font-size:11px}
   <h3>Packing days</h3>
   <p>Held days are below the shipping threshold and are excluded from shippable totals until you verify or release them. Their units still count as packed — the boxes exist.</p>
   <div class="days" id="days"><span style="color:var(--text-muted);font-size:12px">Nothing packed against this plan yet.</span></div>
+  <!-- renderInvoiceBar() fills this. It must exist in the markup: the function returns
+       early when the container is missing, so a missing div showed no error anywhere and
+       simply made combined invoicing invisible. -->
+  <div id="invoice-bar"></div>
   <div class="form-row" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
     <div class="form-group"><label>Min cartons to ship</label><input type="number" id="min-cartons" min="0" step="1"/></div>
     <div class="form-group"><label>Min units to ship</label><input type="number" id="min-units" min="0" step="1"/></div>
@@ -365,6 +376,11 @@ let rollover = "";
 // and "did the upload work?" is the natural next thought.
 let skippedInactive = 0;
 let catalogueInfo = null;
+/* Which verified days the owner has ticked for a combined invoice. A Set of
+   pack_date strings, deliberately NOT derived from the day list: the whole point is
+   that he chooses a subset. Cleared on load so a stale tick from a previous plan can
+   never end up on an invoice. */
+let invoicePick = new Set();
 let currentFilter = "deficit";
 
 // ASINs whose plan fields the owner has edited but not yet saved. Only these are
@@ -394,6 +410,7 @@ async function load(){
   rollover = "";
   skippedInactive = 0;
   catalogueInfo = null;
+  invoicePick = new Set();
   try{
     /* The DRAFT wins when one exists. That is the whole point of the state: the
        owner is preparing a replacement, so this screen must show him what he is
@@ -712,19 +729,113 @@ function renderDays(){
        Not offered on a shipped day: that one already carries an invoice id, and
        inviting a second invoice for the same boxes is a tax problem, not a UI
        annoyance. The id is shown instead so the owner can go and find it. */
-    if(d.status === "verified"){
-      actions.push(`<button class="btn-green" onclick="invoiceDay('${dt}')">Invoice</button>`);
-    }
     if(d.status === "shipped" && d.invoice_id){
       actions.push(`<span class="d-invoiced">On invoice #${Number(d.invoice_id)}</span>`);
     }
-    return `<div class="day ${st}">
+
+    /* Verified days get a TICK BOX rather than their own Invoice button.
+
+       "sometimes even if the carton or the units is above the benchmark then also
+       multiple days can be combined and create invoice, give option where I can select
+       multiple days packed and create invoice together."
+
+       The button used to grab every verified day silently, so combining was automatic
+       and choosing was impossible. Now the owner picks, and the count of ticked days is
+       shown on one Invoice button below the cards.
+
+       Only verified days are tickable: verification is the owner's approval and it is
+       what allows a GST number to be spent. The server refuses anything less anyway, so
+       offering a tick on a submitted day would be offering a click that errors. */
+    const pickable = d.status === "verified";
+    const picked = invoicePick.has(d.pack_date);
+    /* data-pick + one delegated listener, NOT an inline onchange handler.
+
+       An HTML attribute is HTML-decoded BEFORE the JavaScript inside it is parsed, so
+       esc() cannot make a string safe there — the browser turns &#39; back into a quote
+       first and the argument list breaks. A pack_date is a server-validated YYYY-MM-DD
+       today, so nothing would break; but the same reasoning applies here as in
+       templates/ops.html, and a rule with a clever exception is a rule that gets broken
+       by the next edit. */
+    const pick = pickable
+      ? `<label class="d-pick"><input type="checkbox" data-pick="${dt}"
+           ${picked ? "checked" : ""}/> Include in invoice</label>`
+      : "";
+
+    return `<div class="day ${st}${picked ? " picked" : ""}">
       <div class="d-date" title="${dt}">${dayLabel(d.pack_date)} <span class="badge ${st}">${st}</span></div>
       <div class="d-nums">${d.total_units.toLocaleString("en-IN")} units · ${d.total_cartons.toLocaleString("en-IN")} cartons${d.submitted_by ? " · by " + esc(d.submitted_by) : ""}</div>
       ${d.hold_reason ? `<div class="d-reason">${esc(d.hold_reason)}</div>` : ""}
+      ${pick}
       <div class="d-actions">${actions.join("")}</div>
     </div>`;
   }).join("");
+
+  renderInvoiceBar();
+}
+
+/* The selection summary and the one Invoice button.
+
+   Rendered under the day cards rather than on them, because a combined invoice is an
+   action on a SET of days and a per-card button cannot express that — which is exactly
+   how the old one ended up silently including days the owner had not chosen. */
+function renderInvoiceBar(){
+  const bar = document.getElementById("invoice-bar");
+  if(!bar) return;
+
+  const verified = days.filter(d => d.status === "verified");
+  if(!verified.length){
+    bar.innerHTML = "";
+    return;
+  }
+
+  // Drop ticks for days that are no longer verified (a re-verify, a new plan) so the
+  // count can never claim a day the server would refuse.
+  const stillValid = new Set(verified.map(d => d.pack_date));
+  for(const date of Array.from(invoicePick)){
+    if(!stillValid.has(date)) invoicePick.delete(date);
+  }
+
+  const chosen = verified.filter(d => invoicePick.has(d.pack_date));
+  const units = chosen.reduce((t, d) => t + Number(d.total_units || 0), 0);
+  const cartons = chosen.reduce((t, d) => t + Number(d.total_cartons || 0), 0);
+
+  const dates = chosen.map(d => dayLabel(d.pack_date)).join(", ");
+  const summary = chosen.length
+    ? `<strong>${chosen.length} day(s) selected</strong> — ${dates} ·
+       ${units.toLocaleString("en-IN")} units · ${cartons.toLocaleString("en-IN")} cartons`
+    : `<span style="color:var(--text-muted)">Tick the days to put on one invoice.
+       ${verified.length} verified day(s) available.</span>`;
+
+  bar.innerHTML = `
+    <div class="invoice-bar">
+      <div class="ib-summary">${summary}</div>
+      <div class="ib-actions">
+        <button class="btn-outline" onclick="pickAllVerified(true)">Select all verified</button>
+        <button class="btn-outline" onclick="pickAllVerified(false)">Clear</button>
+        <button class="btn-green" id="ib-go" ${chosen.length ? "" : "disabled"}
+                onclick="invoiceSelectedDays()">
+          Create invoice${chosen.length > 1 ? ` from ${chosen.length} days` : ""}</button>
+      </div>
+    </div>`;
+}
+
+/* One delegated listener for every day tick box, so re-rendering the cards never
+   leaves stale handlers behind and no pack_date is ever interpolated into an
+   attribute that the browser will parse as code. */
+document.getElementById("days").addEventListener("change", (e) => {
+  const date = e.target && e.target.dataset ? e.target.dataset.pick : null;
+  if(!date) return;
+  if(e.target.checked) invoicePick.add(date); else invoicePick.delete(date);
+  // Re-render the cards so the tinted "picked" state matches, and the bar so the
+  // running totals move as he ticks.
+  renderDays();
+});
+
+function pickAllVerified(on){
+  invoicePick = new Set(
+    on ? days.filter(d => d.status === "verified").map(d => d.pack_date) : []
+  );
+  renderDays();
 }
 
 // ─── Table ──────────────────────────────────────────────────────────────────
@@ -1153,23 +1264,38 @@ async function releaseDay(packDate){
 
    The confirm names the dates because this is the last cheap moment to notice
    the selection is wrong — after /invoice/save the number is spent. */
-async function invoiceDay(packDate){
+async function invoiceSelectedDays(){
   const verified = days.filter(d => d.status === "verified").map(d => d.pack_date);
-  if(!verified.length){ toast("No verified days to invoice", "error"); return; }
+  const chosen = verified.filter(d => invoicePick.has(d));
 
-  const others = verified.filter(d => d !== packDate);
-  const question = others.length
-    ? `Invoice ${verified.length} verified days together (${verified.join(", ")})?\n\n`
-      + "They go onto ONE invoice — combining days is why they were held, and each "
-      + "invoice uses a number from the GST series."
-    : `Create an invoice from ${packDate}?`;
+  if(!chosen.length){ toast("Tick at least one verified day", "error"); return; }
+
+  /* The confirm names the dates and the totals, because this is the last cheap moment
+     to notice the selection is wrong: after /invoice/save the GST number is spent and a
+     gap in the series is a question you answer during an audit. */
+  const picked = days.filter(d => invoicePick.has(d.pack_date));
+  const units = picked.reduce((t, d) => t + Number(d.total_units || 0), 0);
+  const cartons = picked.reduce((t, d) => t + Number(d.total_cartons || 0), 0);
+  const left = verified.length - chosen.length;
+
+  let question = chosen.length > 1
+    ? `Put these ${chosen.length} days on ONE invoice?\n\n`
+      + picked.map(d => `  ${d.pack_date} — ${d.total_units} units, ${d.total_cartons} cartons`).join("\n")
+      + `\n\nTotal: ${units} units in ${cartons} cartons.`
+    : `Create an invoice from ${chosen[0]} (${units} units, ${cartons} cartons)?`;
+  if(left > 0){
+    // Said plainly: leaving a verified day out is legitimate, but doing it by accident
+    // means that day needs its own invoice and its own number from the series.
+    question += `\n\n${left} other verified day(s) are NOT included and will need a `
+      + "separate invoice.";
+  }
   if(!confirm(question)) return;
 
   try{
     const r = await fetch("/shipment/invoice-payload", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({pack_dates: verified}),
+      body: JSON.stringify({pack_dates: chosen}),
     });
     const data = await r.json();
     if(!r.ok) throw new Error(data.error || "Could not build the invoice");

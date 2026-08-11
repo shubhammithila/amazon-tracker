@@ -25,6 +25,17 @@
     /* Warnings carried over from the Shipment tab — usually a line with no
        purchase rate, which would otherwise save at zero taxable value. */
     .handoff-warning { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--warning); border-radius: 6px; font-size: 12px; line-height: 1.5; color:var(--yellow); background: var(--yellow-soft); }
+    /* The auto-weight and its working. Deliberately quiet: the number is the answer,
+       the breakdown is only there so a wrong total can be traced to a wrong line. */
+    .weight-tag { font-size: 10px; font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--green); }
+    .weight-tag.edited { color: var(--text-dim); }
+    .weight-note { margin-top: 5px; font-size: 11px; color: var(--text-dim); line-height: 1.5; }
+    .weight-note .warn { color: var(--yellow); font-weight: 600; }
+    .weight-note details { margin-top: 3px; }
+    .weight-note summary { cursor: pointer; color: var(--accent); }
+    .weight-note table { border-collapse: collapse; margin-top: 5px; }
+    .weight-note td { padding: 1px 8px 1px 0; font-size: 11px; white-space: nowrap; }
+    .weight-note td.num { text-align: right; font-variant-numeric: tabular-nums; }
     .btn-success { background: var(--success); color:var(--on-accent); }
     .btn-success:hover { background:var(--green); }
     .btn-warning { background: var(--warning); color: #000; }
@@ -152,8 +163,21 @@
         <input type="number" id="f-boxes" placeholder="e.g. 50">
       </div>
       <div class="form-group">
-        <label>Shipment Weight (Kg)</label>
+        <label>Shipment Weight (Kg)
+          <span class="weight-tag" id="weight-tag"></span>
+        </label>
         <input type="text" id="f-weight" placeholder="e.g. 630 Kg">
+        {#
+          Auto-filled from units × pack size on BOTH paths (CSV upload and the Shipment
+          tab), then editable.
+
+          It is NET product weight — cartons, filler and tape are not in the catalogue —
+          so the label says so and the owner can type over it with a weighbridge figure.
+          Auto-filling and LOCKING would make a real gross weight impossible to enter;
+          auto-filling silently would put a number on a GST document that disagrees with
+          the truck for a reason nobody could see.
+        #}
+        <div class="weight-note" id="weight-note"></div>
       </div>
     </div>
 
@@ -247,6 +271,107 @@
   uploadArea.addEventListener("drop", e => { e.preventDefault(); uploadArea.style.borderColor = ""; if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]); });
   fileInput.addEventListener("change", () => { if (fileInput.files[0]) uploadFile(fileInput.files[0]); });
 
+
+  /* ── Shipment weight, auto-filled and editable ───────────────────────────
+     Net product weight = sum of (units × pack size). The server computes it — one
+     function, `logic.shipment_weight`, shared by the CSV upload and the Shipment tab —
+     so an invoice raised either way cannot disagree about the weight.
+
+     Three rules, each the difference between useful and dangerous on a tax document:
+
+     1. It NEVER overwrites something the owner typed. `weightTouched` latches on his
+        first keystroke, so a weighbridge figure survives a re-parse.
+     2. It is labelled NET. Cartons, filler and tape are not in the catalogue, so the
+        truck will read higher. A number that silently disagrees with the weighbridge is
+        worse than no number.
+     3. Lines with no pack size are counted and named. They are EXCLUDED from the total,
+        so without saying so a 130 kg shipment could quietly report 90. */
+  let weightTouched = false;
+
+  document.getElementById("f-weight").addEventListener("input", () => {
+    weightTouched = true;
+    const tag = document.getElementById("weight-tag");
+    tag.textContent = "\u2014 entered by hand";
+    tag.className = "weight-tag edited";
+  });
+
+  function applyShipmentWeight(weight) {
+    const field = document.getElementById("f-weight");
+    const tag = document.getElementById("weight-tag");
+    const note = document.getElementById("weight-note");
+    tag.textContent = "";
+    tag.className = "weight-tag";
+    note.textContent = "";
+
+    if (!weight || typeof weight.total !== "number") return;
+
+    // A hand-typed weight wins. Re-parsing a file must not silently discard it.
+    if (!weightTouched) {
+      field.value = weight.total;
+      tag.textContent = "\u2014 auto, net";
+    } else {
+      /* Keep saying whose number is in the field. Clearing the tag above and stopping
+         here left the owner's typed 412.5 sitting under a note reading "Net product
+         weight ... 390 kg" \u2014 two different numbers on screen and a label on neither. */
+      tag.textContent = "\u2014 entered by hand";
+      tag.className = "weight-tag edited";
+    }
+
+    const lines = Array.isArray(weight.lines) ? weight.lines : [];
+    const counted = lines.filter(l => l.weight !== null && l.weight !== undefined);
+    const unknown = lines.filter(l => l.weight === null || l.weight === undefined);
+
+    const parts = [];
+    parts.push(document.createTextNode(
+      (weightTouched ? "Calculated" : "Net")
+      + ` product weight of ${counted.length} line(s): ${weight.total} kg. `
+      + (weightTouched
+          ? "Your entered weight is being used instead."
+          : "Excludes cartons and packing \u2014 edit if you have a weighbridge figure.")
+    ));
+
+    if (unknown.length) {
+      const warn = document.createElement("div");
+      warn.className = "warn";
+      // Named, not just counted: "2 lines missing" leaves the owner hunting.
+      warn.textContent = `${unknown.length} line(s) have no pack size and are NOT in `
+        + `that total: ${unknown.map(l => l.title || "(untitled)").slice(0, 4).join(", ")}`
+        + (unknown.length > 4 ? ` and ${unknown.length - 4} more` : "");
+      parts.push(warn);
+    }
+
+    // The working, collapsed. Present so a wrong total is traceable to a wrong line;
+    // collapsed so it is not noise on a screen that is mostly about money.
+    if (counted.length) {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = "Show the working";
+      details.appendChild(summary);
+
+      const table = document.createElement("table");
+      counted.forEach(l => {
+        const tr = document.createElement("tr");
+        [
+          [l.title || "", ""],
+          [String(l.units), "num"],
+          ["\u00d7 " + (l.pack_label || (l.pack_weight + " kg")), ""],
+          ["= " + l.weight.toFixed(3).replace(/\.?0+$/, "") + " kg", "num"],
+        ].forEach(([text, cls]) => {
+          const td = document.createElement("td");
+          if (cls) td.className = cls;
+          // textContent throughout: product titles come from an uploaded file.
+          td.textContent = text;
+          tr.appendChild(td);
+        });
+        table.appendChild(tr);
+      });
+      details.appendChild(table);
+      parts.push(details);
+    }
+
+    parts.forEach(p => note.appendChild(p));
+  }
+
   async function uploadFile(file) {
     const status = document.getElementById("upload-status");
     status.textContent = "Parsing...";
@@ -260,6 +385,9 @@
     parsedData = data;
     status.textContent = `Parsed ${data.items.length} items from ${data.metadata.shipment_id}`;
     status.style.color = "var(--success)";
+
+    // Same weight calculation as the Shipment tab, from the same server function.
+    applyShipmentWeight(data.weight);
 
     // Fill form fields from parsed data
     document.getElementById("f-shipment-id").value = data.metadata.shipment_id;
@@ -532,6 +660,9 @@
     // The cartons ops counted daily, prefilled — requirement 7's concrete
     // payoff. Prefilled, not forced: the owner can still correct it.
     if(data.boxes) document.getElementById("f-boxes").value = data.boxes;
+
+    // Net weight from units × pack size, filled in and still editable.
+    applyShipmentWeight(data.weight);
 
     /* shipment_id, the FC and the place of supply stay EMPTY. That is the
        design, not an omission: they come from Amazon only after the shipment

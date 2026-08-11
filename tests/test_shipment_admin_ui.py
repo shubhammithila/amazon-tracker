@@ -447,15 +447,65 @@ def test_both_derived_numbers_are_shown(source):
 def test_the_invoice_bridge_is_reachable_from_a_verified_day(source):
     """"the operations team can directly generate invoice using this if they want to."
 
-    Only from a verified day. The server refuses anything less, and a button that
+    Only from a verified day. The server refuses anything less, and a control that
     always errors reads as a broken app rather than as a rule being enforced.
     """
     body = _without_comments(source)
     assert "/shipment/invoice-payload" in body, "no way to start an invoice"
-    assert "invoiceDay" in body, "the day cards offer no invoice action"
+    assert "invoiceSelectedDays" in body, "the day cards offer no invoice action"
     assert re.search(r'd\.status\s*===\s*"verified"', body), (
-        "the Invoice button is not gated on a verified day — it would be offered "
+        "the invoice control is not gated on a verified day — it would be offered "
         "on days the server will refuse"
+    )
+
+
+def test_the_owner_chooses_which_days_go_on_one_invoice(source):
+    """"give option where I can select multiple days packed and create invoice together."
+
+    The old button took EVERY verified day silently — combining was automatic and
+    choosing was impossible. Two verified days that should have been two shipments would
+    land on one GST invoice with no way to say otherwise.
+    """
+    body = _without_comments(source)
+    assert "invoicePick" in body, "there is no per-day selection at all"
+    assert 'data-pick=' in body, "verified days carry no tick box"
+    assert re.search(r"invoicePick\.has\(d\.pack_date\)", body), (
+        "the tick state is not read back per day, so the boxes cannot reflect the "
+        "selection after a re-render"
+    )
+    # And the request must send the CHOSEN days, not all of them.
+    assert re.search(r"pack_dates:\s*chosen", body), (
+        "the invoice request does not send the selected subset — it is back to "
+        "invoicing every verified day whatever the owner ticked"
+    )
+
+
+def test_a_stale_tick_cannot_reach_an_invoice(source):
+    """A day that stops being verified must drop out of the selection.
+
+    Re-verifying, or generating a new plan, changes the day list under a selection the
+    owner made minutes ago. A tick that survived would either be refused by the server
+    (confusing) or, worse, put an unintended day on a GST document.
+    """
+    body = _without_comments(source)
+    assert "stillValid" in body, (
+        "the selection is never reconciled against the current verified days"
+    )
+    assert re.search(r"invoicePick\s*=\s*new Set\(\)", body), (
+        "the selection is not cleared on load, so a tick from a previous plan persists"
+    )
+
+
+def test_leaving_a_verified_day_out_is_called_out(source):
+    """Excluding a day is legitimate; doing it by accident is expensive.
+
+    Each invoice spends a number from a legally-sequential GST series, so a day left
+    behind needs its own invoice and its own number. The confirm says so rather than
+    letting the owner discover it afterwards.
+    """
+    body = _without_comments(source)
+    assert "separate invoice" in body, (
+        "nothing warns that unticked verified days will need their own invoice"
     )
 
 

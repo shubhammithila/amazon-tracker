@@ -30,8 +30,58 @@ def load_pricing() -> dict:
     return {}
 
 
+def load_pack_weights() -> dict:
+    """{ASIN: pack size in kg}, for totalling a shipment's net weight.
+
+    Read from ``product_families.json`` rather than the live MRP sheet, deliberately:
+    this parser is synchronous and runs while handling an upload, so a network fetch
+    here would make the invoice screen wait on Google and fail when Google is
+    unreachable. The Shipment tab already reads the sheet live, so a newly added product
+    reaches its plan; this path is the manual fallback, where a months-old pack size is
+    still far better than no weight at all.
+    """
+    path = BASE_DIR / "product_families.json"
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            families = json.load(f)
+    except Exception:
+        return {}
+
+    weights: dict = {}
+    for asin, info in families.items():
+        try:
+            weight = float((info or {}).get("weight") or 0)
+        except (TypeError, ValueError):
+            continue
+        if weight > 0:
+            weights[str(asin).strip().upper()] = weight
+    return weights
+
+
 FC_ADDRESSES = load_fc_addresses()
 PRICING = load_pricing()
+PACK_WEIGHTS = load_pack_weights()
+
+
+def get_pack_weight(sku: str, asin: str) -> float:
+    """Pack size in kg for one line, or 0.0 when the catalogue does not know it.
+
+    ASIN is tried first because that is what the catalogue is keyed by; the SKU is a
+    fallback for exports where the ASIN column is blank.
+
+    Returns 0.0 rather than guessing. ``logic.shipment_weight`` counts those lines
+    separately and the screen says how many are missing, so a short total is VISIBLE
+    instead of looking like a complete answer.
+    """
+    for key in (asin, sku):
+        if not key:
+            continue
+        found = PACK_WEIGHTS.get(str(key).strip().upper())
+        if found:
+            return found
+    return 0.0
 
 
 def get_fc_info(code: str) -> dict:
@@ -187,6 +237,10 @@ def parse_shipment_tsv(content: str) -> dict:
         # Auto-fill purchase rate from master pricing
         rate = get_purchase_rate(sku, asin)
 
+        # Pack size in kg, so the invoice screen can total the shipment weight instead
+        # of the owner reaching for a calculator. 0.0 when unknown — never a guess.
+        pack_weight = get_pack_weight(sku, asin)
+
         items.append({
             "sku": sku,
             "title": title,
@@ -198,6 +252,16 @@ def parse_shipment_tsv(content: str) -> dict:
             "gst_rate": hsn_info["gst_rate"],
             "rate": rate,
             "unit": "Pcs",
+            "weight": pack_weight,
+            "line_weight": round(quantity * pack_weight, 3),
         })
 
-    return {"metadata": metadata, "items": items}
+    # The same calculation the Shipment tab uses, from the same function, so an invoice
+    # raised from a CSV and one raised from a plan cannot disagree about the weight.
+    from app.shipment.logic import shipment_weight
+
+    return {
+        "metadata": metadata,
+        "items": items,
+        "weight": shipment_weight(items),
+    }

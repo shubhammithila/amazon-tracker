@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (859 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (895 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -441,6 +441,53 @@ a 400 and anything already invoiced with a 409.
 
 It does **not** allocate an invoice number. `POST /invoice/save` remains the only
 writer of the GST series. See "Known gaps" below for the one window this leaves.
+
+### The owner picks the days; the threshold does not
+"crossing the min benchmark is not the final call for making shipment." Passing
+25/500 makes a day *shippable*, not *shipped* — a day over the line can still be
+worth combining with the next one for a fuller truck.
+
+So the days carry tick boxes and the owner sends a chosen subset. The previous
+button took **every** verified day silently, which meant two days that should have
+been two shipments could only ever be one invoice.
+
+`invoicePick` is reconciled against the current verified days on every render
+(`stillValid`), because re-verifying or generating a plan changes the list under a
+selection made minutes earlier — and a tick that survived would put an unintended
+day on a GST document. Leaving a verified day out is legitimate but is confirmed,
+since each invoice spends a number from a legally-sequential series and the day
+left behind needs its own.
+
+### Shipment weight is calculated, never typed from scratch
+`logic.shipment_weight` sums `units × pack size` and **both** paths call it — the
+Shipment tab handoff and the CSV/TSV upload (`app/invoice/parser.py`) — so an
+invoice raised either way cannot disagree about the weight of the same boxes.
+`templates/invoice.html` has one filler, `applyShipmentWeight`, for the same reason.
+
+Three properties, each a way to put a wrong number on a GST document:
+
+- **It is NET.** Cartons, filler and tape are not in the catalogue, so the
+  weighbridge reads higher. The label says so, and the field stays editable — a
+  number that silently disagrees with the truck is worse than no number.
+- **A line with no pack size is excluded AND counted.** Treating it as 0 kg would
+  make a 130 kg shipment quietly report 90 while still looking complete. The
+  missing lines are *named* on screen, not just tallied.
+- **A hand-typed weight is never overwritten.** `weightTouched` latches on the
+  first keystroke so a weighbridge figure survives a re-parse — and the tag then
+  keeps reading "entered by hand". Blanking it left the owner's 412.5 under a note
+  reading "390 kg", which is two numbers on screen with a label on neither.
+
+`get_pack_weight` returns 0.0 rather than guessing, and reads
+`product_families.json` rather than the live MRP sheet: the parser is synchronous
+and runs during an upload, so a network fetch there would make the invoice screen
+wait on Google and fail when Google is unreachable.
+
+> **A render target must exist in the markup.** `renderInvoiceBar` was complete and
+> had five passing tests, and was invisible in the browser: there was no
+> `<div id="invoice-bar">`, and the function's own `if(!bar) return;` guard made
+> that silent — no console error, no failing test. `tests/test_template_render_targets.py`
+> now checks every `getElementById` that is written to against the ids each template
+> declares, across all templates.
 
 ---
 

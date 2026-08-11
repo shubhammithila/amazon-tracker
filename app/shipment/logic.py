@@ -119,6 +119,92 @@ def category_for(name) -> int:
     return DEFAULT_CATEGORY
 
 
+def line_weight(units, pack_weight) -> float:
+    """Net weight of one invoice line: units × pack size, in kg.
+
+    Rounded to 3 decimals because the inputs are pack sizes like 0.25 and 0.15 and
+    float multiplication produces 30.000000000000004, which then renders on a GST
+    document. Three places keeps a 50 g pack meaningful while hiding the noise.
+    """
+    return round(_as_count(units) * max(0.0, _as_float(pack_weight)), 3)
+
+
+def shipment_weight(lines) -> dict:
+    """Total NET weight of a shipment, plus the working.
+
+    ``lines`` is any iterable of mappings with ``quantity`` (or ``units``) and
+    ``weight`` (the per-unit pack size in kg). Returns::
+
+        {"total": 130.5, "lines": [{...}], "unknown": 2, "counted": 8}
+
+    **Net, not gross, and that distinction is on the label wherever this is shown.**
+    It is the weight of the product only — cartons, filler and tape are not in the
+    catalogue, so the figure a transporter weighs will be higher. Silently presenting
+    this as the shipment weight would put a number on an invoice that disagrees with
+    the weighbridge, and nobody would know which to trust.
+
+    ``unknown`` counts lines whose pack size is missing or zero, and those are excluded
+    from the total rather than treated as 0 kg. A line silently contributing nothing is
+    how a 130 kg shipment reports 90 kg — the caller surfaces the count so the total is
+    never quietly short.
+
+    Returned as a breakdown rather than a bare float so the screen can show the working.
+    A weight the owner cannot check is one he has to either trust blindly or ignore, and
+    on a document that goes to a transporter he will ignore it.
+    """
+    detail = []
+    total = 0.0
+    unknown = 0
+
+    for line in lines or []:
+        if not isinstance(line, Mapping):
+            continue
+        units = _as_count(line.get("quantity", line.get("units", 0)))
+        if units <= 0:
+            continue
+
+        pack = _as_float(line.get("weight"))
+        if pack <= 0:
+            unknown += 1
+            detail.append({
+                "title": str(line.get("title") or line.get("item") or line.get("asin") or ""),
+                "units": units,
+                "pack_weight": None,
+                "weight": None,
+            })
+            continue
+
+        weight = line_weight(units, pack)
+        total += weight
+        detail.append({
+            "title": str(line.get("title") or line.get("item") or line.get("asin") or ""),
+            "units": units,
+            "pack_weight": pack,
+            "pack_label": weight_label(pack),
+            "weight": weight,
+        })
+
+    return {
+        "total": round(total, 3),
+        "lines": detail,
+        "unknown": unknown,
+        "counted": len(detail) - unknown,
+    }
+
+
+def _as_float(value) -> float:
+    """A float from anything the CSVs or JSON can produce. 0.0 on nonsense.
+
+    Separate from ``_as_count`` because a pack size is fractional (0.25 kg) where a
+    unit count never is, and rounding a pack size to an int would turn every gram
+    figure into zero.
+    """
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def weight_label(weight) -> str:
     """Pack size as the warehouse says it: grams under 1 kg, kilos at 1 kg and up.
 

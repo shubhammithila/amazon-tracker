@@ -1531,6 +1531,12 @@ async def build_invoice_payload(
                 "gst_rate": hsn["gst_rate"],
                 "rate": get_purchase_rate(item.fba_sku or "", item.asin),
                 "unit": "Pcs",
+                # Pack size in kg, so the invoice screen can total the shipment weight
+                # rather than the owner working it out on paper. Sent per LINE as well
+                # as in the total below, because a total nobody can break down is a
+                # total nobody can check.
+                "weight": float(item.weight or 0),
+                "line_weight": logic.line_weight(units, item.weight),
             }
         )
 
@@ -1546,6 +1552,10 @@ async def build_invoice_payload(
     missing_rate = [line["sku"] or line["asin"] for line in lines if not line["rate"]]
     missing_sku = [line["asin"] for line in lines if not line["sku"]]
 
+    # Net product weight from units × pack size. Computed here rather than in the
+    # browser so the CSV path and this path get the identical number from one function.
+    weight = logic.shipment_weight(lines)
+
     warnings = []
     if missing_rate:
         warnings.append(
@@ -1556,6 +1566,14 @@ async def build_invoice_payload(
     if missing_sku:
         warnings.append(
             f"{len(missing_sku)} line(s) have no merchant SKU recorded."
+        )
+    if weight["unknown"]:
+        # Said out loud, because the total is SHORT by however much those lines weigh
+        # and the number still looks like a complete answer.
+        warnings.append(
+            f"{weight['unknown']} line(s) have no pack size recorded, so the "
+            f"calculated weight of {weight['total']} kg does not include them. Check "
+            "the Net Weight column in the MRP sheet, or type the weight in by hand."
         )
 
     return JSONResponse(
@@ -1578,6 +1596,11 @@ async def build_invoice_payload(
             # Requirement 7's concrete payoff: the cartons ops counted daily
             # prefill the invoice's Boxes field instead of being recounted.
             "boxes": total_cartons,
+            # Net product weight, with the per-line working. NET on purpose: cartons,
+            # filler and tape are not in the catalogue, so the weighbridge figure will
+            # be higher — the invoice screen labels it as net and lets the owner type
+            # over it rather than presenting a number that disagrees with the truck.
+            "weight": weight,
             "warnings": warnings,
         }
     )
