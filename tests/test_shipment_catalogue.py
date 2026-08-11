@@ -34,6 +34,11 @@ pytestmark = pytest.mark.regression
 
 #: A miniature version of the real sheet: the same column layout (ASIN in I,
 #: Active in T) with a deliberately awkward mix.
+#:
+#: The Net Weight values are deliberately NOT all numeric. The real sheet stores a
+#: bare number ("0.5", "1"), but "500g" is exactly the sort of thing a hand-edited
+#: cell contains, and a row must survive it — weight only affects sort order, whereas
+#: dropping the row loses a product from a shipment.
 SHEET_CSV = (
     "Name,Net Weight,M.R.P,M.F.G. DATE,Use By Date,FSSAI,Expiry ,Batch Code,ASIN,"
     "FNSKU,FK SKU,FSN,Amazon FBA SKU,Split Into,Packet Size,Packet used,"
@@ -43,6 +48,19 @@ SHEET_CSV = (
     "Blank Flag,1kg,,,,,,,B0CCCCCCCC,,,,MF-3,,,,,,Mithila,\n"
     "Lowercase yes,2kg,,,,,,,B0DDDDDDDD,,,,MF-4,,,,,,Howrah,y\n"
     "Junk row with no asin,,,,,,,,,,,,,,,,,,,Y\n"
+)
+
+#: The same layout with the numeric weights the real sheet actually uses, for the
+#: tests that care about the product record rather than the Active flag.
+CATALOGUE_CSV = (
+    "Name,Net Weight,M.R.P,M.F.G. DATE,Use By Date,FSSAI,Expiry ,Batch Code,ASIN,"
+    "FNSKU,FK SKU,FSN,Amazon FBA SKU,Split Into,Packet Size,Packet used,"
+    "Product label,Blinkit UPC Code,Brand Name,Active\n"
+    "Triphala Sattu,0.5,400,,,,,,B0H8NPDB88,,,,,,zipper,Sticker,No,,Mithila Foods,Y\n"
+    "Triphala Sattu,1,650,,,,,,B0H8NPVN6Z,,,,,,zipper,Sticker,No,,Mithila Foods,Y\n"
+    "Retired Thing,1,200,,,,,,B0RETIRED1,,,,,,zipper,Sticker,No,,Mithila Foods,N\n"
+    "Howrah Rice,2,300,,,,,,B0HOWRAH01,,,,,,zipper,Sticker,No,,Howrah Foods,Y\n"
+    "Bad Weight,not-a-number,50,,,,,,B0BADWEIGH,,,,,,zipper,Sticker,No,,Mithila Foods,Y\n"
 )
 
 
@@ -260,7 +278,10 @@ async def test_an_unwritable_cache_does_not_break_the_fetch(tmp_path, monkeypatc
         catalogue._write_cache({})
 
     # Restore a working writer only to prove load_active_flags is what shields it.
-    monkeypatch.setattr(catalogue, "_write_cache", lambda flags: None, raising=True)
+    # Signature is (flags, products=None) now, so accept both.
+    monkeypatch.setattr(
+        catalogue, "_write_cache", lambda flags, products=None: None, raising=True
+    )
     flags, warning = await catalogue.load_active_flags()
     assert flags["B0AAAAAAAA"] is True
     assert warning is None
@@ -275,11 +296,24 @@ async def test_generate_skips_inactive_products(auth_client, monkeypatch):
     asins = sorted(FAMILIES)
     keep, drop = asins[0], asins[1]
 
-    async def _flags():
-        return {keep: True, drop: False}, None
+    # Patches ``load_catalogue``, which is what the router actually calls. Stubbing
+    # ``load_active_flags`` here tested nothing once the plan's product list moved to
+    # the sheet — the inactive ASIN sailed straight into the plan, and this test is
+    # what caught it.
+    async def _catalogue():
+        return (
+            {
+                keep: {"asin": keep, "name": "Keep Me", "weight": 1.0,
+                       "brand": "Mithila Foods", "active": True},
+                drop: {"asin": drop, "name": "Drop Me", "weight": 1.0,
+                       "brand": "Mithila Foods", "active": False},
+            },
+            None,
+            "sheet",
+        )
 
     monkeypatch.setattr(
-        "app.shipment.catalogue.load_active_flags", _flags, raising=True
+        "app.shipment.catalogue.load_catalogue", _catalogue, raising=True
     )
 
     sales = f"(Child) ASIN,Units Ordered\n{keep},10\n{drop},10\n"
@@ -309,11 +343,13 @@ async def test_generate_skips_inactive_products(auth_client, monkeypatch):
 
 async def test_generate_reports_a_stale_or_missing_sheet(auth_client, monkeypatch):
     """The warning has to reach the response, not just the log."""
-    async def _flags():
-        return {}, "Could not read the product sheet, using the copy from 2026-08-01."
+    async def _catalogue():
+        return (
+            {}, "Could not read the MRP sheet, using the copy from 2026-08-01.", "cache"
+        )
 
     monkeypatch.setattr(
-        "app.shipment.catalogue.load_active_flags", _flags, raising=True
+        "app.shipment.catalogue.load_catalogue", _catalogue, raising=True
     )
 
     from app.routers.shipment import FAMILIES
@@ -367,7 +403,255 @@ async def test_generate_still_works_when_the_sheet_is_unreachable(
     body = r.json()
     assert body["items"], "the plan came back empty"
     assert body["skipped_inactive"] == 0, "nothing should have been filtered"
-    assert "could not read the product sheet" in (body.get("warning") or "").lower(), (
+    assert "could not read the mrp sheet" in (body.get("warning") or "").lower(), (
         "an unfiltered plan was produced with no warning — indistinguishable from "
         "a correctly filtered one"
     )
+
+
+# ─── The sheet decides WHICH products exist ─────────────────────────────────
+#
+# The reported bug: "why is triphala sattu not in the shipment list when it is there
+# in sales and also in MRP sheet".
+#
+# It was in the sheet, marked Active, in two pack sizes. It never reached a plan
+# because the plan iterated ``product_families.json`` — a static 205-ASIN file that
+# Triphala had never been added to — and consulted the sheet only for a yes/no Active
+# flag. So the sheet could say "yes, I sell this" about a product the plan had no way
+# to know existed.
+#
+# These tests pin the fix: the sheet supplies the product LIST, not just the flag.
+
+def test_the_parser_returns_full_product_records():
+    """Name, weight and brand, not just the flag — those are what the plan needs."""
+    products = catalogue.parse_catalogue(CATALOGUE_CSV)
+
+    triphala = products["B0H8NPDB88"]
+    assert triphala["name"] == "Triphala Sattu"
+    assert triphala["weight"] == 0.5
+    assert triphala["brand"] == "Mithila Foods"
+    assert triphala["active"] is True
+
+
+def test_an_unparseable_weight_keeps_the_row():
+    """Weight only affects sort order; a missing row affects a shipment.
+
+    So a typo in one cell must cost the ordering, never the product. ``None`` rather
+    than 0, so the caller can tell "the sheet does not say" from "the sheet says zero"
+    and fall back to the static file.
+    """
+    products = catalogue.parse_catalogue(CATALOGUE_CSV)
+    assert "B0BADWEIGH" in products, "a row was dropped over one bad weight cell"
+    assert products["B0BADWEIGH"]["weight"] is None
+    assert products["B0BADWEIGH"]["active"] is True
+
+
+def test_the_flags_view_still_agrees_with_the_full_parser():
+    """``parse_active_flags`` is now a view over ``parse_catalogue``.
+
+    Asserted because two parsers that must agree is exactly the drift this avoids —
+    and the fallback path still uses the narrow one.
+    """
+    products = catalogue.parse_catalogue(SHEET_CSV)
+    flags = catalogue.parse_active_flags(SHEET_CSV)
+    assert flags == {a: r["active"] for a, r in products.items()}
+
+
+async def test_a_product_only_in_the_sheet_reaches_the_plan(auth_client, monkeypatch):
+    """The reported bug, end to end.
+
+    B0H8NPDB88 is deliberately NOT in product_families.json — that is the whole point.
+    Before the fix this ASIN could sell, be marked Active, and still produce no row.
+    """
+    from app.routers.shipment import FAMILIES
+
+    new_asin = "B0H8NPDB88"
+    assert new_asin not in FAMILIES, (
+        "premise changed: this ASIN is now in product_families.json, so it no longer "
+        "tests the sheet-only path. Pick another that is absent from the file."
+    )
+
+    async def _catalogue():
+        return catalogue.parse_catalogue(CATALOGUE_CSV), None, "sheet"
+
+    monkeypatch.setattr(
+        "app.shipment.catalogue.load_catalogue", _catalogue, raising=True
+    )
+
+    sales = f"(Child) ASIN,Units Ordered\n{new_asin},40\n"
+    stock = f"asin,sku,afn-fulfillable-quantity\n{new_asin},TRI-500G,0\n"
+    r = await auth_client.post(
+        "/shipment/generate",
+        files={
+            "sales_csv": ("s.csv", sales.encode(), "text/csv"),
+            "stock_csv": ("k.csv", stock.encode(), "text/csv"),
+        },
+        data={"multiplier": "5"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    row = next((i for i in body["items"] if i["asin"] == new_asin), None)
+    assert row is not None, (
+        "a product that is in the MRP sheet, marked Active, and selling did not reach "
+        "the plan — this is the Triphala Sattu bug"
+    )
+    # And it arrives fully formed, not as a nameless row.
+    assert row["item"] == "Triphala Sattu"
+    assert row["weight"] == 0.5
+    assert row["brand"] == "MF", "brand was not mapped from the sheet"
+    # 40 sold * 5 = 200 projected, 0 stock -> 200 to ship.
+    assert row["shipment_plan"] == 200
+    # The merchant SKU comes from the uploaded stock CSV, not the sheet blank column M.
+    assert row["fba_sku"] == "TRI-500G"
+
+
+async def test_the_sheet_brand_drives_the_mithila_howrah_split(auth_client, monkeypatch):
+    """Brand decides sort order (MF before HF) and prints on every document.
+
+    The sheet says "Mithila Foods" / "Howrah Foods" where the code wants MF / HF, and
+    that mapping is a substring test — so a sheet that ever says "Mithila Foods Pvt
+    Ltd" still maps correctly.
+    """
+    async def _catalogue():
+        return catalogue.parse_catalogue(CATALOGUE_CSV), None, "sheet"
+
+    monkeypatch.setattr(
+        "app.shipment.catalogue.load_catalogue", _catalogue, raising=True
+    )
+
+    rows = [("B0H8NPDB88", 10, "A"), ("B0HOWRAH01", 10, "B")]
+    sales = "(Child) ASIN,Units Ordered\n" + "".join(f"{a},{u}\n" for a, u, _ in rows)
+    stock = "asin,sku,afn-fulfillable-quantity\n" + "".join(
+        f"{a},{s},0\n" for a, _, s in rows
+    )
+    r = await auth_client.post(
+        "/shipment/generate",
+        files={"sales_csv": ("s.csv", sales.encode(), "text/csv"),
+               "stock_csv": ("k.csv", stock.encode(), "text/csv")},
+        data={"multiplier": "5"},
+    )
+    assert r.status_code == 200, r.text
+    brands = {i["asin"]: i["brand"] for i in r.json()["items"]}
+    assert brands["B0H8NPDB88"] == "MF"
+    assert brands["B0HOWRAH01"] == "HF"
+
+
+async def test_an_inactive_sheet_product_never_reaches_the_plan(auth_client, monkeypatch):
+    """The other half: the sheet can also REMOVE a product, including a new one."""
+    async def _catalogue():
+        return catalogue.parse_catalogue(CATALOGUE_CSV), None, "sheet"
+
+    monkeypatch.setattr(
+        "app.shipment.catalogue.load_catalogue", _catalogue, raising=True
+    )
+
+    sales = "(Child) ASIN,Units Ordered\nB0RETIRED1,50\nB0H8NPDB88,50\n"
+    stock = "asin,sku,afn-fulfillable-quantity\nB0RETIRED1,R,0\nB0H8NPDB88,T,0\n"
+    r = await auth_client.post(
+        "/shipment/generate",
+        files={"sales_csv": ("s.csv", sales.encode(), "text/csv"),
+               "stock_csv": ("k.csv", stock.encode(), "text/csv")},
+        data={"multiplier": "5"},
+    )
+    assert r.status_code == 200, r.text
+    listed = {i["asin"] for i in r.json()["items"]}
+    assert "B0H8NPDB88" in listed
+    assert "B0RETIRED1" not in listed, (
+        "a product marked N in the sheet reached the plan, so it would go on the "
+        "packer morning sheet and the Amazon upload"
+    )
+
+
+async def test_generate_says_where_the_product_list_came_from(auth_client, monkeypatch):
+    """A plan built from a week-old cache looks identical to one built from today's
+    sheet. The owner should not have to guess which he is holding."""
+    async def _catalogue():
+        return catalogue.parse_catalogue(CATALOGUE_CSV), None, "sheet"
+
+    monkeypatch.setattr(
+        "app.shipment.catalogue.load_catalogue", _catalogue, raising=True
+    )
+
+    r = await auth_client.post(
+        "/shipment/generate",
+        files={
+            "sales_csv": ("s.csv", b"(Child) ASIN,Units Ordered\nB0H8NPDB88,10\n", "text/csv"),
+            "stock_csv": ("k.csv", b"asin,sku,afn-fulfillable-quantity\nB0H8NPDB88,T,0\n", "text/csv"),
+        },
+        data={"multiplier": "5"},
+    )
+    assert r.status_code == 200, r.text
+    info = r.json()["catalogue"]
+
+    assert info["source"] == "sheet"
+    assert info["sheet_products"] == 5
+    assert info["active"] == 4          # one row is marked N
+    assert info["skipped_inactive"] >= 1
+    # Named, not just counted: "2 new products" sends the owner hunting through 110 rows.
+    assert any("Triphala" in n for n in info["new_to_the_catalogue"]), (
+        "the newly-added products are not named"
+    )
+
+
+async def test_generate_names_what_appeared_and_what_vanished(
+    auth_client, monkeypatch, plan_factory
+):
+    """The sheet is hand-edited, so a stale Active flag shows up here as a row
+    silently leaving the plan. "110 rows" alone gives the owner no way to notice."""
+    await plan_factory()
+
+    async def _catalogue():
+        return catalogue.parse_catalogue(CATALOGUE_CSV), None, "sheet"
+
+    monkeypatch.setattr(
+        "app.shipment.catalogue.load_catalogue", _catalogue, raising=True
+    )
+
+    r = await auth_client.post(
+        "/shipment/generate",
+        files={
+            "sales_csv": ("s.csv", b"(Child) ASIN,Units Ordered\nB0H8NPDB88,10\n", "text/csv"),
+            "stock_csv": ("k.csv", b"asin,sku,afn-fulfillable-quantity\nB0H8NPDB88,T,0\n", "text/csv"),
+        },
+        data={"multiplier": "5"},
+    )
+    assert r.status_code == 200, r.text
+    info = r.json()["catalogue"]
+
+    assert any("Triphala" in a for a in info["added"]), (
+        "the new product is not reported as added"
+    )
+    assert info["removed"], (
+        "the fixture plan products are gone from the new plan and nothing said so"
+    )
+
+
+async def test_the_static_file_is_the_offline_fallback(auth_client, monkeypatch):
+    """With no sheet and no cache, the plan is still built — from the static file.
+
+    A Google outage must not stop the owner building a plan, and the response says the
+    filtering did not happen so an unfiltered plan is not mistaken for a filtered one.
+    """
+    async def _nothing():
+        return {}, "Could not read the MRP sheet and there is no saved copy.", "none"
+
+    monkeypatch.setattr(
+        "app.shipment.catalogue.load_catalogue", _nothing, raising=True
+    )
+
+    from app.routers.shipment import FAMILIES
+    asin = sorted(FAMILIES)[0]
+    r = await auth_client.post(
+        "/shipment/generate",
+        files={
+            "sales_csv": ("s.csv", f"(Child) ASIN,Units Ordered\n{asin},10\n".encode(), "text/csv"),
+            "stock_csv": ("k.csv", f"asin,sku,afn-fulfillable-quantity\n{asin},S,0\n".encode(), "text/csv"),
+        },
+        data={"multiplier": "5"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["items"], "no sheet and no cache produced an empty plan"
+    assert body["catalogue"]["source"] == "none"
+    assert "could not read the mrp sheet" in (body.get("warning") or "").lower()

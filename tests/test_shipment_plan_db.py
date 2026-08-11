@@ -482,10 +482,18 @@ async def test_the_api_returns_items_in_canonical_order(auth_client, plan_factor
 # catalogue changes and cannot silently pass against a plan of all zeroes.
 
 @pytest.fixture
-def real_asins():
+def real_asins(no_live_product_sheet):
     """Two ASINs the router will actually emit rows for.
 
     Sorted so the pair is deterministic across runs.
+
+    Depends on ``no_live_product_sheet`` explicitly — not for the stub itself (it is
+    autouse) but to make the dependency visible, because it is now load-bearing. The
+    plan's product list comes from the MRP sheet, so "an ASIN in FAMILIES" is no longer
+    the same thing as "an ASIN the router emits": the sheet marks the second one
+    alphabetically (B0CWGY2LCP, Chana Sattu 1.5kg) INACTIVE, and with the real sheet
+    this fixture silently returned a product that generates no row at all. The stub
+    returns no flags, which means "filter nothing", so both ASINs come through.
     """
     from app.routers.shipment import FAMILIES
 

@@ -364,6 +364,7 @@ let rollover = "";
 // Shown because 205 products becoming 117 rows is otherwise unexplained,
 // and "did the upload work?" is the natural next thought.
 let skippedInactive = 0;
+let catalogueInfo = null;
 let currentFilter = "deficit";
 
 // ASINs whose plan fields the owner has edited but not yet saved. Only these are
@@ -392,6 +393,7 @@ async function load(){
   // stranded-stock warning does not follow him around forever.
   rollover = "";
   skippedInactive = 0;
+  catalogueInfo = null;
   try{
     /* The DRAFT wins when one exists. That is the whole point of the state: the
        owner is preparing a replacement, so this screen must show him what he is
@@ -485,6 +487,11 @@ async function generate(){
        next load, which is when he has had a chance to act on it. */
     rollover = data.warning && (data.abandoned_holds || []).length ? data.warning : "";
     skippedInactive = data.skipped_inactive || 0;
+    /* Held outside `adopt(data)` for the same reason as `rollover`: it describes the
+       GENERATE that just happened, and adopt() is also called by plain loads that
+       carry no catalogue information. Kept until the next generate so the owner can
+       act on it rather than blinking past a toast. */
+    catalogueInfo = data.catalogue || null;
     adopt(data);
     toast(items.length + " products loaded as a draft — review, then Finalise","success");
   }catch(e){ toast(e.message,"error"); }
@@ -510,6 +517,61 @@ function renderBanners(){
       ${removed ? ` ${removed} row(s) removed.` : ""}
       ${skippedInactive ? ` ${skippedInactive} inactive product(s) skipped.` : ""}
     </div>`);
+  }
+
+  /* Where the product list came from, and what moved.
+
+     The MRP sheet now decides WHICH products exist, not just which are still sold —
+     that is the fix for Triphala Sattu, which was in the sheet, marked Active, and
+     never reached a plan. The consequence is that a hand-edited Active flag can add
+     or remove a row, so this says which, by name. A row count alone ("108 rows")
+     gives no way to notice that a product quietly left.
+
+     Only after a generate: catalogueInfo is null on a plain page load, because it
+     describes an upload rather than the plan's current state. */
+  if(catalogueInfo){
+    const c = catalogueInfo;
+    const bits = [];
+
+    if(c.source === "sheet"){
+      bits.push(`Read <strong>${c.sheet_products}</strong> products from the MRP
+        sheet — ${c.active} active, ${c.skipped_inactive} skipped as inactive.`);
+    }else if(c.source === "cache"){
+      bits.push(`<strong>The MRP sheet could not be read</strong>, so a saved copy was
+        used. A product added to the sheet since then will not be here.`);
+    }else{
+      bits.push(`<strong>The MRP sheet could not be read</strong> and there is no saved
+        copy, so the built-in product list was used and nothing was filtered.`);
+    }
+
+    /* Named, not counted — "2 new products" sends the owner hunting through 108 rows.
+       But capped: the first generate after this change reported 30+ appearances,
+       because the previous plan predated the sheet taking over. A wall of names is
+       read as noise and skipped entirely, which defeats the purpose. */
+    const LIST_CAP = 8;
+    const listed = (names) => {
+      const shown = names.slice(0, LIST_CAP).map(esc).join(", ");
+      const rest = names.length - LIST_CAP;
+      return rest > 0 ? `${shown} and ${rest} more` : shown;
+    };
+
+    if((c.new_to_the_catalogue || []).length){
+      bits.push(`<br/>New in the sheet:
+        <strong>${listed(c.new_to_the_catalogue)}</strong>.`);
+    }
+    if((c.added || []).length){
+      bits.push(`<br/>Appeared since your last plan: ${listed(c.added)}.`);
+    }
+    if((c.removed || []).length){
+      // Worth its own emphasis: a product LEAVING the plan is the failure mode of a
+      // stale Active flag, and the one the owner cannot see by scanning the table.
+      bits.push(`<br/><strong>Gone since your last plan:</strong>
+        ${listed(c.removed)} — check the Active column in the sheet if that is wrong.`);
+    }
+
+    out.push(
+      `<div class="banner ${c.source === "sheet" ? "info" : "warn"}">${bits.join(" ")}</div>`
+    );
   }
 
   // Then, in the loudest style available: this is stock that is physically

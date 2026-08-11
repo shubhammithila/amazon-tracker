@@ -255,19 +255,26 @@ async def plan_factory(db):
 def no_live_product_sheet(request, monkeypatch):
     """Stop the test suite reading the real Google Sheet.
 
-    ``POST /shipment/generate`` filters out products marked inactive in column T
-    of the product master sheet. Left unmocked, every generate test would make a
-    live network call to a Google document — slow, flaky offline, and worst of all
-    it makes the suite's results depend on a spreadsheet somebody edits by hand: a
-    product deactivated on Tuesday would break unrelated tests on Wednesday.
+    ``POST /shipment/generate`` builds its product list from the MRP master sheet.
+    Left unmocked, every generate test would make a live network call to a Google
+    document — slow, flaky offline, and worst of all it makes the suite's results
+    depend on a spreadsheet somebody edits by hand: a product deactivated on Tuesday
+    would break unrelated tests on Wednesday.
 
-    Autouse and returning **no flags**, so the default is "filter nothing" and
-    every pre-existing generate test keeps asserting what it was written to
-    assert.
+    Autouse and returning **nothing**, so the default is "no sheet data, filter
+    nothing" and every pre-existing generate test keeps asserting what it was written
+    to assert — the plan falls back to product_families.json exactly as before.
 
-    ``@pytest.mark.real_catalogue`` opts out. tests/test_shipment_catalogue.py
-    needs the genuine function — testing its fallbacks is the entire point of that
-    file — and only fakes httpx underneath it.
+    **Both entry points are patched, and that matters.** When the router moved from
+    ``load_active_flags`` to ``load_catalogue``, this fixture still stubbed only the
+    old one — so the suite quietly went back to fetching the live sheet on every
+    generate test, and one test began failing because the sheet marks its second ASIN
+    inactive. Patching only the function you happen to remember is how a stub silently
+    stops covering the thing it exists to cover.
+
+    ``@pytest.mark.real_catalogue`` opts out. tests/test_shipment_catalogue.py needs
+    the genuine functions — testing their fallbacks is the entire point of that file —
+    and fakes httpx underneath them instead.
     """
     if request.node.get_closest_marker("real_catalogue"):
         return
@@ -275,8 +282,14 @@ def no_live_product_sheet(request, monkeypatch):
     async def _no_flags():
         return {}, None
 
+    async def _no_catalogue():
+        return {}, None, "none"
+
     monkeypatch.setattr(
         "app.shipment.catalogue.load_active_flags", _no_flags, raising=True
+    )
+    monkeypatch.setattr(
+        "app.shipment.catalogue.load_catalogue", _no_catalogue, raising=True
     )
 
 

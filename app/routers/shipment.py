@@ -259,21 +259,59 @@ async def generate_plan(
 
     sku_map = parse_sku_map(stock_content)
 
-    # Column T of the product master sheet: only products the owner still sells
-    # may reach a plan. A discontinued SKU otherwise lands on the packer's morning
-    # sheet and in the Amazon upload — a wasted trip and a rejected line.
+    # ── The product list comes from the MRP sheet, live ──────────────────────
     #
-    # Never raises: on a fetch failure this returns the last good list (or an
-    # empty one) plus a warning, because a Google outage must not stop the owner
-    # building a plan.
-    active_flags, sheet_warning = await catalogue.load_active_flags()
+    # **The sheet decides which products exist**, not merely which are still sold.
+    # That distinction is the bug this fixes: Triphala Sattu was in the sheet in two
+    # pack sizes, marked Active, and never appeared in a plan — because this loop used
+    # to iterate FAMILIES, the static product_families.json, which had 205 ASINs and
+    # had never had Triphala added to it. The sheet was consulted only for a yes/no
+    # flag, so a genuinely new product was invisible whatever the sheet said.
+    #
+    # Never raises: on a fetch failure this returns the cached copy (or nothing) plus
+    # a warning, because a Google outage must not stop the owner building a plan.
+    sheet_products, sheet_warning, sheet_source = await catalogue.load_catalogue()
+
+    # The union, so neither source can lose a product on its own:
+    #   * in the sheet only  -> new product, include it (this is Triphala)
+    #   * in both            -> sheet wins on name/weight/brand/active
+    #   * in the file only   -> the sheet has never heard of it. Keep it: absence is
+    #                           missing information, not a decision to discontinue,
+    #                           and dropping it would shrink the plan silently.
+    #                           (Currently empty — the sheet is a strict superset.)
+    candidates = set(FAMILIES) | set(sheet_products)
 
     items: list[dict] = []
     skipped_inactive = 0
-    for asin, info in FAMILIES.items():
-        if not catalogue.is_active(active_flags, asin):
+    from_sheet_only = []
+
+    for asin in sorted(candidates):
+        info = FAMILIES.get(asin) or {}
+        sheet_row = sheet_products.get(asin) or {}
+
+        # is_active() treats an unknown ASIN as active, which is what keeps a
+        # file-only product in the plan rather than silently dropping it.
+        if sheet_row and not sheet_row.get("active"):
             skipped_inactive += 1
             continue
+        if not sheet_row and not catalogue.is_active(
+            {a: bool(r["active"]) for a, r in sheet_products.items()}, asin
+        ):
+            skipped_inactive += 1
+            continue
+
+        # Sheet first for every displayed field, then the static file, then a default.
+        # The sheet is hand-maintained and current; the file is a months-old snapshot.
+        # Verified before switching: for the 108 active ASINs in both, weight and brand
+        # agree exactly — 0 mismatches — so this changes no existing row.
+        brand_name = sheet_row.get("brand") or info.get("brand") or ""
+        product_name = sheet_row.get("name") or info.get("parent_product") or ""
+        weight = sheet_row.get("weight")
+        if weight is None:
+            weight = info.get("weight") or 0
+
+        if sheet_row and asin not in FAMILIES:
+            from_sheet_only.append(f"{product_name} {logic.weight_label(weight)}".strip())
 
         units_sold = sales.get(asin, 0)
         fba_stock = stock.get(asin, 0)
@@ -281,11 +319,18 @@ async def generate_plan(
         deficit = projection - fba_stock
 
         items.append({
-            "brand": "MF" if info.get("brand") == "Mithila Foods" else "HF",
+            # Substring, not equality: the sheet says "Mithila Foods" while the static
+            # file's values are compared exactly. Anything not Mithila is Howrah, which
+            # matches the sheet's only two brand values.
+            "brand": "MF" if "mithila" in brand_name.lower() else "HF",
+            # NOT from the sheet. Column M ("Amazon FBA SKU") is blank on all 108 active
+            # rows, and the real value arrives in the uploaded stock CSV — Amazon's own
+            # export. Reading the sheet's empty column would blank the SKU on every row,
+            # and Amazon rejects those lines.
             "fba_sku": sku_map.get(asin, ""),
             "asin": asin,
-            "item": info.get("parent_product") or "",
-            "weight": info.get("weight") or 0,
+            "item": product_name,
+            "weight": weight,
             "sales_7d": units_sold,
             "projection": projection,
             "fba_stock": fba_stock,
@@ -318,6 +363,16 @@ async def generate_plan(
         else []
     )
 
+    # What the previous plan contained, read BEFORE the new draft is created, so the
+    # response can say which products appeared and which vanished. The sheet is
+    # hand-edited: a stale Active flag shows up here as a row silently leaving the
+    # plan, and "110 rows" alone gives the owner no way to notice.
+    previous_asins: set[str] = set()
+    if outgoing is not None:
+        previous_asins = {
+            i.asin for i in await repository.load_plan_items(db, outgoing.id)
+        }
+
     # A DRAFT, and the active plan is left completely alone. The owner removes
     # rows, fixes quantities and fills missing SKUs before the warehouse ever
     # sees it; POST /plan/{id}/finalise is what promotes it. Any previous draft is
@@ -334,8 +389,37 @@ async def generate_plan(
     payload["abandoned_holds"] = abandoned_holds
     payload["skipped_inactive"] = skipped_inactive
 
+    # Where the product list came from, and what moved. The owner asked for the sheet
+    # to drive the plan; this is how he can see that it did, and check the sheet before
+    # a wrong Active flag reaches a real shipment.
+    current_asins = {i["asin"] for i in items}
+    added = sorted(current_asins - previous_asins) if previous_asins else []
+    removed = sorted(previous_asins - current_asins) if previous_asins else []
+
+    def _label(asin: str) -> str:
+        row = sheet_products.get(asin) or {}
+        info = FAMILIES.get(asin) or {}
+        name = row.get("name") or info.get("parent_product") or asin
+        weight = row.get("weight")
+        if weight is None:
+            weight = info.get("weight") or 0
+        return f"{name} {logic.weight_label(weight)}".strip()
+
+    payload["catalogue"] = {
+        "source": sheet_source,             # "sheet" | "cache" | "none"
+        "sheet_products": len(sheet_products),
+        "active": sum(1 for r in sheet_products.values() if r["active"]),
+        "skipped_inactive": skipped_inactive,
+        "rows": len(items),
+        # Named, not just counted: "2 new products" sends the owner hunting through
+        # 110 rows to find out which.
+        "added": [_label(a) for a in added],
+        "removed": [_label(a) for a in removed],
+        "new_to_the_catalogue": sorted(from_sheet_only),
+    }
+
     warnings = []
-    # First, because it explains the row count. Without it the owner sees 117 rows
+    # First, because it explains the row count. Without it the owner sees 110 rows
     # where he expected 205 and has no way to know why.
     if sheet_warning:
         warnings.append(sheet_warning)
