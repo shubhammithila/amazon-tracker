@@ -531,12 +531,30 @@ Three traps, all covered by `tests/test_scraper_deal_badge.py`:
 - Ad carousels carry deal markup for **other** products — 7 such mentions on one page —
   so the XPath is scoped to the badge region.
 
-> **The same ASIN can legitimately return Yes locally and No on EC2.** Measured: from
-> this laptop B0CY84RYRG has the badge and the ₹295 sale price; from the EC2 box the
-> identical request returns **zero** deal markers and the pre-sale ₹349. Amazon serves
-> datacentre IPs a thinner page. That is the same root cause as the scraper failure
-> already noted below — a network/IP issue, not a parser one — so a No in production
-> with a Yes locally is not necessarily a bug in this code.
+> **The same ASIN legitimately returns Yes locally and No on EC2, and it is not a parser
+> bug.** Measured on six ASINs, three fetches each, both machines:
+>
+> | ASIN | laptop | EC2 | |
+> |---|---|---|---|
+> | B0CWGXYLT6 | Yes ₹173 | Yes ₹173 | agree |
+> | B0CY88658Y | Yes ₹178 | Yes ₹178 | agree |
+> | B0D8157HND | Yes ₹118 | Yes ₹118 | agree |
+> | B0D817HX57 | No ₹289 | No ₹289 | agree |
+> | B0CY84RYRG | **Yes ₹295** | **No ₹349** | differ |
+> | B0CY85DH38 | **Yes ₹414** | **No ₹569** | differ |
+>
+> **Deal and price move together in every row.** That is the signature of two different
+> OFFERS being served, not of a mis-read badge — a parser fault would disagree about the
+> badge while the price stayed identical. Where the price matches, the badge matches; the
+> two rows that differ are ₹54 and ₹155 cheaper from the laptop, because the deal is what
+> sets that price. The EC2 page is complete (buy box, price block, 2.07 MB) — it simply
+> carries the non-deal offer, and 6/6 repeat fetches agree.
+>
+> So Amazon shows datacentre IPs a different offer, exactly as it blocks httpx from this
+> machine (below). Deals appear on the dashboard only for products whose deal is offered
+> to the EC2 IP as well. Fixing it properly needs residential-proxy egress for the
+> scraper, which is a cost and an operations decision rather than a code change — noted
+> here rather than silently worked around.
 
 
 ### The invoice attach is a second request, so there is a window
