@@ -170,40 +170,57 @@ def extract_fulfillment(tree: html.HtmlElement) -> Optional[str]:
 
 
 def extract_deal(tree: html.HtmlElement) -> str:
-    """
-    Detect ACTIVE deal badge only — the red 'Ends in XX:XX' / 'Limited time deal' tag.
-    Relies ONLY on the dealBadge feature div having a real countdown/deal timer.
-    Does NOT match template strings or plain MRP discounts.
-    """
-    # The dealBadge feature div only has deal-keyword text when an active deal is running.
-    # When there's no deal, the div exists but all its text is JS code or empty.
-    deal_texts = tree.xpath('//*[@data-feature-name="dealBadge"]//text()')
-    if deal_texts:
-        # Filter out JS/script content — keep only short readable strings
-        readable = [
-            t.strip().lower() for t in deal_texts
-            if t.strip()
-            and len(t.strip()) < 80
-            and 'function' not in t
-            and 'p.when' not in t.lower()
-            and '{' not in t
-            and 'P.declare' not in t
-        ]
-        combined = " ".join(readable)
-        if any(kw in combined for kw in (
-            'ends in', 'limited time deal', 'deal of the day',
-            'lightning deal', 'prime day deal', 'best deal',
-            'savings and sales',
-        )):
-            return "Yes"
+    """Is the red deal badge on the page? Returns "Yes" / "No".
 
-        # Also check for a countdown timer element with a target time
-        timer = tree.xpath(
-            '//*[@data-feature-name="dealBadge"]//*[@data-target-time] | '
-            '//*[@data-feature-name="dealBadge"]//span[contains(@class,"countdown")]'
-        )
-        if timer:
-            return "Yes"
+    **Structure, not vocabulary.** The previous version matched a hardcoded list of
+    phrases — 'limited time deal', 'lightning deal', 'prime day deal' — and reported
+    "No" for every product during the Freedom Sale, because the badge read
+    **"Freedom Sale Deal"** and that string was not on the list. Amazon names each
+    sale differently ("Great Indian Festival", "Freedom Sale", whatever is next), so
+    a keyword list is guaranteed to go stale and it fails SILENTLY: every row reads
+    No, which is indistinguishable from genuinely having no deals.
+
+    Two structural signals are used instead, both taken from the live DOM:
+
+    1. ``#dealBadgeSupportingText`` — the span holding the badge's VISIBLE text. On a
+       page with a deal it contains exactly "Freedom Sale Deal"; on one without, the
+       span does not exist at all.
+    2. ``data-csa-c-painter="dp-deal"`` — Amazon's own marker that the detail page
+       painted a deal. Absent when there is no deal.
+
+    Verified against real pages of both kinds:
+
+        with a deal    (B0CY84RYRG): supporting text present, painter present
+        without a deal (0143448145): dealBadge div present but BOTH absent
+
+    Note the div itself is always present, which is why its mere existence cannot be
+    the test — that is the trap the old countdown-element check fell into.
+
+    **The screen-reader spans are deliberately excluded.** They are `aok-hidden` and
+    contain the badge text with UNSUBSTITUTED placeholders —
+    "Freedom Sale Deal NO_OF_HOURS hours NO_OF_MINUTES minutes" — because the
+    countdown is filled in by JavaScript that never runs here. Reading those would
+    work today and would also match a page where the template shipped but no deal was
+    active, so the visible span is the honest source.
+    """
+    # 1. The visible badge text. Most direct: if it is there, the shopper sees a badge.
+    visible = " ".join(
+        t.strip()
+        for t in tree.xpath('//*[@id="dealBadgeSupportingText"]//text()')
+        if t.strip()
+    )
+    # Guard against the placeholder text leaking in through a markup change; a badge
+    # whose text is still a template is not a rendered badge.
+    if visible and "NO_OF_" not in visible:
+        return "Yes"
+
+    # 2. Amazon's own "this page painted a deal" marker, scoped to the badge region so
+    #    a deal on a *recommended* product elsewhere on the page cannot trigger it.
+    if tree.xpath(
+        '//*[@data-feature-name="dealBadge"]//*[@data-csa-c-painter="dp-deal"] | '
+        '//span[contains(@class,"dealBadge")][@data-csa-c-painter="dp-deal"]'
+    ):
+        return "Yes"
 
     return "No"
 
