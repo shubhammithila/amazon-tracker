@@ -357,6 +357,67 @@ def test_the_table_header_is_not_offset_into_the_first_row(source):
         )
 
 
+def test_the_table_height_is_measured_not_guessed(source):
+    """Reported: "the part where displays the items are bit less."
+
+    The cap was `calc(100vh - 300px)`, and 300px is an assumption about the chrome
+    above the table. Trimming the header left it ~90px pessimistic, so the space freed
+    became whitespace instead of rows; on a short phone the same constant ran the last
+    row underneath the fixed savebar, where it cannot be typed into. Both failures come
+    from the constant, not from its value, so the fix is to measure.
+    """
+    body = _without_comments(source)
+
+    # The .table-wrap rule itself must consume the measured value. Asserting the
+    # variable merely EXISTS somewhere passed even with the rule reverted to the
+    # hardcoded calc(), because sizeTable() still set a property nothing read.
+    wrap = re.search(r"\.table-wrap\{([^}]*)\}", body)
+    assert wrap, "the .table-wrap rule is gone"
+    max_h = re.search(r"max-height:([^;}]*)", wrap.group(1))
+    assert max_h, ".table-wrap sets no max-height, so it is not a scroll container"
+    assert "--table-cap" in max_h.group(1), (
+        f"the table height is a hardcoded guess about the chrome above it "
+        f"(max-height:{max_h.group(1).strip()}). Trimming the header then frees space "
+        "the table never claims, and a short screen hides the last row under the "
+        "savebar."
+    )
+    assert "function sizeTable" in body, "nothing measures the available height"
+    # Measured from the wrapper's own position and the bar's own height.
+    assert "getBoundingClientRect().top" in body, (
+        "sizeTable does not read where the table actually starts"
+    )
+    assert re.search(r'addEventListener\("resize",\s*sizeTable\)', body), (
+        "the cap is never recomputed, so rotating a phone or opening the keyboard "
+        "leaves the last row under the savebar"
+    )
+
+
+def test_the_thumb_targets_are_not_shrunk_to_win_space(source):
+    """The packer is standing, on a phone, possibly gloved.
+
+    Height on this screen was won from labels, padding and tiles. The controls he
+    actually hits 62 times a day must not pay for it: shrinking `input.qty` would be
+    the easy pixel saving and the wrong one.
+    """
+    body = _without_comments(source)
+
+    qty = re.search(r"input\.qty\{([^}]*)\}", body)
+    assert qty, "the quantity input rule is gone"
+    min_h = re.search(r"min-height:(\d+)px", qty.group(1))
+    assert min_h and int(min_h.group(1)) >= 44, (
+        "the in-table quantity box is under the 44px touch minimum — it is typed into "
+        "once per product by someone standing at a bench"
+    )
+
+    for name, pattern in (("Save/Submit", r"\.savebar \.btn\{([^}]*)\}"),):
+        rule = re.search(pattern, body)
+        if rule:
+            found = re.search(r"min-height:(\d+)px", rule.group(1))
+            assert found and int(found.group(1)) >= 44, (
+                f"the {name} button dropped below the 44px touch minimum"
+            )
+
+
 # ─── Ops must not be offered admin actions ───────────────────────────────────
 
 #: Admin-only endpoints. A button here would 403 — and a page of buttons that

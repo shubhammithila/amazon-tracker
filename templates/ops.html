@@ -58,10 +58,16 @@ header h1{font-size:16px;font-weight:600}
 .nav-links a{color:var(--text-muted);text-decoration:none;font-size:14px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
 .nav-links a.active{color:var(--text);border-color:var(--accent)}
 .header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:14px;text-decoration:none}
-main{max-width:1100px;margin:0 auto;padding:18px}
-h2{font-size:21px;font-weight:600;margin-bottom:4px}
-.subtitle{color:var(--text-muted);font-size:13px;margin-bottom:16px}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:14px}
+/* Vertical space on this screen is the product: every pixel above the table is a
+   packing row the warehouse cannot see, and on a 62-row day the packer scrolls all
+   shift. The chrome below is deliberately tight — heading, subtitle, date card and
+   totals tiles were costing ~300px between them, leaving only 8 rows visible.
+   The TAP TARGETS are not shrunk: inputs and buttons keep their 44-46px minimum,
+   because this is used standing up on a phone. Only the labelling gets smaller. */
+main{max-width:1100px;margin:0 auto;padding:10px 18px}
+h2{font-size:17px;font-weight:600;margin-bottom:2px}
+.subtitle{color:var(--text-muted);font-size:12px;margin-bottom:8px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:9px 12px;margin-bottom:8px}
 .empty-state{text-align:center;padding:36px 16px;color:var(--text-muted);line-height:1.6}
 .date-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 input[type="date"]{background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:10px 12px;font-size:15px}
@@ -85,10 +91,16 @@ input[type="date"]{background:var(--bg);border:1px solid var(--border);border-ra
 .banner.error{background:var(--red-soft);border:1px solid var(--red);color:var(--red)}
 
 /* Progress */
-.totals{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
-.tot{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center}
-.tot .num{font-size:22px;font-weight:700}
-.tot .lbl{font-size:10px;color:var(--text-muted);margin-top:3px;text-transform:uppercase;letter-spacing:.04em}
+/* One row, tighter. The three numbers are a progress glance, not the work — the
+   work is the table underneath, so the tiles no longer take 135px of it. Number and
+   label sit side by side rather than stacked, which halves the height and still
+   reads at arm's length. */
+.totals{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px}
+.tot{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  padding:6px 10px;text-align:center;display:flex;align-items:baseline;
+  justify-content:center;gap:7px}
+.tot .num{font-size:18px;font-weight:700;line-height:1.1}
+.tot .lbl{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
 .tot.low{border-color:var(--yellow)}.tot.low .num{color:var(--yellow)}
 .tot.ok .num{color:var(--green)}
 
@@ -120,8 +132,16 @@ input[type="date"]{background:var(--bg);border:1px solid var(--border);border-ra
    "PACKED NOW" and "STILL NEEDED" are indistinguishable columns of numbers without
    them. Any non-zero `top` here brings the bug straight back; a test enforces it.
 
-   max-height, not height: a 4-row day should not leave an empty scroll well. */
-.table-wrap{overflow:auto;max-height:calc(100vh - 300px);min-height:180px;border:1px solid var(--border);border-radius:10px;background:var(--surface);overscroll-behavior:contain}
+   max-height, not height: a 4-row day should not leave an empty scroll well.
+
+   The cap is `--table-cap`, which sizeTable() sets from the wrapper's MEASURED top
+   and the savebar's MEASURED height on load, resize and re-render. It was a
+   hardcoded `100vh - 300px`, and that number is a guess about the chrome above:
+   trimming the tiles left the guess 90px too small, so the freed space went to
+   whitespace instead of rows, while on a short phone the same constant ran the table
+   under the fixed savebar and hid the last row. Measuring cannot drift out of step
+   with the layout the way a constant does. */
+.table-wrap{overflow:auto;max-height:var(--table-cap, calc(100vh - 300px));min-height:180px;border:1px solid var(--border);border-radius:10px;background:var(--surface);overscroll-behavior:contain}
 table{width:100%;border-collapse:separate;border-spacing:0;min-width:560px}
 /* border-collapse:separate above is required, not cosmetic: with `collapse` the
    browser paints borders on the TABLE rather than the cells, so a sticky header's
@@ -189,7 +209,13 @@ input.qty.over{border-color:var(--red);color:var(--red);background:var(--surface
    entered numbers leave the phone. The carton box lives here rather than in the
    table because it belongs to the DAY — putting it in a column would be the
    per-SKU question all over again. */
-.savebar{position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);padding:10px 18px;display:flex;gap:14px;align-items:center;z-index:200;flex-wrap:wrap;box-shadow:var(--shadow)}
+.savebar{position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);padding:6px 18px;display:flex;gap:12px;align-items:center;z-index:200;flex-wrap:wrap;box-shadow:var(--shadow)}
+/* Trimmed to the height of its own controls. The buttons and the carton field keep
+   their 44-46px minimum — those are gloved-thumb targets — so only the bar's own
+   padding gives way, and `body{padding-bottom}` below is what actually frees the
+   table's last rows from sitting underneath it. */
+.savebar .btn{padding:9px 18px;min-height:44px}
+.savebar .btn-outline{padding:9px 16px;min-height:44px}
 
 /* The carton entry: left of the bar, bordered and tinted.
    It began as a bare field in the corner and read as a stray input, so it gained a
@@ -200,9 +226,17 @@ input.qty.over{border-color:var(--red);color:var(--red);background:var(--surface
    The panel itself stays. This is a REQUIRED daily entry, not an option, and the
    number prefills the Boxes field on a GST invoice — hence the accent tint the table
    uses for "type here", and the amber state below while it is still empty. */
-.cartonbox{display:flex;align-items:center;gap:10px;margin-right:auto;padding:6px 14px;border:2px solid var(--accent);border-radius:10px;background:var(--accent-soft)}
+/* Padding trimmed to 3px: the 46px input inside is the tap target and keeps its
+   full size, so the panel is now only as tall as the control it wraps rather than
+   setting the height of the whole bar. */
+.cartonbox{display:flex;align-items:center;gap:10px;margin-right:auto;padding:3px 12px;border:2px solid var(--accent);border-radius:10px;background:var(--accent-soft)}
 .cartonbox label{font-size:12px;color:var(--accent);text-transform:uppercase;letter-spacing:.04em;font-weight:700;line-height:1.25;text-align:right}
-.cartonbox input{background:var(--surface);border-color:var(--accent)}
+/* Slightly shorter than the in-table quantity boxes (46px), which keep their full
+   size: those are typed into 62 times a day while standing, this one once. 40px is
+   still a comfortable thumb target, and the 6px saved comes off the fixed bar and
+   goes to the row count. */
+.cartonbox input{background:var(--surface);border-color:var(--accent);
+  min-height:40px;padding:8px 8px}
 /* Empty is the state worth flagging: a submitted day with no carton count sends
    someone back to the warehouse to recount boxes that have already gone. */
 .cartonbox.empty{border-color:var(--yellow);background:var(--yellow-soft)}
@@ -564,7 +598,39 @@ function renderRows(){
          <tbody>${body}</tbody>
        </table></div>`
     : '<div class="card"><div class="empty-state">No product matches that search.</div></div>';
+  sizeTable();
 }
+
+/* Give the table every pixel that is not already spoken for.
+
+   Vertical space is the whole point of this screen: the packer works down 62 rows
+   standing at a bench, and each row hidden is a scroll. So the cap is measured from
+   where the wrapper actually starts and how tall the savebar actually is, rather
+   than assumed — a hardcoded `100vh - 300px` was 90px pessimistic after the header
+   was trimmed, and on a short screen the same constant ran the last row underneath
+   the fixed bar where it could not be typed into.
+
+   Also sets body padding-bottom, so the end of the list clears the savebar instead
+   of hiding behind it. */
+function sizeTable(){
+  const wrap = document.querySelector(".table-wrap");
+  const bar = $("savebar");
+  const barH = bar && bar.style.display !== "none"
+    ? Math.ceil(bar.getBoundingClientRect().height) : 0;
+  // 8px of breathing room below the table so it does not touch the bar.
+  document.body.style.paddingBottom = (barH + 8) + "px";
+  if(!wrap) return;
+  const top = wrap.getBoundingClientRect().top;   // viewport-relative: already
+                                                  // accounts for the sticky header
+                                                  // and everything above.
+  const cap = Math.max(180, Math.round(window.innerHeight - top - barH - 14));
+  document.documentElement.style.setProperty("--table-cap", cap + "px");
+}
+
+/* The measurement is only true for the viewport it was taken in. Rotating a phone
+   or opening the keyboard changes innerHeight, and a stale cap would leave the last
+   row under the savebar again. */
+window.addEventListener("resize", sizeTable);
 
 function renderSaveBar(){
   const bar = $("savebar");
@@ -597,6 +663,12 @@ function renderSaveBar(){
   }
   $("saveBtn").disabled = saving || pending === 0;
   $("submitBtn").disabled = saving;
+
+  /* Re-measure AFTER the bar has been shown or hidden. renderRows() runs first and
+     sizes the table against whatever state the bar was in a moment earlier, so on a
+     verified (locked) day the bar disappears here and the table would otherwise keep
+     reserving room for a bar that is no longer there. */
+  sizeTable();
 }
 
 /* ── Editing ───────────────────────────────────────────────────────────── */

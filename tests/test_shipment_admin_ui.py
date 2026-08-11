@@ -442,6 +442,128 @@ def test_both_derived_numbers_are_shown(source):
     )
 
 
+# ─── The frozen identity block ───────────────────────────────────────────────
+
+#: The frozen columns, in order, with the width each is pinned to. A sticky `left`
+#: offset must equal the SUM of the widths before it — that is the whole invariant,
+#: and it is the one thing about this feature that cannot be eyeballed from the CSS.
+FROZEN_BLOCK = [
+    ("freeze-pick", 30),
+    ("freeze-name", 190),
+    ("freeze-wt", 42),
+    ("freeze-s", 28),      # width comes from .col-smb
+    ("freeze-m", 28),
+    ("freeze-b", 28),
+    ("freeze-brand", 58),
+]
+
+
+def _rule_for(body: str, cls: str) -> str | None:
+    """Declarations of the rule whose selector list contains ``.cls``.
+
+    Selectors here are grouped (``th.freeze-pick, td.freeze-pick{...}``), so a plain
+    ``\\.cls\\s*\\{`` never matches — it looks for the class immediately before the
+    brace and finds the last selector in the group instead.
+    """
+    for match in re.finditer(r"([^{}]+)\{([^}]*)\}", body):
+        selector, declarations = match.group(1), match.group(2)
+        if re.search(r"\.%s\b" % re.escape(cls), selector):
+            return declarations.replace(" ", "").replace("\n", "")
+    return None
+
+
+def test_the_frozen_offsets_match_the_cumulative_widths(source):
+    """The requirement: "freeze the first column. which has item, wt, s m b etc."
+
+    Seven columns are pinned, so each one's `left` has to be the sum of the widths
+    before it. Get one wrong and the failure is visual, not functional: too large and
+    the column overlaps its neighbour, too small and a transparent stripe opens that
+    the scrolling numbers slide through underneath. Both look like a rendering glitch
+    rather than a wrong number, so nothing else in the suite would object.
+
+    Measured in a browser at 1280px: offsets 0/30/220/262/290/318/346 against widths
+    30/190/42/28/28/28/58.
+    """
+    body = _without_comments(source)
+
+    expected = 0
+    for cls, width in FROZEN_BLOCK:
+        declarations = _rule_for(body, cls)
+        assert declarations is not None, (
+            f"no CSS rule for .{cls} — that column is not frozen"
+        )
+
+        # `px` is optional: a zero offset is legitimately written `left:0`.
+        found = re.search(r"left:(-?[\d.]+)(?:px)?[;}]?", declarations)
+        assert found, f".{cls} is in the frozen block but sets no left offset"
+        assert float(found.group(1)) == expected, (
+            f".{cls} is pinned at left:{found.group(1)}px but the columns before it "
+            f"are {expected}px wide. Too large overlaps the previous column; too "
+            f"small leaves a gap the scrolling cells show through."
+        )
+        expected += width
+
+
+@pytest.mark.parametrize("cls,width", FROZEN_BLOCK)
+def test_each_frozen_column_has_a_pinned_width(source, cls, width):
+    """A frozen column may not size itself from its content.
+
+    Item rendered at 222.9px against a 190px `min-width`, because the longest product
+    name decided it. Every offset after it is then wrong by 33px — and it would shift
+    again on a plan with different products, so the table would be correct on one
+    catalogue and broken on the next.
+    """
+    body = _without_comments(source)
+    if cls in ("freeze-s", "freeze-m", "freeze-b"):
+        rule = re.search(r"thead th\.col-smb\{([^}]*)\}", body)
+        assert rule and f"width:{width}px" in rule.group(1).replace(" ", ""), (
+            "the S/M/B columns take their width from .col-smb; it no longer sets one"
+        )
+        return
+
+    decl = _rule_for(body, cls)
+    assert decl is not None, f"no rule for .{cls}"
+    assert f"width:{width}px" in decl, f".{cls} does not pin width:{width}px"
+    assert f"max-width:{width}px" in decl, (
+        f".{cls} sets no max-width, so a long value can still stretch it and push "
+        "every offset after it out of alignment"
+    )
+
+
+def test_the_frozen_cells_are_opaque_and_layered(source):
+    """Transparent frozen cells let the scrolling numbers show through them.
+
+    The pinned cells overlap the scrolling ones, so they need a background of their
+    own and a z-index above the body. Without both, the effect is unreadable rather
+    than merely ugly — two numbers in the same place.
+    """
+    body = _without_comments(source)
+    rule = re.search(r"th\.freeze,\s*td\.freeze\{([^}]*)\}", body)
+    assert rule, "the frozen cells have no shared rule"
+    decl = rule.group(1).replace(" ", "")
+    assert "position:sticky" in decl, "the frozen cells are not sticky at all"
+    assert "background:" in decl, (
+        "the frozen cells are transparent — the scrolling columns will show through"
+    )
+    assert "z-index" in decl, "the frozen cells sit under the cells they overlap"
+
+
+def test_the_row_state_tints_reach_the_frozen_cells(source):
+    """The frozen cells carry their own opaque background, which hides the row tint.
+
+    So hover, dirty, selected, excluded and over-packed each have to be repeated on
+    `td.freeze` — otherwise the row you are pointing at is highlighted everywhere
+    except the part holding the product name.
+    """
+    body = _without_comments(source)
+    for state in ("tr:hover", "tr.dirty", "tr.selected", "tr.excluded",
+                  "tr.over-packed-row"):
+        assert re.search(re.escape(state) + r"\s+td\.freeze\{", body), (
+            f"{state} does not repaint the frozen cells, so the tint stops at the "
+            "frozen/scrolling join"
+        )
+
+
 # ─── The invoice bridge: requirement 8 ───────────────────────────────────────
 
 def test_the_invoice_bridge_is_reachable_from_a_verified_day(source):

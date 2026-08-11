@@ -123,11 +123,35 @@ td.left{text-align:left}
 th.freeze, td.freeze{position:sticky;background:var(--surface);z-index:2}
 th.freeze{z-index:5}
 td.freeze{background:var(--surface)}
-th.freeze-pick, td.freeze-pick{left:0;width:30px}
-th.freeze-name, td.freeze-name{left:30px;text-align:left;min-width:190px;
-  /* A shadow rather than a border: it reads as depth, so the join between the
-     frozen and scrolling halves is obvious while the numbers move. */
-  box-shadow:var(--shadow-freeze)}
+
+/* The frozen block is the whole IDENTITY of a row — tick, name, size, S/M/B and
+   brand — because those are the cells you check before typing a quantity into one
+   of the columns 900px to the right.
+
+   Each `left` offset below is the SUM of the widths before it, so the widths are
+   pinned rather than left to the content. They have to agree exactly: a column
+   whose real width exceeds its neighbour's offset overlaps it, and one that falls
+   short leaves a transparent stripe the scrolling numbers slide through. The
+   longest product name in the live catalogue measures 170px ("Roasted black
+   sesame seeds"), so 190px holds every one without wrapping. */
+th.freeze-pick,  td.freeze-pick  {left:0;    width:30px;  min-width:30px;  max-width:30px}
+th.freeze-name,  td.freeze-name  {left:30px; width:190px; min-width:190px; max-width:190px;
+                                  text-align:left}
+th.freeze-wt,    td.freeze-wt    {left:220px;width:42px;  min-width:42px;  max-width:42px}
+th.freeze-s,     td.freeze-s     {left:262px}
+th.freeze-m,     td.freeze-m     {left:290px}
+th.freeze-b,     td.freeze-b     {left:318px}
+/* Last in the block, so this one carries the shadow. A shadow rather than a
+   border: it reads as depth, so the join between the frozen and scrolling halves
+   stays obvious while the numbers move under it. */
+th.freeze-brand, td.freeze-brand {left:346px;width:58px;  min-width:58px;  max-width:58px;
+                                  box-shadow:var(--shadow-freeze)}
+
+/* Merchant SKU and ASIN are deliberately NOT frozen, though they are identity too:
+   the SKU is a 152px text input and the ASIN 89px, which together would put 645px
+   — nearly half the 1450px table — behind glass and leave the quantity columns
+   fighting for the rest. They are for looking a row up, not for keeping your place
+   in it. */
 /* The row-state tints have to be repeated on the frozen cells: those cells carry
    their own background to be opaque, which would otherwise hide the hover, dirty,
    selected and excluded colouring exactly on the part of the row you are pointing
@@ -850,9 +874,9 @@ function renderHead(){
   ).join("");
   document.getElementById("thead-row").innerHTML = `
     <th class="col-smb freeze freeze-pick" title="Select all shown"><input type="checkbox" id="pick-all" onchange="pickAll(this.checked)"/></th>
-    <th class="freeze freeze-name">Item</th><th>Wt</th>
-    <th class="col-smb">S</th><th class="col-smb">M</th><th class="col-smb">B</th>
-    <th>Brand</th><th title="Amazon's upload keys on this, not the ASIN — click to fill a missing one">Merchant SKU</th><th>ASIN</th>
+    <th class="freeze freeze-name">Item</th><th class="freeze freeze-wt">Wt</th>
+    <th class="col-smb freeze freeze-s">S</th><th class="col-smb freeze freeze-m">M</th><th class="col-smb freeze freeze-b">B</th>
+    <th class="freeze freeze-brand">Brand</th><th title="Amazon's upload keys on this, not the ASIN — click to fill a missing one">Merchant SKU</th><th>ASIN</th>
     <th class="col-calc">Sales<br/>(7d)</th>
     <th class="col-calc">Proj</th>
     <th class="col-calc">FBA<br/>Stock</th>
@@ -897,9 +921,9 @@ function renderFootTotals(rows){
   document.getElementById("tfoot-row").innerHTML = `
     <td class="freeze freeze-pick"></td>
     <td class="freeze freeze-name t-label">Total · ${n(rows.length)} rows</td>
-    <td></td>
-    <td></td><td></td><td></td>
-    <td></td><td></td><td></td>
+    <td class="freeze freeze-wt"></td>
+    <td class="freeze freeze-s"></td><td class="freeze freeze-m"></td><td class="freeze freeze-b"></td>
+    <td class="freeze freeze-brand"></td><td></td><td></td>
     <td>${n(sum("sales_7d"))}</td>
     <td>${n(sum("projection"))}</td>
     <td>${n(sum("fba_stock"))}</td>
@@ -975,11 +999,11 @@ function renderTable(){
       <td class="pick no-strike freeze freeze-pick"><input type="checkbox" ${selected.has(i.asin) ? "checked" : ""}
           onchange="pick('${asin}',this.checked)"/></td>
       <td class="left freeze freeze-name"><strong>${esc(i.item)}</strong></td>
-      <td style="font-size:11px;color:var(--text-muted)">${esc(i.weight_label || "")}</td>
-      <td><input type="checkbox" ${i.s ? "checked" : ""} onchange="edit('${asin}','s',this.checked)"/></td>
-      <td><input type="checkbox" ${i.m ? "checked" : ""} onchange="edit('${asin}','m',this.checked)"/></td>
-      <td><input type="checkbox" ${i.b ? "checked" : ""} onchange="edit('${asin}','b',this.checked)"/></td>
-      <td style="font-size:11px">${esc(i.brand)}</td>
+      <td class="freeze freeze-wt" style="font-size:11px;color:var(--text-muted)">${esc(i.weight_label || "")}</td>
+      <td class="freeze freeze-s"><input type="checkbox" ${i.s ? "checked" : ""} onchange="edit('${asin}','s',this.checked)"/></td>
+      <td class="freeze freeze-m"><input type="checkbox" ${i.m ? "checked" : ""} onchange="edit('${asin}','m',this.checked)"/></td>
+      <td class="freeze freeze-b"><input type="checkbox" ${i.b ? "checked" : ""} onchange="edit('${asin}','b',this.checked)"/></td>
+      <td class="freeze freeze-brand" style="font-size:11px">${esc(i.brand)}</td>
       <td class="no-strike"><input type="text" class="sku-input" value="${esc(i.fba_sku)}"
           placeholder="no SKU — type it" title="Amazon rejects rows with no merchant SKU"
           onchange="edit('${asin}','fba_sku',this.value.trim())"
