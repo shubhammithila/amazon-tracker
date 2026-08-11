@@ -64,10 +64,12 @@ header h1{font-size:16px;font-weight:600}
    totals tiles were costing ~300px between them, leaving only 8 rows visible.
    The TAP TARGETS are not shrunk: inputs and buttons keep their 44-46px minimum,
    because this is used standing up on a phone. Only the labelling gets smaller. */
-main{max-width:1100px;margin:0 auto;padding:10px 18px}
-h2{font-size:17px;font-weight:600;margin-bottom:2px}
-.subtitle{color:var(--text-muted);font-size:12px;margin-bottom:8px}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:9px 12px;margin-bottom:8px}
+main{max-width:1100px;margin:0 auto;padding:8px 18px}
+/* Title and instructions share a baseline instead of stacking. */
+.page-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+h2{font-size:16px;font-weight:600}
+.subtitle{color:var(--text-muted);font-size:12px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:7px 10px;margin-bottom:6px}
 .empty-state{text-align:center;padding:36px 16px;color:var(--text-muted);line-height:1.6}
 .date-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 input[type="date"]{background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:10px 12px;font-size:15px}
@@ -84,22 +86,30 @@ input[type="date"]{background:var(--bg);border:1px solid var(--border);border-ra
 .badge.held{background:var(--yellow-soft);color:var(--yellow)}
 .badge.verified{background:var(--green-soft);color:var(--green)}
 .badge.shipped{background:var(--accent-soft);color:var(--accent)}
-.banner{border-radius:8px;padding:12px 14px;font-size:13.5px;margin-bottom:14px;line-height:1.55}
+/* Two banners can be up at once (verified-and-locked, plus below-the-minimum), and
+   at 47px each they were taking a row and a half of the table between them. Tightened
+   rather than removed: both say something the packer acts on. */
+.banner{border-radius:8px;padding:7px 11px;font-size:12.5px;margin-bottom:6px;line-height:1.45}
 .banner.warn{background:var(--yellow-soft);border:1px solid var(--yellow);color:var(--yellow)}
 .banner.info{background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue)}
 .banner.good{background:var(--green-soft);border:1px solid var(--green);color:var(--green)}
 .banner.error{background:var(--red-soft);border:1px solid var(--red);color:var(--red)}
 
 /* Progress */
-/* One row, tighter. The three numbers are a progress glance, not the work — the
-   work is the table underneath, so the tiles no longer take 135px of it. Number and
-   label sit side by side rather than stacked, which halves the height and still
-   reads at arm's length. */
-.totals{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px}
-.tot{background:var(--surface);border:1px solid var(--border);border-radius:8px;
-  padding:6px 10px;text-align:center;display:flex;align-items:baseline;
-  justify-content:center;gap:7px}
-.tot .num{font-size:18px;font-weight:700;line-height:1.1}
+/* The three numbers are a progress glance, not the work — the work is the table
+   underneath, so they no longer take 135px of it. Number beside label rather than
+   stacked, sharing the toolbar row with the date and the PDF buttons.
+
+   `.toolbar` puts the date-row and the tiles on one line and lets the tiles take the
+   slack, so on a narrow window they wrap as a group instead of one tile at a time. */
+.toolbar{display:flex;align-items:center;gap:10px 16px;flex-wrap:wrap}
+.toolbar .date-row{flex:0 0 auto}
+.toolbar #totals{flex:1 1 320px;min-width:0}
+.totals{display:flex;gap:14px;justify-content:flex-end;flex-wrap:wrap}
+/* No border or panel: inside the toolbar card they would be boxes within a box. The
+   bold number carries the emphasis instead. */
+.tot{display:flex;align-items:baseline;gap:6px;white-space:nowrap}
+.tot .num{font-size:17px;font-weight:700;line-height:1.1}
 .tot .lbl{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
 .tot.low{border-color:var(--yellow)}.tot.low .num{color:var(--yellow)}
 .tot.ok .num{color:var(--green)}
@@ -159,7 +169,10 @@ tbody tr.dirty{background:var(--yellow-soft)}
 tbody tr.over{background:var(--red-soft)}
 tbody tr.over td.freeze{background:var(--red-soft)}
 .over-tag{color:var(--red);font-weight:700;white-space:nowrap}
-td{padding:7px 8px;font-size:14px;text-align:center;white-space:nowrap}
+/* 3px vertical padding, not 7px. The 46px quantity input is what sets the row
+   height, and it keeps its full size — the cell padding around it was pure margin,
+   8px per row, which is a whole extra row visible every seven. */
+td{padding:3px 8px;font-size:14px;text-align:center;white-space:nowrap}
 /* Capped, not just floored. Left to size itself the product column took 405px of a
    1280px page, which put a 200px gap between "Chana Sattu" and the "1 kg" that
    completes it — the two read as unrelated cells. The reference columns to the
@@ -202,7 +215,8 @@ input.qty:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color
 input.qty:disabled{opacity:.5}
 input.qty.over{border-color:var(--red);color:var(--red);background:var(--surface)}
 
-.search-input{width:100%;background:var(--surface);border:1px solid var(--border-strong);border-radius:8px;color:var(--text);padding:12px;font-size:15px;min-height:44px;margin-bottom:12px}
+/* Keeps its 44px height — it is tapped and typed into — but not its 12px gap. */
+.search-input{width:100%;background:var(--surface);border:1px solid var(--border-strong);border-radius:8px;color:var(--text);padding:10px 12px;font-size:15px;min-height:44px;margin-bottom:6px}
 .search-input:focus{outline:none;border-color:var(--accent)}
 
 /* Save bar pinned to the bottom: reachable by thumb, and it is the only way
@@ -272,22 +286,35 @@ input.qty.over{border-color:var(--red);color:var(--red);background:var(--surface
 <div class="header-right"><a href="/logout">Logout</a></div>
 </header>
 <main>
-<h2>📦 Today's Packing</h2>
-<p class="subtitle">Type the units packed against each product, enter the day's total
-  cartons at the bottom, then submit the day.</p>
+<!-- Heading and instructions on ONE line. The page title already says "Daily
+     Packing" in the header two rows above, so a 22px <h2> repeating it plus a
+     16px subtitle underneath cost 54px of the row area to say something the
+     packer read once on his first day and never again. -->
+<div class="page-head">
+  <h2>Today's Packing</h2>
+  <span class="subtitle">Units per product, total cartons at the bottom, then submit.</span>
+</div>
 
-<div class="card">
+<!-- The date, the day's state, the two PDFs and the three running totals all sit on
+     ONE line. Every one of them is a short glance, and stacking them in separate
+     bordered cards cost ~200px of the only part of this screen that does the work.
+     `#totals` is inside the same row, so its tiles flow beside the buttons and wrap
+     onto a second line only when the window is genuinely too narrow. -->
+<div class="card toolbar">
   <div class="date-row">
-    <label for="packDate" style="color:var(--text-muted);font-size:13px">Packing date</label>
+    <label for="packDate" style="color:var(--text-muted);font-size:13px">Date</label>
     <input type="date" id="packDate"/>
     <span id="dayBadge"></span>
     <button class="btn-outline" id="pdfBtn">Still to pack (PDF)</button>
     <button class="btn-outline" id="packedBtn">Packed sheet (PDF)</button>
   </div>
+  <div id="totals"></div>
 </div>
 
 <div id="messages"></div>
-<div id="totals"></div>
+<!-- Full width, outside the toolbar: renderTotals() writes the hold warning here.
+     Must exist in the markup — see tests/test_template_render_targets.py. -->
+<div id="hold-warning"></div>
 
 <!-- Outside #packingArea on purpose: renderRows() replaces that element's
      contents, so a search box inside it would be destroyed mid-typing and lose
@@ -367,6 +394,7 @@ async function load(){
     $("savebar").style.display = "none";
     $("search").style.display = "none";
     $("totals").innerHTML = "";
+    $("hold-warning").innerHTML = "";
     $("dayBadge").innerHTML = "";
     rows = [];
     /* Draft plans made this message misleading. The owner can be sitting on a
@@ -481,7 +509,9 @@ function renderMessages(){
 }
 
 function renderTotals(){
-  if(!rows.length){ $("totals").innerHTML = ""; return; }
+  // Both targets clear together, or a hold warning from the previous day survives
+  // into a plan that has no rows to hold.
+  if(!rows.length){ $("totals").innerHTML = ""; $("hold-warning").innerHTML = ""; return; }
 
   const units = unitsTotal();
   const done = rows.filter(i => Number(i.units || 0) > 0).length;
@@ -492,6 +522,9 @@ function renderTotals(){
      the server's answer is still the only one that counts. */
   const wouldHold = units > 0 && cartons < minCartons && units < minUnits;
 
+  /* Tiles only. The hold warning goes to #hold-warning below, which is full width:
+     rendered in here it inherited the toolbar's ~425px column and wrapped to four
+     lines, making the toolbar taller than the rows it was supposed to leave room for. */
   $("totals").innerHTML = `
     <div class="totals">
       <div class="tot ${wouldHold ? "low" : (units ? "ok" : "")}">
@@ -500,11 +533,13 @@ function renderTotals(){
         <div class="num">${n(cartons)}</div><div class="lbl">Cartons today</div></div>
       <div class="tot"><div class="num">${done}/${rows.length}</div>
         <div class="lbl">Products entered</div></div>
-    </div>
-    ${wouldHold ? '<div class="banner warn">Below the minimum for a shipment ('
+    </div>`;
+
+  $("hold-warning").innerHTML = wouldHold
+    ? '<div class="banner warn">Below the minimum for a shipment ('
       + n(minCartons) + ' cartons or ' + n(minUnits) + ' units). Submitting now will '
-      + 'put the day <strong>on hold</strong> so it can be combined with tomorrow.</div>' : ""}
-  `;
+      + 'put the day <strong>on hold</strong> so it can be combined with tomorrow.</div>'
+    : "";
 }
 
 function visibleRows(){

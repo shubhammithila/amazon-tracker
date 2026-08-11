@@ -392,6 +392,89 @@ def test_the_table_height_is_measured_not_guessed(source):
     )
 
 
+def test_enough_rows_fit_without_scrolling(source):
+    """"only 5 rows of items are being shown at a time. I want atleast 7-8."
+
+    Measured, not guessed. The height of one row and the height of everything above the
+    table are both decided by CSS in this file, so the row count on a given screen is
+    arithmetic — and it is the number the packer actually experiences.
+
+    Budget on the reported 698px CSS viewport (a 1080p laptop at 125% scaling, which is
+    what the screenshot showed — not the 900px I first tested at):
+
+        header 58 + page-head 21 + toolbar card 60 + search 50 + savebar 63 + slack 14
+
+    Each row is the 46px quantity input plus 2x the vertical cell padding. Asserted as a
+    budget rather than a literal `rowsVisible >= 7` because a browser is the only place
+    that can measure the truth; this fails if someone reintroduces the stacked heading,
+    the bordered totals tiles or the 7px cell padding that together made it 5 rows.
+    """
+    body = _without_comments(source)
+
+    # There is more than one bare `td{...}` rule (one sets only a border), so find the
+    # one that actually sets padding rather than assuming which comes first.
+    pad = None
+    for match in re.finditer(r"(?<![\w.\-])td\{([^}]*)\}", body):
+        found = re.search(r"padding:\s*([\d.]+)px", match.group(1))
+        if found:
+            pad = found
+            break
+    assert pad, "no td rule sets a padding in px"
+    # `padding: <vertical> <horizontal>`; only the first value adds row height.
+    row_height = 46 + 2 * float(pad.group(1))       # the input sets the floor
+    assert row_height <= 56, (
+        f"a packing row is {row_height:.0f}px tall. On a 698px viewport the chrome "
+        f"leaves ~412px for the table, so anything over 56px shows fewer than 7 rows "
+        f"— which is the complaint this guards."
+    )
+
+    # And the chrome above the table must stay collapsed to one line each. Read the
+    # rule's OWN declarations: `"display:flex" in body` passed with .page-head set
+    # back to block, because some other rule in the file uses flex.
+    head = re.search(r"\.page-head\{([^}]*)\}", body)
+    assert head, "the heading and subtitle no longer share a row"
+    assert "display:flex" in head.group(1).replace(" ", ""), (
+        "the heading and subtitle are stacked again, costing a row of the table"
+    )
+    assert ".toolbar{" in body, (
+        "the date row and the totals no longer share one line — separate bordered "
+        "cards for each cost ~200px of the only part of this screen that does work"
+    )
+    tot = re.search(r"(?<![\w.\-])\.tot\{([^}]*)\}", body)
+    assert tot and "align-items:baseline" in tot.group(1).replace(" ", ""), (
+        "the totals tiles stack their number above their label again, doubling the "
+        "height of a row of three short numbers"
+    )
+
+
+def test_the_hold_warning_is_full_width_not_in_the_toolbar(source):
+    """It rendered inside #totals, which the toolbar narrows to ~425px.
+
+    The warning is two sentences, so at that width it wrapped to four lines and made
+    the toolbar 122px tall — taller than the two rows of table it was displacing. The
+    irony is that it was rendered there to save space.
+    """
+    body = _without_comments(source)
+
+    assert 'id="hold-warning"' in body, (
+        "there is no full-width target for the hold warning"
+    )
+    assert re.search(r'\$\("hold-warning"\)\.innerHTML\s*=\s*wouldHold', body), (
+        "the hold warning is not rendered into its own full-width element"
+    )
+    # Nothing may write a banner into #totals — including with `+=`, which is how the
+    # earlier version of this test was fooled: it only inspected the region between the
+    # `#totals` assignment and the `#hold-warning` one, so appending to #totals slipped
+    # straight past it.
+    for match in re.finditer(r'\$\("totals"\)\.innerHTML\s*\+?=', body):
+        tail = body[match.end():match.end() + 700]
+        tail = tail[:tail.find('$("')] if '$("' in tail else tail
+        assert "banner" not in tail, (
+            "a banner is written into #totals, which the toolbar narrows to ~425px — "
+            "it wraps to four lines there and costs more height than it saves"
+        )
+
+
 def test_the_thumb_targets_are_not_shrunk_to_win_space(source):
     """The packer is standing, on a phone, possibly gloved.
 
