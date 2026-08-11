@@ -33,6 +33,7 @@ from app.database import get_db
 from app.invoice.company_data import SUPPLIER_GSTIN
 from app.invoice.hsn_codes import lookup_hsn
 from app.invoice.parser import get_purchase_rate
+from app.models import Invoice
 from app.routers.auth import ROLE_ADMIN, require_admin, require_ops_or_admin
 from app.shipment import catalogue, documents, logic, repository
 
@@ -1063,6 +1064,84 @@ async def verify_packing(
     await db.commit()
     await db.refresh(day)
     return JSONResponse({"status": day.status, "verified_at": day.verified_at.isoformat()})
+
+
+@router.post("/packing/{pack_date}/reopen")
+async def reopen_packing(
+    pack_date: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_ops_or_admin),
+):
+    """Send a verified day back to `open` so the warehouse can correct it.
+
+    Asked for directly: "even after the day is verified or submitted. give option for
+    the warehouse team to edit the units and carton and then resubmit."
+
+    **Ops, not admin.** A miscount is discovered on the floor, by the person who did
+    the counting, and the correction is the same manual work as the original entry. The
+    old advice — the 409 from `save_packing` and the banner on the packing screen both
+    said "ask the owner to reopen it" — pointed at a route that did not exist anywhere
+    in the app, so the only real recovery was to ask the owner to run SQL.
+
+    **Refused once an invoice is attached (409).** That is the one case the warehouse
+    cannot be allowed to fix quietly: `/invoice/save` has already spent a number from a
+    legally-sequential GST series against these exact quantities, so changing them here
+    would leave the tax document and the warehouse record disagreeing with nothing in
+    the app able to detect it afterwards. The error names the invoice so the owner knows
+    what he is being asked about.
+
+    Verification is cleared, not kept. The owner's approval is what gates a GST invoice,
+    so it has to refer to the numbers actually on the day — leaving `verified` in place
+    would make his sign-off cover figures he never saw. Back to `open` rather than
+    `submitted` because the day is being edited again, and `submit` re-applies the
+    hold threshold to whatever the corrected totals turn out to be.
+    """
+    if not _valid_date(pack_date):
+        return JSONResponse({"error": "Date must be YYYY-MM-DD"}, status_code=400)
+
+    plan = await repository.get_active_plan(db)
+    if plan is None:
+        return JSONResponse({"error": "No active plan"}, status_code=404)
+
+    day = await repository.get_day(db, plan.id, pack_date)
+    if day is None:
+        return JSONResponse({"error": f"No packing for {pack_date}"}, status_code=404)
+
+    # Checked before the status, and deliberately: a shipped day is invoiced by
+    # definition, and "invoice ST/26-27/031 already covers these boxes" is the reason,
+    # where "it is shipped" only restates the symptom.
+    if day.invoice_id:
+        invoice = await db.get(Invoice, day.invoice_id)
+        # `invoice_no` ("ST/26-27/028"), NOT `invoice_number` — the latter is the bare
+        # sequence integer (28), which on screen would read as "invoice 28" and match
+        # nothing the owner can search for in his own records.
+        number = getattr(invoice, "invoice_no", None) or f"#{day.invoice_id}"
+        return JSONResponse(
+            {
+                "error": f"{pack_date} is already on invoice {number}, so its units "
+                "and cartons cannot be changed here. That invoice has a GST number "
+                "against these exact quantities — editing them would leave the tax "
+                "document and the packing record disagreeing. Ask the owner: the "
+                "invoice has to be dealt with first.",
+                "invoice_id": day.invoice_id,
+                "invoice_number": number,
+            },
+            status_code=409,
+        )
+
+    if day.status == logic.STATUS_OPEN:
+        return JSONResponse(
+            {"error": f"{pack_date} is already open for editing."}, status_code=409
+        )
+
+    day.status = logic.STATUS_OPEN
+    day.hold_reason = None
+    day.submitted_at = None
+    day.verified_at = None
+    await db.commit()
+    await db.refresh(day)
+    return JSONResponse({"status": day.status, "pack_date": pack_date})
 
 
 @router.post("/packing/{pack_date}/release")

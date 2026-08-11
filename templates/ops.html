@@ -81,6 +81,13 @@ input[type="date"]{background:var(--bg);border:1px solid var(--border);border-ra
 
 /* Status + hold messaging */
 .badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+/* An action inside a sentence of prose. A full .btn here would break the line and
+   read as the page's primary action, which reopening a verified day is not — but it
+   still needs the 44px touch height, so the padding gives it that without making it
+   look like a button sitting in the middle of a paragraph. */
+.btn-link{background:none;border:none;padding:0 2px;min-height:44px;font:inherit;
+  font-weight:700;color:var(--accent);text-decoration:underline;cursor:pointer}
+.btn-link:hover{color:var(--accent-hover)}
 .badge.open{background:var(--surface2);color:var(--text-muted)}
 .badge.submitted{background:var(--blue-soft);color:var(--blue)}
 .badge.held{background:var(--yellow-soft);color:var(--yellow)}
@@ -449,10 +456,21 @@ function renderMessages(){
   const parts = [];
 
   if(isLocked()){
+    /* The banner used to say "ask the owner to reopen the day" and there was no
+       reopen route anywhere in the app, so the advice went nowhere. It is a button
+       now: a miscount is found on the floor by the person who counted, and the
+       correction is the same manual work as the original entry.
+
+       The exception is a day already on an invoice. The server refuses those (409,
+       naming the invoice) because a GST number has been spent against those exact
+       quantities; the button is still shown, because "why can I not fix this?" is
+       better answered by the reason than by a missing control. */
     parts.push(
       '<div class="banner info">This day is <strong>' + esc(dayStatus)
-      + '</strong>. The numbers are locked because an invoice may already use '
-      + 'them — ask the owner to reopen the day if something needs correcting.</div>'
+      + '</strong>, so the numbers are locked. Found a miscount? '
+      + '<button class="btn-link" onclick="reopenDay()">Reopen for editing</button>'
+      + ' — the units and cartons become editable again and the owner verifies it '
+      + 'once more after you resubmit.</div>'
     );
   }else if(dayStatus === "held"){
     parts.push(
@@ -890,6 +908,47 @@ async function submitDay(){
   }finally{
     saving = false;
     renderBadge(); renderTotals(); renderRows(); renderSaveBar();
+  }
+}
+
+/* Send a verified day back to `open` so a miscount can be corrected.
+
+   Confirmed first, because it withdraws the owner's approval: the day has to be
+   submitted and verified again before it can reach an invoice, and a packer who
+   clicked it by accident would otherwise silently un-verify a finished day.
+
+   A day already on an invoice is refused by the server with a 409 that names the
+   invoice. That message is shown as-is rather than paraphrased — "already on invoice
+   ST/26-27/028" is what lets the owner go and look it up. */
+async function reopenDay(){
+  const packDate = $("packDate").value;
+  if(!confirm(
+      `Reopen ${packDate} for editing?\n\n`
+      + "The units and cartons become editable again. The day goes back to OPEN, so "
+      + "you must submit it again and the owner has to verify it again."
+  )) return;
+
+  try{
+    const r = await fetch(`/shipment/packing/${packDate}/reopen`, {method: "POST"});
+    const data = await r.json();
+    if(!r.ok){
+      $("messages").innerHTML =
+        `<div class="banner error"><strong>Cannot reopen.</strong> `
+        + `${esc(data.error || "Could not reopen the day.")}</div>`;
+      return;
+    }
+    /* Reload rather than patching dayStatus by hand: reopening changes what every
+       part of this screen may do — the inputs, the savebar, the badge and the
+       banners — and re-fetching is the same path a fresh visit takes, so there is
+       one code path for "what does an open day look like" instead of two. */
+    await load();
+    $("messages").innerHTML =
+      '<div class="banner good"><strong>Reopened.</strong> Correct the units and '
+      + 'cartons, then submit the day again.</div>';
+  }catch(err){
+    $("messages").innerHTML =
+      '<div class="banner error">Could not reach the server. The day was not '
+      + 'reopened.</div>';
   }
 }
 

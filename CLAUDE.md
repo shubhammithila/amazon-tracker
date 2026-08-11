@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (895 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (922 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -332,6 +332,26 @@ build until this was fixed. Typing into it changed no number anywhere.)
 
 ### Day lifecycle
 `open` → `submitted` → `verified` → `shipped`, with `held` off to one side.
+
+**`POST /packing/{date}/reopen` sends a locked day back to `open`**, and it is open to
+**ops**, not just the owner: a miscount is found on the floor by the person who did the
+counting, and correcting it is the same manual work as the original entry. Before this,
+`save_packing`'s 409 and the packing banner both said *"ask the owner to reopen it"* —
+pointing at a route that did not exist, so the only real recovery was hand-editing the
+database.
+
+Reopening **clears `verified_at` and `submitted_at`**. The owner's approval is what
+gates a GST invoice, so it must refer to the numbers actually on the day; leaving the
+day `verified` would make his sign-off cover figures he never saw. Back to `open` rather
+than `submitted`, so `submit` re-applies the hold threshold to the corrected totals.
+
+> **A day with an `invoice_id` is refused (409), naming the invoice.** `/invoice/save`
+> has already spent a number from the legally-sequential GST series against those exact
+> quantities, so editing them would leave the tax document and the packing record
+> disagreeing with nothing in the app able to detect it — the double-invoice guard fires
+> on `invoice_id`, not on the numbers. The error carries `invoice_no`
+> ("ST/26-27/028"), never the bare `invoice_number` integer (28), which would match
+> nothing the owner can search for.
 
 A day is `held` only when cartons **AND** units are both below the minimum
 (default 25 / 500). AND, not OR: these products run from 500 g pouches to 5 kg
