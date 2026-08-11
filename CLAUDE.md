@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (818 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (827 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -111,7 +111,8 @@ app/
     ├── generator.py     # Generate Excel + PDF invoices (reportlab)
     ├── fc_addresses.json    # 93 Amazon FC addresses (from official Excel)
     ├── pricing_data.json    # 410 SKU/ASIN → purchase rate mappings
-    ├── product_families.json # 205 ASINs → parent product + brand + weight (drives plan sorting)
+    ├── product_families.json # 205 ASINs → parent product + brand + weight. OFFLINE FALLBACK ONLY;
+    │                         # the MRP sheet is the live source (app/shipment/catalogue.py)
     └── hsn_master.json      # Verified HSN codes (auto-saved after each invoice)
 ```
 
@@ -207,6 +208,37 @@ models and the scheduler job all stay: only the tabs were unwanted, and
 
 Two people work here at once: the owner plans, the warehouse packs. That is the
 constraint everything else follows from.
+
+### The product list comes from the MRP sheet, live
+`app/shipment/catalogue.py` reads the master sheet at **upload time** and it decides
+**which products exist**, not merely which are still sold. ASIN · Name · Net Weight ·
+Brand Name · Active, resolved by header NAME with positional fallback so inserting a
+column cannot silently shift the Active flag onto Brand and mark the whole catalogue
+dead.
+
+> **This distinction was a real bug.** Triphala Sattu was in the sheet, marked Active,
+> in two pack sizes — and could never reach a plan, because `generate` iterated
+> `product_families.json` (a static 205-ASIN file it had never been added to) and used
+> the sheet only for a yes/no flag. Editing the sheet would never have fixed it. The
+> sheet's 271 ASINs are a strict superset of the file's 205, and for the 108 active
+> ASINs in both, weight and brand agree exactly — checked before switching.
+
+Two things are deliberately **not** taken from the sheet:
+
+- **The merchant SKU.** Column M is blank on all 108 active rows, and the real value
+  arrives in the uploaded stock CSV — Amazon's own export. Reading the sheet's empty
+  column would blank the SKU everywhere and Amazon rejects those lines.
+- **Nothing is dropped for a bad weight.** An unparseable Net Weight falls back to the
+  static file, then 0. Weight affects sort order; a missing row affects a shipment.
+
+Fallback order is sheet → cached copy (`app/invoice/active_products.json`) → static
+file, and each degradation is named on screen. A Google outage must not stop the owner
+building a plan, but an unfiltered plan must never look like a filtered one.
+
+Because a hand-edited Active flag can now add or remove a row, `generate` returns a
+`catalogue` block and the page reports it: source, counts, and the products that
+appeared or vanished **by name**, capped at 8. A row count alone gives no way to notice
+that a product quietly left.
 
 ### Why the plan is in the database
 It used to be one JSON blob at repo root, overwritten wholesale by
