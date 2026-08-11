@@ -763,3 +763,293 @@ async def test_last_login_is_recorded(auth_client, client, db_schema):
     row = next(u for u in listing["users"] if u["id"] == created["user"]["id"])
     assert row["never_signed_in"] is False
     assert row["last_login_at"]
+
+
+# ─── Choosing the password rather than generating one ────────────────────────
+#
+# "at the time of creating user, give option to create password. not generate"
+#
+# The API already accepted an optional `password` on create and on reset; only the panel
+# never offered the field. These tests pin the behaviour from both directions, because
+# the interesting cases are the boundaries: too short, blank-means-generate, and a
+# password containing characters that would break if it were ever interpolated into
+# markup or an inline handler.
+
+async def test_an_admin_can_choose_the_password(auth_client, client, db_schema):
+    """The headline: a typed password is the one that works."""
+    chosen = "chana-sattu-2026"
+    r = await auth_client.post(
+        "/admin/users",
+        json={"full_name": "Ravi Kumar", "preset": "packer", "password": chosen},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+
+    # Echoed back so the panel can display it, exactly like a generated one.
+    assert body["password"] == chosen
+
+    signed_in = await client.post(
+        "/login", data={"username": body["user"]["username"], "password": chosen}
+    )
+    assert signed_in.status_code == 303, "the chosen password does not work"
+
+
+async def test_a_blank_password_still_generates_one(auth_client, client, db_schema):
+    """Blank means "generate", which is what keeps the old one-click flow.
+
+    Sent as an empty string rather than an absent key, because that is what a form field
+    left untouched produces if the client is careless — and it must not be treated as a
+    password of length 0 and rejected.
+    """
+    r = await auth_client.post(
+        "/admin/users",
+        json={"full_name": "Ravi Kumar", "preset": "packer", "password": ""},
+    )
+    assert r.status_code == 201, r.text
+    generated = r.json()["password"]
+    assert generated, "no password came back at all"
+    assert len(generated) >= 14, f"not a generated password: {generated!r}"
+
+    signed_in = await client.post(
+        "/login",
+        data={"username": r.json()["user"]["username"], "password": generated},
+    )
+    assert signed_in.status_code == 303
+
+
+async def test_a_short_password_is_refused_with_a_reason(auth_client, db_schema):
+    """Refused server-side, not only in the browser.
+
+    The panel checks length too, but that is a courtesy — an eight-character floor that
+    only exists in JavaScript is not a floor.
+    """
+    r = await auth_client.post(
+        "/admin/users",
+        json={"full_name": "Ravi Kumar", "preset": "packer", "password": "short"},
+    )
+    assert r.status_code == 400, r.text
+    assert "8" in r.json()["error"], f"the reason does not name the limit: {r.json()}"
+
+
+async def test_a_refused_password_creates_no_account(auth_client, db_schema):
+    """A half-created user with no usable password would be worse than a clean refusal:
+    the username would be taken and the owner would not know why."""
+    await auth_client.post(
+        "/admin/users",
+        json={"username": "ravi", "full_name": "Ravi", "password": "no"},
+    )
+    listing = (await auth_client.get("/admin/users")).json()
+    assert listing["users"] == [], "a rejected create left an account behind"
+
+
+async def test_a_chosen_password_is_still_stored_hashed(auth_client, db, db_schema):
+    """The obvious way to support a chosen password is to store it as given.
+
+    Asserted at the database because nothing in the API response would reveal it — and a
+    plaintext column would be invisible until the day the file is copied somewhere.
+    """
+    from sqlalchemy import select
+
+    from app.models import User
+
+    chosen = "chana-sattu-2026"
+    r = await auth_client.post(
+        "/admin/users",
+        json={"username": "ravi", "full_name": "Ravi", "password": chosen},
+    )
+    assert r.status_code == 201, r.text
+
+    row = (await db.execute(select(User).where(User.username == "ravi"))).scalar_one()
+    assert row.password_hash != chosen, "the password was stored in plain text"
+    assert row.password_hash.startswith("scrypt$")
+    assert chosen not in row.password_hash
+
+
+async def test_a_chosen_password_with_awkward_characters_works(
+    auth_client, client, db_schema
+):
+    """Quotes, angle brackets and an ampersand.
+
+    A generated password comes from a safe alphabet; a typed one can contain anything.
+    This is the case that makes the panel rule about never interpolating the password
+    into markup or an inline handler load-bearing rather than merely prudent — and it
+    must survive the round trip and the login unchanged.
+    """
+    awkward = """a'b"c<d>&e-12345"""
+    r = await auth_client.post(
+        "/admin/users",
+        json={"username": "ravi", "full_name": "Ravi", "password": awkward},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["password"] == awkward, "the password was altered in transit"
+
+    signed_in = await client.post(
+        "/login", data={"username": "ravi", "password": awkward}
+    )
+    assert signed_in.status_code == 303, "an awkward but valid password broke the login"
+
+
+async def test_a_password_is_not_silently_trimmed(auth_client, client, db_schema):
+    """Leading and trailing spaces are part of the password.
+
+    Stripping them would be a reasonable-looking kindness that makes the value the owner
+    read out differ from the one stored — and the failure would look like a wrong
+    password with no explanation.
+    """
+    spaced = "  spaces matter  "
+    r = await auth_client.post(
+        "/admin/users",
+        json={"username": "ravi", "full_name": "Ravi", "password": spaced},
+    )
+    assert r.status_code == 201, r.text
+    assert (await client.post(
+        "/login", data={"username": "ravi", "password": spaced}
+    )).status_code == 303
+    # And the trimmed version must NOT work, or the space was silently discarded.
+    other = httpx_client_from(client)
+    assert (await other.post(
+        "/login", data={"username": "ravi", "password": spaced.strip()}
+    )).status_code == 401
+
+
+def httpx_client_from(existing):
+    """A second client sharing the same transport but no cookies.
+
+    Needed because a successful login above leaves a session cookie on `client`, and a
+    subsequent failed login would otherwise be evaluated against an already-authenticated
+    session.
+    """
+    from httpx import AsyncClient
+
+    return AsyncClient(
+        transport=existing._transport, base_url="http://test", follow_redirects=False
+    )
+
+
+# ─── Choosing a password on RESET ───────────────────────────────────────────
+
+async def test_a_reset_can_use_a_chosen_password(auth_client, client, db_schema):
+    """"and after user is created then also from the list."
+
+    The reset is the moment a specific password is most useful — handing somebody a
+    temporary one over the phone.
+    """
+    created = (await auth_client.post(
+        "/admin/users", json={"full_name": "Ravi Kumar", "preset": "packer"}
+    )).json()
+    username = created["user"]["username"]
+
+    chosen = "temporary-pass-1"
+    r = await auth_client.post(
+        f"/admin/users/{created['user']['id']}/password", json={"password": chosen}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["password"] == chosen
+
+    assert (await client.post(
+        "/login", data={"username": username, "password": chosen}
+    )).status_code == 303
+    # The original must be dead.
+    other = httpx_client_from(client)
+    assert (await other.post(
+        "/login", data={"username": username, "password": created["password"]}
+    )).status_code == 401, "the old password still works after a reset"
+
+
+async def test_a_reset_with_no_password_still_generates_one(
+    auth_client, client, db_schema
+):
+    """The existing one-click behaviour must survive the new option."""
+    created = (await auth_client.post(
+        "/admin/users", json={"full_name": "Ravi Kumar", "preset": "packer"}
+    )).json()
+
+    r = await auth_client.post(f"/admin/users/{created['user']['id']}/password", json={})
+    assert r.status_code == 200, r.text
+    generated = r.json()["password"]
+    assert generated and generated != created["password"]
+    assert (await client.post(
+        "/login",
+        data={"username": created["user"]["username"], "password": generated},
+    )).status_code == 303
+
+
+async def test_a_short_password_on_reset_is_refused(auth_client, client, db_schema):
+    """And crucially, the OLD password must still work after a refused reset.
+
+    A reset that half-applied would lock the person out with no way back except another
+    reset — and the owner would believe he had set a password that does not work.
+    """
+    created = (await auth_client.post(
+        "/admin/users", json={"full_name": "Ravi Kumar", "preset": "packer"}
+    )).json()
+
+    r = await auth_client.post(
+        f"/admin/users/{created['user']['id']}/password", json={"password": "abc"}
+    )
+    assert r.status_code == 400, r.text
+
+    assert (await client.post(
+        "/login",
+        data={"username": created["user"]["username"], "password": created["password"]},
+    )).status_code == 303, "a refused reset broke the existing password"
+
+
+# ─── The panel offers the field ──────────────────────────────────────────────
+
+def test_the_create_form_has_a_password_field():
+    """Asked for directly. The API already accepted one; only the UI never offered it."""
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent / "templates" / "users.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="password"' in source, "the create form has no password field"
+    assert "leave blank to generate" in source.lower(), (
+        "the field does not say that blank still generates one, so the one-click flow "
+        "looks as though it has been removed"
+    )
+
+
+def test_the_password_field_is_not_masked():
+    """type="text", deliberately.
+
+    The owner is choosing a credential to hand to somebody else, not entering his own.
+    He has to SEE it, because he is about to read it out or write it down — and it cannot
+    be retrieved afterwards to check against a typo.
+    """
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent / "templates" / "users.html"
+    ).read_text(encoding="utf-8")
+
+    field = re.search(r"<input[^>]*id=\"password\"[^>]*>", source, re.S)
+    assert field, "no password input found"
+    assert 'type="text"' in field.group(0), (
+        "the password field is masked — a typo then becomes a login nobody can use, and "
+        "the value cannot be shown again to check"
+    )
+
+
+def test_the_password_is_only_sent_when_it_has_a_value():
+    """An empty string must not be sent as the password.
+
+    The server reads an absent key as "generate one". Sending "" instead would be
+    rejected as too short, which would break the blank-means-generate flow that every
+    existing use of this screen depends on.
+    """
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent / "templates" / "users.html"
+    ).read_text(encoding="utf-8")
+
+    assert "if(typed){" in source or "if (typed) {" in source, (
+        "the create handler does not guard on the password having a value"
+    )
+    assert "typed ? {password: typed} : {}" in source, (
+        "the reset handler sends the password key unconditionally"
+    )
