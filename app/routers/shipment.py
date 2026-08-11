@@ -1419,28 +1419,69 @@ async def download_remaining(
 async def download_shipment_file_xlsx(
     request: Request,
     mode: str = "remaining",
+    pack_dates: str = "",
     db: AsyncSession = Depends(get_db),
     role: str = Depends(require_admin),
 ):
-    """The Amazon upload sheet.
+    """The Amazon upload sheet: merchant SKU + quantity.
 
     An unknown `mode` is rejected rather than quietly treated as `remaining`. The
     three modes produce genuinely different quantities, and a typo silently
     yielding a plausible-looking file is how the wrong numbers get uploaded to
     Amazon.
+
+    ``pack_dates`` is a comma-separated list that narrows `verified` to CHOSEN days —
+    the same subset the owner ticks for an invoice. Asked for so the shipment can be
+    created in Seller Central from exactly the boxes that are going in this truck:
+    ``mode=verified`` alone sweeps up every verified day, which is the same "two days
+    that should have been two shipments can only ever be one" problem the invoice
+    selection was built to fix.
+
+    It is a query parameter rather than a POST body because this is a download the
+    browser navigates to, and the dates are short. Ignored for the other two modes,
+    which are about the plan rather than about days.
     """
     if mode not in ("remaining", "all", "verified"):
         return JSONResponse(
             {"error": "mode must be remaining, all or verified"}, status_code=400
         )
 
+    chosen_dates = [d.strip() for d in pack_dates.split(",") if d.strip()]
+    invalid = [d for d in chosen_dates if not _valid_date(d)]
+    if invalid:
+        return JSONResponse(
+            {"error": f"Not a date (YYYY-MM-DD): {', '.join(invalid)}"}, status_code=400
+        )
+
     loaded = await _document_rows(db)
     if loaded is None:
         return _no_plan()
     _plan, rows, days = loaded
+
+    if chosen_dates:
+        wanted = set(chosen_dates)
+        # Filtered BEFORE the quantities are computed, so `verified` counts only the
+        # selected days. Filtering the finished rows instead would leave the totals
+        # covering every verified day while the file claimed to be about these ones.
+        days = [d for d in days if d["pack_date"] in wanted]
+
+    # Named after the days it covers, not the day it was downloaded: the owner may
+    # download the same selection twice and will certainly download two different
+    # selections on one afternoon. Joining the dates with '-' made
+    # "shipment-verified-2026-08-10-2026-08-11-2026-08-11.xlsx", where the trailing
+    # today's-date is indistinguishable from another pack date — and a single-day file
+    # collided with the unfiltered one. `_to_` separates a range readably, and today's
+    # date is dropped when the dates already identify the file.
+    if chosen_dates:
+        span = sorted(chosen_dates)
+        name = span[0] if len(span) == 1 else f"{span[0]}_to_{span[-1]}"
+        filename = f"shipment-{mode}-{name}.xlsx"
+    else:
+        filename = f"shipment-{mode}-{date.today().isoformat()}.xlsx"
+
     return _attachment(
         documents.build_shipment_file_xlsx(rows, mode=mode, days=days),
-        f"shipment-{mode}-{date.today().isoformat()}.xlsx",
+        filename,
         XLSX_TYPE,
     )
 

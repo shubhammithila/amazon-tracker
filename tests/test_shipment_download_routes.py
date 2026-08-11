@@ -344,6 +344,133 @@ async def test_shipment_file_order_matches_the_canonical_order(
     assert [row[1] for row in rows] == expected
 
 
+# ─── The SKU sheet for a CHOSEN set of days ──────────────────────────────────
+#
+# Asked for: "give me option to select multiple days and download sku and units in
+# excel which I can put in amazon and create shipment." `mode=verified` alone sweeps up
+# EVERY verified day, which is the same "two days that should have been two shipments
+# can only ever be one" problem the invoice day-picker was built to fix. So the sheet
+# takes the same chosen subset.
+
+async def _verify_day(auth_client, date, entries, cartons=30):
+    await auth_client.post(
+        f"/shipment/packing/{date}", json={"entries": entries, "cartons": cartons}
+    )
+    await auth_client.post(f"/shipment/packing/{date}/submit")
+    r = await auth_client.post(f"/shipment/packing/{date}/verify")
+    assert r.status_code == 200, r.text
+
+
+def _units_by_sku(content: bytes) -> dict:
+    """{merchant SKU: quantity} from the shipment file, columns found by name."""
+    header, rows = _rows(content)
+    sku_i, qty_i = header.index("Merchant SKU"), header.index("Quantity")
+    return {r[sku_i]: r[qty_i] for r in rows if r[sku_i]}
+
+
+async def test_the_sku_sheet_covers_only_the_selected_days(auth_client, plan_factory):
+    """The property the whole feature rests on.
+
+    Two verified days, each with different products. Ask for one and the other's units
+    must be absent — not merely a smaller total, which a wrong filter could still
+    produce by accident.
+    """
+    await plan_factory()
+    await _verify_day(auth_client, "2026-07-30", [{"asin": "B0AAA00001", "units": 100}])
+    await _verify_day(auth_client, "2026-07-31", [{"asin": "B0AAA00002", "units": 60}])
+
+    base = "/shipment/download/shipment-file.xlsx?mode=verified"
+
+    first = _units_by_sku((await auth_client.get(f"{base}&pack_dates=2026-07-30")).content)
+    assert first == {"MF-CH-1KG": 100}, f"the other day's units leaked in: {first}"
+
+    second = _units_by_sku((await auth_client.get(f"{base}&pack_dates=2026-07-31")).content)
+    assert second == {"MF-CH-500G": 60}, second
+
+    both = _units_by_sku(
+        (await auth_client.get(f"{base}&pack_dates=2026-07-30,2026-07-31")).content
+    )
+    assert both == {"MF-CH-1KG": 100, "MF-CH-500G": 60}, both
+
+
+async def test_the_same_asin_on_two_days_is_summed(auth_client, plan_factory):
+    """One SKU packed across two days is ONE line in Amazon's upload.
+
+    Two lines for the same merchant SKU is what Amazon rejects, and it is the specific
+    thing aggregating by ASIN exists to prevent — the same reason the invoice bridge
+    aggregates.
+    """
+    await plan_factory()
+    await _verify_day(auth_client, "2026-07-30", [{"asin": "B0AAA00001", "units": 100}])
+    await _verify_day(auth_client, "2026-07-31", [{"asin": "B0AAA00001", "units": 40}])
+
+    content = (await auth_client.get(
+        "/shipment/download/shipment-file.xlsx"
+        "?mode=verified&pack_dates=2026-07-30,2026-07-31"
+    )).content
+    header, rows = _rows(content)
+    sku_i = header.index("Merchant SKU")
+    lines = [r for r in rows if r[sku_i] == "MF-CH-1KG"]
+    assert len(lines) == 1, f"the SKU appears {len(lines)} times, Amazon rejects that"
+    assert lines[0][header.index("Quantity")] == 140
+
+
+async def test_an_unverified_day_cannot_be_selected_into_the_sheet(
+    auth_client, plan_factory
+):
+    """`mode=verified` means verified. Naming a submitted day must not smuggle it in:
+    those units have not been approved, and this sheet is what creates the shipment."""
+    await plan_factory()
+    await auth_client.post(
+        "/shipment/packing/2026-07-30",
+        json={"entries": [{"asin": "B0AAA00001", "units": 100}], "cartons": 30},
+    )
+    await auth_client.post("/shipment/packing/2026-07-30/submit")   # NOT verified
+
+    content = (await auth_client.get(
+        "/shipment/download/shipment-file.xlsx?mode=verified&pack_dates=2026-07-30"
+    )).content
+    assert _units_by_sku(content) == {}, (
+        "a merely-submitted day reached the Amazon upload sheet"
+    )
+
+
+async def test_a_malformed_date_is_refused_rather_than_ignored(auth_client, plan_factory):
+    """Silently dropping an unparseable date would produce a plausible file covering
+    the wrong days — and this one becomes a real shipment at Amazon."""
+    await plan_factory()
+    r = await auth_client.get(
+        "/shipment/download/shipment-file.xlsx?mode=verified&pack_dates=13-08-2026"
+    )
+    assert r.status_code == 400
+    assert "13-08-2026" in r.json()["error"]
+
+
+async def test_the_filename_names_the_days_not_the_download_date(
+    auth_client, plan_factory
+):
+    """Two selections downloaded on one afternoon must not collide in Downloads.
+
+    The first attempt joined the dates with '-' and appended today's date, giving
+    `shipment-verified-2026-08-10-2026-08-11-2026-08-11.xlsx` — where the trailing
+    date is indistinguishable from another pack date, and a single-day file had the
+    same name as the unfiltered one.
+    """
+    await plan_factory()
+    await _verify_day(auth_client, "2026-07-30", [{"asin": "B0AAA00001", "units": 100}])
+    await _verify_day(auth_client, "2026-07-31", [{"asin": "B0AAA00002", "units": 60}])
+
+    base = "/shipment/download/shipment-file.xlsx?mode=verified"
+    one = (await auth_client.get(f"{base}&pack_dates=2026-07-30")).headers[
+        "content-disposition"]
+    two = (await auth_client.get(
+        f"{base}&pack_dates=2026-07-30,2026-07-31")).headers["content-disposition"]
+
+    assert "2026-07-30" in one
+    assert one != two, "a one-day and a two-day selection download to the same filename"
+    assert "2026-07-30_to_2026-07-31" in two, two
+
+
 # ─── Numbers agree with the screen ───────────────────────────────────────────
 
 async def test_downloaded_numbers_match_the_dashboard(auth_client, plan_factory):

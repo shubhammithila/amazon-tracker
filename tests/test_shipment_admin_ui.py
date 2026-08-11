@@ -631,6 +631,31 @@ def test_leaving_a_verified_day_out_is_called_out(source):
     )
 
 
+def test_the_sku_sheet_sends_the_selected_days(source):
+    """"select multiple days and download sku and units in excel."
+
+    The button must pass the ticked dates. Without them the route falls back to EVERY
+    verified day, so the file would silently cover days the owner did not choose — and
+    it is the file he uploads to Seller Central to create the shipment, so the wrong
+    quantities become a real inbound shipment. Caught by mutation: removing
+    `pack_dates` from the URL passed every other test in the suite.
+    """
+    body = _without_comments(source)
+    assert "downloadSkuSheet" in body, "there is no SKU-sheet download at all"
+
+    start = body.index("function downloadSkuSheet")
+    fn = body[start:start + 900]
+    assert "pack_dates=" in fn, (
+        "the SKU sheet is requested without pack_dates, so it covers every verified "
+        "day rather than the ticked ones"
+    )
+    assert "mode=verified" in fn, (
+        "the sheet is not requested in verified mode — it would carry planned or "
+        "unapproved quantities to Amazon"
+    )
+    assert "encodeURIComponent" in fn, "the dates are interpolated unencoded"
+
+
 def test_the_handoff_goes_through_sessionstorage_not_the_url(source):
     """A URL is shared, logged and bookmarked; this payload is invoice data.
 

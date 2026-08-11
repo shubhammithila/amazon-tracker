@@ -827,20 +827,49 @@ function renderInvoiceBar(){
   const summary = chosen.length
     ? `<strong>${chosen.length} day(s) selected</strong> — ${dates} ·
        ${units.toLocaleString("en-IN")} units · ${cartons.toLocaleString("en-IN")} cartons`
-    : `<span style="color:var(--text-muted)">Tick the days to put on one invoice.
-       ${verified.length} verified day(s) available.</span>`;
+    : `<span style="color:var(--text-muted)">Tick the days, then download the SKU list
+       for Amazon or raise the invoice. ${verified.length} verified day(s) available.</span>`;
 
+  /* Two actions on the same selection, in the order the work actually happens:
+     the SKU sheet FIRST (Amazon assigns the shipment ID and the FC), the invoice
+     second (it needs that shipment ID and the destination state to be correct).
+     Putting them side by side is what makes that sequence visible. */
   bar.innerHTML = `
     <div class="invoice-bar">
       <div class="ib-summary">${summary}</div>
       <div class="ib-actions">
         <button class="btn-outline" onclick="pickAllVerified(true)">Select all verified</button>
         <button class="btn-outline" onclick="pickAllVerified(false)">Clear</button>
+        <button class="btn-outline" id="ib-sku" ${chosen.length ? "" : "disabled"}
+                title="Merchant SKU + units for the selected days — upload this to Seller Central to create the shipment"
+                onclick="downloadSkuSheet()">Download SKU list (Excel)</button>
         <button class="btn-green" id="ib-go" ${chosen.length ? "" : "disabled"}
                 onclick="invoiceSelectedDays()">
           Create invoice${chosen.length > 1 ? ` from ${chosen.length} days` : ""}</button>
       </div>
     </div>`;
+}
+
+/* The SKU + units sheet for the selected days, for creating the shipment in Seller
+   Central by hand.
+
+   `mode=verified` with an explicit `pack_dates` list, so the quantities are the units
+   actually packed on THOSE days — not the plan, and not every verified day. Without
+   the date list this is the same sweep-up-everything behaviour the invoice selection
+   was built to avoid, and the two would then disagree about what is in the shipment.
+
+   A plain navigation rather than fetch(): the response is a file with a
+   Content-Disposition, and the browser's own download handling is what the owner
+   expects. Nothing is written on the server, so there is nothing to roll back. */
+function downloadSkuSheet(){
+  const verified = days.filter(d => d.status === "verified");
+  const chosen = verified.filter(d => invoicePick.has(d.pack_date)).map(d => d.pack_date);
+  if(!chosen.length){
+    alert("Tick at least one verified day first.");
+    return;
+  }
+  window.location =
+    `/shipment/download/shipment-file.xlsx?mode=verified&pack_dates=${encodeURIComponent(chosen.join(","))}`;
 }
 
 /* One delegated listener for every day tick box, so re-rendering the cards never
