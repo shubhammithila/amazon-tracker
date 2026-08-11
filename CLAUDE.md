@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (827 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (859 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -513,6 +513,31 @@ python-multipart, itsdangerous, jinja2, aiofiles, reportlab
 ```
 
 ## Known gaps (deliberate, not oversights)
+
+### The deal badge depends on which page Amazon serves you
+`extract_deal` keys on STRUCTURE, not on the sale's name: `#dealBadgeSupportingText`
+(the badge's visible text) and `data-csa-c-painter="dp-deal"` (Amazon's own marker).
+It previously matched a hardcoded phrase list, so during the Freedom Sale — badge text
+**"Freedom Sale Deal"** — every row read No. A phrase list cannot work: Amazon renames
+the sale every few months, and the failure is silent because No is usually correct.
+
+Three traps, all covered by `tests/test_scraper_deal_badge.py`:
+
+- `dealBadge_feature_div` is on **every** product page, deal or not. Its presence cannot
+  be the test.
+- The `aok-hidden` screen-reader spans hold the text with the countdown unsubstituted
+  (`"Freedom Sale Deal NO_OF_HOURS hours"`) because that JavaScript never runs here.
+  Text containing `NO_OF_` is rejected.
+- Ad carousels carry deal markup for **other** products — 7 such mentions on one page —
+  so the XPath is scoped to the badge region.
+
+> **The same ASIN can legitimately return Yes locally and No on EC2.** Measured: from
+> this laptop B0CY84RYRG has the badge and the ₹295 sale price; from the EC2 box the
+> identical request returns **zero** deal markers and the pre-sale ₹349. Amazon serves
+> datacentre IPs a thinner page. That is the same root cause as the scraper failure
+> already noted below — a network/IP issue, not a parser one — so a No in production
+> with a Yes locally is not necessarily a bug in this code.
+
 
 ### The invoice attach is a second request, so there is a window
 `POST /invoice/save` allocates the legally-sequential GST number and is left
