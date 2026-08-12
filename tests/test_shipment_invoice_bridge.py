@@ -638,3 +638,118 @@ async def test_shipped_units_still_count_as_packed_and_shippable(
         "to be packed again"
     )
     assert item["shippable"] == 600, "shipped units stopped counting as shippable"
+
+
+# ─── The destination FC completes the tax document ───────────────────────────
+#
+# Asked for: "use the shipment id from amazon and rest address etc from the app to
+# create the invoice."
+#
+# The FC code is the owner's own choice, made when he built the upload sheet. Given it,
+# the app resolves the recipient address, the destination state, the GSTIN and therefore
+# whether GST is inter-state — the fields that were previously left blank for him to
+# type by hand from Seller Central.
+
+async def test_the_chosen_fc_fills_the_recipient_details(
+    auth_client, ops_client, plan_factory
+):
+    """One code in, four fields out."""
+    await plan_factory()
+    await _packed_and_verified(auth_client, ops_client, MONDAY, [{"asin": ASIN, "units": 100}])
+
+    body = (await auth_client.post("/shipment/invoice-payload", json={
+        "pack_dates": [MONDAY], "fc_code": "ISK3", "shipment_id": "FBA15XYZ123",
+    })).json()
+    meta = body["metadata"]
+
+    assert meta["shipment_id"] == "FBA15XYZ123"
+    assert meta["ship_to"] == "ISK3"
+    # Maharashtra, so the Maharashtra GSTIN — this is the field that decides the GST
+    # treatment, and getting it from the FC code is the point of the whole change.
+    assert meta["recipient_gstin"] == "27AAFCF9848M1ZT", meta["recipient_gstin"]
+    assert meta["warehouse"]["state"] == "Maharashtra"
+    assert "BHIWANDI" in meta["warehouse"]["full_address"].upper()
+    assert not body.get("warnings") or not any(
+        "GSTIN" in w for w in body["warnings"]
+    ), body.get("warnings")
+
+
+async def test_a_lowercase_fc_code_is_normalised(auth_client, ops_client, plan_factory):
+    """The owner types "isk3" as readily as "ISK3".
+
+    Asserting only the GSTIN was not enough, and mutation testing proved it: the GSTIN
+    resolves either way because `get_fc_info` upper-cases internally, so removing the
+    normalisation here survived. What it actually breaks is `ship_to`, which the invoice
+    renders as the recipient NAME — the GST document would read "Amazon FC isk3". So
+    assert the normalised code itself.
+    """
+    await plan_factory()
+    await _packed_and_verified(auth_client, ops_client, MONDAY, [{"asin": ASIN, "units": 100}])
+
+    meta = (await auth_client.post("/shipment/invoice-payload", json={
+        "pack_dates": [MONDAY], "fc_code": "isk3",
+    })).json()["metadata"]
+
+    assert meta["ship_to"] == "ISK3", (
+        f"the FC code reaches the document as {meta['ship_to']!r}, so the recipient "
+        'line reads "Amazon FC isk3"'
+    )
+    assert meta["recipient_gstin"] == "27AAFCF9848M1ZT"
+
+
+async def test_no_fc_leaves_the_fields_blank_exactly_as_before(
+    auth_client, ops_client, plan_factory
+):
+    """The FC is optional: the shipment may not exist at Amazon yet.
+
+    Blank is a field the owner fills in. A guessed FC is the wrong state's GSTIN on a
+    tax document, which nothing downstream could detect.
+    """
+    await plan_factory()
+    await _packed_and_verified(auth_client, ops_client, MONDAY, [{"asin": ASIN, "units": 100}])
+
+    meta = (await auth_client.post(
+        "/shipment/invoice-payload", json={"pack_dates": [MONDAY]}
+    )).json()["metadata"]
+
+    assert meta["shipment_id"] == ""
+    assert meta["ship_to"] == ""
+    assert meta["recipient_gstin"] == ""
+    assert meta["warehouse"] == {}
+
+
+async def test_an_fc_with_no_gstin_is_warned_about(auth_client, ops_client, plan_factory):
+    """FCJD is in Kerala, where we hold no registration.
+
+    `get_fc_info` returns a blank GSTIN rather than failing, so without the warning the
+    owner gets a GST document with an empty recipient GSTIN and no hint why. India also
+    requires the destination FC to be an Additional Place of Business on a registration
+    in that state, so this is a legal blocker, not a data gap.
+    """
+    await plan_factory()
+    await _packed_and_verified(auth_client, ops_client, MONDAY, [{"asin": ASIN, "units": 100}])
+
+    body = (await auth_client.post("/shipment/invoice-payload", json={
+        "pack_dates": [MONDAY], "fc_code": "FCJD",
+    })).json()
+
+    assert body["metadata"]["recipient_gstin"] == ""
+    joined = " ".join(body.get("warnings") or [])
+    assert "FCJD" in joined, f"the unusable FC is not named: {joined}"
+    assert "GSTIN" in joined
+
+
+async def test_an_unknown_fc_is_warned_about_rather_than_silently_blank(
+    auth_client, ops_client, plan_factory
+):
+    """A code we do not recognise at all. The download refuses these outright, but the
+    payload is also reachable directly, so it must not answer 200 with a confident-looking
+    invoice whose recipient GSTIN is empty."""
+    await plan_factory()
+    await _packed_and_verified(auth_client, ops_client, MONDAY, [{"asin": ASIN, "units": 100}])
+
+    body = (await auth_client.post("/shipment/invoice-payload", json={
+        "pack_dates": [MONDAY], "fc_code": "ZZZ9",
+    })).json()
+    joined = " ".join(body.get("warnings") or [])
+    assert "ZZZ9" in joined, joined

@@ -79,6 +79,16 @@ h2{font-size:20px;font-weight:600;margin-bottom:4px}
 .invoice-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:var(--bg)}
 .invoice-bar .ib-summary{font-size:12.5px;line-height:1.5;flex:1;min-width:200px}
 .invoice-bar .ib-actions{display:flex;gap:8px;flex-wrap:wrap}
+/* The second bar: destination, the sheet, Amazon's shipment ID, then the invoice —
+   left to right in the order the work happens. Joined to the bar above by a flat top
+   edge so the two read as one panel rather than two unrelated strips. */
+.invoice-bar.ib-ship{margin-top:-1px;border-top-left-radius:0;border-top-right-radius:0}
+.ib-field{display:flex;flex-direction:column;gap:3px;font-size:10px;
+  text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);font-weight:600}
+.ib-field select,.ib-field input{background:var(--surface);border:1px solid var(--border);
+  border-radius:6px;color:var(--text);padding:6px 8px;font-size:12.5px;
+  text-transform:none;letter-spacing:normal;font-weight:400;min-width:190px}
+.ib-field select:focus,.ib-field input:focus{outline:none;border-color:var(--accent)}
 .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
 .badge.open{background:var(--surface2);color:var(--text-muted)}
 .badge.submitted{background:var(--blue-soft);color:var(--blue)}
@@ -426,7 +436,10 @@ let CAT_LABELS = {1:"Sattu", 2:"Chana", 3:"Flours", 4:"Rice", 5:"Seeds", 6:"Rest
 let categories = [];
 const catEdits = new Map();
 
-load();
+/* The FC list first, then the plan. Awaited in order because renderInvoiceBar() builds
+   the destination <select> from fcChoices — starting them in parallel would race, and
+   the bar would render with an empty picker whenever /shipment/fcs answered second. */
+loadFcs().then(load);
 
 async function load(){
   // A fresh load means the owner has moved on from the last generate, so the
@@ -840,15 +853,45 @@ function renderInvoiceBar(){
       <div class="ib-actions">
         <button class="btn-outline" onclick="pickAllVerified(true)">Select all verified</button>
         <button class="btn-outline" onclick="pickAllVerified(false)">Clear</button>
-        <button class="btn-outline" id="ib-sku" ${chosen.length ? "" : "disabled"}
-                title="Merchant SKU + units for the selected days — upload this to Seller Central to create the shipment"
-                onclick="downloadSkuSheet()">Download SKU list (Excel)</button>
-        <button class="btn-green" id="ib-go" ${chosen.length ? "" : "disabled"}
-                onclick="invoiceSelectedDays()">
-          Create invoice${chosen.length > 1 ? ` from ${chosen.length} days` : ""}</button>
       </div>
+    </div>
+    <!-- The destination and Amazon's shipment ID. Laid out left to right in the order
+         the work happens: choose the FC, download the sheet, upload it at Amazon, paste
+         back the shipment ID it returns, then raise the invoice. The invoice button is
+         last because it is the only step that spends a GST number. -->
+    <div class="invoice-bar ib-ship">
+      <label class="ib-field">
+        <span>Destination FC</span>
+        <select id="fc-pick" onchange="rememberFc(this.value)">
+          <option value="">choose…</option>
+          ${fcOptions(lastFc)}
+        </select>
+      </label>
+      <button class="btn-outline" id="ib-sku" ${chosen.length ? "" : "disabled"}
+              title="Merchant SKU + units + FC for the selected days — this is what you upload to Seller Central"
+              onclick="downloadSkuSheet()">Download SKU list (Excel)</button>
+      <label class="ib-field">
+        <span>Amazon shipment ID</span>
+        <input type="text" id="ship-id" placeholder="FBA15… (after Amazon creates it)"
+               value="${esc(lastShipmentId)}" oninput="rememberShipmentId(this.value)"/>
+      </label>
+      <button class="btn-green" id="ib-go" ${chosen.length ? "" : "disabled"}
+              onclick="invoiceSelectedDays()">
+        Create invoice${chosen.length > 1 ? ` from ${chosen.length} days` : ""}</button>
     </div>`;
 }
+
+/* The FC and shipment ID survive a re-render.
+
+   renderDays() rebuilds this bar on every tick, and the owner types the shipment ID
+   BEFORE he raises the invoice — so without holding them outside the markup, ticking
+   another day would silently blank an ID he had just pasted from Seller Central. Kept in
+   module state rather than read back off the DOM, because the elements are replaced. */
+let lastFc = "";
+let lastShipmentId = "";
+
+function rememberFc(value){ lastFc = value; }
+function rememberShipmentId(value){ lastShipmentId = value.trim(); }
 
 /* The SKU + units sheet for the selected days, for creating the shipment in Seller
    Central by hand.
@@ -868,8 +911,46 @@ function downloadSkuSheet(){
     alert("Tick at least one verified day first.");
     return;
   }
-  window.location =
-    `/shipment/download/shipment-file.xlsx?mode=verified&pack_dates=${encodeURIComponent(chosen.join(","))}`;
+  /* The destination goes on every row of the sheet, so it has to be chosen before the
+     file is built. Read from the picker rather than typed here: a free-text FC would
+     let "ISK33" through, and the same code then reaches the invoice where it resolves
+     to no state and no GSTIN. */
+  const fc = document.getElementById("fc-pick").value;
+  if(!fc){
+    alert("Choose the destination FC first — it goes on every row of the sheet, and it "
+      + "decides which GSTIN the invoice uses.");
+    return;
+  }
+  const params = new URLSearchParams({
+    mode: "verified", pack_dates: chosen.join(","), fc_code: fc,
+  });
+  window.location = `/shipment/download/shipment-file.xlsx?${params}`;
+}
+
+/* The destination FC list, fetched once. Served by /shipment/fcs rather than written
+   into this template so the options cannot drift from what the invoice can resolve. */
+let fcChoices = [];
+
+async function loadFcs(){
+  try{
+    const r = await fetch("/shipment/fcs");
+    if(!r.ok) return;
+    fcChoices = (await r.json()).fcs || [];
+  }catch(e){ /* the picker degrades to empty; the download then refuses politely */ }
+}
+
+function fcOptions(selected){
+  /* An FC we hold no GSTIN for is marked, not hidden. India requires the destination to
+     be an Additional Place of Business on a GST registration in that state, so those 9
+     are not usable today — but hiding them would leave the owner wondering where an FC
+     Amazon named has gone. Named and flagged is the honest option. */
+  return fcChoices.map(f => {
+    const label = f.has_gstin
+      ? `${f.code} · ${f.state}`
+      : `${f.code} · ${f.state} — no GSTIN`;
+    return `<option value="${esc(f.code)}" ${f.code === selected ? "selected" : ""}
+             ${f.has_gstin ? "" : 'data-nogst="1"'}>${esc(label)}</option>`;
+  }).join("");
 }
 
 /* One delegated listener for every day tick box, so re-rendering the cards never
@@ -1342,13 +1423,33 @@ async function invoiceSelectedDays(){
     question += `\n\n${left} other verified day(s) are NOT included and will need a `
       + "separate invoice.";
   }
+  /* Named in the confirmation rather than blocked. Both are legitimately blank when the
+     shipment does not exist at Amazon yet — but an invoice raised without the FC has no
+     recipient GSTIN and no place of supply, and one raised without the shipment ID is
+     the incomplete document this whole workflow exists to avoid. The owner can still
+     type them on the invoice screen; this is the reminder, not a lock. */
+  const gaps = [];
+  if(!lastFc) gaps.push("no destination FC — the recipient GSTIN and place of supply "
+    + "will be blank");
+  if(!lastShipmentId) gaps.push("no Amazon shipment ID");
+  if(gaps.length){
+    question += `\n\nNote: ${gaps.join("; and ")}.`;
+  }
   if(!confirm(question)) return;
 
   try{
     const r = await fetch("/shipment/invoice-payload", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({pack_dates: chosen}),
+      /* The FC and the shipment ID travel with the request. The FC is what lets the
+         server resolve the recipient address, the destination state, the GSTIN and
+         therefore the inter-state/intra-state GST split — the three fields that used
+         to be left blank for the owner to fill in by hand. */
+      body: JSON.stringify({
+        pack_dates: chosen,
+        fc_code: lastFc,
+        shipment_id: lastShipmentId,
+      }),
     });
     const data = await r.json();
     if(!r.ok) throw new Error(data.error || "Could not build the invoice");

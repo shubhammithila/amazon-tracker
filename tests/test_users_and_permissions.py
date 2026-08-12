@@ -19,6 +19,8 @@ a tab" is the easy half:
 * **A password is shown exactly once** and is never stored in readable form.
 * **The login form leaks nothing** about which usernames exist.
 """
+import re
+
 import pytest
 
 from app import credentials, permissions
@@ -184,11 +186,29 @@ def test_a_username_is_suggested_from_a_persons_name():
 
 def test_a_taken_username_gets_a_random_suffix_not_a_number():
     """`ravi.kumar2` invites "who is ravi.kumar1 and do they still work here", and the
-    answer is usually that nobody remembers."""
-    suggested = credentials.suggest_username("Ravi Kumar", {"ravi.kumar"})
-    assert suggested != "ravi.kumar"
-    assert not suggested.endswith("2")
-    assert credentials.username_error(suggested) is None
+    answer is usually that nobody remembers.
+
+    **This used to fail about 2% of every run, and it was the TEST that was wrong.** It
+    asserted `not suggested.endswith("2")`, but the random suffix is drawn from an
+    alphabet that contains "2" (`…wxyz234679`) — so `ravi.kumar.hk2` is a perfectly good
+    random suggestion that tripped the assertion. Surfaced by the random-order suite,
+    which is how an intermittent red gets rerun until green and then ignored.
+
+    What is actually forbidden is a COUNTER — the base with a small number stuck straight
+    on the end. That is what is asserted now, over enough draws that a counter could not
+    hide behind luck.
+    """
+    for _ in range(200):
+        suggested = credentials.suggest_username("Ravi Kumar", {"ravi.kumar"})
+        assert suggested != "ravi.kumar"
+        assert not re.fullmatch(r"ravi\.kumar\d{1,2}", suggested), (
+            f"{suggested} is an incrementing counter, not a random suffix"
+        )
+        # A random suffix is separated from the name and long enough not to read as a
+        # sequence number.
+        assert suggested.startswith("ravi.kumar."), suggested
+        assert len(suggested) >= len("ravi.kumar.") + 4, suggested
+        assert credentials.username_error(suggested) is None
 
 
 def test_a_suggested_username_is_always_valid():

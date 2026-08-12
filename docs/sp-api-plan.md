@@ -1,176 +1,174 @@
-# Plan: create FBA shipments from the app via Amazon SP-API
+# Plan: FBA shipment creation and box labels via Amazon SP-API
 
-**Status: plan only. No code written.** Written 2026-08-11.
-
-## The problem, stated precisely
-
-The invoice cannot be completed until Amazon has told us three things:
-
-| Needed on the invoice | Who decides it | Today |
-|---|---|---|
-| Shipment ID (`FBA15…`) | Amazon, when the shipment is created | typed in by hand |
-| Destination FC | Amazon, from placement options | typed in by hand |
-| Destination **state** | follows from the FC | picks which of our 15 GSTINs applies, and IGST vs CGST/SGST |
-
-So the sequence is forced: create the shipment at Amazon → get ID + FC → *then* invoice.
-Moving shipment creation into the app is what would collapse those three manual steps
-into one automatic one.
-
-We already hold the pieces downstream of the FC: `fc_addresses.json` resolves **93 FC
-codes** to a state, and `get_gstin_for_state` covers **14 of the 17 states** those FCs
-sit in. So **an FC code alone is enough** — we do not need Amazon to give us an address.
-
-> **Gap worth fixing regardless of this project:** FCs exist in **Madhya Pradesh (4),
-> Kerala (3) and Andhra Pradesh (2)** and we hold no GSTIN for any of them. If Amazon
-> ever routes a shipment there, the invoice has no correct GSTIN to use — today that
-> surfaces as a blank, not as an error. That is a registration question for you, not a
-> code change, and it is independent of SP-API.
+**Status: plan only. No SP-API code written.** Revised 2026-08-11 after research.
 
 ---
 
-## The one thing that decides whether this works
+## Read this first: the upload-file plan does not work
 
-**`destinationType` can come back as `AMAZON_OPTIMIZED`, and then the address and
-`warehouseId` are both allowed to be empty.**
+You asked for: build a file of SKU + quantity + FC code, upload it to Amazon, and a
+shipment appears. **No such upload exists.** I checked Amazon's own machine-readable
+Feeds API model and there is no FBA inbound shipment-creation feed of any kind. The only
+FBA feeds are carton contents, removals and fulfilment orders.
 
-Straight from Amazon's own API model: those fields "can be empty if the destination type
-is `AMAZON_OPTIMIZED`", and their use-case guide says that for that type the address "may
-differ from the actual address… Refer to the carton label for the correct address."
+What the various uploads actually are:
 
-If Amazon.in returns `AMAZON_OPTIMIZED` for our shipments, **the API cannot tell us the
-destination state**, and the GST automation — the entire point — does not work. We would
-get the shipment ID automatically and still be typing the FC in by hand from the carton
-label.
+| Thing | Creates a shipment? |
+|---|---|
+| **Send to Amazon** spreadsheet upload | **No** — box/packing detail only |
+| Legacy "Inbound Shipping Plan" upload | **No** — superseded by Send to Amazon |
+| `POST_FBA_INBOUND_CARTON_CONTENTS` feed | **No** — box contents for an *already-created* shipment |
+| **Fulfillment Inbound API v2024-03-20** | **Yes** — and it is the only way |
 
-There is a promising counterweight, also found in the model: `generatePlacementOptions`
-accepts a `customPlacement[]` array (`warehouseId` + items) marked **"only used for the
-India marketplace"**. If that lets us *name* the FC, the problem disappears entirely —
-we would know the state before Amazon does.
+So a shipment is created either **by hand in Send to Amazon**, or **through the API**.
+There is no middle path where a spreadsheet does it.
 
-**Neither can be settled from documentation, and neither can be tested in the sandbox**
-(Fulfillment Inbound is static-response only, so it returns canned data rather than
-exercising real placement). This is the first thing to find out, and it is cheap to find
-out: one real low-value shipment, created through the API, and read what `getShipment`
-actually returns.
+I could not retrieve literal column headers for any Send to Amazon template, because
+every Seller Central help URL redirects to a login. Anyone quoting exact headers without
+a logged-in session is guessing.
 
-**I would not build anything else until that call has been made.** Everything below is
-contingent on it.
+> **What we shipped today is therefore still useful**, just not as an Amazon upload: the
+> SKU + units + FC sheet is your worksheet for typing into Send to Amazon, and it is what
+> feeds the FC code into the invoice. That part works and is live.
 
----
+## But the FC news is much better than my last plan assumed
 
-## What I verified about the API
+My previous plan said the project's viability rested on whether Amazon would tell us the
+destination FC, and warned it probably would not (`AMAZON_OPTIMIZED` returns an empty
+address). That risk is largely **gone**, for a reason specific to you:
 
-Confirmed against Amazon's machine-readable model
-(`amzn/selling-partner-api-models`, `fulfillmentInbound_2024-03-20.json`) rather than the
-HTML docs.
+`generatePlacementOptions` accepts a `customPlacement` array, and Amazon's model says
+verbatim:
 
-- **Fulfillment Inbound v2024-03-20 is the API.** The old v0 (`createInboundShipmentPlan`
-  etc.) was deprecated 2022-09-30 with removal scheduled **2024-12-11** — nearly two years
-  before today. Build only on v2024-03-20. *(The v0 model is still in the repo; that is
-  not evidence it still answers. Verify.)*
-- **Auth is simpler than it used to be.** LWA client ID/secret + a per-seller refresh
-  token. **No AWS SigV4, no IAM role** — the required headers are `host`,
-  `x-amz-access-token`, `x-amz-date`, `user-agent`. Self-authorisation of a *draft*
-  private app still exists, so **no appstore listing and no Amazon app review**. The role
-  needed is "Amazon Fulfillment", which is **not** a restricted role — no PII approval.
-  Must be authorised by the account's Primary User (you).
-- **India is on the EU endpoint** — marketplace `A21TJRUUN4KGV`,
-  `https://sellingpartnerapi-eu.amazon.com`.
-- **Rate limits are a non-issue.** 2 requests/second on everything; a whole shipment is
-  ~12 calls.
-- **The flow is asynchronous.** `generate*`/`confirm*` return an `operationId` you poll.
-  Problems come back as `operationProblems[]` with `severity: WARNING | ERROR`, so **an
-  HTTP 200 does not mean success** — the severity has to be inspected. Exactly the class
-  of silent failure this codebase has been bitten by before.
-- **Two India-specific features suggest real support**, both in the model:
-  `deliveryChallanDocument` ("for PCP transportation in IN marketplace") and
-  `updateItemComplianceDetails`, which is India-only and takes **`hsnCode`**,
-  `declaredValue` and tax rates typed `CGST`/`SGST`/`IGST`. That last one lines up with
-  our `hsn_master.json` — we may be able to push our 87 verified HSN codes upstream.
-- **Placement options carry fees.** Each option has `fees[]`/`discounts[]` targeting
-  "Placement Services" and "Fulfillment Fee Discount", so the cost of consolidated
-  placement vs a free multi-FC split is machine-comparable. Options **expire**, so they
-  cannot be cached.
-- **No official Amazon Python SDK.** `python-amazon-sp-api` (saleweaver) is credible and
-  actively maintained (v2.1.20, 2026-08-01), and ships both a
-  `fulfillment_inbound_2024_03_20` module **and an asyncio variant** — which matters,
-  because this app is async throughout and a blocking HTTP client inside a request
-  handler would stall the event loop.
+> "This is only used for the India (IN - A21TJRUUN4KGV) marketplace."
+
+`CustomPlacementInput` **requires** `warehouseId` — e.g. `ISK3`. So in India, and only in
+India, **the seller can name the destination FC.** Your instinct was right; it is just an
+API field rather than a spreadsheet column.
+
+Unverified: whether Amazon.in *honours* it or treats it as a hint, and whether it carries
+a fee. Both need one real call.
 
 ---
 
-## The call sequence
+## The real constraint is GST registration, not the API
 
-Roughly twelve calls, five of them asynchronous:
+**India requires the destination FC to be registered as an Additional Place of Business
+on a GST registration in that state.** That is a legal constraint that no amount of code
+changes.
 
-1. `POST /inboundPlans` — source address, marketplace, items (`msku`, `quantity`,
-   `prepOwner`, `labelOwner`). One marketplace per request. → `inboundPlanId`
-2. `generatePackingOptions` → `getPackingOptions` → `confirmPackingOption`
-3. `setPackingInformation` — box dimensions and weights
-4. `generatePlacementOptions` → `getPlacementOptions` → **`confirmPlacementOption`**
-   ← *this is the call that creates the shipments*
-5. `generateTransportationOptions` → `getTransportationOptions` →
-   `confirmTransportationOptions`
-6. `getShipment` → `shipmentConfirmationId` (the `FBA…` ID) and `destination`
+Measured against our own data:
 
-Two points of substance. **Step 4 is the commit point** — before it there are no
-shipments, after it there are, and it cannot be undone by not writing our row. And
-**step 3 needs box dimensions and weights we do not currently hold**: we know net product
-weight (`logic.shipment_weight`) but not carton dimensions. That is a new input the
-warehouse would have to give us.
+- `fc_addresses.json` resolves **93 FC codes** to a state.
+- `get_gstin_for_state` covers **84 of them**.
+- **9 FCs are legally unusable today**: Madhya Pradesh (4), Kerala (3), Andhra Pradesh (2).
+
+The app now names those on the picker as "no GSTIN" rather than hiding them, and the
+invoice bridge warns if one is chosen. **Deciding whether to register in those three
+states is your call, and it gates FC choice regardless of SP-API.**
 
 ---
 
-## How it would fit this codebase
+## Labels: fetchable, and that is the piece you actually asked for
 
-Five things follow from decisions already made here:
+You asked for label downloads in different formats, and this is available:
 
-1. **The mutation belongs behind one module**, `app/shipment/spapi.py`, the way
-   `catalogue.py` isolates the Google Sheet. Nothing else should know about LWA tokens.
-2. **The parser stays synchronous and offline.** `app/invoice/parser.py` deliberately
-   reads `product_families.json` rather than fetching the live sheet, because it runs
-   during an upload and must not make the invoice screen wait on the network. SP-API is
-   the same argument, more so — it must never be called from a document path.
-3. **Credentials are `.env`, never committed.** Note `cookies.txt` is already in git
-   history with a live token; a refresh token is worth more and must not repeat that.
-4. **A created shipment is a fact in the world.** Like the invoice number, it cannot be
-   rolled back by a failed transaction. The `invoice_id` attach window is documented as a
-   known gap for exactly this reason, and this is worse: an inbound plan confirmed at
-   Amazon with no local row is invisible to the app but real to Amazon. So the
-   `inbound_plan_id` must be persisted **before** `confirmPlacementOption`, not after —
-   the same lesson as "never let a bookkeeping bug roll back a committed invoice".
-5. **`AMAZON_OPTIMIZED` must block, not guess.** If the state cannot be determined, the
-   invoice must say so and fall back to manual entry. A guessed FC puts the wrong state's
-   GSTIN on a tax document, and `get_gstin_for_state` does *partial* matching — it would
-   return something plausible for a wrong input rather than failing.
+`GET /fba/inbound/v0/shipments/{shipmentId}/labels` — **not marked deprecated** in the
+current model, and the 2024 use-case guide states `getLabels` and `getBillOfLading` "are
+necessary to create shipments".
+
+- `LabelType`: `BARCODE_2D`, `UNIQUE`, `PALLET`
+- `PageType`: `PackageLabel_Thermal`, `_Thermal_Unified`, **`_Thermal_NonPCP`**,
+  `_Thermal_No_Carrier_Rotation`, `PackageLabel_A4_2`, `_A4_4`, `_Letter_2/_4/_6`,
+  `_Plain_Paper`
+
+`_Thermal_NonPCP` is the non-partnered-carrier variant — which is your case, since you
+select "Other". For non-partnered LTL, `PageSize` and `PageStartIndex` become required.
+
+**Labels need a `shipmentId`, so they come after the shipment exists.** That means label
+download cannot be built before either (a) you paste in the shipment ID Amazon gave you,
+or (b) the API creates the shipment. Option (a) is small and independent — worth doing
+first.
+
+## Cartons and "Other" as carrier
+
+Confirmed from the model. `"Other"` is `USE_YOUR_OWN_CARRIER`. Boxes go in via
+`setPackingInformation`, and `BoxInput` **requires** `contentInformationSource`,
+`dimensions` (L/W/H + unit), `quantity` and `weight`.
+
+Two things follow for us:
+
+1. **We do not hold carton dimensions.** We know net product weight
+   (`logic.shipment_weight`) and the day's carton count, but not box sizes. That is a new
+   input the warehouse would have to record.
+2. `BoxContentInformationSource` = `BOX_CONTENT_PROVIDED` | `MANUAL_PROCESS` |
+   `BARCODE_2D`, and the model notes **`MANUAL_PROCESS` "incurs charges"**. We should
+   send box content, not let Amazon do it manually.
+
+Non-partnered tracking is mandatory: SPD needs `boxId` + `trackingId` **per box**; LTL
+needs `freightBillNumber`.
 
 ---
 
-## Sequence, if the spike says yes
+## Revised sequence
 
-| Step | What | Risk |
-|---|---|---|
-| 0 | **Spike.** Register the app, self-authorise, call `getInboundOperationStatus` or a read-only op. Confirm auth works at all. | Low — no mutation |
-| 1 | **Answer the `destinationType` question** with one real cheap shipment. Record what `getShipment` returns. **Stop here if it is `AMAZON_OPTIMIZED` and `customPlacement` does not help.** | Creates a real shipment |
-| 2 | `app/shipment/spapi.py`: token handling, retries, `operationProblems` severity. Tests against recorded fixtures, no live calls in the suite. | Low |
-| 3 | Model + migration: `inbound_plan_id`, `shipment_confirmation_id`, `warehouse_id`, `destination_type`, `placement_fees`, status. Persisted before the commit point. | Medium |
-| 4 | The flow behind an explicit two-step confirm, showing placement **fees** before step 4. | **Highest — spends money and creates real shipments** |
-| 5 | Wire the returned ID + FC into the invoice payload, with the `AMAZON_OPTIMIZED` fallback. | Medium |
-| 6 | Optional: push HSN via `updateItemComplianceDetails`; fetch the delivery challan. | Low |
+Ordered so each step is useful on its own, and the cheap certain wins come before the
+uncertain expensive ones.
 
-## Open questions for the live account
+| # | Step | Depends on | Value if we stop here |
+|---|---|---|---|
+| **1** | **Done, live today.** FC picker → SKU+units+FC sheet → shipment ID and FC carried into the invoice (address, state, GSTIN, IGST/CGST all resolved from the code). | nothing | The invoice is complete without retyping Amazon's data |
+| 2 | **Store the shipment against the days.** Persist `shipment_id` + `fc_code` on the packing days so the invoice, the sheet and the label fetch all refer to one record instead of a field re-typed each time. | nothing | An audit trail, and no re-typing |
+| 3 | **Decide the 3 states.** Register in MP/Kerala/AP, or accept those 9 FCs are unusable. | you, not code | Removes a silent blank GSTIN |
+| 4 | **SP-API spike.** Register app, self-authorise, one read-only call. | nothing | Proves auth; ~half a day |
+| 5 | **Label fetch** via `getLabels`, using a shipment ID you paste in. Thermal + A4 + Letter. | 4 | **Your label-format request, without full shipment creation** |
+| 6 | **Test `customPlacement`** with one real cheap shipment. Does Amazon.in honour `ISK3`? At what fee? | 4 | Answers the only open question that matters |
+| 7 | **Full creation flow** — inbound plan → packing → placement → transportation. Needs carton dimensions from step 2. | 6 | Ends manual Send to Amazon entry |
 
-1. Does Amazon.in return `AMAZON_OPTIMIZED` (no address, no `warehouseId`)? **Decides the
-   project.**
-2. Does India's `customPlacement` let us choose the FC?
-3. Is v0 actually switched off?
-4. Do India placement options carry fees at all?
-5. Who supplies carton dimensions and weights for `setPackingInformation`?
+**Step 5 is the sweet spot**: it gives you the labels in the formats you asked for, needs
+no shipment-creation risk, and depends only on auth working.
 
-## What I recommend
+## Auth, briefly
 
-Do step 0 and step 1 — a day's work, one cheap shipment — before committing to anything
-else. The honest position is that **this project's value rests on an unverified
-assumption**, and one API call settles it. If the state comes back, the plan above is
-worth building. If it does not, the automation saves you typing a shipment ID and
-nothing more, and the manual Excel route we shipped today is most of the value already.
+LWA client ID/secret + refresh token. **No AWS SigV4 and no IAM role** — headers are
+`host`, `x-amz-access-token`, `x-amz-date`, `user-agent`. Self-authorising a *draft*
+private app is supported, so **no appstore listing and no Amazon review**. Role needed is
+"Amazon Fulfillment", which is not restricted. Must be authorised by the account's Primary
+User (you). India is on `https://sellingpartnerapi-eu.amazon.com`, marketplace
+`A21TJRUUN4KGV`. Rate limits are 2 req/sec — irrelevant at ~12 calls per shipment.
+
+`python-amazon-sp-api` (saleweaver) is actively maintained (v2.1.20, 2026-08-01) and
+ships both a `fulfillment_inbound_2024_03_20` module and an **asyncio** variant, which
+matters because a blocking HTTP client in a request handler would stall this app's event
+loop.
+
+## Design constraints this codebase already implies
+
+1. **One module, `app/shipment/spapi.py`**, the way `catalogue.py` isolates the Google
+   Sheet. Nothing else should know about LWA tokens.
+2. **Never call SP-API from a document or invoice path.** `parser.py` is deliberately
+   synchronous and offline for exactly this reason.
+3. **Credentials in `.env`, never committed.** `cookies.txt` is already in git history
+   with a live token; a refresh token is worth more.
+4. **Persist before confirming.** A confirmed placement is a real shipment at Amazon that
+   no failed transaction can undo — the same lesson as the invoice-number sequence. Write
+   `inbound_plan_id` *before* `confirmPlacementOption`.
+5. **`operationProblems[]` severity must be inspected.** HTTP 200 does not mean success,
+   and this codebase has been bitten by silent failures repeatedly.
+
+## Still unverified
+
+1. Whether Amazon.in honours `customPlacement`, and its fee.
+2. Whether v0 `getLabels` still answers (model presence ≠ live endpoint).
+3. Literal Send to Amazon template headers (login-walled).
+4. Whether Amazon's FBA pickup really files the e-way bill for us (forum claim, undated).
+
+**None can be settled in the sandbox** — Fulfillment Inbound is static-response only, so
+it returns canned data rather than exercising placement. Steps 4–6 are the only way.
+
+## Recommendation
+
+Do **step 2** (store the shipment against the days) and **step 3** (the GST decision)
+next — neither needs Amazon. Then **step 4 + 5** to get your label downloads. Treat full
+shipment creation as a separate project gated on step 6, because it is the only part that
+spends money and creates real shipments.

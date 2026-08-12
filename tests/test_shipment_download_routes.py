@@ -471,6 +471,144 @@ async def test_the_filename_names_the_days_not_the_download_date(
     assert "2026-07-30_to_2026-07-31" in two, two
 
 
+# ─── The destination FC the owner chose ──────────────────────────────────────
+#
+# Asked for: "create the shipment using the sku's qty and warehouse which needs to be
+# asked from the user on our app. for suppose ISK3."
+#
+# The FC is the owner's choice, and everything on the tax document follows from it: the
+# recipient address, the destination state, which of the 15 GSTINs applies, and whether
+# GST is inter-state or intra-state. So a wrong code is not a cosmetic problem.
+
+async def test_the_chosen_fc_is_on_every_row(auth_client, plan_factory):
+    """On every row, not once in a header.
+
+    The sheet gets sorted and filtered by hand before it is uploaded, and a value that
+    lives on the row cannot be detached from it. This file decides where real boxes go.
+    """
+    await plan_factory()
+    await _verify_day(auth_client, "2026-07-30", [
+        {"asin": "B0AAA00001", "units": 100},
+        {"asin": "B0AAA00002", "units": 60},
+    ])
+
+    content = (await auth_client.get(
+        "/shipment/download/shipment-file.xlsx"
+        "?mode=verified&pack_dates=2026-07-30&fc_code=ISK3"
+    )).content
+    header, rows = _rows(content)
+    assert "Ship to FC" in header, "the sheet does not say where the boxes are going"
+    index = header.index("Ship to FC")
+    assert rows, "no rows at all"
+    assert {r[index] for r in rows} == {"ISK3"}, (
+        "the FC is missing from some rows, so those lines have no destination"
+    )
+
+
+async def test_a_lowercase_fc_code_still_works(auth_client, plan_factory):
+    """`get_fc_info` keys on the upper-case code, and the owner types "isk3" as readily
+    as "ISK3". A case mismatch would fall through to the unknown-FC branch and produce
+    an invoice with no GSTIN."""
+    await plan_factory()
+    await _verify_day(auth_client, "2026-07-30", [{"asin": "B0AAA00001", "units": 100}])
+
+    content = (await auth_client.get(
+        "/shipment/download/shipment-file.xlsx"
+        "?mode=verified&pack_dates=2026-07-30&fc_code=isk3"
+    )).content
+    header, rows = _rows(content)
+    assert rows[0][header.index("Ship to FC")] == "ISK3"
+
+
+async def test_an_unknown_fc_code_is_refused(auth_client, plan_factory):
+    """A typo must not become a plausible-looking sheet naming a warehouse that does
+    not exist — the same wrong code then reaches the invoice, where it resolves to no
+    state and no GSTIN. We hold all 93 codes, so checking is free."""
+    await plan_factory()
+    await _verify_day(auth_client, "2026-07-30", [{"asin": "B0AAA00001", "units": 100}])
+
+    r = await auth_client.get(
+        "/shipment/download/shipment-file.xlsx"
+        "?mode=verified&pack_dates=2026-07-30&fc_code=ISK33"
+    )
+    assert r.status_code == 400
+    assert "ISK33" in r.json()["error"]
+
+
+async def test_the_fc_column_is_absent_when_no_fc_is_chosen(auth_client, plan_factory):
+    """Omitted rather than blank. An empty destination column invites someone to fill
+    it in by hand after the file has left the app."""
+    await plan_factory()
+    r = await auth_client.get("/shipment/download/shipment-file.xlsx?mode=all")
+    header, _rows_ = _rows(r.content)
+    assert "Ship to FC" not in header
+
+
+async def test_the_fc_is_in_the_filename(auth_client, plan_factory):
+    """Two shipments to two warehouses on the same days is a normal week, and they must
+    not overwrite each other in the Downloads folder."""
+    await plan_factory()
+    await _verify_day(auth_client, "2026-07-30", [{"asin": "B0AAA00001", "units": 100}])
+
+    base = ("/shipment/download/shipment-file.xlsx"
+            "?mode=verified&pack_dates=2026-07-30&fc_code=")
+    one = (await auth_client.get(base + "ISK3")).headers["content-disposition"]
+    two = (await auth_client.get(base + "BLR4")).headers["content-disposition"]
+    assert "ISK3" in one and "BLR4" in two
+    assert one != two, "two destinations download to the same filename"
+
+
+async def test_the_fc_list_offers_only_codes_the_invoice_can_resolve(auth_client):
+    """The picker is served, not hardcoded in the template.
+
+    A picker offering a code `get_fc_info` cannot resolve would put a blank recipient
+    GSTIN on a GST document. Every offered code must round-trip.
+    """
+    from app.invoice.parser import get_fc_info
+
+    body = (await auth_client.get("/shipment/fcs")).json()
+    fcs = body["fcs"]
+    assert len(fcs) > 50, f"only {len(fcs)} FCs offered"
+
+    codes = {f["code"] for f in fcs}
+    for code in ("ISK3", "BLR4", "DED3"):
+        assert code in codes, f"{code} is missing from the picker"
+
+    # Every entry resolves, and `has_gstin` tells the truth about it.
+    for fc in fcs:
+        info = get_fc_info(fc["code"])
+        assert info["fc_code"] == fc["code"]
+        assert bool(info["recipient_gstin"]) == fc["has_gstin"], (
+            f"{fc['code']} claims has_gstin={fc['has_gstin']} but resolves to "
+            f"{info['recipient_gstin']!r}"
+        )
+
+
+async def test_the_priority_fcs_come_first(auth_client):
+    """ISK3, BLR4 and DED3 are the three used most. In a list of 93, a picker that
+    makes the owner scroll to reach them is a picker that gets mis-clicked."""
+    body = (await auth_client.get("/shipment/fcs")).json()
+    first_three = {f["code"] for f in body["fcs"][:3]}
+    assert first_three == {"ISK3", "BLR4", "DED3"}, first_three
+
+
+async def test_fcs_we_hold_no_gstin_for_are_flagged_not_hidden(auth_client):
+    """There are FCs in Madhya Pradesh, Kerala and Andhra Pradesh where we have no
+    registration, and India requires the destination FC to be an Additional Place of
+    Business on a GST registration IN that state.
+
+    Flagged rather than hidden: if Amazon names one of them, the owner needs to see it
+    in the list and understand why it cannot be used — not wonder where it went.
+    """
+    body = (await auth_client.get("/shipment/fcs")).json()
+    without = [f for f in body["fcs"] if not f["has_gstin"]]
+    assert without, "every FC claims a GSTIN, which is not true of our registrations"
+    assert all(f["state"] for f in without), (
+        "an FC with no GSTIN also has no state, so nothing on screen can explain why "
+        "it is unusable"
+    )
+
+
 # ─── Numbers agree with the screen ───────────────────────────────────────────
 
 async def test_downloaded_numbers_match_the_dashboard(auth_client, plan_factory):

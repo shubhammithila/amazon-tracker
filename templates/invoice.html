@@ -664,11 +664,30 @@
     // Net weight from units × pack size, filled in and still editable.
     applyShipmentWeight(data.weight);
 
-    /* shipment_id, the FC and the place of supply stay EMPTY. That is the
-       design, not an omission: they come from Amazon only after the shipment
-       exists, and a guessed FC puts the wrong state's GSTIN on a tax document.
-       /invoice/save already refuses a blank shipment_id, so this cannot be
-       saved half-finished by accident. */
+    /* The shipment ID and the destination, when the owner supplied them on the
+       Shipment tab.
+
+       These used to be deliberately left blank, and that was right while the FC was
+       Amazon's to choose and unknowable in advance. It is no longer true: the owner
+       picks the FC himself when he builds the upload sheet, so the app knows the
+       destination before Amazon does — and from the FC code alone it resolves the
+       address, the state, the GSTIN and therefore the inter-state/intra-state GST
+       split.
+
+       Still only filled when actually supplied. A blank is a field the owner
+       completes; a GUESSED FC is the wrong state's GSTIN on a tax document, which is
+       why each of these is guarded rather than assigned unconditionally. */
+    const meta = data.metadata || {};
+    if(meta.shipment_id){
+      document.getElementById("f-shipment-id").value = meta.shipment_id;
+    }
+    const shipWh = meta.warehouse || {};
+    if(shipWh.state || meta.ship_to){
+      document.getElementById("f-place-supply").value = shipWh.state || meta.ship_to;
+    }
+    if(meta.recipient_gstin){
+      document.getElementById("f-recipient-gstin").value = meta.recipient_gstin;
+    }
     if(Array.isArray(data.warnings) && data.warnings.length){
       const box = document.createElement("div");
       box.className = "handoff-warning";

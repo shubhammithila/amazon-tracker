@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (928 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (944 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -461,6 +461,39 @@ a 400 and anything already invoiced with a 409.
 
 It does **not** allocate an invoice number. `POST /invoice/save` remains the only
 writer of the GST series. See "Known gaps" below for the one window this leaves.
+
+### The destination FC is the owner's choice, and it completes the invoice
+He picks the FC (ISK3, DED3, BLR4 …) **before** downloading the upload sheet, so the
+app knows the destination before Amazon does. From that one code `get_fc_info`
+resolves the recipient address, the state, and — via `get_gstin_for_state` — which of
+the 15 GSTINs applies and therefore whether GST is inter-state or intra-state. Those
+three fields were previously left blank for him to retype from Seller Central.
+
+`/shipment/download/shipment-file.xlsx?mode=verified&pack_dates=…&fc_code=ISK3` writes
+the code onto **every row**, not once at the top: the sheet gets sorted and filtered by
+hand before it is used, and a value on the row cannot be detached from it. The column is
+omitted entirely when no FC is given, because an empty destination column invites
+someone to fill it in later.
+
+- **An unrecognised code is refused (400).** A typo like `ISK33` would otherwise produce
+  a plausible sheet naming a warehouse that does not exist, and the same code then
+  resolves to no state and no GSTIN on the invoice. We hold all 93 codes, so checking is
+  free.
+- **Codes are upper-cased.** `get_fc_info` upper-cases internally so the GSTIN resolves
+  either way — but `ship_to` is rendered as the recipient *name*, so an un-normalised
+  code puts "Amazon FC isk3" on a tax document. A test asserting only the GSTIN let a
+  mutation removing this survive.
+- **9 of the 93 FCs are legally unusable**: Madhya Pradesh (4), Kerala (3), Andhra
+  Pradesh (2), where we hold no registration. India requires the destination FC to be an
+  Additional Place of Business on a GST registration *in that state*. `/shipment/fcs`
+  flags these rather than hiding them, and the payload warns if one is chosen — otherwise
+  the owner gets a GST document with an empty recipient GSTIN and no hint why.
+
+> **`intakeFromShipment` used to throw these away.** It carried a comment saying
+> `shipment_id`, the FC and the place of supply "stay EMPTY" — correct while Amazon chose
+> the FC and would not say which until the shipment existed, and obsolete the moment the
+> owner started choosing it. The server sent all three and the screen discarded them, so
+> the invoice still showed blanks with nothing failing. Found in a browser, not by a test.
 
 ### The owner picks the days; the threshold does not
 "crossing the min benchmark is not the final call for making shipment." Passing

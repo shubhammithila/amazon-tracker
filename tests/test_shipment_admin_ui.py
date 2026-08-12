@@ -644,16 +644,27 @@ def test_the_sku_sheet_sends_the_selected_days(source):
     assert "downloadSkuSheet" in body, "there is no SKU-sheet download at all"
 
     start = body.index("function downloadSkuSheet")
-    fn = body[start:start + 900]
-    assert "pack_dates=" in fn, (
+    fn = body[start:start + 1400]
+
+    # Matched as a parameter NAME, not as a literal "pack_dates=" — the request is built
+    # with URLSearchParams now, and asserting the query-string spelling made this test
+    # fail on a refactor that kept the behaviour identical. The property is that the
+    # chosen dates and the verified mode are sent at all.
+    assert re.search(r"pack_dates\s*[:=]", fn), (
         "the SKU sheet is requested without pack_dates, so it covers every verified "
         "day rather than the ticked ones"
     )
-    assert "mode=verified" in fn, (
+    assert re.search(r'mode\s*[:=]\s*"verified"|mode=verified', fn), (
         "the sheet is not requested in verified mode — it would carry planned or "
         "unapproved quantities to Amazon"
     )
-    assert "encodeURIComponent" in fn, "the dates are interpolated unencoded"
+    assert re.search(r"fc_code\s*[:=]", fn), (
+        "the destination FC is not sent, so the sheet cannot say where the boxes go"
+    )
+    # URLSearchParams encodes for us; a hand-built string must still encode.
+    assert "URLSearchParams" in fn or "encodeURIComponent" in fn, (
+        "the parameters are interpolated unencoded"
+    )
 
 
 def test_the_handoff_goes_through_sessionstorage_not_the_url(source):

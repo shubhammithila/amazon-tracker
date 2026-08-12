@@ -90,15 +90,25 @@ def _write_sheet(worksheet, headers: list[str], rows: list[list], widths: list[i
 
 
 def build_shipment_file_xlsx(
-    items: list[dict], mode: str = "remaining", days: list[dict] | None = None
+    items: list[dict],
+    mode: str = "remaining",
+    days: list[dict] | None = None,
+    fc_code: str = "",
 ) -> io.BytesIO:
-    """The Amazon upload sheet: merchant SKU + quantity.
+    """The Amazon upload sheet: merchant SKU + quantity, and the destination FC.
 
     ``mode`` picks the quantity column:
 
       remaining  what is still to be packed (planning a future shipment)
       all        the full planned quantity
       verified   only units on days the owner has verified
+
+    ``fc_code`` is the destination the owner chose (ISK3, DED3, BLR4 …), written onto
+    **every** row rather than stated once at the top. The sheet is read by a machine
+    and gets sorted and filtered by hand, so a value that lives on the row cannot be
+    detached from it — and this file decides where real boxes are sent. The column is
+    omitted entirely when no FC is given, rather than appearing blank, because an
+    empty destination column invites someone to fill it in later.
 
     Rows whose quantity is 0 are omitted — Amazon has nothing to do with them and
     they only make the file harder to check.
@@ -134,7 +144,10 @@ def build_shipment_file_xlsx(
         sku = item.get("fba_sku") or ""
         if not sku:
             missing_sku += 1
-        rows.append([sku, asin, item.get("item", ""), _weight_label(item.get("weight")), quantity])
+        row = [sku, asin, item.get("item", ""), _weight_label(item.get("weight")), quantity]
+        if fc_code:
+            row.append(fc_code)
+        rows.append(row)
 
     if missing_sku:
         # Surfaced rather than swallowed: this used to fail invisibly.
@@ -143,12 +156,13 @@ def build_shipment_file_xlsx(
             missing_sku,
         )
 
-    _write_sheet(
-        sheet,
-        ["Merchant SKU", "ASIN", "Product", "Weight", "Quantity"],
-        rows,
-        [22, 14, 30, 9, 11],
-    )
+    headers = ["Merchant SKU", "ASIN", "Product", "Weight", "Quantity"]
+    widths = [22, 14, 30, 9, 11]
+    if fc_code:
+        headers.append("Ship to FC")
+        widths.append(12)
+
+    _write_sheet(sheet, headers, rows, widths)
 
     buffer = io.BytesIO()
     workbook.save(buffer)

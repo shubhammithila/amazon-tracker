@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.invoice.company_data import SUPPLIER_GSTIN
 from app.invoice.hsn_codes import lookup_hsn
-from app.invoice.parser import get_purchase_rate
+from app.invoice.parser import get_fc_info, get_purchase_rate
 from app.models import Invoice
 from app.routers.auth import ROLE_ADMIN, require_admin, require_ops_or_admin
 from app.shipment import catalogue, documents, logic, repository
@@ -53,6 +53,41 @@ def load_families() -> dict:
 
 
 FAMILIES = load_families()
+
+
+def load_fc_choices() -> list[dict]:
+    """Every FC we can resolve, for the destination picker.
+
+    Built from the same two sources `get_fc_info` reads — the 93-address file and the
+    three priority addresses — so the picker cannot offer a code that then fails to
+    resolve on the invoice. Derived once at import: the file does not change at runtime.
+
+    Each entry carries whether we hold a GSTIN for its state, because that is the
+    difference between an FC we can legally ship to and one we cannot. There are FCs in
+    Madhya Pradesh, Kerala and Andhra Pradesh where we have no registration, and India
+    requires the destination FC to be an Additional Place of Business on a GST
+    registration IN that state. Sorted with the usable ones first, then by code.
+    """
+    from app.invoice.company_data import PRIORITY_FC_ADDRESSES, get_gstin_for_state
+    from app.invoice.parser import FC_ADDRESSES
+
+    codes = set(FC_ADDRESSES) | set(PRIORITY_FC_ADDRESSES)
+    choices = []
+    for code in codes:
+        info = PRIORITY_FC_ADDRESSES.get(code) or FC_ADDRESSES.get(code) or {}
+        state = (info.get("state") or "").strip()
+        choices.append({
+            "code": str(code).upper(),
+            "state": state,
+            "gstin": get_gstin_for_state(state) if state else "",
+            "priority": code in PRIORITY_FC_ADDRESSES,
+        })
+    choices.sort(key=lambda c: (not c["priority"], not c["gstin"], c["code"]))
+    return choices
+
+
+FC_CHOICES = load_fc_choices()
+KNOWN_FC_CODES = frozenset(c["code"] for c in FC_CHOICES)
 
 
 def _clean_number(val) -> float:
@@ -442,6 +477,32 @@ async def generate_plan(
     if warnings:
         payload["warning"] = " ".join(warnings)
     return JSONResponse(payload)
+
+
+@router.get("/fcs")
+async def list_fcs(request: Request, role: str = Depends(require_admin)):
+    """The destination FCs the owner can pick, for the shipment-file picker.
+
+    Served rather than hardcoded in the template so the list cannot drift from the one
+    `get_fc_info` resolves against — a picker offering a code the invoice cannot resolve
+    would put a blank GSTIN on a GST document.
+
+    `has_gstin` travels with each entry because it is the difference between an FC we may
+    legally ship to and one we may not: India requires the destination FC to be an
+    Additional Place of Business on a GST registration in that state, and we hold no
+    registration for 9 of the 93 (Madhya Pradesh, Kerala, Andhra Pradesh).
+    """
+    return JSONResponse({
+        "fcs": [
+            {
+                "code": c["code"],
+                "state": c["state"],
+                "has_gstin": bool(c["gstin"]),
+                "priority": c["priority"],
+            }
+            for c in FC_CHOICES
+        ]
+    })
 
 
 @router.get("/active")
@@ -1420,6 +1481,7 @@ async def download_shipment_file_xlsx(
     request: Request,
     mode: str = "remaining",
     pack_dates: str = "",
+    fc_code: str = "",
     db: AsyncSession = Depends(get_db),
     role: str = Depends(require_admin),
 ):
@@ -1453,6 +1515,22 @@ async def download_shipment_file_xlsx(
             {"error": f"Not a date (YYYY-MM-DD): {', '.join(invalid)}"}, status_code=400
         )
 
+    # An unrecognised FC is refused rather than written onto every row. This file
+    # decides where real boxes are sent, and a typo like "ISK33" would otherwise
+    # produce a plausible-looking sheet naming a warehouse that does not exist — then
+    # the same wrong code reaches the invoice, where it resolves to no state and no
+    # GSTIN. Cheap to check: we hold all 93 FC codes.
+    fc_code = fc_code.strip().upper()
+    if fc_code and fc_code not in KNOWN_FC_CODES:
+        return JSONResponse(
+            {
+                "error": f"{fc_code} is not an FC code we know. Check the spelling — "
+                "the destination decides the GSTIN on the invoice.",
+                "known_example": "ISK3, BLR4, DED3",
+            },
+            status_code=400,
+        )
+
     loaded = await _document_rows(db)
     if loaded is None:
         return _no_plan()
@@ -1478,9 +1556,15 @@ async def download_shipment_file_xlsx(
         filename = f"shipment-{mode}-{name}.xlsx"
     else:
         filename = f"shipment-{mode}-{date.today().isoformat()}.xlsx"
+    # The FC in the filename too: two shipments to two warehouses on the same days is
+    # a normal week, and they must not overwrite each other in the Downloads folder.
+    if fc_code:
+        filename = filename.replace(".xlsx", f"-{fc_code}.xlsx")
 
     return _attachment(
-        documents.build_shipment_file_xlsx(rows, mode=mode, days=days),
+        documents.build_shipment_file_xlsx(
+            rows, mode=mode, days=days, fc_code=fc_code
+        ),
         filename,
         XLSX_TYPE,
     )
@@ -1539,9 +1623,18 @@ async def build_invoice_payload(
     * any requested day already has an invoice — 409. Invoicing the same boxes
       twice is a GST problem, not a UI annoyance.
 
-    `shipment_id`, `fc_code` and `place_of_supply` are deliberately left blank:
-    those come from Amazon *after* the shipment exists, and guessing them would
-    put a wrong FC on a tax document.
+    ``fc_code`` and ``shipment_id`` are optional and both come from the owner, not
+    from a guess. The FC is the one HE chose when building the upload file (ISK3,
+    DED3, BLR4 …), and the shipment ID is what Amazon returned after the upload
+    created the shipment. Given the FC code, `get_fc_info` resolves the address, the
+    state and — through `get_gstin_for_state` — which of the 15 GSTINs applies and
+    therefore whether this is inter-state or intra-state GST. That is the whole
+    reason the code is worth carrying: everything else on a tax document follows
+    from it.
+
+    Left blank when not supplied, exactly as before. A blank FC is a field the owner
+    fills in; a *wrong* FC is the wrong state's GSTIN on a GST document, and nothing
+    downstream could detect it.
     """
     body, error = await _json_object(request)
     if error:
@@ -1562,6 +1655,13 @@ async def build_invoice_payload(
         return JSONResponse(
             {"error": "Select at least one packed day to invoice."}, status_code=400
         )
+
+    # The FC the owner chose, and Amazon's shipment ID once he has it. Upper-cased
+    # because `get_fc_info` keys on the upper-case code and the owner types "isk3"
+    # as readily as "ISK3" — a case mismatch would silently fall through to the
+    # unknown-FC branch and produce an invoice with no GSTIN.
+    fc_code = str(body.get("fc_code") or "").strip().upper()
+    shipment_id = str(body.get("shipment_id") or "").strip()
 
     invalid = [d for d in pack_dates if not _valid_date(d)]
     if invalid:
@@ -1676,7 +1776,22 @@ async def build_invoice_payload(
     # browser so the CSV path and this path get the identical number from one function.
     weight = logic.shipment_weight(lines)
 
+    # The chosen FC resolved to an address, a state and a GSTIN. Empty dict when no
+    # code was supplied, so the invoice screen behaves exactly as it did before.
+    fc_info = get_fc_info(fc_code) if fc_code else {}
+
     warnings = []
+    if fc_code and not fc_info.get("recipient_gstin"):
+        # An unknown code, or a state we hold no GSTIN for — there are FCs in Madhya
+        # Pradesh, Kerala and Andhra Pradesh where we have no registration. Either way
+        # `get_fc_info` returns a blank GSTIN rather than failing, so without this the
+        # owner gets a GST document with an empty recipient GSTIN and no hint why.
+        warnings.append(
+            f"{fc_code} did not resolve to a GSTIN"
+            + (f" (state: {fc_info.get('state')})" if fc_info.get("state") else "")
+            + ". Check the FC code, and confirm we are registered in that state — the "
+            "recipient GSTIN and the inter-state/intra-state GST split both depend on it."
+        )
     if missing_rate:
         warnings.append(
             f"{len(missing_rate)} line(s) have no purchase rate in the master "
@@ -1702,13 +1817,17 @@ async def build_invoice_payload(
             "plan_id": plan.id,
             "pack_dates": pack_dates,
             "metadata": {
-                # Blank: these are Amazon's, and only exist once the shipment does.
-                "shipment_id": "",
+                # Amazon's shipment ID, pasted in by the owner after the upload
+                # created the shipment. Blank until he has it.
+                "shipment_id": shipment_id,
                 "name": "",
-                "ship_to": "",
-                "recipient_gstin": "",
+                # The FC HE chose for this shipment. Everything else on the tax
+                # document follows from it: the address, the destination state, and
+                # therefore which GSTIN applies and whether GST is inter-state.
+                "ship_to": fc_code,
+                "recipient_gstin": fc_info.get("recipient_gstin", ""),
                 "supplier_gstin": SUPPLIER_GSTIN,
-                "warehouse": {},
+                "warehouse": fc_info,
                 "total_skus": len(lines),
                 "total_units": sum(line["quantity"] for line in lines),
             },

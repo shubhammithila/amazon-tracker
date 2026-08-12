@@ -205,3 +205,52 @@ def test_the_attach_is_not_wired_into_invoice_save(source):
         "the attach does not follow the save — the invoice must be committed "
         "first, since only its failure is recoverable"
     )
+
+
+# ─── The destination now arrives with the handoff ─────────────────────────────
+
+def test_the_handoff_fills_the_shipment_id_and_destination(source):
+    """These were deliberately left blank, and that is no longer right.
+
+    While Amazon chose the FC and would not say which until the shipment existed, a
+    blank was the honest answer. Now the owner picks the FC himself when he builds the
+    upload sheet, so the app knows the destination first and resolves the address, the
+    state and the GSTIN from the code.
+
+    The bug this guards: `intakeFromShipment` carried a comment saying the three fields
+    "stay EMPTY", so the server sent them and the screen threw them away. The payload
+    was right and the invoice still showed blanks — nothing failed, because no test
+    asserted the fields were populated.
+    """
+    body = _without_comments(source)
+    intake = body[body.index("function intakeFromShipment"):]
+
+    assert 'getElementById("f-shipment-id").value = meta.shipment_id' in intake, (
+        "the handoff drops Amazon's shipment id"
+    )
+    assert 'getElementById("f-place-supply").value' in intake, (
+        "the handoff drops the place of supply, which decides the GST treatment"
+    )
+    assert 'getElementById("f-recipient-gstin").value = meta.recipient_gstin' in intake, (
+        "the handoff drops the recipient GSTIN"
+    )
+
+
+@pytest.mark.parametrize("field,source_expr", [
+    ("f-shipment-id", "meta.shipment_id"),
+    ("f-recipient-gstin", "meta.recipient_gstin"),
+])
+def test_the_destination_fields_are_only_filled_when_supplied(source, field, source_expr):
+    """Guarded, not assigned unconditionally.
+
+    The FC is legitimately absent when the shipment does not exist at Amazon yet. An
+    unguarded assignment would overwrite whatever the owner had typed with an empty
+    string — and for the GSTIN that means a tax document with no recipient GSTIN, put
+    there by the app rather than left blank by him.
+    """
+    body = _without_comments(source)
+    intake = body[body.index("function intakeFromShipment"):]
+    assert re.search(rf"if\s*\(\s*{re.escape(source_expr)}\s*\)", intake), (
+        f"{field} is filled from {source_expr} without checking it is present, so an "
+        "empty payload blanks a field the owner may have typed"
+    )
