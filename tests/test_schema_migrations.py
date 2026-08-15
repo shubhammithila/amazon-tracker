@@ -321,3 +321,99 @@ async def test_product_download_returns_a_real_xlsx(auth_client, db):
     assert r.status_code == 200
     # XLSX files are zip archives — verify the magic bytes, not just the status.
     assert r.content[:2] == b"PK", "download did not return a valid .xlsx"
+
+
+
+
+# ─── The deploy script's baseline detector, RUN rather than grepped ───────────
+
+def _baseline_detector_source() -> str:
+    """The Python heredoc out of deploy/update-ec2.sh, so it can be executed.
+
+    Extracted rather than duplicated: a copy in this test would drift from the script and
+    then pass while the real deploy failed, which is the whole failure mode being guarded.
+    """
+    script = (REPO_ROOT / "deploy" / "update-ec2.sh").read_text(encoding="utf-8")
+    start = script.index("BASELINE=")
+    body = script[script.index("\n", start) + 1:]
+    # The heredoc terminator is a line that is exactly PY. Splitting on lines handles
+    # CRLF, which a regex on the raw text does not — that mistake made an earlier version
+    # of this test silently extract nothing.
+    lines = []
+    for line in body.splitlines():
+        if line.strip() == "PY":
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _detected_baseline(db_path) -> str:
+    """Run the real detector against a real database file and return its answer."""
+    import subprocess
+    import sys
+
+    source = _baseline_detector_source()
+    result = subprocess.run(
+        [sys.executable, "-c", source],
+        capture_output=True, text=True, cwd=str(db_path.parent),
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def test_the_deploy_detector_reports_the_head_for_a_head_schema(tmp_path, monkeypatch):
+    """A failed production deploy, and the test that would have prevented it.
+
+    ``deploy/update-ec2.sh`` decides which revision production's schema already matches by
+    inspecting columns, then stamps it so `upgrade head` applies only what is genuinely
+    new. That guard exists because ``create_all()`` has twice outrun Alembic.
+
+    Its newest branch was still ``users in tables -> 394fc6f28429`` after 7c1a4e9b2d38 had
+    shipped. So it inspected a database already at the head, concluded it was one revision
+    older, and stamped it **backwards** — and `upgrade head` then re-ran a migration whose
+    columns already existed and died on "duplicate column name". The rollback worked and no
+    data was lost, but the deploy failed for a reason unrelated to the code in it.
+
+    This RUNS the detector against a fully-migrated database and asserts it says "head".
+    Grepping the script for the revision id was not enough: the id also appears in a
+    comment, so a substring check passed even with the branch deleted. Verified by
+    deleting the branch and watching this fail.
+    """
+    db = tmp_path / "tracker.db"
+    # `.as_posix()` AND the env var both matter: env.py builds its own engine from
+    # settings, so without the override the migration runs against the real dev database
+    # and this test then inspects an empty temp file — which is how the first version of
+    # it reported '' and looked like a detector bug.
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db.as_posix()}")
+    import app.config
+    app.config.get_settings.cache_clear()
+    try:
+        _upgrade_to_head_on(f"sqlite:///{db.as_posix()}")
+    finally:
+        app.config.get_settings.cache_clear()
+    assert db.exists(), "the migration did not create the temp database"
+
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+    head = ScriptDirectory.from_config(cfg).get_current_head()
+
+    detected = _detected_baseline(db)
+    assert detected == head, (
+        f"the deploy script's detector says a head schema is at {detected!r}, but the head "
+        f"is {head!r}. It will stamp production BACKWARDS and the deploy will die "
+        "re-applying a migration that has already run. Add a branch for the new revision, "
+        "newest first, keyed on a column it specifically adds."
+    )
+
+
+def test_the_deploy_detector_reports_nothing_for_an_empty_database(tmp_path):
+    """An empty database must migrate from scratch, not be stamped at anything.
+
+    Stamping an empty database would skip every migration and leave the app pointing at
+    tables that do not exist.
+    """
+    import sqlite3
+
+    db = tmp_path / "tracker.db"
+    sqlite3.connect(db).close()          # exists, no tables
+    assert _detected_baseline(db) == ""

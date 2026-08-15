@@ -284,6 +284,14 @@ export PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}"
 # and stamp the newest revision the schema already satisfies. A stamp writes one row and
 # emits no DDL, so it cannot lose data — but stamping too NEW would skip a real migration,
 # which is why each marker below is a column or table that revision specifically adds.
+#
+# ⚠ **EVERY NEW MIGRATION MUST ADD A BRANCH HERE, NEWEST FIRST.** This list going stale
+# is not a harmless omission — it caused a failed deploy. After 7c1a4e9b2d38 shipped, the
+# newest branch was still `users in tables -> 394fc6f28429`, so the detector looked at a
+# database already at 7c1a4e9b2d38, decided it was at 394fc6f28429, and stamped it
+# BACKWARDS. `upgrade head` then re-ran a migration whose columns already existed and
+# died on "duplicate column name". The rollback worked and no data was lost, but the
+# deploy failed for a reason that had nothing to do with the code being deployed.
 BASELINE="$(venv/bin/python - <<'PY'
 import sqlite3
 
@@ -297,8 +305,10 @@ def cols(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "shipment_packing_days" in tables and "inbound_plan_id" in cols("shipment_packing_days"):
+    print("7c1a4e9b2d38")                           # head: Amazon shipment on a day
 elif "users" in tables:
-    print("394fc6f28429")                           # head
+    print("394fc6f28429")                           # users + per-area permissions
 elif "shipment_packing_entries" in tables and "cartons" not in cols("shipment_packing_entries"):
     print("0f85fa400957")                           # per-entry cartons dropped
 elif "shipment_plan_items" in tables and "brand_rank" in cols("shipment_plan_items"):
