@@ -617,10 +617,32 @@ any failure. Four things it knows that cost two failed deploys to learn:
    product_categories already exists". Fixed at both ends: `create_all()` now runs
    only on an empty database, and the script detects the baseline by inspecting
    columns and stamps it.
+5. **Every new migration MUST add a branch to that baseline detector**, newest first,
+   keyed on a column the revision adds. The list going stale is a *failed deploy*, not
+   a cosmetic omission: after `7c1a4e9b2d38` shipped, the newest branch still said
+   `users in tables → 394fc6f28429`, so the detector saw a head schema, decided it was
+   one revision older, and **stamped production backwards** — then `upgrade head`
+   re-ran a migration whose columns already existed and died on "duplicate column
+   name". `tests/test_schema_migrations.py` now *runs* the detector against a
+   freshly-migrated database and asserts it answers with the real head. Grepping the
+   script for the revision id was not enough: the id also appears in the comment
+   explaining the bug, so a substring check passed with the branch deleted.
+
+> **The script replaces itself mid-deploy, so a broken detector is self-perpetuating.**
+> The rollback restores the *previous* checkout — including the previous
+> `deploy/update-ec2.sh` — so the fixed script never gets a chance to run and every
+> retry repeats the same failure. Break the loop by checking out just that file first:
+> `git fetch origin <branch> && git checkout origin/<branch> -- deploy/update-ec2.sh`,
+> then deploy normally.
 
 `OPS_PASSWORD` is **not set** in the server's `.env`, so the shared packing login does
 not work there. Either add it, or create a named Packer account from `/users-page` —
 the latter is better, because it can be revoked per person.
+
+**SP-API credentials ARE set** (`SP_API_CLIENT_ID`, `SP_API_CLIENT_SECRET`,
+`SP_API_REFRESH_TOKEN`, `SP_API_MARKETPLACE_ID`), and the `.env` is `chmod 600`. The
+refresh token is the most valuable secret on the box — worth more than the app
+password, since it reaches the seller account itself.
 
 ---
 
