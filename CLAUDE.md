@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (944 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (951 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -461,6 +461,25 @@ a 400 and anything already invoiced with a 409.
 
 It does **not** allocate an invoice number. `POST /invoice/save` remains the only
 writer of the GST series. See "Known gaps" below for the one window this leaves.
+
+**An invoice raised outside this flow is recorded with the same endpoint.** When the
+owner downloads the sheet, creates the shipment at Amazon and raises the invoice from
+a CSV on the Invoice tab, nothing had told the app about it — those days read
+`verified` for ever while app-invoiced days read "On invoice ST/26-27/046". Same
+real-world state, two labels, and the verified-looking ones still offered a tick box
+that would spend a **second** GST number on boxes that already had one.
+
+"Already invoiced…" on the Shipment tab posts the ticked days to
+`/shipment/attach-invoice` — the identical endpoint the automatic path uses, which is
+idempotent and refuses a *different* invoice on an already-invoiced day. The invoice is
+**chosen from `/invoice/history`**, never typed: days store an `invoice_id` (a row id),
+and the owner only ever sees "ST/26-27/046".
+
+> **Every message that names an invoice goes through `_invoice_numbers()`.** Three
+> refusals interpolated the raw `invoice_id` — "already on invoice #5" names something
+> the owner has never seen and cannot search for. One of them even carried a comment
+> claiming it printed "ST/26-27/031" while printing the id. `invoice_no` also travels on
+> each day in `/active`, resolved in one query rather than per card.
 
 ### The destination FC is the owner's choice, and it completes the invoice
 He picks the FC (ISK3, DED3, BLR4 …) **before** downloading the upload sheet, so the

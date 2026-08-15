@@ -27,6 +27,7 @@ from pathlib import Path
 import pandas as pd
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -239,6 +240,28 @@ def _item_payload(item, packed: int, shippable: int) -> dict:
             getattr(item, "category_rank", None) or logic.DEFAULT_CATEGORY
         ),
     }
+
+
+async def _invoice_numbers(db, invoice_ids) -> dict:
+    """{invoice row id: "ST/26-27/046"} for the ids given.
+
+    Every message that names an invoice goes through this. The days store an
+    `invoice_id`, which is a database row id — "already on invoice #5" names something
+    the owner has never seen and cannot search for, while the document in his hand says
+    "ST/26-27/032". Three separate messages were interpolating the raw id, and one of
+    them had a comment claiming it printed the real number.
+
+    One query for the whole set rather than a lookup per day, and missing ids simply do
+    not appear, so a caller falling back to `#id` still works when an invoice row is
+    gone.
+    """
+    ids = {int(i) for i in invoice_ids if i}
+    if not ids:
+        return {}
+    rows = await db.execute(
+        select(Invoice.id, Invoice.invoice_no).where(Invoice.id.in_(ids))
+    )
+    return {row.id: row.invoice_no for row in rows}
 
 
 def _plan_payload(plan, items, days) -> dict:
@@ -1173,11 +1196,11 @@ async def reopen_packing(
     # definition, and "invoice ST/26-27/031 already covers these boxes" is the reason,
     # where "it is shipped" only restates the symptom.
     if day.invoice_id:
-        invoice = await db.get(Invoice, day.invoice_id)
         # `invoice_no` ("ST/26-27/028"), NOT `invoice_number` — the latter is the bare
         # sequence integer (28), which on screen would read as "invoice 28" and match
         # nothing the owner can search for in his own records.
-        number = getattr(invoice, "invoice_no", None) or f"#{day.invoice_id}"
+        numbers = await _invoice_numbers(db, [day.invoice_id])
+        number = numbers.get(day.invoice_id) or f"#{day.invoice_id}"
         return JSONResponse(
             {
                 "error": f"{pack_date} is already on invoice {number}, so its units "
@@ -1688,10 +1711,14 @@ async def build_invoice_payload(
     # him looking for a verify button on a day that is finished.
     invoiced = [d for d in days if d.invoice_id]
     if invoiced:
+        numbers = await _invoice_numbers(db, [d.invoice_id for d in invoiced])
         return JSONResponse(
             {
                 "error": "Already invoiced: "
-                + ", ".join(f"{d.pack_date} (invoice #{d.invoice_id})" for d in invoiced)
+                + ", ".join(
+                    f"{d.pack_date} ({numbers.get(d.invoice_id) or '#' + str(d.invoice_id)})"
+                    for d in invoiced
+                )
                 + ". Invoicing the same boxes twice would put two GST documents "
                 "against one shipment.",
                 "pack_dates": [d.pack_date for d in invoiced],
@@ -1917,10 +1944,14 @@ async def attach_invoice(
                 {"error": f"Nothing was packed on {pack_date}."}, status_code=404
             )
         if day.invoice_id and day.invoice_id != invoice_id:
+            numbers = await _invoice_numbers(db, [day.invoice_id])
+            named = numbers.get(day.invoice_id) or f"#{day.invoice_id}"
             return JSONResponse(
                 {
-                    "error": f"{pack_date} is already on invoice #{day.invoice_id}. "
-                    "Two GST invoices must not cover the same boxes."
+                    "error": f"{pack_date} is already on invoice {named}. "
+                    "Two GST invoices must not cover the same boxes.",
+                    "invoice_id": day.invoice_id,
+                    "invoice_number": named,
                 },
                 status_code=409,
             )

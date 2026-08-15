@@ -27,6 +27,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    Invoice,
     ProductCategory,
     ShipmentPackingDay,
     ShipmentPackingEntry,
@@ -713,6 +714,19 @@ async def load_days_with_entries(db: AsyncSession, plan_id: int) -> list[dict]:
     tested without a database, and so nothing downstream can lazily trigger IO.
     """
     days = await load_days(db, plan_id)
+
+    # The GST invoice NUMBER for each attached invoice, resolved in one query rather than
+    # per day. The days store an `invoice_id`, which is a row id — showing that puts "On
+    # invoice #46" on screen, and 46 matches nothing the owner can search for, because the
+    # document he holds says "ST/26-27/046".
+    invoice_ids = {d.invoice_id for d in days if d.invoice_id}
+    invoice_numbers: dict[int, str] = {}
+    if invoice_ids:
+        rows = await db.execute(
+            select(Invoice.id, Invoice.invoice_no).where(Invoice.id.in_(invoice_ids))
+        )
+        invoice_numbers = {row.id: row.invoice_no for row in rows}
+
     out: list[dict] = []
     for day in days:
         entries = await load_entries(db, day.id)
@@ -728,6 +742,9 @@ async def load_days_with_entries(db: AsyncSession, plan_id: int) -> list[dict]:
                 "submitted_at": day.submitted_at.isoformat() if day.submitted_at else None,
                 "verified_at": day.verified_at.isoformat() if day.verified_at else None,
                 "invoice_id": day.invoice_id,
+                # None when the invoice row has since been deleted, which the screen
+                # falls back from rather than rendering "undefined" on a day card.
+                "invoice_no": invoice_numbers.get(day.invoice_id),
                 # Units only. Cartons are a day-level fact and are already above as
                 # `total_cartons`; a per-entry key here would invite summing it back
                 # up into a number that means nothing.

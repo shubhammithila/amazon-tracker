@@ -753,3 +753,135 @@ async def test_an_unknown_fc_is_warned_about_rather_than_silently_blank(
     })).json()
     joined = " ".join(body.get("warnings") or [])
     assert "ZZZ9" in joined, joined
+
+
+# ─── Days invoiced OUTSIDE this flow ─────────────────────────────────────────
+#
+# Asked for: "say for these two days I created the invoice manualy by downloading the
+# data, creating the shipment and using csv to generate invoice from the invoice tab.
+# give me an option to make it same like 12 and 13 aug which says on invoice."
+#
+# The automatic path records the invoice against the days. An invoice raised the manual
+# way left them reading VERIFIED for ever — the same real-world state as a shipped day,
+# with a different label, and still offering a tick box that would spend a SECOND GST
+# number on boxes already invoiced.
+
+async def test_a_manually_invoiced_day_can_be_marked(auth_client, ops_client, plan_factory, db):
+    """The requirement: a verified day becomes shipped and names its invoice."""
+    from app.models import Invoice
+
+    await plan_factory()
+    await _packed_and_verified(auth_client, ops_client, MONDAY, [{"asin": ASIN, "units": 100}])
+    await _packed_and_verified(auth_client, ops_client, TUESDAY, [{"asin": SECOND, "units": 60}])
+
+    invoice = Invoice(invoice_no="ST/26-27/046", invoice_number=46, shipment_id="FBA15M")
+    db.add(invoice)
+    await db.commit()
+    await db.refresh(invoice)
+
+    r = await auth_client.post("/shipment/attach-invoice", json={
+        "pack_dates": [MONDAY, TUESDAY], "invoice_id": invoice.id,
+    })
+    assert r.status_code == 200, r.text
+    assert sorted(r.json()["updated"]) == sorted([MONDAY, TUESDAY])
+
+    days = {d["pack_date"]: d for d in (await auth_client.get("/shipment/active")).json()["days"]}
+    for date in (MONDAY, TUESDAY):
+        assert days[date]["status"] == "shipped", f"{date} still reads un-invoiced"
+        # The GST number, not the row id: "#5" matches nothing the owner can search for.
+        assert days[date]["invoice_no"] == "ST/26-27/046", days[date]
+
+
+async def test_a_marked_day_cannot_be_invoiced_again(auth_client, ops_client, plan_factory, db):
+    """The reason this feature is worth having at all.
+
+    A day left looking verified stays tickable, and the next invoice run would put a
+    second GST number against boxes that already have one.
+    """
+    from app.models import Invoice
+
+    await plan_factory()
+    await _packed_and_verified(auth_client, ops_client, MONDAY, [{"asin": ASIN, "units": 100}])
+    invoice = Invoice(invoice_no="ST/26-27/047", invoice_number=47, shipment_id="FBA15N")
+    db.add(invoice)
+    await db.commit()
+    await db.refresh(invoice)
+
+    await auth_client.post("/shipment/attach-invoice", json={
+        "pack_dates": [MONDAY], "invoice_id": invoice.id,
+    })
+
+    r = await auth_client.post("/shipment/invoice-payload", json={"pack_dates": [MONDAY]})
+    assert r.status_code == 409
+    error = r.json()["error"]
+    assert "ST/26-27/047" in error, (
+        f"the refusal names a row id instead of the GST number: {error}"
+    )
+
+
+async def test_attaching_a_different_invoice_names_the_first_one(
+    auth_client, ops_client, plan_factory, db
+):
+    """Two GST documents against one set of boxes, refused — and the error has to say
+    WHICH invoice already covers them, or the owner cannot go and look."""
+    from app.models import Invoice
+
+    await plan_factory()
+    await _packed_and_verified(auth_client, ops_client, MONDAY, [{"asin": ASIN, "units": 100}])
+    first = Invoice(invoice_no="ST/26-27/048", invoice_number=48, shipment_id="FBA15P")
+    second = Invoice(invoice_no="ST/26-27/049", invoice_number=49, shipment_id="FBA15Q")
+    db.add_all([first, second])
+    await db.commit()
+    await db.refresh(first)
+    await db.refresh(second)
+
+    await auth_client.post("/shipment/attach-invoice", json={
+        "pack_dates": [MONDAY], "invoice_id": first.id,
+    })
+    r = await auth_client.post("/shipment/attach-invoice", json={
+        "pack_dates": [MONDAY], "invoice_id": second.id,
+    })
+    assert r.status_code == 409
+    assert "ST/26-27/048" in r.json()["error"], r.json()["error"]
+    assert r.json()["invoice_number"] == "ST/26-27/048"
+
+
+async def test_marking_the_same_invoice_twice_is_harmless(
+    auth_client, ops_client, plan_factory, db
+):
+    """The owner may well click it again, unsure whether the first click worked."""
+    from app.models import Invoice
+
+    await plan_factory()
+    await _packed_and_verified(auth_client, ops_client, MONDAY, [{"asin": ASIN, "units": 100}])
+    invoice = Invoice(invoice_no="ST/26-27/050", invoice_number=50, shipment_id="FBA15R")
+    db.add(invoice)
+    await db.commit()
+    await db.refresh(invoice)
+
+    body = {"pack_dates": [MONDAY], "invoice_id": invoice.id}
+    await auth_client.post("/shipment/attach-invoice", json=body)
+    r = await auth_client.post("/shipment/attach-invoice", json=body)
+    assert r.status_code == 200
+    assert r.json()["already_attached"] == [MONDAY]
+    assert r.json()["updated"] == []
+
+
+async def test_a_deleted_invoice_row_does_not_render_as_undefined(
+    auth_client, ops_client, plan_factory, db
+):
+    """`invoice_no` is None when the invoice row is gone, and the screen falls back to
+    the id rather than printing "On invoice undefined" on a day card."""
+    await plan_factory()
+    await _packed_and_verified(auth_client, ops_client, MONDAY, [{"asin": ASIN, "units": 100}])
+    await auth_client.post("/shipment/attach-invoice", json={
+        "pack_dates": [MONDAY], "invoice_id": 9999,      # no such invoice
+    })
+
+    day = next(d for d in (await auth_client.get("/shipment/active")).json()["days"]
+               if d["pack_date"] == MONDAY)
+    assert day["invoice_id"] == 9999
+    assert day["invoice_no"] is None, (
+        "a missing invoice resolved to something truthy, which would render as text on "
+        "the day card"
+    )

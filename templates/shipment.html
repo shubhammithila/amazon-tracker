@@ -767,7 +767,11 @@ function renderDays(){
        inviting a second invoice for the same boxes is a tax problem, not a UI
        annoyance. The id is shown instead so the owner can go and find it. */
     if(d.status === "shipped" && d.invoice_id){
-      actions.push(`<span class="d-invoiced">On invoice #${Number(d.invoice_id)}</span>`);
+      /* The GST number ("ST/26-27/046"), falling back to the row id only if the invoice
+         row has gone. "#46" was the row id, which matches nothing the owner can search
+         for in his own records — the number on the document is what he looks up. */
+      const label = d.invoice_no ? esc(d.invoice_no) : `#${Number(d.invoice_id)}`;
+      actions.push(`<span class="d-invoiced">On invoice ${label}</span>`);
     }
 
     /* Verified days get a TICK BOX rather than their own Invoice button.
@@ -878,6 +882,12 @@ function renderInvoiceBar(){
       <button class="btn-green" id="ib-go" ${chosen.length ? "" : "disabled"}
               onclick="invoiceSelectedDays()">
         Create invoice${chosen.length > 1 ? ` from ${chosen.length} days` : ""}</button>
+      <!-- For days invoiced OUTSIDE this flow. Deliberately last and understated: it
+           records what already happened rather than doing anything, and the common
+           case is the green button to its left. -->
+      <button class="btn-outline" id="ib-mark" ${chosen.length ? "" : "disabled"}
+              title="Already invoiced these days by hand? Record which invoice covers them, so they stop looking un-invoiced"
+              onclick="markAlreadyInvoiced()">Already invoiced…</button>
     </div>`;
 }
 
@@ -925,6 +935,80 @@ function downloadSkuSheet(){
     mode: "verified", pack_dates: chosen.join(","), fc_code: fc,
   });
   window.location = `/shipment/download/shipment-file.xlsx?${params}`;
+}
+
+/* Mark days as covered by an invoice that was raised OUTSIDE this flow.
+
+   The normal path — tick days, Create invoice, save — records the invoice against the
+   days automatically. But an invoice raised the manual way (download the sheet, create
+   the shipment at Amazon, upload the CSV on the Invoice tab) leaves those days reading
+   VERIFIED for ever, while days invoiced through the app read "On invoice #46". Same
+   real-world state, two different labels, and the verified-looking ones then still offer
+   a tick box that would spend a SECOND GST number on boxes already invoiced.
+
+   So this reuses /shipment/attach-invoice — the same endpoint the automatic path calls,
+   which is idempotent and refuses to put a different invoice on an already-invoiced day.
+   Nothing new on the server. */
+async function markAlreadyInvoiced(){
+  const verified = days.filter(d => d.status === "verified");
+  const chosen = verified.filter(d => invoicePick.has(d.pack_date)).map(d => d.pack_date);
+  if(!chosen.length){
+    alert("Tick the verified day(s) that are already on an invoice.");
+    return;
+  }
+
+  let invoices = [];
+  try{
+    invoices = await fetch("/invoice/history").then(r => r.ok ? r.json() : []);
+  }catch(e){ /* fall through to the empty check below */ }
+  if(!invoices.length){
+    alert("No saved invoices found. Save the invoice on the Invoice tab first, then "
+      + "come back and mark these days against it.");
+    return;
+  }
+
+  /* Chosen from the REAL saved invoices, never typed. The days store an invoice_id
+     (a row id), and asking the owner to type one would mean typing a number he never
+     sees — the invoice he knows is "ST/26-27/046". So he picks by that, and the id
+     travels behind it. */
+  const list = invoices.slice(0, 15).map((inv, i) =>
+    `  ${i + 1}. ${inv.invoice_no}${inv.date ? " — " + inv.date : ""}`
+    + `${inv.fc_code ? " · " + inv.fc_code : ""}`
+    + `${inv.total_qty ? " · " + inv.total_qty + " units" : ""}`
+  ).join("\n");
+
+  const answer = prompt(
+    `Which invoice already covers ${chosen.length} day(s) — ${chosen.join(", ")}?\n\n`
+    + `${list}\n\nType the number (1-${Math.min(invoices.length, 15)}):`
+  );
+  if(answer === null) return;
+  const index = Number(answer.trim()) - 1;
+  const invoice = invoices[index];
+  if(!invoice){
+    alert("That was not one of the numbers listed. Nothing was changed.");
+    return;
+  }
+
+  if(!confirm(
+    `Mark ${chosen.join(", ")} as covered by ${invoice.invoice_no}?\n\n`
+    + "Those days become SHIPPED and can no longer be selected for another invoice — "
+    + "which is the point: it stops a second GST number being spent on the same boxes."
+  )) return;
+
+  try{
+    const r = await fetch("/shipment/attach-invoice", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({pack_dates: chosen, invoice_id: invoice.id}),
+    });
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || "Could not attach the invoice");
+    invoicePick = new Set();       // the days are no longer tickable
+    await load();
+    toast(`${chosen.length} day(s) marked as covered by ${invoice.invoice_no}`, "success");
+  }catch(err){
+    toast(err.message, "error");
+  }
 }
 
 /* The destination FC list, fetched once. Served by /shipment/fcs rather than written

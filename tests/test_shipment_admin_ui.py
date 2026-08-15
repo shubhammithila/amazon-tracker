@@ -667,6 +667,45 @@ def test_the_sku_sheet_sends_the_selected_days(source):
     )
 
 
+def test_days_invoiced_by_hand_can_be_marked(source):
+    """"give me an option to make it same like 12 and 13 aug which says on invoice."
+
+    An invoice raised the manual way — download the sheet, create the shipment at Amazon,
+    upload the CSV on the Invoice tab — leaves its days reading VERIFIED for ever, while
+    days invoiced through the app read "On invoice ST/26-27/046". Same real-world state,
+    two labels; and the verified-looking ones still offer a tick box that would spend a
+    SECOND GST number on boxes already invoiced.
+    """
+    body = _without_comments(source)
+    assert "markAlreadyInvoiced" in body, (
+        "there is no way to record an invoice raised outside this flow"
+    )
+    assert 'onclick="markAlreadyInvoiced()"' in body, (
+        "the mark-as-invoiced function exists but nothing calls it — the feature is "
+        "unreachable, the same class of bug as the missing invoice-bar container"
+    )
+    assert "/shipment/attach-invoice" in body, (
+        "marking does not go through attach-invoice, so it is a second code path for "
+        "recording an invoice against days"
+    )
+    # Chosen from real saved invoices, never typed: the days store a row id, and the
+    # owner only ever sees the GST number.
+    assert "/invoice/history" in body, (
+        "the invoice is not chosen from the saved invoices, so the owner would have to "
+        "type a database row id he has never seen"
+    )
+
+
+def test_a_shipped_day_shows_the_gst_number_not_the_row_id(source):
+    """"On invoice #46" named a database row id. The document in the owner's hand says
+    "ST/26-27/046", and 46 matches nothing he can search for."""
+    body = _without_comments(source)
+    assert "d.invoice_no" in body, (
+        "the day card does not read the invoice number, so it is back to printing the "
+        "row id"
+    )
+
+
 def test_the_handoff_goes_through_sessionstorage_not_the_url(source):
     """A URL is shared, logged and bookmarked; this payload is invoice data.
 
