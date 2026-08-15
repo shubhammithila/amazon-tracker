@@ -1,6 +1,80 @@
 # Plan: FBA shipment creation and box labels via Amazon SP-API
 
-**Status: plan only. No SP-API code written.** Revised 2026-08-11 after research.
+**Status: plan only, but the unknowns are now ANSWERED.** Revised 2026-08-15 after
+testing real credentials against the live Amazon.in account.
+
+---
+
+## Verified against the live account — 2026-08-15
+
+Credentials arrived in `.env` (`SP_API_*`, gitignored). I exchanged the refresh token and
+called the real API. **Every open question in this document is now settled, and all four
+answers are favourable.**
+
+| Question this doc asked | Answer, measured |
+|---|---|
+| Does auth work? Do we have FBA permission? | **Yes.** LWA returns a token; `GET /inbound/fba/2024-03-20/inboundPlans` returns 200 with **10 real inbound plans** |
+| Does Amazon.in return `AMAZON_OPTIMIZED` and hide the FC? *(the risk I said "decides the project")* | **No. It returns `AMAZON_WAREHOUSE`** with the FC filled in |
+| Can we get the destination state for GST? | **Yes, in full** |
+| Can we fetch box labels, in multiple formats? | **Yes.** Real PDFs downloaded |
+| Is v0 switched off? | **No**, `/fba/inbound/v0/shipments` answers 200 |
+
+A real shipment on the 14 Aug plan (`getShipment`) returned:
+
+```
+shipmentConfirmationId : FBA15M59XQFZ          ← the invoice's shipment ID
+destinationType        : AMAZON_WAREHOUSE      ← NOT AMAZON_OPTIMIZED
+warehouseId            : ISK3                  ← the FC code
+address                : BHIWANDI / MAHARASHTRA / 421302
+name                   : FBA STA (14/08/2026 08:15)-ISK3
+status                 : IN_TRANSIT
+```
+
+**Maharashtra comes straight back from Amazon**, which resolves to GSTIN
+`27AAFCF9848M1ZT` through the existing `get_gstin_for_state`. The whole GST chain works
+off one API call. My worry that the destination would be unknowable was wrong for this
+account.
+
+### Labels: working, with a non-obvious parameter
+
+`GET /fba/inbound/v0/shipments/{shipmentConfirmationId}/labels` — note it keys on the
+**`shipmentConfirmationId`** (`FBA15M59XQFZ`), not the internal `shipmentId`.
+
+**`PageSize` and `PageStartIndex` are mandatory here**, because these are non-partnered
+("Other" carrier) shipments. Without them every request 400s with *"pageSize must be
+provided for Non-Partnered and LTL Shipments"* — which reads like a permission failure
+and is not. Measured results with `LabelType=BARCODE_2D`, `PageSize=1`,
+`PageStartIndex=0`:
+
+| PageType | Result |
+|---|---|
+| `PackageLabel_Thermal` | **200** — real PDF (`%PDF-1.4`, 2,219 bytes) |
+| `PackageLabel_A4_4` | **200** |
+| `PackageLabel_Plain_Paper` | **200** |
+| `PackageLabel_A4_2` | 400 — "not able to fetch carrier labels while it is required" |
+| `PackageLabel_Letter_2` | 400 — same |
+
+So thermal, A4 4-up and plain paper are available today; the 2-up variants are refused
+for this shipment type. `LabelType=UNIQUE` needs a valid `cartonIdList` and is not
+usable without real carton ids.
+
+### One genuine 403
+
+`GET /inboundPlans/{id}/shipments` (the list) → **403 Unauthorized**, while
+`GET /inboundPlans/{id}/shipments/{shipmentId}` (the single shipment) → **200**. The
+shipment ids are already present in the plan detail response, so this costs nothing —
+but it means the working code must read shipments from the plan payload rather than
+listing them.
+
+### What this changes
+
+Steps 4 and 6 of the sequence below — "spike to prove auth" and "test whether the FC
+comes back" — **are now done.** The risk that gated everything is retired. What remains
+is ordinary implementation work, and **step 5 (label fetch) is immediately buildable**.
+
+Still unverified: whether `customPlacement` lets us *choose* the FC when creating a plan
+ourselves (all 10 existing plans were created through Send to Amazon, so this account has
+never exercised it), and whether placement fees apply. Neither blocks label fetching.
 
 ---
 
