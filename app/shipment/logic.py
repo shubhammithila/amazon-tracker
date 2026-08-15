@@ -674,3 +674,109 @@ def carry_over(
         "shortfall_cartons": max(0, floor_cartons - cartons),
         "shortfall_units": max(0, floor_units - units),
     }
+
+
+# ─── The Amazon inbound-plan body ─────────────────────────────────────────────
+#
+# Pure, and deliberately so: this builds the request that would create a REAL shipment
+# at Amazon, and the one thing that must be provable without a network call is that it
+# refuses to send an incomplete one.
+
+#: Amazon's inbound plan keys every line on the merchant SKU (`msku`), so a line without
+#: one cannot be sent at all. Verified against the live account: our `fba_sku` values
+#: ("abc_sattu500g FBA") are exactly the shape Amazon returns ("wss 200g FBA").
+def amazon_plan_items(items, units_by_asin) -> dict:
+    """Split plan items into what Amazon can accept and what blocks the shipment.
+
+    Returns ``{"lines": [...], "missing_sku": [...], "units": int}``.
+
+    ``units_by_asin`` is what was actually PACKED on the chosen days — not the plan. A
+    shipment must describe the boxes that exist, and those two numbers differ whenever
+    the packer over- or under-packed against the plan.
+
+    **A line with no merchant SKU is separated out, never silently dropped.** Amazon
+    keys on the msku, so sending such a line either fails the whole request or, worse,
+    is accepted with that line absent — real stock in a real carton that the shipment
+    does not mention, discovered at the FC. The caller refuses the whole shipment and
+    names the products, because the fix is one field in the plan and the alternative is
+    a physical reconciliation.
+
+    A zero-unit line is skipped in silence: nothing was packed, so there is nothing to
+    declare and it is not a problem to report.
+    """
+    lines: list[dict] = []
+    missing_sku: list[dict] = []
+    total = 0
+
+    for item in items or []:
+        asin = (getattr(item, "asin", "") or "").strip()
+        units = _as_count((units_by_asin or {}).get(asin, 0))
+        if units <= 0:
+            continue
+
+        sku = (getattr(item, "fba_sku", "") or "").strip()
+        label = (getattr(item, "item", "") or "").strip() or asin
+        weight_text = weight_label(getattr(item, "weight", 0))
+
+        if not sku:
+            missing_sku.append({
+                "asin": asin,
+                "item": label,
+                "pack_size": weight_text,
+                "units": units,
+            })
+            continue
+
+        total += units
+        lines.append({
+            "msku": sku,
+            "quantity": units,
+            # Both SELLER on every line of every live plan on this account, and the
+            # prep fee came back 0 INR. Sent explicitly rather than omitted: the
+            # default is Amazon's to change, and label ownership decides who pays.
+            "labelOwner": "SELLER",
+            "prepOwner": "SELLER",
+            # Not sent to Amazon — carried so the dry run can be READ by a human.
+            # A screen of mskus and numbers is not checkable; product names are.
+            "_item": label,
+            "_asin": asin,
+            "_pack_size": weight_text,
+        })
+
+    return {"lines": lines, "missing_sku": missing_sku, "units": total}
+
+
+def amazon_plan_body(source_address: dict, items, units_by_asin,
+                     marketplace_id: str) -> dict:
+    """The full createInboundPlan request, or the reason it cannot be built.
+
+    Returns ``{"ok": bool, "body": {...}, "missing_sku": [...], "lines": [...]}``.
+
+    ``ok`` is False when ANY line lacks a merchant SKU, or when there is nothing to
+    ship. Not a warning: the owner asked for the shipment to be blocked until the SKUs
+    are filled in, and that is the right call — a shipment missing a line is discovered
+    by Amazon receiving boxes it has no record of.
+
+    The body is still returned when ``ok`` is False, so the screen can show what WOULD
+    be sent alongside what is blocking it. Showing the reason without the context is how
+    a refusal reads as a bug.
+    """
+    split = amazon_plan_items(items, units_by_asin)
+    ok = bool(split["lines"]) and not split["missing_sku"]
+
+    return {
+        "ok": ok,
+        "missing_sku": split["missing_sku"],
+        "lines": split["lines"],
+        "units": split["units"],
+        "body": {
+            "destinationMarketplaces": [marketplace_id],
+            "sourceAddress": source_address,
+            # The private `_` keys are stripped here: they exist for the dry-run screen
+            # and Amazon rejects unknown fields.
+            "items": [
+                {k: v for k, v in line.items() if not k.startswith("_")}
+                for line in split["lines"]
+            ],
+        },
+    }

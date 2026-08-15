@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.database import get_db
 from app.invoice.company_data import SUPPLIER_GSTIN
 from app.invoice.hsn_codes import lookup_hsn
@@ -500,6 +501,184 @@ async def generate_plan(
     if warnings:
         payload["warning"] = " ".join(warnings)
     return JSONResponse(payload)
+
+
+#: The ship-from address, as Amazon accepts it. Read back from a real inbound plan on the
+#: live account rather than assembled from SUPPLIER_ADDRESS, because Amazon validated
+#: THIS exact shape — a hand-built variant risks a rejection at the one moment it matters.
+AMAZON_SOURCE_ADDRESS = {
+    "name": "F2D TECH PRIVATE LIMITED, MITHILA FOODS",
+    "companyName": "F2D TECH PRIVATE LIMITED, MITHILA FOODS",
+    "addressLine1": "C/O DINESH PRASAD SAH, new babu para,near dadi shyam mandir",
+    "addressLine2": "Dumka jharkhand",
+    "city": "Dumka",
+    "stateOrProvinceCode": "Jharkhand",
+    "postalCode": "814101",
+    "countryCode": "IN",
+    "phoneNumber": "7870034414",
+    "email": "f2dtechpvtltd@gmail.com",
+}
+
+
+@router.post("/amazon-shipment-preview")
+async def preview_amazon_shipment(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """What WOULD be sent to Amazon for the chosen days. Sends nothing.
+
+    Body: ``{"pack_dates": ["2026-08-14"]}``.
+
+    A dry run, and the deliberate step before anything irreversible exists. Creating an
+    inbound plan is a real shipment at Amazon that no failed transaction can undo, so the
+    owner sees the exact lines and quantities first — with product names, not just mskus,
+    because a screen of SKU codes is not something a human can check.
+
+    **Refuses when any line has no merchant SKU.** Asked for directly: "for the ones with
+    no sku. warn the user and ask them to fill it , then only the shipment will be
+    created." Amazon keys every line on the msku, so such a line is either rejected or
+    accepted with the line missing — real cartons arriving at an FC against a shipment
+    that does not mention them. Blocking is cheaper than reconciling.
+
+    Quantities are what was PACKED on those days, never the plan: a shipment describes
+    boxes that exist.
+    """
+    body, error = await _json_object(request)
+    if error:
+        return error
+
+    raw_dates = body.get("pack_dates") or []
+    if isinstance(raw_dates, str):
+        raw_dates = [raw_dates]
+    pack_dates: list[str] = []
+    for value in raw_dates:
+        text = str(value).strip()
+        if text and text not in pack_dates:
+            pack_dates.append(text)
+    if not pack_dates:
+        return JSONResponse(
+            {"error": "Select at least one packed day."}, status_code=400
+        )
+    invalid = [d for d in pack_dates if not _valid_date(d)]
+    if invalid:
+        return JSONResponse(
+            {"error": f"Not a date (YYYY-MM-DD): {', '.join(invalid)}"}, status_code=400
+        )
+
+    plan = await repository.get_active_plan(db)
+    if plan is None:
+        return _no_plan()
+
+    days = [
+        d for d in await repository.load_days_with_entries(db, plan.id)
+        if d["pack_date"] in set(pack_dates)
+    ]
+    missing_days = set(pack_dates) - {d["pack_date"] for d in days}
+    if missing_days:
+        return JSONResponse(
+            {"error": f"Nothing was packed on {', '.join(sorted(missing_days))}."},
+            status_code=404,
+        )
+
+    # Verified only, for the same reason the invoice bridge insists on it: this creates
+    # the shipment those boxes travel in, and unapproved counts must not reach Amazon.
+    unverified = [d for d in days if d["status"] not in logic.INVOICEABLE_STATUSES]
+    if unverified:
+        return JSONResponse(
+            {
+                "error": "These days are not verified yet: "
+                + ", ".join(f"{d['pack_date']} ({d['status']})" for d in unverified)
+                + ". Verify them before creating the shipment.",
+            },
+            status_code=400,
+        )
+
+    items = await repository.load_plan_items(db, plan.id)
+    preview = logic.amazon_plan_body(
+        AMAZON_SOURCE_ADDRESS,
+        items,
+        logic.units_by_asin(days),
+        get_settings().sp_api_marketplace_id,
+    )
+
+    blockers = []
+    if preview["missing_sku"]:
+        names = ", ".join(
+            f"{m['item']} {m['pack_size']}".strip() for m in preview["missing_sku"][:6]
+        )
+        extra = len(preview["missing_sku"]) - 6
+        blockers.append(
+            f"{len(preview['missing_sku'])} product(s) have no merchant SKU: {names}"
+            + (f" and {extra} more" if extra > 0 else "")
+            + ". Amazon's shipment keys on the merchant SKU, so these boxes would ship "
+            "against a shipment that does not list them. Fill the SKU in on the plan "
+            "(the Merchant SKU column is editable), then try again."
+        )
+    elif not preview["lines"]:
+        blockers.append("No units were packed on the selected day(s).")
+
+    return JSONResponse({
+        "configured": get_settings().spapi_configured,
+        "ok": preview["ok"],
+        "pack_dates": pack_dates,
+        "units": preview["units"],
+        "lines": preview["lines"],
+        "missing_sku": preview["missing_sku"],
+        "blockers": blockers,
+        # The literal request, so the owner (or I) can see exactly what would go.
+        "request_body": preview["body"],
+    })
+
+
+@router.get("/amazon-shipments")
+async def list_amazon_shipments(
+    request: Request, role: str = Depends(require_admin)
+):
+    """Recent Amazon inbound shipments, so the owner picks instead of typing.
+
+    **Read-only.** Nothing is created, confirmed or modified at Amazon. This is the
+    lookup that retires the hand-typed shipment ID: each entry carries the `FBA15…`
+    confirmation id, the FC Amazon actually chose, and the destination state — which is
+    what decides the GSTIN and the inter-state/intra-state GST split.
+
+    The state comes from **Amazon's answer**, not from the FC the owner picked when he
+    built the sheet. His pick is a request; this is what happened. They can differ, and a
+    tax document has to carry the truth.
+
+    Admin only, matching the plan sheet and the Amazon upload: this is the owner's data
+    about his own shipments, and ops has no use for it.
+
+    Answers 200 with `configured: false` rather than an error when there are no
+    credentials. The app ran without SP-API for its whole life and must keep doing so —
+    a 500 here would break the Shipment page for a feature the owner may not have set up.
+    """
+    from app.shipment import spapi
+
+    if not get_settings().spapi_configured:
+        return JSONResponse({
+            "configured": False,
+            "shipments": [],
+            "message": "Amazon API is not set up. Add SP_API_CLIENT_ID, "
+                       "SP_API_CLIENT_SECRET and SP_API_REFRESH_TOKEN to .env.",
+        })
+
+    try:
+        shipments = await spapi.recent_shipments(limit=10)
+    except spapi.SpApiError as exc:
+        # Amazon's own message is surfaced rather than paraphrased. It is written for a
+        # developer, and it is what told us "not supported for the Indian marketplace"
+        # instead of leaving us guessing at a permissions problem.
+        logger.warning("amazon-shipments lookup failed: %s", exc.message)
+        return JSONResponse(
+            {"configured": True, "shipments": [], "error": exc.message},
+            status_code=502,
+        )
+
+    return JSONResponse({
+        "configured": True,
+        "shipments": [s.as_dict() for s in shipments],
+    })
 
 
 @router.get("/fcs")

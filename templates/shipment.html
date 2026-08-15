@@ -89,6 +89,23 @@ h2{font-size:20px;font-weight:600;margin-bottom:4px}
   border-radius:6px;color:var(--text);padding:6px 8px;font-size:12.5px;
   text-transform:none;letter-spacing:normal;font-weight:400;min-width:190px}
 .ib-field select:focus,.ib-field input:focus{outline:none;border-color:var(--accent)}
+/* Amazon lookup results. Hidden until something is rendered into it, so an empty
+   container does not leave a gap on a page that is mostly table. */
+#amazon-panel:empty{display:none}
+#amazon-panel{margin-top:8px;padding:10px 14px;border:1px solid var(--border);
+  border-radius:8px;background:var(--bg);font-size:12.5px;line-height:1.55}
+#amazon-panel .warn{color:var(--yellow);font-weight:600}
+#amazon-panel .good{color:var(--green);font-weight:600}
+#amazon-panel .muted{color:var(--text-muted)}
+/* Each shipment is a real button: it is a choice that changes the invoice's
+   destination, so it must be keyboard-reachable rather than a clickable div. */
+.amz-row{display:block;width:100%;text-align:left;margin-top:5px;padding:7px 10px;
+  border:1px solid var(--border);border-radius:6px;background:var(--surface);
+  color:var(--text);font:inherit;font-size:12.5px;cursor:pointer}
+.amz-row:hover{border-color:var(--accent);background:var(--accent-soft)}
+.amz-table{margin-top:6px;border-collapse:collapse;width:100%}
+.amz-table td{padding:3px 8px;font-size:12px;border-bottom:1px solid var(--border)}
+.amz-table td:last-child{color:var(--text-muted)}
 .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
 .badge.open{background:var(--surface2);color:var(--text-muted)}
 .badge.submitted{background:var(--blue-soft);color:var(--blue)}
@@ -272,6 +289,10 @@ td input[type="text"].sku-input{width:120px;font-size:11px}
        early when the container is missing, so a missing div showed no error anywhere and
        simply made combined invoicing invisible. -->
   <div id="invoice-bar"></div>
+  <!-- Amazon lookup results (shipment picker, dry-run check). Must exist in the markup:
+       the render functions return early when it is missing, which makes the whole
+       feature silently invisible — see tests/test_template_render_targets.py. -->
+  <div id="amazon-panel"></div>
   <div class="form-row" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
     <div class="form-group"><label>Min cartons to ship</label><input type="number" id="min-cartons" min="0" step="1"/></div>
     <div class="form-group"><label>Min units to ship</label><input type="number" id="min-units" min="0" step="1"/></div>
@@ -879,6 +900,14 @@ function renderInvoiceBar(){
         <input type="text" id="ship-id" placeholder="FBA15… (after Amazon creates it)"
                value="${esc(lastShipmentId)}" oninput="rememberShipmentId(this.value)"/>
       </label>
+      <!-- Read-only lookups. Neither creates or changes anything at Amazon: one fetches
+           the shipments that already exist, the other shows what WOULD be sent. -->
+      <button class="btn-outline" id="ib-lookup"
+              title="Fetch your recent Amazon shipments and fill the ID and destination in"
+              onclick="lookupAmazonShipments()">Fetch from Amazon</button>
+      <button class="btn-outline" id="ib-preview" ${chosen.length ? "" : "disabled"}
+              title="Show exactly what would be sent to Amazon for the ticked days — sends nothing"
+              onclick="previewAmazonShipment()">Check shipment data</button>
       <button class="btn-green" id="ib-go" ${chosen.length ? "" : "disabled"}
               onclick="invoiceSelectedDays()">
         Create invoice${chosen.length > 1 ? ` from ${chosen.length} days` : ""}</button>
@@ -889,6 +918,198 @@ function renderInvoiceBar(){
               title="Already invoiced these days by hand? Record which invoice covers them, so they stop looking un-invoiced"
               onclick="markAlreadyInvoiced()">Already invoiced…</button>
     </div>`;
+}
+
+/* ── Amazon lookups: both read-only ──────────────────────────────────────────
+
+   Neither of these sends anything that creates or changes a shipment. Creating an
+   inbound plan is a real shipment at Amazon that no failed transaction can undo, so it
+   is a separate deliberate step and cannot happen as a side effect of a click here. */
+
+function amazonPanel(){
+  return document.getElementById("amazon-panel");
+}
+
+function showAmazonPanel(nodes){
+  const panel = amazonPanel();
+  if(!panel) return;
+  panel.innerHTML = "";
+  for(const node of nodes) panel.appendChild(node);
+}
+
+function amazonLine(text, cls){
+  const div = document.createElement("div");
+  if(cls) div.className = cls;
+  // textContent: product titles and Amazon's error messages both arrive from
+  // outside this app, and one of them ends up on a GST document.
+  div.textContent = text;
+  return div;
+}
+
+/* Pull the shipments that already exist at Amazon and let the owner pick one.
+
+   This is what retires the hand-typed shipment ID. Each entry also carries the FC and
+   the destination STATE as Amazon reports them — and that is what fills the invoice,
+   because his FC choice was a request and this is what actually happened. */
+async function lookupAmazonShipments(){
+  const button = document.getElementById("ib-lookup");
+  const original = button.textContent;
+  button.disabled = true; button.textContent = "Fetching…";
+  try{
+    const r = await fetch("/shipment/amazon-shipments");
+    const data = await r.json();
+
+    if(data.configured === false){
+      showAmazonPanel([amazonLine(data.message || "Amazon API is not set up.", "warn")]);
+      return;
+    }
+    if(!r.ok || data.error){
+      showAmazonPanel([
+        amazonLine("Could not reach Amazon.", "warn"),
+        amazonLine(data.error || "Unknown error.", "muted"),
+      ]);
+      return;
+    }
+    const shipments = data.shipments || [];
+    if(!shipments.length){
+      showAmazonPanel([amazonLine("No recent inbound shipments found at Amazon.", "muted")]);
+      return;
+    }
+
+    const nodes = [amazonLine(`${shipments.length} recent Amazon shipment(s) — click one to use it:`, "muted")];
+    for(const s of shipments){
+      const row = document.createElement("button");
+      row.className = "amz-row";
+      row.type = "button";
+      /* The destination is shown, not just the id, because choosing the wrong shipment
+         puts the wrong state's GSTIN on a tax document. An unknown destination
+         (AMAZON_OPTIMIZED) is labelled rather than left blank. */
+      row.textContent = `${s.confirmation_id} · `
+        + (s.destination_known ? `${s.warehouse_id} · ${s.state}` : "destination not given by Amazon")
+        + ` · ${s.status}` + (s.created_at ? ` · ${s.created_at.slice(0, 10)}` : "");
+      row.onclick = () => useAmazonShipment(s);
+      nodes.push(row);
+    }
+    showAmazonPanel(nodes);
+  }catch(err){
+    showAmazonPanel([amazonLine("Could not reach the server.", "warn")]);
+  }finally{
+    button.disabled = false; button.textContent = original;
+  }
+}
+
+/* Apply a chosen Amazon shipment: its id, and its destination FC.
+
+   The FC comes from AMAZON, overriding whatever was picked — deliberately. The picked
+   value was a request; Amazon decides. Silently keeping his choice when Amazon shipped
+   elsewhere is how the wrong GSTIN reaches an invoice. */
+function useAmazonShipment(shipment){
+  lastShipmentId = shipment.confirmation_id || "";
+  const notes = [];
+  if(shipment.warehouse_id){
+    const select = document.getElementById("fc-pick");
+    const known = [...(select ? select.options : [])].some(o => o.value === shipment.warehouse_id);
+    if(known){
+      if(lastFc && lastFc !== shipment.warehouse_id){
+        notes.push(`Destination changed from ${lastFc} to ${shipment.warehouse_id} — `
+          + "Amazon decides where the boxes go, so the invoice follows Amazon.");
+      }
+      lastFc = shipment.warehouse_id;
+    }else{
+      notes.push(`Amazon sent this to ${shipment.warehouse_id}, which is not in our FC `
+        + "list — the recipient GSTIN cannot be resolved for it.");
+    }
+  }else{
+    notes.push("Amazon did not give a destination for this shipment, so the place of "
+      + "supply and GSTIN must be filled in by hand.");
+  }
+
+  renderDays();   // re-render so the picker and the ID field show the applied values
+  const nodes = [amazonLine(`Using ${shipment.confirmation_id}`
+    + (shipment.destination_known ? ` → ${shipment.warehouse_id}, ${shipment.state}` : ""), "good")];
+  for(const n of notes) nodes.push(amazonLine(n, "warn"));
+  showAmazonPanel(nodes);
+}
+
+/* The dry run. Shows what WOULD be sent, and refuses on a missing merchant SKU.
+
+   Asked for: "for the ones with no sku. warn the user and ask them to fill it, then only
+   the shipment will be created." Amazon keys every line on the msku, so a line without
+   one either fails the request or is accepted with the line absent — real cartons at an
+   FC against a shipment that does not list them. */
+async function previewAmazonShipment(){
+  const verified = days.filter(d => d.status === "verified");
+  const chosen = verified.filter(d => invoicePick.has(d.pack_date)).map(d => d.pack_date);
+  if(!chosen.length){
+    alert("Tick at least one verified day first.");
+    return;
+  }
+  const button = document.getElementById("ib-preview");
+  const original = button.textContent;
+  button.disabled = true; button.textContent = "Checking…";
+  try{
+    const r = await fetch("/shipment/amazon-shipment-preview", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({pack_dates: chosen}),
+    });
+    const data = await r.json();
+    if(!r.ok){
+      showAmazonPanel([amazonLine(data.error || "Could not build the shipment data.", "warn")]);
+      return;
+    }
+
+    const nodes = [];
+    if(data.ok){
+      nodes.push(amazonLine(
+        `Ready: ${data.lines.length} line(s), ${data.units} units for `
+        + `${data.pack_dates.join(", ")}.`, "good"));
+    }else{
+      nodes.push(amazonLine("This shipment cannot be created yet:", "warn"));
+      for(const blocker of (data.blockers || [])) nodes.push(amazonLine(blocker, "warn"));
+    }
+
+    /* The missing ones NAMED, in a table, because "3 products have no SKU" leaves the
+       owner hunting through 81 rows for which three. */
+    if((data.missing_sku || []).length){
+      const table = document.createElement("table");
+      table.className = "amz-table";
+      for(const m of data.missing_sku){
+        const tr = document.createElement("tr");
+        for(const text of [m.item, m.pack_size, `${m.units} units`, m.asin, "no SKU"]){
+          const td = document.createElement("td");
+          td.textContent = text;
+          tr.appendChild(td);
+        }
+        table.appendChild(tr);
+      }
+      nodes.push(table);
+    }
+
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = `Show the ${(data.lines || []).length} line(s) that would be sent`;
+    details.appendChild(summary);
+    const table = document.createElement("table");
+    table.className = "amz-table";
+    for(const line of (data.lines || [])){
+      const tr = document.createElement("tr");
+      for(const text of [line._item, line._pack_size, line.msku, `${line.quantity}`]){
+        const td = document.createElement("td");
+        td.textContent = text;
+        tr.appendChild(td);
+      }
+      table.appendChild(tr);
+    }
+    details.appendChild(table);
+    nodes.push(details);
+
+    showAmazonPanel(nodes);
+  }catch(err){
+    showAmazonPanel([amazonLine("Could not reach the server.", "warn")]);
+  }finally{
+    button.disabled = false; button.textContent = original;
+  }
 }
 
 /* The FC and shipment ID survive a re-render.

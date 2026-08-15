@@ -343,6 +343,29 @@ class ShipmentPackingDay(Base):
     verified_at = Column(DateTime)
     invoice_id = Column(Integer, ForeignKey("invoices.id"))
 
+    # ── The Amazon shipment these boxes went into ────────────────────────────
+    #
+    # Recorded per DAY, matching invoice_id above, because a shipment covers the same
+    # chosen set of days an invoice does — that is what makes the two agree.
+    #
+    # Written whether the shipment was created through SP-API or by hand in Send to
+    # Amazon: the value is the same fact either way, and storing it only for the
+    # automated path would leave the manual path looking un-shipped exactly as it
+    # previously looked un-invoiced.
+    #
+    # `shipment_confirmation_id` is the FBA15… string that goes on the GST invoice.
+    # `inbound_plan_id` and `amazon_shipment_id` are Amazon's internal handles, kept
+    # because getShipment and getLabels need them and they are not derivable from the
+    # confirmation id.
+    inbound_plan_id = Column(String(60))
+    amazon_shipment_id = Column(String(60))
+    shipment_confirmation_id = Column(String(30))
+    # From Amazon's own answer, not from the FC the owner picked. The destination
+    # decides which of the 15 GSTINs applies, so the two must not be conflated: his
+    # pick is a request, this is what actually happened.
+    destination_warehouse_id = Column(String(10))
+    destination_state = Column(String(50))
+
     plan = relationship("ShipmentPlan", back_populates="days")
     entries = relationship(
         "ShipmentPackingEntry", back_populates="day", lazy="selectin",
