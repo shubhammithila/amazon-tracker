@@ -664,7 +664,11 @@ async def list_amazon_shipments(
         })
 
     try:
-        shipments = await spapi.recent_shipments(limit=10)
+        # Five, not ten. Each shipment costs two round trips to Amazon's EU endpoint and
+        # their rate limit is 2/second, so ten measured 10.4s against 7.6s for five — and
+        # the shipment being invoiced is always among the most recent one or two. A
+        # lookup slow enough to feel broken gets clicked twice.
+        shipments = await spapi.recent_shipments(limit=5)
     except spapi.SpApiError as exc:
         # Amazon's own message is surfaced rather than paraphrased. It is written for a
         # developer, and it is what told us "not supported for the Indian marketplace"

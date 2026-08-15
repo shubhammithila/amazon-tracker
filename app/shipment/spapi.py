@@ -51,6 +51,12 @@ _TOKEN_SAFETY_MARGIN = 60
 #: Enough for the "which shipment is this?" picker without paging.
 DEFAULT_PLAN_PAGE_SIZE = 20
 
+#: Parallel requests when fetching the shipments behind several plans. Amazon documents
+#: 2 requests/second on these operations, so this stays at 2 rather than spending the
+#: burst allowance — an intermittent 429 in a picker is worse than a slower picker.
+#: Sequentially the same work measured 21 seconds from Mumbai to the EU endpoint.
+_CONCURRENCY = 2
+
 #: The label page types that WORK for a non-partnered shipment, measured. A4_2 and
 #: Letter_2 return "We are not able to fetch carrier labels while it is required" for
 #: this shipment type, so they are deliberately not offered — an option that always
@@ -156,19 +162,29 @@ async def _access_token(client: httpx.AsyncClient) -> str:
     return _token.value
 
 
-async def _get(path: str, params: dict[str, Any] | None = None) -> dict:
+async def _get(
+    path: str,
+    params: dict[str, Any] | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
     """One GET against SP-API, with the token attached and errors typed.
 
     No SigV4 and no AWS credentials: SP-API dropped that requirement, and the only
     required headers are the access token and a user agent.
+
+    ``client`` lets a caller making several calls **reuse one connection**. Measured: 3
+    calls on a reused client took 2.5s total, while a fresh ``AsyncClient`` per call cost
+    ~1.2s each because every request repaid the TCP and TLS handshake to Amazon's EU
+    endpoint. Parallelism alone did not fix it — the handshake was the cost, not the
+    waiting.
     """
     settings = get_settings()
     if not settings.spapi_configured:
         raise SpApiNotConfigured()
 
-    async with httpx.AsyncClient(timeout=settings.sp_api_timeout) as client:
-        token = await _access_token(client)
-        response = await client.get(
+    async def _send(session: httpx.AsyncClient) -> httpx.Response:
+        token = await _access_token(session)
+        return await session.get(
             settings.sp_api_endpoint + path,
             params=params,
             headers={
@@ -176,6 +192,12 @@ async def _get(path: str, params: dict[str, Any] | None = None) -> dict:
                 "user-agent": "AmazonTracker/2.0 (Language=Python)",
             },
         )
+
+    if client is not None:
+        response = await _send(client)
+    else:
+        async with httpx.AsyncClient(timeout=settings.sp_api_timeout) as session:
+            response = await _send(session)
 
     if response.status_code == 200:
         try:
@@ -288,7 +310,9 @@ def _shipment_from_payload(
     )
 
 
-async def list_inbound_plans(page_size: int = DEFAULT_PLAN_PAGE_SIZE) -> list[dict]:
+async def list_inbound_plans(
+    page_size: int = DEFAULT_PLAN_PAGE_SIZE, client: httpx.AsyncClient | None = None
+) -> list[dict]:
     """Recent inbound plans, newest first. Read-only.
 
     Sorted here rather than trusting Amazon's order: the live response came back with the
@@ -296,23 +320,32 @@ async def list_inbound_plans(page_size: int = DEFAULT_PLAN_PAGE_SIZE) -> list[di
     August one and the owner would choose the wrong shipment.
     """
     payload = await _get(
-        "/inbound/fba/2024-03-20/inboundPlans", {"pageSize": max(1, min(page_size, 30))}
+        "/inbound/fba/2024-03-20/inboundPlans",
+        {"pageSize": max(1, min(page_size, 30))},
+        client=client,
     )
     plans = payload.get("inboundPlans") or []
     plans.sort(key=lambda p: str(p.get("createdAt") or ""), reverse=True)
     return plans
 
 
-async def get_inbound_plan(inbound_plan_id: str) -> dict:
+async def get_inbound_plan(
+    inbound_plan_id: str, client: httpx.AsyncClient | None = None
+) -> dict:
     """One plan in detail. Its `shipments` array is where the shipment ids live —
     the list endpoint for them is a 403 on this account."""
-    return await _get(f"/inbound/fba/2024-03-20/inboundPlans/{inbound_plan_id}")
+    return await _get(
+        f"/inbound/fba/2024-03-20/inboundPlans/{inbound_plan_id}", client=client
+    )
 
 
-async def get_shipment(inbound_plan_id: str, shipment_id: str) -> AmazonShipment:
+async def get_shipment(
+    inbound_plan_id: str, shipment_id: str, client: httpx.AsyncClient | None = None
+) -> AmazonShipment:
     """One shipment, with its confirmation id and destination."""
     payload = await _get(
-        f"/inbound/fba/2024-03-20/inboundPlans/{inbound_plan_id}/shipments/{shipment_id}"
+        f"/inbound/fba/2024-03-20/inboundPlans/{inbound_plan_id}/shipments/{shipment_id}",
+        client=client,
     )
     return _shipment_from_payload(inbound_plan_id, shipment_id, payload)
 
@@ -320,44 +353,81 @@ async def get_shipment(inbound_plan_id: str, shipment_id: str) -> AmazonShipment
 async def recent_shipments(limit: int = 10) -> list[AmazonShipment]:
     """The shipments behind the recent plans, ready for the picker.
 
-    Two calls per plan (detail, then each shipment), which is why `limit` is small. At
-    2 requests/second and ~10 plans this is a couple of seconds — acceptable for an
-    explicit "look up my shipments" click, and the reason this is not done on page load.
+    Two calls per plan — the plan detail, then each shipment on it — so ~20 requests for
+    10 plans. **Run in bounded parallel**, because sequentially it measured **21 seconds**
+    from the Mumbai box to Amazon's EU endpoint, and a lookup that slow reads as a hung
+    page and gets clicked again.
 
-    A plan that fails is skipped rather than failing the whole list: one bad plan must
-    not hide the nine good ones the owner is trying to choose between.
+    ``_CONCURRENCY`` is 2 to respect Amazon's documented 2 requests/second on these
+    operations. Deliberately not higher: a 429 here would make the picker fail
+    intermittently, which is far worse than it being a few seconds slow, and the burst
+    allowance is not worth spending on a convenience lookup.
+
+    Order is restored after gathering. ``asyncio.gather`` preserves the order of its
+    arguments, but the plans are sorted by date beforehand and that sort is the whole
+    point — the newest shipment must be the first one offered.
+
+    A plan or shipment that fails is skipped rather than failing the whole list: one bad
+    plan must not hide the nine good ones the owner is choosing between.
     """
-    plans = await list_inbound_plans()
-    shipments: list[AmazonShipment] = []
+    import asyncio
 
-    for plan in plans:
-        if len(shipments) >= limit:
-            break
-        plan_id = str(plan.get("inboundPlanId") or "")
-        if not plan_id:
-            continue
-        created = str(plan.get("createdAt") or "")
-        try:
-            detail = await get_inbound_plan(plan_id)
-        except SpApiError as exc:
-            logger.warning("spapi: skipping plan %s (%s)", plan_id, exc.message)
-            continue
+    settings = get_settings()
+    semaphore = asyncio.Semaphore(_CONCURRENCY)
 
-        for entry in detail.get("shipments") or []:
-            shipment_id = str(entry.get("shipmentId") or "")
-            if not shipment_id:
+    # ONE client for every call below, so the TCP and TLS handshake to Amazon is paid
+    # once instead of ~20 times. This was the actual cost: parallelising without it left
+    # the lookup slower than sequential.
+    async with httpx.AsyncClient(timeout=settings.sp_api_timeout) as client:
+        # Only as many plans as could possibly be needed. Each plan on this account has
+        # exactly one shipment, so `limit` plans is enough — and fetching detail for all
+        # 10 when the caller asked for 3 was costing ~7 wasted round trips. If a plan
+        # ever carries several shipments the list simply comes back short, which is
+        # honest, rather than slow for everyone.
+        plans = [
+            p for p in await list_inbound_plans(client=client) if p.get("inboundPlanId")
+        ][:limit]
+
+        async def detail_for(plan: dict):
+            async with semaphore:
+                plan_id = str(plan["inboundPlanId"])
+                try:
+                    return plan, await get_inbound_plan(plan_id, client=client)
+                except SpApiError as exc:
+                    logger.warning("spapi: skipping plan %s (%s)", plan_id, exc.message)
+                    return plan, None
+
+        details = await asyncio.gather(*(detail_for(p) for p in plans))
+
+        # (plan_id, shipment_id, created_at) for every shipment across every plan, still
+        # in newest-first plan order.
+        wanted: list[tuple[str, str, str]] = []
+        for plan, detail in details:
+            if not detail:
                 continue
-            try:
-                shipment = await get_shipment(plan_id, shipment_id)
-            except SpApiError as exc:
-                logger.warning(
-                    "spapi: skipping shipment %s (%s)", shipment_id, exc.message
-                )
-                continue
-            shipment.created_at = created
-            shipments.append(shipment)
-            if len(shipments) >= limit:
-                break
+            plan_id = str(plan["inboundPlanId"])
+            created = str(plan.get("createdAt") or "")
+            for entry in detail.get("shipments") or []:
+                shipment_id = str(entry.get("shipmentId") or "")
+                if shipment_id:
+                    wanted.append((plan_id, shipment_id, created))
+        wanted = wanted[:limit]
+
+        async def shipment_for(plan_id: str, shipment_id: str, created: str):
+            async with semaphore:
+                try:
+                    shipment = await get_shipment(plan_id, shipment_id, client=client)
+                except SpApiError as exc:
+                    logger.warning(
+                        "spapi: skipping shipment %s (%s)", shipment_id, exc.message
+                    )
+                    return None
+                shipment.created_at = created
+                return shipment
+
+        gathered = await asyncio.gather(*(shipment_for(*w) for w in wanted))
+
+    shipments = [s for s in gathered if s is not None]
 
     return shipments
 

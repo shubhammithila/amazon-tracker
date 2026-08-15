@@ -464,3 +464,61 @@ def test_the_amazon_panel_is_built_with_textcontent():
     assert ".innerHTML" not in body, (
         "the Amazon panel interpolates outside data with innerHTML"
     )
+
+
+# ─── Ordering and connection reuse ───────────────────────────────────────────
+
+def test_plans_are_sorted_newest_first():
+    """Amazon returned the 10 live plans NOT in date order.
+
+    Measured: the raw response had 2026-08-04 above 2026-08-07. A picker that trusted
+    Amazon's order would offer a July shipment first, and choosing the wrong shipment puts
+    the wrong FBA id and destination state on a GST invoice.
+    """
+    source = Path(spapi.__file__).read_text(encoding="utf-8")
+    assert re.search(
+        r'plans\.sort\(\s*key=lambda p: str\(p\.get\("createdAt"\).*reverse=True',
+        source,
+    ), "the plan list is not sorted newest-first"
+
+
+def test_one_http_client_is_shared_across_the_lookup():
+    """The performance fix, and it is not obvious.
+
+    Sequentially the lookup took 21s; parallelising it made it WORSE (36s). The cost was
+    not waiting, it was a fresh TCP+TLS handshake per call — a new AsyncClient every
+    request. One shared client took it to 10.4s. A regression here would be felt as "the
+    button hangs" rather than as a failure, so it is pinned.
+    """
+    source = Path(spapi.__file__).read_text(encoding="utf-8")
+    start = source.index("async def recent_shipments")
+    body = source[start:]
+
+    assert "async with httpx.AsyncClient" in body, (
+        "recent_shipments no longer opens one client for the whole lookup"
+    )
+    # Every inner call must be handed that client, or it silently opens its own.
+    for call in ("list_inbound_plans(client=client)",
+                 "get_inbound_plan(plan_id, client=client)",
+                 "get_shipment(plan_id, shipment_id, client=client)"):
+        assert call in body, f"{call} does not reuse the shared connection"
+
+
+def test_only_the_needed_plan_details_are_fetched():
+    """Fetching detail for all 10 plans when the caller asked for 3 cost ~7 wasted round
+    trips at 2 requests/second. The slice is what took limit=5 from 11.8s to 7.6s."""
+    source = Path(spapi.__file__).read_text(encoding="utf-8")
+    start = source.index("async def recent_shipments")
+    body = source[start:]
+    assert "][:limit]" in body, (
+        "every plan's detail is fetched regardless of how many shipments were asked for"
+    )
+
+
+def test_the_concurrency_respects_amazons_rate_limit():
+    """2 requests/second is documented for these operations. Going higher would spend
+    the burst allowance on a convenience lookup and make the picker fail intermittently
+    with a 429 — worse than being a few seconds slow."""
+    assert spapi._CONCURRENCY == 2, (
+        f"concurrency is {spapi._CONCURRENCY}; Amazon documents 2 requests/second here"
+    )
