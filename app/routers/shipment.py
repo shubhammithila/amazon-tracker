@@ -520,6 +520,76 @@ AMAZON_SOURCE_ADDRESS = {
 }
 
 
+async def _verified_days_for_amazon(request: Request, db: AsyncSession):
+    """Validate a `{"pack_dates": [...]}` body and build the Amazon plan body from it.
+
+    Shared by the dry run and the real creation, because the two must agree completely:
+    if the preview validated differently from the create, the owner would approve one thing
+    and send another. One function means "what the preview showed" and "what gets sent" are
+    the same code path.
+
+    Returns ``((plan, pack_dates, days, preview), None)`` or ``(None, JSONResponse)``.
+    """
+    body, error = await _json_object(request)
+    if error:
+        return None, error
+
+    raw_dates = body.get("pack_dates") or []
+    if isinstance(raw_dates, str):
+        raw_dates = [raw_dates]
+    pack_dates: list[str] = []
+    for value in raw_dates:
+        text = str(value).strip()
+        if text and text not in pack_dates:
+            pack_dates.append(text)
+    if not pack_dates:
+        return None, JSONResponse(
+            {"error": "Select at least one packed day."}, status_code=400
+        )
+    invalid = [d for d in pack_dates if not _valid_date(d)]
+    if invalid:
+        return None, JSONResponse(
+            {"error": f"Not a date (YYYY-MM-DD): {', '.join(invalid)}"}, status_code=400
+        )
+
+    plan = await repository.get_active_plan(db)
+    if plan is None:
+        return None, _no_plan()
+
+    days = [
+        d for d in await repository.load_days_with_entries(db, plan.id)
+        if d["pack_date"] in set(pack_dates)
+    ]
+    missing_days = set(pack_dates) - {d["pack_date"] for d in days}
+    if missing_days:
+        return None, JSONResponse(
+            {"error": f"Nothing was packed on {', '.join(sorted(missing_days))}."},
+            status_code=404,
+        )
+
+    # Verified only, for the same reason the invoice bridge insists on it: this creates
+    # the shipment those boxes travel in, and unapproved counts must not reach Amazon.
+    unverified = [d for d in days if d["status"] not in logic.INVOICEABLE_STATUSES]
+    if unverified:
+        return None, JSONResponse(
+            {
+                "error": "These days are not verified yet: "
+                + ", ".join(f"{d['pack_date']} ({d['status']})" for d in unverified)
+                + ". Verify them before creating the shipment.",
+            },
+            status_code=400,
+        )
+
+    items = await repository.load_plan_items(db, plan.id)
+    preview = logic.amazon_plan_body(
+        AMAZON_SOURCE_ADDRESS,
+        items,
+        logic.units_by_asin(days),
+        get_settings().sp_api_marketplace_id,
+    )
+    return (plan, pack_dates, days, preview), None
+
+
 @router.post("/amazon-shipment-preview")
 async def preview_amazon_shipment(
     request: Request,
@@ -544,63 +614,10 @@ async def preview_amazon_shipment(
     Quantities are what was PACKED on those days, never the plan: a shipment describes
     boxes that exist.
     """
-    body, error = await _json_object(request)
+    loaded, error = await _verified_days_for_amazon(request, db)
     if error:
         return error
-
-    raw_dates = body.get("pack_dates") or []
-    if isinstance(raw_dates, str):
-        raw_dates = [raw_dates]
-    pack_dates: list[str] = []
-    for value in raw_dates:
-        text = str(value).strip()
-        if text and text not in pack_dates:
-            pack_dates.append(text)
-    if not pack_dates:
-        return JSONResponse(
-            {"error": "Select at least one packed day."}, status_code=400
-        )
-    invalid = [d for d in pack_dates if not _valid_date(d)]
-    if invalid:
-        return JSONResponse(
-            {"error": f"Not a date (YYYY-MM-DD): {', '.join(invalid)}"}, status_code=400
-        )
-
-    plan = await repository.get_active_plan(db)
-    if plan is None:
-        return _no_plan()
-
-    days = [
-        d for d in await repository.load_days_with_entries(db, plan.id)
-        if d["pack_date"] in set(pack_dates)
-    ]
-    missing_days = set(pack_dates) - {d["pack_date"] for d in days}
-    if missing_days:
-        return JSONResponse(
-            {"error": f"Nothing was packed on {', '.join(sorted(missing_days))}."},
-            status_code=404,
-        )
-
-    # Verified only, for the same reason the invoice bridge insists on it: this creates
-    # the shipment those boxes travel in, and unapproved counts must not reach Amazon.
-    unverified = [d for d in days if d["status"] not in logic.INVOICEABLE_STATUSES]
-    if unverified:
-        return JSONResponse(
-            {
-                "error": "These days are not verified yet: "
-                + ", ".join(f"{d['pack_date']} ({d['status']})" for d in unverified)
-                + ". Verify them before creating the shipment.",
-            },
-            status_code=400,
-        )
-
-    items = await repository.load_plan_items(db, plan.id)
-    preview = logic.amazon_plan_body(
-        AMAZON_SOURCE_ADDRESS,
-        items,
-        logic.units_by_asin(days),
-        get_settings().sp_api_marketplace_id,
-    )
+    plan, pack_dates, days, preview = loaded
 
     blockers = []
     if preview["missing_sku"]:
@@ -628,6 +645,418 @@ async def preview_amazon_shipment(
         "blockers": blockers,
         # The literal request, so the owner (or I) can see exactly what would go.
         "request_body": preview["body"],
+    })
+
+
+# ─── Creating the shipment at Amazon ─────────────────────────────────────────
+#
+# Asked for: "when the packing is done. I want to select the days, select fc and create
+# shipment from my app only on amazon using amazon api ... and autofill the shipment id
+# and create invoice, download box labels and invoice from my app only."
+#
+# **Two steps, deliberately.** `create` makes an inbound plan and asks Amazon to place it
+# at the chosen FC; `confirm` is what turns that into a real shipment. Splitting them is
+# not ceremony — confirmation cannot be undone, so the owner sees the destination Amazon
+# offered and the fee it will charge BEFORE the irreversible click. The same reasoning as
+# never letting a bookkeeping bug roll back a committed GST invoice number.
+#
+# India needs no packing information and no carton dimensions: `ListPackingOptions` and
+# `ListShipmentBoxes` are both refused for this marketplace, and a real test plan generated
+# placement options without them. Cartons are still recorded per DAY for the invoice's Boxes
+# field — they are just not something Amazon wants here.
+
+
+@router.post("/amazon-shipment/create")
+async def create_amazon_shipment(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """Create an inbound plan at Amazon and place it at the chosen FC. **Stops before
+    confirming**, so nothing has shipped yet and the plan can still be cancelled.
+
+    Body: ``{"pack_dates": ["2026-08-14"], "fc_code": "ISK3"}``.
+
+    Refuses when any line has no merchant SKU — Amazon keys on the msku, so such a line is
+    either rejected or accepted with the line missing, which means real cartons arriving
+    against a shipment that does not list them.
+
+    The response carries the placement options with their FEES and expiry. Both are shown
+    before the confirm step: the fee was ₹0 on the test plan but it is Amazon's to change,
+    and an expired option cannot be confirmed.
+    """
+    from app.shipment import spapi
+
+    # Read the body once, then re-validate through the SAME helper the dry run uses, so
+    # what was previewed is what gets sent.
+    body, error = await _json_object(request)
+    if error:
+        return error
+    fc_code = str(body.get("fc_code") or "").strip().upper()
+    if not fc_code:
+        return JSONResponse(
+            {"error": "Choose the destination FC. It decides where the boxes go and "
+                      "which GSTIN the invoice uses."},
+            status_code=400,
+        )
+    if fc_code not in KNOWN_FC_CODES:
+        return JSONResponse(
+            {"error": f"{fc_code} is not an FC code we know."}, status_code=400
+        )
+
+
+    loaded, error = await _verified_days_for_amazon(request, db)
+    if error:
+        return error
+    plan, pack_dates, days, preview = loaded
+
+    if not preview["ok"]:
+        names = ", ".join(
+            f"{m['item']} {m['pack_size']}".strip() for m in preview["missing_sku"][:6]
+        )
+        if preview["missing_sku"]:
+            return JSONResponse(
+                {
+                    "error": f"{len(preview['missing_sku'])} product(s) have no merchant "
+                             f"SKU: {names}. Amazon's shipment keys on the merchant SKU, "
+                             "so these boxes would ship against a shipment that does not "
+                             "list them. Fill the SKU in on the plan, then try again.",
+                    "missing_sku": preview["missing_sku"],
+                },
+                status_code=400,
+            )
+        return JSONResponse(
+            {"error": "No units were packed on the selected day(s)."}, status_code=400
+        )
+
+    # Refuse days that already have a shipment. Creating a second one for the same boxes
+    # would send Amazon two shipments for one set of cartons, and the FC would receive
+    # half of each — the same class of mistake as invoicing the same day twice.
+    already = [d["pack_date"] for d in days if d.get("shipment_confirmation_id")]
+    if already:
+        return JSONResponse(
+            {
+                "error": "Already sent to Amazon: "
+                + ", ".join(
+                    f"{d['pack_date']} ({d.get('shipment_confirmation_id')})"
+                    for d in days if d.get("shipment_confirmation_id")
+                )
+                + ". Creating a second shipment for the same boxes would have the FC "
+                "expecting twice what is on the truck.",
+                "pack_dates": already,
+            },
+            status_code=409,
+        )
+
+    # Credentials last of the cheap checks. Every guard above is about OUR data — an FC
+    # typo, an unverified day, a missing SKU, boxes already sent — and each is actionable
+    # whether or not Amazon is configured. Reporting "API not set up" first would hide a
+    # duplicate shipment behind a credentials message.
+    settings = get_settings()
+    if not settings.spapi_configured:
+        return JSONResponse(
+            {"error": "Amazon API is not set up. Add the SP_API_* keys to .env."},
+            status_code=400,
+        )
+
+    # The declared value is the PER-UNIT purchase rate, the same taxable value the GST
+    # invoice uses.
+    #
+    # **A zero declared value must never be sent.** With no purchase rate on file the
+    # route sent `declaredValue: 0`, and Amazon answered "We encountered an internal
+    # error. Please try again." — which reads like a transient fault and is not one. The
+    # identical call with a real amount succeeded immediately. So a missing rate is
+    # reported as the data problem it is, before the plan is even created, rather than
+    # producing a misleading error halfway through.
+    missing_rate = [
+        line for line in preview["lines"]
+        if float(get_purchase_rate(line["msku"], line.get("_asin", "")) or 0) <= 0
+    ]
+    if missing_rate:
+        names = ", ".join(
+            f"{line['_item']} {line['_pack_size']}".strip() for line in missing_rate[:6]
+        )
+        return JSONResponse(
+            {
+                "error": f"{len(missing_rate)} product(s) have no purchase rate: {names}. "
+                "Amazon needs a declared value per SKU for an Indian inbound shipment, "
+                "and it must not be zero. Add the rate to the master pricing first.",
+                "missing_rate": [
+                    {"msku": line["msku"], "item": line["_item"],
+                     "pack_size": line["_pack_size"]}
+                    for line in missing_rate
+                ],
+            },
+            status_code=400,
+        )
+
+    label = f"{plan.label or 'Plan'} · {', '.join(pack_dates)} · {fc_code}"
+    try:
+        plan_id = await spapi.create_inbound_plan(
+            AMAZON_SOURCE_ADDRESS,
+            preview["body"]["items"],
+            settings.sp_api_marketplace_id,
+            name=label[:60],
+        )
+    except spapi.SpApiError as exc:
+        # Amazon's message verbatim: it is what said "does not require prepOwner but
+        # SELLER was assigned. Accepted values: [NONE]" and named the exact SKU.
+        logger.warning("amazon create plan failed: %s", exc.message)
+        return JSONResponse({"error": exc.message}, status_code=502)
+
+    # **Persisted BEFORE placement is confirmed**, and before anything else can fail. A
+    # plan confirmed at Amazon with no local record is invisible here and real there, so
+    # the id is written the moment it exists.
+    await repository.attach_inbound_plan(db, plan.id, pack_dates, plan_id)
+
+    # India requires HSN and a declared value per SKU, and PLACEMENT is where it is
+    # enforced: without this the plan creates fine and then placement fails with
+    # "ERROR: Declared value need to be provided." Sent for every line rather than only
+    # the ones that look unset — Amazon already held these values for the SKUs tested and
+    # still refused until they were re-declared. Idempotent, so re-sending is harmless.
+    #
+    compliance_failures = []
+    for line in preview["lines"]:
+        rate = get_purchase_rate(line["msku"], line.get("_asin", ""))
+        hsn = lookup_hsn("", sku=line["msku"])
+        try:
+            await spapi.declare_item_compliance(
+                line["msku"],
+                hsn_code=hsn["hsn_code"],
+                declared_value=float(rate),
+                gst_rate=hsn["gst_rate"],
+            )
+        except spapi.SpApiError as exc:
+            compliance_failures.append(f"{line['msku']}: {exc.message}")
+
+    if compliance_failures:
+        logger.warning("amazon compliance failed: %s", "; ".join(compliance_failures))
+        return JSONResponse(
+            {
+                "error": "Amazon rejected the GST details for "
+                f"{len(compliance_failures)} SKU(s): "
+                + "; ".join(compliance_failures[:3]),
+                "inbound_plan_id": plan_id,
+                "hint": "The plan exists at Amazon but is not placed. Cancel it and fix "
+                        "the HSN or purchase rate first.",
+            },
+            status_code=502,
+        )
+
+    try:
+        options = await spapi.generate_placement_options(
+            plan_id, fc_code, preview["body"]["items"]
+        )
+    except spapi.SpApiError as exc:
+        logger.warning("amazon placement failed for %s: %s", plan_id, exc.message)
+        return JSONResponse(
+            {
+                "error": exc.message,
+                "inbound_plan_id": plan_id,
+                "hint": "The plan exists at Amazon but has no placement. Cancel it, or "
+                        "finish it in Seller Central.",
+            },
+            status_code=502,
+        )
+
+    # The destination Amazon actually chose, per option. `customPlacement` was honoured on
+    # the test plan, but this is read back rather than assumed — the FC decides the GSTIN.
+    detail = []
+    for option in options:
+        shipments = []
+        for shipment_id in option.get("shipmentIds") or []:
+            try:
+                shipment = await spapi.get_shipment(plan_id, shipment_id)
+                shipments.append(shipment.as_dict())
+            except spapi.SpApiError:
+                shipments.append({"shipment_id": shipment_id})
+        detail.append({
+            "placement_option_id": option.get("placementOptionId"),
+            "status": option.get("status"),
+            "expiration": option.get("expiration"),
+            "fees": [
+                {
+                    "target": f.get("target"),
+                    "amount": (f.get("value") or {}).get("amount"),
+                    "currency": (f.get("value") or {}).get("code"),
+                }
+                for f in (option.get("fees") or [])
+            ],
+            "shipments": shipments,
+        })
+
+    return JSONResponse({
+        "inbound_plan_id": plan_id,
+        "requested_fc": fc_code,
+        "pack_dates": pack_dates,
+        "units": preview["units"],
+        "lines": len(preview["lines"]),
+        "placement_options": detail,
+        "confirmed": False,
+        "next": "Review the destination and fee, then confirm to create the shipment.",
+    })
+
+
+@router.post("/amazon-shipment/confirm")
+async def confirm_amazon_shipment(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """**THE COMMIT POINT.** Confirm placement — this creates the real shipment.
+
+    Body: ``{"inbound_plan_id": "wf…", "placement_option_id": "pl…",
+    "pack_dates": [...]}``.
+
+    After this, `FBA…` ids exist at Amazon, Seller Central shows a working shipment, and
+    any placement fee is incurred. Nothing here can undo it.
+
+    The `FBA…` confirmation id and the destination Amazon chose are written onto the packing
+    days, which is what lets the invoice fill itself in and the box labels be fetched.
+    """
+    from app.shipment import spapi
+
+    if not get_settings().spapi_configured:
+        return JSONResponse(
+            {"error": "Amazon API is not set up."}, status_code=400
+        )
+
+    body, error = await _json_object(request)
+    if error:
+        return error
+    plan_id = str(body.get("inbound_plan_id") or "").strip()
+    option_id = str(body.get("placement_option_id") or "").strip()
+    if not plan_id or not option_id:
+        return JSONResponse(
+            {"error": "inbound_plan_id and placement_option_id are both required."},
+            status_code=400,
+        )
+
+    raw_dates = body.get("pack_dates") or []
+    if isinstance(raw_dates, str):
+        raw_dates = [raw_dates]
+    pack_dates = [str(d).strip() for d in raw_dates if str(d).strip()]
+    invalid = [d for d in pack_dates if not _valid_date(d)]
+    if invalid:
+        return JSONResponse(
+            {"error": f"Not a date (YYYY-MM-DD): {', '.join(invalid)}"}, status_code=400
+        )
+
+    plan = await repository.get_active_plan(db)
+    if plan is None:
+        return _no_plan()
+
+    try:
+        await spapi.confirm_placement(plan_id, option_id)
+        shipments = await spapi.plan_shipments(plan_id)
+    except spapi.SpApiError as exc:
+        logger.warning("amazon confirm failed for %s: %s", plan_id, exc.message)
+        return JSONResponse(
+            {
+                "error": exc.message,
+                "inbound_plan_id": plan_id,
+                "hint": "Check Seller Central before retrying — if the confirmation went "
+                        "through, retrying would not create a second shipment but the app "
+                        "would not know the id.",
+            },
+            status_code=502,
+        )
+
+    # Record what Amazon actually created. The destination comes from Amazon, never from
+    # the FC that was requested: they can differ, and the destination state decides which
+    # of the 15 GSTINs the invoice must use.
+    if shipments and pack_dates:
+        first = shipments[0]
+        await repository.attach_amazon_shipment(
+            db, plan.id, pack_dates,
+            inbound_plan_id=plan_id,
+            amazon_shipment_id=first.shipment_id,
+            confirmation_id=first.confirmation_id,
+            warehouse_id=first.warehouse_id,
+            state=first.state,
+        )
+
+    return JSONResponse({
+        "confirmed": True,
+        "inbound_plan_id": plan_id,
+        "shipments": [s.as_dict() for s in shipments],
+        # Named so the screen can say it plainly: more than one shipment means Amazon split
+        # the plan, and each part needs its own labels.
+        "split": len(shipments) > 1,
+    })
+
+
+@router.post("/amazon-shipment/cancel")
+async def cancel_amazon_shipment(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """Void an inbound plan at Amazon, and forget it locally.
+
+    For a plan created by mistake, or one whose placement failed halfway. Verified against
+    the live account: the plan status becomes `VOIDED`.
+
+    Deliberately available: without it, a mis-click leaves a plan sitting in Seller Central
+    for ever, and the days would refuse a second attempt because they already carry a plan
+    id.
+    """
+    from app.shipment import spapi
+
+    if not get_settings().spapi_configured:
+        return JSONResponse({"error": "Amazon API is not set up."}, status_code=400)
+
+    body, error = await _json_object(request)
+    if error:
+        return error
+    plan_id = str(body.get("inbound_plan_id") or "").strip()
+    if not plan_id:
+        return JSONResponse({"error": "inbound_plan_id is required."}, status_code=400)
+
+    plan = await repository.get_active_plan(db)
+    try:
+        await spapi.cancel_inbound_plan(plan_id)
+    except spapi.SpApiError as exc:
+        return JSONResponse({"error": exc.message}, status_code=502)
+
+    if plan is not None:
+        await repository.clear_inbound_plan(db, plan.id, plan_id)
+    return JSONResponse({"cancelled": True, "inbound_plan_id": plan_id})
+
+
+@router.get("/amazon-shipment/labels")
+async def amazon_shipment_labels(
+    request: Request,
+    confirmation_id: str,
+    page_type: str = "PackageLabel_Thermal",
+    role: str = Depends(require_admin),
+):
+    """A download URL for Amazon's box labels.
+
+    Returns the URL rather than proxying the PDF: it is a short-lived signed Amazon link,
+    and streaming it through this app would add a timeout to a download that works fine
+    directly.
+
+    Only the three page types that actually work for a non-partnered ("Other" carrier)
+    shipment are offered — A4_2 and Letter_2 are refused by Amazon for this shipment type,
+    and an option that always errors reads as a broken app.
+    """
+    from app.shipment import spapi
+
+    if not get_settings().spapi_configured:
+        return JSONResponse({"error": "Amazon API is not set up."}, status_code=400)
+    confirmation_id = confirmation_id.strip().upper()
+    if not confirmation_id:
+        return JSONResponse({"error": "confirmation_id is required."}, status_code=400)
+
+    try:
+        url = await spapi.label_url(confirmation_id, page_type)
+    except spapi.SpApiError as exc:
+        return JSONResponse({"error": exc.message}, status_code=502)
+    return JSONResponse({
+        "url": url,
+        "page_type": page_type,
+        "formats": list(spapi.LABEL_PAGE_TYPES),
     })
 
 

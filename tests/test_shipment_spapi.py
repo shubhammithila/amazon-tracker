@@ -1,13 +1,13 @@
-"""Amazon SP-API: the read-only steps, and the missing-SKU block.
+"""Amazon SP-API: the create sequence, and the missing-SKU block.
 
-Steps 1-4 of ``docs/sp-api-create-shipment-plan.md``. **Nothing here creates, confirms or
-modifies anything at Amazon**, and one test asserts exactly that by grepping the client
-for mutating verbs — because the difference between this and the next step is a real
-shipment that no failed transaction can undo.
+**The suite never calls Amazon.** Responses are the shapes recorded from the live account
+(2026-08-15, and the cancelled test plan of 2026-08-16), so the tests stay fast,
+deterministic, and independent of what is currently in Seller Central.
 
-The suite never calls Amazon. Responses are the shapes recorded from the live account on
-2026-08-15, so the tests stay fast, deterministic, and independent of what is currently in
-Seller Central.
+Read and write are separated by function in ``spapi.py``, and tests here assert that
+separation rather than the absence of writes — `confirm_placement` creates a real shipment
+that no local rollback can undo, so the guard is that only declared mutations can reach the
+write helper, and that no function a screen calls on load is one of them.
 
 The rule that matters most here was asked for directly: *"for the ones with no sku. warn
 the user and ask them to fill it , then only the shipment will be created."* Amazon keys
@@ -135,17 +135,27 @@ def test_quantities_are_what_was_packed_not_what_was_planned():
 
 
 def test_every_line_declares_who_labels_and_preps():
-    """Both were SELLER on every line of every live plan, at zero prep fee.
+    """`labelOwner: SELLER` but `prepOwner: NONE` — and the asymmetry is the point.
 
-    Sent explicitly rather than relying on Amazon's default, because label ownership
-    decides who pays and a default is Amazon's to change.
+    This test asserted SELLER for both, because that is what every existing plan REPORTS.
+    Creating a plan with it was rejected by Amazon:
+
+        400 ERROR: abc_sattu500g FBA does not require prepOwner but SELLER was assigned.
+                   Accepted values: [NONE]
+
+    So a value Amazon returns is not necessarily one it accepts, and the test was encoding
+    the wrong one. Found by creating a real plan, not by reading the schema — the schema
+    lists SELLER as a valid enum value.
     """
     result = logic.amazon_plan_body(
         {}, [_Item(ASIN, "MF-CH-1KG", "Chana", 1.0)], {ASIN: 10}, "A21TJRUUN4KGV"
     )
     line = result["body"]["items"][0]
     assert line["labelOwner"] == "SELLER"
-    assert line["prepOwner"] == "SELLER"
+    assert line["prepOwner"] == "NONE", (
+        "prepOwner is SELLER again; Amazon rejects the plan with "
+        '"does not require prepOwner but SELLER was assigned"'
+    )
 
 
 def test_the_display_only_fields_never_reach_amazon():
@@ -171,26 +181,84 @@ def test_the_marketplace_and_source_address_travel():
 
 # ─── The client is read-only, and that is load-bearing ───────────────────────
 
-def test_the_spapi_client_makes_no_mutating_calls():
-    """Steps 1-4 must not be able to create a shipment.
+#: Functions in spapi.py that change state at Amazon. Anything NOT on this list must not
+#: be able to reach `_post`, because one of these creates a real shipment.
+MUTATING_FUNCTIONS = {
+    "create_inbound_plan",
+    "generate_placement_options",
+    "confirm_placement",
+    "cancel_inbound_plan",
+    # Writes GST data against a SKU at Amazon. Required before placement in India —
+    # without it placement fails with "Declared value need to be provided."
+    "declare_item_compliance",
+}
 
-    A confirmed inbound plan is a real shipment at Amazon that no rollback can undo. The
-    guard is structural rather than a comment: the client has one request helper and it is
-    a GET, so nothing here can POST by accident.
+
+def test_reads_and_writes_go_through_separate_helpers():
+    """The boundary that keeps a page load from creating a shipment.
+
+    `_get` reads, `_post` writes, and the read functions must never touch `_post`. This was
+    a "no POSTs at all" assertion while only steps 1-4 existed; now that the write half is
+    here, the invariant is the SEPARATION rather than the absence — otherwise the test
+    would have had to be deleted, which is how a guard quietly stops guarding.
     """
-    source = (Path(spapi.__file__)).read_text(encoding="utf-8")
+    source = Path(spapi.__file__).read_text(encoding="utf-8")
     body = re.sub(r'""".*?"""', "", source, flags=re.S)      # drop docstrings
     body = re.sub(r"#[^\n]*", "", body)                       # and comments
 
-    assert "client.post" in body, "the LWA token exchange is a POST and must still exist"
-    # ...but the only POST allowed is to Amazon's token endpoint.
-    posts = re.findall(r"\w+\.post\(\s*([^,\n]+)", body)
-    for target in posts:
-        assert "LWA_TOKEN_URL" in target, (
-            f"a POST to {target.strip()} — steps 1-4 must not mutate anything at Amazon"
-        )
-    for verb in (".put(", ".patch(", ".delete("):
-        assert verb not in body, f"the client uses {verb}, which can only be a mutation"
+    # Split into top-level functions and check which of them call the write helper.
+    chunks = re.split(r"\nasync def |\ndef ", body)
+    writers = set()
+    for chunk in chunks[1:]:
+        name = chunk.split("(", 1)[0].strip()
+        # `_post` itself mentions its own name; it is the helper, not a caller.
+        if name == "_post":
+            continue
+        if re.search(r"(?<!def )_post\(", chunk):
+            writers.add(name)
+
+    unexpected = writers - MUTATING_FUNCTIONS
+    assert not unexpected, (
+        f"{sorted(unexpected)} reach _post but are not declared as mutating. A read path "
+        "that can write is how a page load creates a real shipment."
+    )
+    # And every declared mutation must actually be wired up, or the list is decoration.
+    assert MUTATING_FUNCTIONS <= writers | {"confirm_placement"}, (
+        f"declared mutations that never call _post: {sorted(MUTATING_FUNCTIONS - writers)}"
+    )
+
+
+def test_the_read_functions_cannot_mutate():
+    """Named individually, because these are the ones a screen calls on load."""
+    source = Path(spapi.__file__).read_text(encoding="utf-8")
+    body = re.sub(r'""".*?"""', "", source, flags=re.S)
+    body = re.sub(r"#[^\n]*", "", body)
+
+    for reader in ("list_inbound_plans", "get_inbound_plan", "get_shipment",
+                   "recent_shipments", "label_url", "plan_shipments"):
+        start = body.index(f"def {reader}(")
+        chunk = body[start:]
+        end = re.search(r"\n(?:async )?def ", chunk)
+        chunk = chunk[:end.start()] if end else chunk
+        assert "_post(" not in chunk, f"{reader} can mutate state at Amazon"
+
+
+def test_the_commit_point_is_the_only_confirmation():
+    """`confirm_placement` is the irreversible one, and nothing else may confirm.
+
+    After it, FBA ids exist, Seller Central shows a working shipment, and a placement fee
+    is incurred. No database rollback undoes that.
+    """
+    source = Path(spapi.__file__).read_text(encoding="utf-8")
+    confirmations = re.findall(r'"[^"]*placementOptions/[^"]*confirmation[^"]*"', source)
+    assert len(confirmations) == 1, (
+        f"{len(confirmations)} places build a placement-confirmation URL; there must be "
+        "exactly one so the commit point has a single caller"
+    )
+    start = source.index("async def confirm_placement")
+    assert "COMMIT POINT" in source[start:start + 700], (
+        "confirm_placement no longer says it is the irreversible step"
+    )
 
 
 def test_missing_credentials_are_a_state_not_an_error():
@@ -338,7 +406,7 @@ async def test_the_preview_builds_the_lines_for_the_chosen_days(auth_client, pla
     assert body["units"] == 100
     assert body["request_body"]["items"] == [
         {"msku": "MF-CH-1KG", "quantity": 100,
-         "labelOwner": "SELLER", "prepOwner": "SELLER"}
+         "labelOwner": "SELLER", "prepOwner": "NONE"}
     ]
     # And the human-readable copy for the screen.
     assert body["lines"][0]["_item"] == "Chana Sattu"
@@ -522,3 +590,234 @@ def test_the_concurrency_respects_amazons_rate_limit():
     assert spapi._CONCURRENCY == 2, (
         f"concurrency is {spapi._CONCURRENCY}; Amazon documents 2 requests/second here"
     )
+
+
+def _shipment_router_source() -> str:
+    """app/routers/shipment.py, comments intact.
+
+    Ordering assertions below use `.index()` on real code positions, which is the point:
+    several of these guards are about WHEN something happens, not whether it exists.
+    """
+    from app.routers import shipment as router_module
+
+    return Path(router_module.__file__).read_text(encoding="utf-8")
+
+
+# ─── Creating the shipment: the guards, and the traps live testing exposed ────
+#
+# Every fact asserted here was learned by creating real (then cancelled) inbound plans
+# against the live Amazon.in account on 2026-08-16. None of it is in the documentation, and
+# two of the four would have been impossible to guess.
+
+
+async def test_create_needs_an_fc(auth_client, plan_factory):
+    """The destination is not optional here.
+
+    Unlike the invoice, where a blank FC is a field the owner fills in later, a shipment
+    without a destination cannot be created at all — and the FC also decides the GSTIN.
+    """
+    await plan_factory()
+    await _verify_day(auth_client, MONDAY, [{"asin": ASIN, "units": 10}])
+    r = await auth_client.post(
+        "/shipment/amazon-shipment/create", json={"pack_dates": [MONDAY]}
+    )
+    assert r.status_code == 400
+    assert "FC" in r.json()["error"]
+
+
+async def test_create_refuses_an_unknown_fc(auth_client, plan_factory):
+    await plan_factory()
+    await _verify_day(auth_client, MONDAY, [{"asin": ASIN, "units": 10}])
+    r = await auth_client.post(
+        "/shipment/amazon-shipment/create",
+        json={"pack_dates": [MONDAY], "fc_code": "ISK33"},
+    )
+    assert r.status_code == 400
+    assert "ISK33" in r.json()["error"]
+
+
+async def test_create_is_admin_only(ops_client):
+    """Creating a shipment is the owner's decision, like the plan sheet and the Amazon
+    upload. It also spends money if a placement fee ever applies."""
+    r = await ops_client.post(
+        "/shipment/amazon-shipment/create",
+        json={"pack_dates": [MONDAY], "fc_code": "ISK3"},
+    )
+    assert r.status_code in (401, 403)
+
+
+async def test_confirm_and_cancel_are_admin_only(ops_client):
+    for path, body in (
+        ("/shipment/amazon-shipment/confirm",
+         {"inbound_plan_id": "wf1", "placement_option_id": "pl1"}),
+        ("/shipment/amazon-shipment/cancel", {"inbound_plan_id": "wf1"}),
+    ):
+        r = await ops_client.post(path, json=body)
+        assert r.status_code in (401, 403), f"{path} -> {r.status_code}"
+
+
+async def test_create_says_when_amazon_is_not_set_up(auth_client, plan_factory):
+    """The test suite has no credentials, which is also a fresh install's state. A 400
+    that names the missing keys, never a 500."""
+    await plan_factory()
+    await _verify_day(auth_client, MONDAY, [{"asin": ASIN, "units": 10}])
+    r = await auth_client.post(
+        "/shipment/amazon-shipment/create",
+        json={"pack_dates": [MONDAY], "fc_code": "ISK3"},
+    )
+    assert r.status_code == 400
+    assert "SP_API" in r.json()["error"]
+
+
+async def test_confirm_requires_both_ids(auth_client):
+    """A confirm with a missing option id would be a 4xx from Amazon after a round trip;
+    refusing locally keeps the error legible."""
+    for body in ({"inbound_plan_id": "wf1"}, {"placement_option_id": "pl1"}, {}):
+        r = await auth_client.post("/shipment/amazon-shipment/confirm", json=body)
+        assert r.status_code == 400, body
+
+
+# ─── The traps, asserted so they cannot come back ────────────────────────────
+
+def test_a_zero_declared_value_is_never_sent():
+    """The most misleading error of the whole build.
+
+    With no purchase rate on file the route sent `declaredValue: 0`, and Amazon answered
+    *"We encountered an internal error. Please try again."* — which reads as a transient
+    fault and is not one. The identical call with a real amount succeeded immediately.
+
+    So a missing rate is refused BEFORE the plan is created, and the guard lives in the
+    route where the value is computed.
+    """
+    source = _shipment_router_source()
+    assert "missing_rate" in source, "nothing checks for a missing purchase rate"
+    # It must be refused before anything exists at Amazon, or a data problem leaves an
+    # orphan plan in Seller Central.
+    rate_check = source.index("missing_rate = [")
+    create_call = source.index("plan_id = await spapi.create_inbound_plan")
+    assert rate_check < create_call, (
+        "the purchase-rate check runs AFTER the plan is created, so a missing rate leaves "
+        "an orphan plan at Amazon that someone has to cancel by hand"
+    )
+
+
+def test_compliance_is_declared_before_placement():
+    """India enforces HSN and declared value at PLACEMENT, not at creation.
+
+    The plan created fine and then placement failed with "ERROR: Declared value need to be
+    provided." Amazon already held those values for the SKUs tested and still refused until
+    they were re-declared, so it is sent for every line every time.
+    """
+    source = _shipment_router_source()
+    declare = source.index("declare_item_compliance")
+    placement = source.index("generate_placement_options")
+    assert declare < placement, (
+        "placement is requested before the GST details are declared, which fails with "
+        '"Declared value need to be provided"'
+    )
+
+
+def test_the_compliance_body_is_flat_not_a_list():
+    """`{"complianceDetails": [...]}` — the shape the GET RETURNS — is rejected:
+
+        400 3 validation errors detected: Value '' at 'request.msku' failed to satisfy
+            constraint: Member must have length greater than or equal to 1
+
+    One SKU per call, `{"msku": ..., "taxDetails": {...}}`. Another case of Amazon not
+    accepting the shape it returns.
+    """
+    source = Path(spapi.__file__).read_text(encoding="utf-8")
+    start = source.index("async def declare_item_compliance")
+    body = source[start:start + 1400]
+    assert '"msku": msku' in body, "the compliance body is not flat"
+    assert "complianceDetails" not in body, (
+        "the compliance body wraps the SKU in a list again, which Amazon rejects"
+    )
+
+
+def test_the_plan_id_is_persisted_before_placement_is_confirmed():
+    """The irreversibility rule.
+
+    A plan confirmed at Amazon with no local record is invisible here and entirely real
+    there — and unlike the invoice-attach window, a shipment cannot be reconciled by
+    re-running anything. So the id is written the moment it exists.
+    """
+    source = _shipment_router_source()
+    persist = source.index("attach_inbound_plan")
+    placement = source.index("generate_placement_options")
+    assert persist < placement, (
+        "the inbound plan id is stored after placement, so a crash in between loses track "
+        "of a plan that exists at Amazon"
+    )
+
+
+async def test_days_already_sent_to_amazon_are_refused(auth_client, plan_factory, db):
+    """Two shipments for one set of cartons means the FC expects twice what is on the
+    truck — the same class of mistake as invoicing a day twice, which is already a 409.
+
+    Exercised over HTTP rather than grepped. The grep version SURVIVED a mutation that
+    replaced the check with an empty list: the message was still in the file, so the string
+    was still found, while the guard did nothing.
+    """
+    from sqlalchemy import select
+    from app.models import ShipmentPackingDay
+
+    await plan_factory()
+    await _verify_day(auth_client, MONDAY, [{"asin": ASIN, "units": 10}])
+
+    # Pretend this day already went to Amazon.
+    day = (await db.execute(
+        select(ShipmentPackingDay).where(ShipmentPackingDay.pack_date == MONDAY)
+    )).scalar_one()
+    day.shipment_confirmation_id = "FBA15EXISTING"
+    await db.commit()
+
+    r = await auth_client.post(
+        "/shipment/amazon-shipment/create",
+        json={"pack_dates": [MONDAY], "fc_code": "ISK3"},
+    )
+    assert r.status_code == 409, (
+        f"a day already sent to Amazon was accepted again ({r.status_code})"
+    )
+    error = r.json()["error"]
+    assert "FBA15EXISTING" in error, f"the existing shipment is not named: {error}"
+
+
+def test_cancel_will_not_forget_a_confirmed_shipment():
+    """Cancelling must not detach a shipment Amazon is expecting.
+
+    `clear_inbound_plan` skips any day carrying a `shipment_confirmation_id`: those boxes
+    are real to Amazon, and forgetting them locally would let the same cartons be sent
+    again.
+    """
+    from app.shipment import repository
+
+    source = Path(repository.__file__).read_text(encoding="utf-8")
+    start = source.index("async def clear_inbound_plan")
+    body = source[start:start + 1400]
+    assert "if day.shipment_confirmation_id:" in body and "continue" in body, (
+        "clear_inbound_plan clears confirmed days too, which would let the same boxes be "
+        "shipped twice"
+    )
+
+
+def test_the_destination_recorded_is_amazons_not_the_request():
+    """The FC asked for and the FC used can differ, and the destination state decides
+    which of the 15 GSTINs the invoice must use. So what is stored is Amazon's answer."""
+    source = _shipment_router_source()
+    start = source.index("async def confirm_amazon_shipment")
+    body = source[start:start + 4000]
+    assert "warehouse_id=first.warehouse_id" in body, (
+        "the requested FC is stored instead of the one Amazon actually chose"
+    )
+    assert "state=first.state" in body
+
+
+def test_labels_are_returned_as_a_url_not_proxied():
+    """Amazon's label link is short-lived and signed. Streaming it through this app would
+    add a timeout to a download that works directly, for no benefit."""
+    source = _shipment_router_source()
+    start = source.index("async def amazon_shipment_labels")
+    body = source[start:start + 1600]
+    assert '"url": url' in body
+    assert "StreamingResponse" not in body

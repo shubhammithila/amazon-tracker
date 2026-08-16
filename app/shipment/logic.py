@@ -731,11 +731,20 @@ def amazon_plan_items(items, units_by_asin) -> dict:
         lines.append({
             "msku": sku,
             "quantity": units,
-            # Both SELLER on every line of every live plan on this account, and the
-            # prep fee came back 0 INR. Sent explicitly rather than omitted: the
-            # default is Amazon's to change, and label ownership decides who pays.
+            # `labelOwner: SELLER` but `prepOwner: NONE`, and the asymmetry is not a
+            # typo — it is what Amazon actually accepts.
+            #
+            # Every existing plan REPORTS `prepOwner: SELLER`, so that is what this sent
+            # originally, and creating a plan with it was rejected outright:
+            #
+            #   400 ERROR: abc_sattu500g FBA does not require prepOwner but SELLER was
+            #              assigned. Accepted values: [NONE]
+            #
+            # A value Amazon RETURNS is not necessarily one it ACCEPTS. The error names
+            # the msku, so this is per-SKU: a product that genuinely needed prep would
+            # want SELLER, and Amazon says so by name rather than failing silently.
             "labelOwner": "SELLER",
-            "prepOwner": "SELLER",
+            "prepOwner": "NONE",
             # Not sent to Amazon — carried so the dry run can be READ by a human.
             # A screen of mskus and numbers is not checkable; product names are.
             "_item": label,

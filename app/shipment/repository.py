@@ -745,6 +745,15 @@ async def load_days_with_entries(db: AsyncSession, plan_id: int) -> list[dict]:
                 # None when the invoice row has since been deleted, which the screen
                 # falls back from rather than rendering "undefined" on a day card.
                 "invoice_no": invoice_numbers.get(day.invoice_id),
+                # The Amazon shipment these boxes went into. `shipment_confirmation_id` is
+                # the FBA15… string that reaches the GST invoice; the destination is what
+                # Amazon actually CHOSE, which is not necessarily the FC that was requested
+                # and is what decides the recipient GSTIN.
+                "inbound_plan_id": day.inbound_plan_id,
+                "amazon_shipment_id": day.amazon_shipment_id,
+                "shipment_confirmation_id": day.shipment_confirmation_id,
+                "destination_warehouse_id": day.destination_warehouse_id,
+                "destination_state": day.destination_state,
                 # Units only. Cartons are a day-level fact and are already above as
                 # `total_cartons`; a per-entry key here would invite summing it back
                 # up into a number that means nothing.
@@ -769,3 +778,111 @@ def _as_int(value) -> int:
         return int(float(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+# ─── The Amazon shipment on a set of days ────────────────────────────────────
+#
+# Written by the SP-API routes. Separate small functions rather than one flexible one,
+# because they happen at different moments and the ORDER is the safety property: the plan
+# id is written BEFORE placement is confirmed, and the confirmation id only after Amazon
+# has actually created the shipment.
+
+
+async def attach_inbound_plan(
+    db: AsyncSession, plan_id: int, pack_dates: list[str], inbound_plan_id: str
+) -> int:
+    """Record the Amazon inbound plan id against the chosen days.
+
+    Called **before** `confirmPlacementOption`, and that ordering is the whole point. A plan
+    confirmed at Amazon with no local record is invisible to this app and entirely real to
+    them — the same failure the invoice/attach window is documented for, except a shipment
+    cannot be reconciled by re-running anything.
+
+    Committed immediately, not left to a later flush, so a crash between here and the
+    confirm still leaves the id recoverable.
+    """
+    if not pack_dates:
+        return 0
+    result = await db.execute(
+        select(ShipmentPackingDay).where(
+            ShipmentPackingDay.plan_id == plan_id,
+            ShipmentPackingDay.pack_date.in_(pack_dates),
+        )
+    )
+    days = list(result.scalars())
+    for day in days:
+        day.inbound_plan_id = inbound_plan_id
+    await db.commit()
+    return len(days)
+
+
+async def attach_amazon_shipment(
+    db: AsyncSession,
+    plan_id: int,
+    pack_dates: list[str],
+    *,
+    inbound_plan_id: str,
+    amazon_shipment_id: str,
+    confirmation_id: str,
+    warehouse_id: str,
+    state: str,
+) -> int:
+    """Record the confirmed shipment: its FBA id and the destination Amazon chose.
+
+    Keyword-only past the dates because five strings in a row is exactly where an
+    `amazon_shipment_id` ends up in the `confirmation_id` column — and those two are
+    different identifiers for the same shipment (`shcc4552…` versus `FBA15M59XQFZ`), so a
+    swap would produce a label lookup that fails and an invoice carrying a string the owner
+    has never seen.
+
+    `warehouse_id` and `state` come from Amazon's answer, never from the FC that was
+    requested: the destination decides which of the 15 GSTINs the invoice must use.
+    """
+    if not pack_dates:
+        return 0
+    result = await db.execute(
+        select(ShipmentPackingDay).where(
+            ShipmentPackingDay.plan_id == plan_id,
+            ShipmentPackingDay.pack_date.in_(pack_dates),
+        )
+    )
+    days = list(result.scalars())
+    for day in days:
+        day.inbound_plan_id = inbound_plan_id
+        day.amazon_shipment_id = amazon_shipment_id
+        day.shipment_confirmation_id = confirmation_id
+        day.destination_warehouse_id = warehouse_id
+        day.destination_state = state
+    await db.commit()
+    return len(days)
+
+
+async def clear_inbound_plan(
+    db: AsyncSession, plan_id: int, inbound_plan_id: str
+) -> int:
+    """Forget a cancelled plan, so the days can be sent to Amazon again.
+
+    Scoped to the matching `inbound_plan_id` rather than clearing whatever the days hold:
+    cancelling plan A must not silently detach a shipment created under plan B.
+
+    Only clears rows that have NOT been confirmed. A day carrying a
+    `shipment_confirmation_id` describes boxes Amazon is expecting, and forgetting that
+    locally would let the same cartons be sent twice.
+    """
+    result = await db.execute(
+        select(ShipmentPackingDay).where(
+            ShipmentPackingDay.plan_id == plan_id,
+            ShipmentPackingDay.inbound_plan_id == inbound_plan_id,
+        )
+    )
+    cleared = 0
+    for day in result.scalars():
+        if day.shipment_confirmation_id:
+            continue
+        day.inbound_plan_id = None
+        day.amazon_shipment_id = None
+        day.destination_warehouse_id = None
+        day.destination_state = None
+        cleared += 1
+    await db.commit()
+    return cleared
