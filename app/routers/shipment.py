@@ -2415,6 +2415,21 @@ async def build_invoice_payload(
     # browser so the CSV path and this path get the identical number from one function.
     weight = logic.shipment_weight(lines)
 
+    # **What Amazon recorded beats what was typed.** If the shipment was created through
+    # this app, the days already carry the FBA id and the destination Amazon actually
+    # chose — and those are facts, where the form fields are intentions. Preferring them
+    # is what makes the invoice fill itself in after a shipment is created, and it is also
+    # the only way the FC on a tax document cannot disagree with where the boxes went.
+    #
+    # A typed value still wins over nothing, for the manual path where the shipment was
+    # made in Seller Central and the app was told about it afterwards.
+    for day in days:
+        if getattr(day, "shipment_confirmation_id", None):
+            shipment_id = shipment_id or day.shipment_confirmation_id
+            if getattr(day, "destination_warehouse_id", None):
+                fc_code = day.destination_warehouse_id
+            break
+
     # The chosen FC resolved to an address, a state and a GSTIN. Empty dict when no
     # code was supplied, so the invoice screen behaves exactly as it did before.
     fc_info = get_fc_info(fc_code) if fc_code else {}

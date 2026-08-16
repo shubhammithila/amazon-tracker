@@ -106,6 +106,21 @@ h2{font-size:20px;font-weight:600;margin-bottom:4px}
 .amz-table{margin-top:6px;border-collapse:collapse;width:100%}
 .amz-table td{padding:3px 8px;font-size:12px;border-bottom:1px solid var(--border)}
 .amz-table td:last-child{color:var(--text-muted)}
+/* The Amazon action. Distinct from .btn-green (which raises an invoice) because these are
+   two different irreversible things, and clicking the wrong one costs differently. */
+.btn-amz{background:var(--accent);color:var(--on-accent);border:none;border-radius:6px;
+  padding:7px 14px;font-size:12.5px;font-weight:600;cursor:pointer}
+.btn-amz:hover:not(:disabled){background:var(--accent-hover)}
+.btn-amz:disabled{opacity:.45;cursor:default}
+/* The confirm button sits inside the panel, full width and separated: it is the
+   irreversible step and must not read as one option among a row of buttons. */
+.amz-confirm{display:block;width:100%;margin-top:8px;padding:10px}
+.amz-labels{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 8px}
+.amz-labels .btn-outline{padding:5px 10px;font-size:11.5px}
+/* The Amazon shipment id on a day card. Monospace because it is an identifier that gets
+   compared character by character against Seller Central. */
+.day .d-shipped-amz{font-size:11px;color:var(--text-muted);font-weight:600;
+  align-self:center;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
 .badge.open{background:var(--surface2);color:var(--text-muted)}
 .badge.submitted{background:var(--blue-soft);color:var(--blue)}
@@ -795,6 +810,23 @@ function renderDays(){
       actions.push(`<span class="d-invoiced">On invoice ${label}</span>`);
     }
 
+    /* The Amazon shipment these boxes went into, on any day that has one.
+
+       Shown independently of the invoice, because the two happen in that order and the
+       gap between them is real: the shipment exists at Amazon first, and the invoice is
+       raised against it afterwards. A day showing an FBA id but no invoice is the normal
+       state in between, not an error.
+
+       The destination is included because it is Amazon's answer rather than the FC that
+       was requested, and it decides which GSTIN the invoice uses. */
+    if(d.shipment_confirmation_id){
+      const dest = d.destination_warehouse_id
+        ? ` → ${esc(d.destination_warehouse_id)}` : "";
+      actions.push(
+        `<span class="d-shipped-amz">${esc(d.shipment_confirmation_id)}${dest}</span>`
+      );
+    }
+
     /* Verified days get a TICK BOX rather than their own Invoice button.
 
        "sometimes even if the carton or the units is above the benchmark then also
@@ -908,6 +940,11 @@ function renderInvoiceBar(){
       <button class="btn-outline" id="ib-preview" ${chosen.length ? "" : "disabled"}
               title="Show exactly what would be sent to Amazon for the ticked days — sends nothing"
               onclick="previewAmazonShipment()">Check shipment data</button>
+      <!-- Creates the plan at Amazon and places it at the chosen FC. Stops before
+           confirming, so nothing has shipped and the plan can still be cancelled. -->
+      <button class="btn-amz" id="ib-create" ${chosen.length ? "" : "disabled"}
+              title="Create the shipment at Amazon for the ticked days and the chosen FC"
+              onclick="createAmazonShipment()">Create shipment at Amazon</button>
       <button class="btn-green" id="ib-go" ${chosen.length ? "" : "disabled"}
               onclick="invoiceSelectedDays()">
         Create invoice${chosen.length > 1 ? ` from ${chosen.length} days` : ""}</button>
@@ -1109,6 +1146,268 @@ async function previewAmazonShipment(){
     showAmazonPanel([amazonLine("Could not reach the server.", "warn")]);
   }finally{
     button.disabled = false; button.textContent = original;
+  }
+}
+
+/* ── Creating the shipment at Amazon ─────────────────────────────────────────
+
+   TWO clicks, and the split is the safety property rather than ceremony.
+
+   `createAmazonShipment` makes the plan and asks Amazon to place it at the chosen FC.
+   Nothing has shipped at that point and the plan can be cancelled. `confirmAmazonShipment`
+   is the irreversible one: after it, FBA ids exist, Seller Central shows a working
+   shipment, and any placement fee is incurred. So the destination Amazon actually chose
+   and the fee it will charge are on screen BEFORE that button is reachable. */
+
+//: Held between the two clicks. Not read back off the DOM, because renderDays() replaces
+//: the panel whenever a tick changes — and losing the plan id mid-sequence would leave a
+//: real plan at Amazon that the screen could no longer confirm or cancel.
+let pendingAmazonPlan = null;
+
+async function createAmazonShipment(){
+  const verified = days.filter(d => d.status === "verified");
+  const chosen = verified.filter(d => invoicePick.has(d.pack_date)).map(d => d.pack_date);
+  if(!chosen.length){
+    alert("Tick at least one verified day first.");
+    return;
+  }
+  const fc = document.getElementById("fc-pick").value;
+  if(!fc){
+    alert("Choose the destination FC first — Amazon needs it, and it decides which GSTIN "
+      + "the invoice uses.");
+    return;
+  }
+  if(!confirm(
+      `Create a shipment at Amazon?\n\n`
+      + `Days: ${chosen.join(", ")}\nDestination: ${fc}\n\n`
+      + "This creates a plan in Seller Central. Nothing ships yet — you will see the "
+      + "destination and the fee, and then confirm separately."
+  )) return;
+
+  const button = document.getElementById("ib-create");
+  const original = button.textContent;
+  button.disabled = true; button.textContent = "Creating at Amazon…";
+  showAmazonPanel([amazonLine("Talking to Amazon — this takes a few seconds.", "muted")]);
+  try{
+    const r = await fetch("/shipment/amazon-shipment/create", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({pack_dates: chosen, fc_code: fc}),
+    });
+    const data = await r.json();
+    if(!r.ok){
+      /* Amazon's own message, verbatim. It is what named the SKU with no purchase rate
+         and the one whose prepOwner was wrong — paraphrasing it would have cost hours. */
+      const nodes = [amazonLine(data.error || "Could not create the shipment.", "warn")];
+      for(const m of (data.missing_rate || [])){
+        nodes.push(amazonLine(`  no purchase rate: ${m.item} ${m.pack_size} (${m.msku})`,
+                              "muted"));
+      }
+      for(const m of (data.missing_sku || [])){
+        nodes.push(amazonLine(`  no merchant SKU: ${m.item} ${m.pack_size}`, "muted"));
+      }
+      if(data.inbound_plan_id){
+        // A plan exists at Amazon but is not placed. Offer the cleanup rather than
+        // leaving it for someone to find in Seller Central weeks later.
+        nodes.push(amazonLine(data.hint || "", "muted"));
+        nodes.push(cancelPlanButton(data.inbound_plan_id));
+      }
+      showAmazonPanel(nodes);
+      return;
+    }
+    pendingAmazonPlan = {plan_id: data.inbound_plan_id, pack_dates: data.pack_dates};
+    renderAmazonPlacement(data);
+  }catch(err){
+    showAmazonPanel([amazonLine("Could not reach the server. Check Seller Central before "
+      + "retrying — a plan may have been created.", "warn")]);
+  }finally{
+    button.disabled = false; button.textContent = original;
+  }
+}
+
+function cancelPlanButton(planId){
+  const button = document.createElement("button");
+  button.className = "amz-row";
+  button.type = "button";
+  button.textContent = "Cancel this plan at Amazon";
+  button.onclick = () => cancelAmazonShipment(planId);
+  return button;
+}
+
+/* The review step: what Amazon offered, and what it will cost.
+
+   The destination shown is Amazon's ANSWER, not the FC that was requested. They can
+   differ, and the destination state decides which of the 15 GSTINs the invoice uses — so
+   a mismatch is called out rather than smoothed over. */
+function renderAmazonPlacement(data){
+  const nodes = [amazonLine(
+    `Plan created at Amazon — ${data.lines} line(s), ${data.units} units for `
+    + `${data.pack_dates.join(", ")}. Nothing has shipped yet.`, "good")];
+
+  for(const option of (data.placement_options || [])){
+    const fees = (option.fees || []).map(f => `${f.target}: ${f.currency} ${f.amount}`);
+    const paid = (option.fees || []).some(f => Number(f.amount) > 0);
+    nodes.push(amazonLine(
+      fees.length ? `Fee — ${fees.join(", ")}` : "No placement fee.",
+      paid ? "warn" : "muted"));
+
+    for(const shipment of (option.shipments || [])){
+      if(shipment.warehouse_id && data.requested_fc
+         && shipment.warehouse_id !== data.requested_fc){
+        nodes.push(amazonLine(
+          `Amazon is sending this to ${shipment.warehouse_id}, not the ${data.requested_fc}`
+          + " you asked for. The invoice will follow Amazon, so the GSTIN changes.", "warn"));
+      }
+      nodes.push(amazonLine(
+        `Destination: ${shipment.warehouse_id || "not given"}`
+        + (shipment.state ? ` · ${shipment.state}` : "")
+        + (shipment.city ? ` · ${shipment.city}` : ""), "muted"));
+    }
+
+    if(option.expiration){
+      nodes.push(amazonLine(`This offer expires ${option.expiration.slice(0, 10)}.`,
+                            "muted"));
+    }
+
+    const go = document.createElement("button");
+    go.className = "btn-amz amz-confirm";
+    go.type = "button";
+    go.textContent = "Confirm — create the real shipment";
+    go.onclick = () => confirmAmazonShipment(option.placement_option_id);
+    nodes.push(go);
+  }
+  nodes.push(cancelPlanButton(data.inbound_plan_id));
+  showAmazonPanel(nodes);
+}
+
+/* THE COMMIT POINT. After this the shipment is real at Amazon. */
+async function confirmAmazonShipment(placementOptionId){
+  if(!pendingAmazonPlan){
+    alert("The plan reference was lost. Reload and check Seller Central before retrying.");
+    return;
+  }
+  if(!confirm(
+      "Confirm the shipment at Amazon?\n\n"
+      + "This CANNOT be undone. Amazon will expect these boxes, the FBA shipment id is "
+      + "issued, and any placement fee is charged.\n\n"
+      + "The shipment id and destination will be saved against the packing day(s), so the "
+      + "invoice fills itself in."
+  )) return;
+
+  showAmazonPanel([amazonLine("Confirming with Amazon — do not close this page.", "muted")]);
+  try{
+    const r = await fetch("/shipment/amazon-shipment/confirm", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        inbound_plan_id: pendingAmazonPlan.plan_id,
+        placement_option_id: placementOptionId,
+        pack_dates: pendingAmazonPlan.pack_dates,
+      }),
+    });
+    const data = await r.json();
+    if(!r.ok){
+      showAmazonPanel([
+        amazonLine(data.error || "Could not confirm the shipment.", "warn"),
+        amazonLine(data.hint || "", "muted"),
+      ]);
+      return;
+    }
+
+    const nodes = [amazonLine("Shipment created at Amazon.", "good")];
+    if(data.split){
+      // Amazon split the plan. Each part is its own shipment with its own labels, and
+      // saying so is the difference between "why are there two?" and knowing to print
+      // both sets.
+      nodes.push(amazonLine(
+        `Amazon split this into ${data.shipments.length} shipments — each one needs its `
+        + "own box labels.", "warn"));
+    }
+    for(const shipment of (data.shipments || [])){
+      nodes.push(amazonLine(
+        `${shipment.confirmation_id} → ${shipment.warehouse_id || "?"}`
+        + (shipment.state ? ` · ${shipment.state}` : ""), "good"));
+      nodes.push(labelButtons(shipment.confirmation_id));
+    }
+    showAmazonPanel(nodes);
+    pendingAmazonPlan = null;
+    await load();     // the day cards now show the FBA id
+  }catch(err){
+    showAmazonPanel([amazonLine(
+      "Lost contact while confirming. **Check Seller Central before retrying** — if the "
+      + "confirmation went through, retrying would not create a second shipment but the "
+      + "app would not know the id.", "warn")]);
+  }
+}
+
+/* Box labels, in the three formats that work for an "Other" carrier shipment.
+   A4_2 and Letter_2 are refused by Amazon for this shipment type, so they are not
+   offered — an option that always errors reads as a broken app. */
+function labelButtons(confirmationId){
+  const wrap = document.createElement("div");
+  wrap.className = "amz-labels";
+  const formats = [
+    ["PackageLabel_Thermal", "Thermal"],
+    ["PackageLabel_A4_4", "A4 (4 per page)"],
+    ["PackageLabel_Plain_Paper", "Plain paper"],
+  ];
+  for(const [pageType, label] of formats){
+    const button = document.createElement("button");
+    button.className = "btn-outline";
+    button.type = "button";
+    button.textContent = label;
+    button.onclick = () => downloadBoxLabels(confirmationId, pageType, button);
+    wrap.appendChild(button);
+  }
+  return wrap;
+}
+
+async function downloadBoxLabels(confirmationId, pageType, button){
+  const original = button.textContent;
+  button.disabled = true; button.textContent = "Fetching…";
+  try{
+    const params = new URLSearchParams({confirmation_id: confirmationId,
+                                        page_type: pageType});
+    const r = await fetch(`/shipment/amazon-shipment/labels?${params}`);
+    const data = await r.json();
+    if(!r.ok || !data.url){
+      alert(data.error || "Amazon did not return a label file.");
+      return;
+    }
+    // Amazon's link is short-lived and signed, so it is opened directly rather than
+    // proxied through this app.
+    window.open(data.url, "_blank");
+  }catch(err){
+    alert("Could not reach the server.");
+  }finally{
+    button.disabled = false; button.textContent = original;
+  }
+}
+
+async function cancelAmazonShipment(planId){
+  if(!confirm(
+      "Cancel this plan at Amazon?\n\n"
+      + "Use this for a plan created by mistake, or one that failed halfway. A plan that "
+      + "has already been CONFIRMED cannot be undone this way — those boxes are a real "
+      + "shipment."
+  )) return;
+  try{
+    const r = await fetch("/shipment/amazon-shipment/cancel", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({inbound_plan_id: planId}),
+    });
+    const data = await r.json();
+    if(!r.ok){
+      showAmazonPanel([amazonLine(data.error || "Could not cancel.", "warn")]);
+      return;
+    }
+    pendingAmazonPlan = null;
+    showAmazonPanel([amazonLine("Cancelled at Amazon. The days are free to send again.",
+                                "good")]);
+    await load();
+  }catch(err){
+    showAmazonPanel([amazonLine("Could not reach the server.", "warn")]);
   }
 }
 

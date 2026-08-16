@@ -330,3 +330,27 @@ async def reset_scrape_state():
     scrape_state.reset()
     yield
     scrape_state.reset()
+
+
+@pytest.fixture
+def no_spapi_credentials(monkeypatch):
+    """Force the "Amazon API not set up" state, whatever the machine's .env says.
+
+    Two tests assert what happens with no credentials, and they previously relied on the
+    machine simply not having any. That held until a local .env was added for live SP-API
+    testing, at which point they failed for a reason unrelated to the code they cover — a
+    test whose result depends on an untracked file is not a test.
+
+    Cleared through the settings cache rather than the environment alone, because
+    ``get_settings`` is ``lru_cache``d and a stale instance would keep the real values.
+    """
+    from app import config
+
+    monkeypatch.setenv("SP_API_CLIENT_ID", "")
+    monkeypatch.setenv("SP_API_CLIENT_SECRET", "")
+    monkeypatch.setenv("SP_API_REFRESH_TOKEN", "")
+    config.get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        config.get_settings.cache_clear()

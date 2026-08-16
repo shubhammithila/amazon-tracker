@@ -358,10 +358,15 @@ def test_the_token_cache_refuses_a_stale_token():
 
 # ─── The endpoints ───────────────────────────────────────────────────────────
 
-async def test_the_shipment_lookup_says_when_it_is_not_configured(auth_client):
-    """200 with `configured: false`, never a 500.
+async def test_the_shipment_lookup_says_when_it_is_not_configured(
+    auth_client, no_spapi_credentials
+):
+    """200 with `configured: false`, never a 500 — the state a fresh install is in.
 
-    The test suite has no credentials, which is exactly the state a fresh install is in.
+    The missing state is FORCED by a fixture rather than assumed from the environment.
+    This test used to rely on the machine having no .env, so it passed everywhere until a
+    local .env was added for live testing and then failed for a reason that had nothing to
+    do with the code. A test whose result depends on an untracked file is not a test.
     """
     r = await auth_client.get("/shipment/amazon-shipments")
     assert r.status_code == 200
@@ -656,9 +661,13 @@ async def test_confirm_and_cancel_are_admin_only(ops_client):
         assert r.status_code in (401, 403), f"{path} -> {r.status_code}"
 
 
-async def test_create_says_when_amazon_is_not_set_up(auth_client, plan_factory):
-    """The test suite has no credentials, which is also a fresh install's state. A 400
-    that names the missing keys, never a 500."""
+async def test_create_says_when_amazon_is_not_set_up(
+    auth_client, plan_factory, no_spapi_credentials
+):
+    """A 400 that names the missing keys, never a 500.
+
+    Credentials are cleared by the fixture, not assumed absent from the environment.
+    """
     await plan_factory()
     await _verify_day(auth_client, MONDAY, [{"asin": ASIN, "units": 10}])
     r = await auth_client.post(
@@ -821,3 +830,129 @@ def test_labels_are_returned_as_a_url_not_proxied():
     body = source[start:start + 1600]
     assert '"url": url' in body
     assert "StreamingResponse" not in body
+
+
+# ─── The invoice fills itself in from what Amazon recorded ───────────────────
+
+async def test_the_invoice_uses_what_amazon_recorded_not_what_was_typed(
+    auth_client, plan_factory, db
+):
+    """"autofill the shipment id and create invoice".
+
+    Once a shipment exists, the FBA id and the destination on the day are FACTS. The form
+    fields are intentions. So the recorded values win — which is also the only way the FC
+    on a tax document cannot disagree with where the boxes actually went.
+    """
+    from sqlalchemy import select
+    from app.models import ShipmentPackingDay
+
+    await plan_factory()
+    await _verify_day(auth_client, MONDAY, [{"asin": ASIN, "units": 100}])
+
+    day = (await db.execute(
+        select(ShipmentPackingDay).where(ShipmentPackingDay.pack_date == MONDAY)
+    )).scalar_one()
+    day.shipment_confirmation_id = "FBA15REAL01"
+    day.destination_warehouse_id = "BLR4"          # Amazon sent it to Karnataka
+    day.destination_state = "KARNATAKA"
+    await db.commit()
+
+    # The owner had typed ISK3 (Maharashtra) before the shipment was made.
+    meta = (await auth_client.post("/shipment/invoice-payload", json={
+        "pack_dates": [MONDAY], "fc_code": "ISK3",
+    })).json()["metadata"]
+
+    assert meta["shipment_id"] == "FBA15REAL01", "the recorded FBA id was not used"
+    assert meta["ship_to"] == "BLR4", (
+        f"the invoice says {meta['ship_to']} but Amazon shipped to BLR4 — the GSTIN would "
+        "be wrong"
+    )
+    # Karnataka's GSTIN, not Maharashtra's. This is the whole point.
+    assert meta["recipient_gstin"] == "29AAFCF9848M1ZP", meta["recipient_gstin"]
+
+
+async def test_a_typed_shipment_id_still_works_when_nothing_was_recorded(
+    auth_client, plan_factory
+):
+    """The manual path: the shipment was made in Seller Central and the app told
+    afterwards. A typed value must still fill the invoice."""
+    await plan_factory()
+    await _verify_day(auth_client, MONDAY, [{"asin": ASIN, "units": 100}])
+
+    meta = (await auth_client.post("/shipment/invoice-payload", json={
+        "pack_dates": [MONDAY], "fc_code": "ISK3", "shipment_id": "FBA15TYPED",
+    })).json()["metadata"]
+
+    assert meta["shipment_id"] == "FBA15TYPED"
+    assert meta["ship_to"] == "ISK3"
+
+
+# ─── The screen ──────────────────────────────────────────────────────────────
+
+def test_the_screen_creates_and_confirms_in_two_separate_clicks():
+    """The safety property of the whole feature, asserted structurally.
+
+    Creating is reversible; confirming is not. One button that did both would mean the fee
+    and the destination Amazon chose were never seen before the irreversible step.
+    """
+    source = _shipment_source()
+    assert "createAmazonShipment" in source
+    assert "confirmAmazonShipment" in source
+
+    create_fn = source[source.index("async function createAmazonShipment"):]
+    create_fn = create_fn[:create_fn.index("function cancelPlanButton")]
+    assert "/amazon-shipment/confirm" not in create_fn, (
+        "the create handler confirms as well, so the fee and destination are never "
+        "reviewed before the irreversible step"
+    )
+    # And confirming is itself confirmed, with the cost named.
+    confirm_fn = source[source.index("async function confirmAmazonShipment"):]
+    confirm_fn = confirm_fn[:confirm_fn.index("function labelButtons")]
+    assert "CANNOT be undone" in confirm_fn, (
+        "the confirmation dialog does not say the step is irreversible"
+    )
+
+
+def test_the_plan_reference_survives_a_re_render():
+    """renderDays() rebuilds the panel whenever a tick changes.
+
+    Losing the plan id between the two clicks would leave a real plan at Amazon that the
+    screen can no longer confirm OR cancel — recoverable only in Seller Central.
+    """
+    source = _shipment_source()
+    assert "let pendingAmazonPlan" in source, (
+        "the plan id is not held outside the markup, so a re-render loses it"
+    )
+
+
+def test_a_destination_mismatch_is_called_out_on_screen():
+    """Amazon can place the shipment somewhere other than the FC requested, and the
+    destination decides the GSTIN. Applying that silently is how a tax document ends up
+    with the wrong state."""
+    source = _shipment_source()
+    start = source.index("function renderAmazonPlacement")
+    body = source[start:source.index("async function confirmAmazonShipment")]
+    assert "not the" in body and "requested_fc" in body, (
+        "a different destination is applied without telling the owner"
+    )
+
+
+def test_only_the_working_label_formats_are_offered():
+    """A4_2 and Letter_2 are refused by Amazon for a non-partnered shipment. Offering
+    them would give the owner two buttons that always fail."""
+    source = _shipment_source()
+    start = source.index("function labelButtons")
+    body = source[start:source.index("async function downloadBoxLabels")]
+    assert "PackageLabel_Thermal" in body
+    assert "PackageLabel_A4_4" in body
+    assert "PackageLabel_Plain_Paper" in body
+    assert "PackageLabel_A4_2" not in body
+    assert "PackageLabel_Letter_2" not in body
+
+
+def test_a_split_shipment_is_reported():
+    """Amazon may split a plan into several shipments, and each needs its own labels.
+    Silence here means the owner prints one set and under-labels the rest."""
+    source = _shipment_source()
+    assert "data.split" in source, "a split shipment is not detected on screen"
+    assert "own box labels" in source, "nothing says each part needs its own labels"
