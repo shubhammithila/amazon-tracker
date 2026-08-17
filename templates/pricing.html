@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Products — Amazon Tracker</title>
+{#
+  Purchase rate, HSN code and GST rate per product. Administrators only.
+
+  Asked for: "lets add a products tab separately where I can update the pricing. Jitne
+  products ka pricing hai abhi wo daal do. and rest ka blank chor do."
+
+  Four things about this page are deliberate:
+
+  1. **Unpriced products sort FIRST.** The screen exists to fill blanks, so it opens on
+     them. Sorting alphabetically would bury four missing prices among 267 correct ones,
+     which is how a shipment gets refused at the last moment.
+
+  2. **A blank price is not zero.** Amazon rejects an inbound shipment whose declared
+     value is 0 — and does it with "We encountered an internal error. Please try again.",
+     which reads like a fault on their side. So the field is left empty and the server
+     refuses a 0, rather than storing one.
+
+  3. **Every row saves on its own.** No global Save that could half-apply across 271
+     rows, and a failed save says which product failed rather than reporting success.
+
+  4. **HSN defaults to 1106 at 5%** because every F2D product is, but both are editable:
+     a non-food line would be classified differently, and a wrong HSN on a GST document
+     is worse than a blank one.
+#}
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px}
+header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
+header h1{font-size:16px;font-weight:600}
+.nav-links{display:flex;gap:16px;margin-left:32px}
+.nav-links a{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
+.nav-links a:hover,.nav-links a.active{color:var(--text);border-color:var(--accent)}
+.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:13px;text-decoration:none}
+main{max-width:1180px;margin:0 auto;padding:16px 20px}
+h2{font-size:19px;font-weight:600;margin-bottom:2px}
+.subtitle{color:var(--text-muted);font-size:12.5px;margin-bottom:12px;line-height:1.5}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;box-shadow:var(--shadow)}
+
+.banner{border-radius:8px;padding:10px 13px;font-size:12.5px;margin-bottom:10px;line-height:1.55}
+.banner.warn{background:var(--yellow-soft);border:1px solid var(--yellow);color:var(--yellow)}
+.banner.good{background:var(--green-soft);border:1px solid var(--green);color:var(--green)}
+.banner.error{background:var(--red-soft);border:1px solid var(--red);color:var(--red)}
+.banner.info{background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue)}
+
+.toolbar{display:flex;gap:10px 16px;align-items:center;flex-wrap:wrap}
+.search-input{flex:1 1 260px;min-width:200px;background:var(--bg);border:1px solid var(--border-strong);
+  border-radius:8px;color:var(--text);padding:9px 12px;font-size:14px}
+.search-input:focus{outline:none;border-color:var(--accent)}
+.pill{font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;background:var(--surface2);color:var(--text-muted)}
+.pill.missing{background:var(--red-soft);color:var(--red)}
+label.only{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-muted);cursor:pointer}
+
+/* The table scrolls inside its own box so the headings stay put over 271 rows —
+   `top:0`, never a positive value, because a sticky header inside a scroll container
+   positions against the container and an offset parks it on top of the first row. */
+.table-wrap{overflow:auto;max-height:calc(100vh - 250px);min-height:240px;border:1px solid var(--border);
+  border-radius:10px;background:var(--surface)}
+table{width:100%;border-collapse:separate;border-spacing:0;min-width:820px}
+thead th{background:var(--surface2);color:var(--text-muted);padding:8px 10px;font-size:10.5px;
+  font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:left;white-space:nowrap;
+  border-bottom:2px solid var(--border-strong);position:sticky;top:0;z-index:4}
+tbody td{padding:5px 10px;font-size:13px;border-bottom:1px solid var(--border);white-space:nowrap}
+tbody tr:hover{background:var(--accent-soft)}
+tbody tr.unpriced{background:var(--red-soft)}
+tbody tr.unpriced:hover{background:var(--red-soft)}
+tbody tr.saved{background:var(--green-soft)}
+.p-name{font-weight:600}
+.p-asin{font-size:11px;color:var(--text-dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.p-size{font-weight:600}
+.num{width:96px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);
+  padding:6px 8px;font-size:13px;text-align:right}
+.num:focus{outline:none;border-color:var(--accent)}
+.num.wide{width:112px;text-align:left}
+.num.flag{border-color:var(--red)}
+.inactive{opacity:.55}
+.tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;background:var(--surface2);color:var(--text-muted)}
+.empty-state{text-align:center;padding:36px;color:var(--text-muted)}
+.row-status{font-size:11px;color:var(--text-muted);min-width:52px;display:inline-block}
+.row-status.ok{color:var(--green);font-weight:600}
+.row-status.bad{color:var(--red);font-weight:600}
+</style>
+<link rel="stylesheet" href="/static/theme.css"/>
+</head>
+<body>
+<header>
+<span>📦</span><h1>Amazon Tracker v2</h1>
+{% include "nav.html" %}
+<div class="header-right"><a href="/logout">Logout</a></div>
+</header>
+<main>
+<h2>Products &amp; pricing</h2>
+<p class="subtitle">Purchase rate per unit, HSN code and GST rate. The rate is the declared
+  value Amazon needs for an inbound shipment and the taxable value on the GST invoice —
+  a product with no rate cannot be sent to Amazon.</p>
+
+<div id="messages"></div>
+
+<div class="card">
+  <div class="toolbar">
+    <input class="search-input" id="search" type="search"
+           placeholder="Search product, SKU or ASIN…"/>
+    <label class="only"><input type="checkbox" id="only-missing"/> Only missing prices</label>
+    <!-- Checked by DEFAULT. 72 products have no price but only 8 are still sold, and a
+         discontinued line will never reach a shipment. Opening on all 72 makes an
+         eight-item job look like a chore nobody finishes. -->
+    <label class="only"><input type="checkbox" id="only-active" checked/> Only active products</label>
+    <span class="pill" id="count-total">—</span>
+    <span class="pill missing" id="count-missing" style="display:none"></span>
+  </div>
+</div>
+
+<div id="listArea">
+  <div class="card"><div class="empty-state">Loading products…</div></div>
+</div>
+</main>
+
+<script>
+/* ── State ──────────────────────────────────────────────────────────────────
+   `rows` is the server's list, held as-is. Filtering and sorting are applied on
+   render rather than by mutating it: the server decides the order (unpriced first),
+   and re-sorting here would put the blanks back among the 267 priced rows the moment
+   the owner typed a search. */
+let rows = [];
+
+const $ = id => document.getElementById(id);
+
+function esc(s){
+  return String(s == null ? "" : s)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+}
+
+function message(text, cls){
+  $("messages").innerHTML = text
+    ? `<div class="banner ${cls || "info"}">${esc(text)}</div>` : "";
+}
+
+async function load(){
+  try{
+    const r = await fetch("/products-pricing");
+    if(!r.ok){
+      message("Could not load the product list.", "error");
+      return;
+    }
+    const data = await r.json();
+    rows = data.products || [];
+    /* The catalogue can degrade to a cached copy or the static file when the MRP sheet is
+       unreachable. Said out loud, because an unfiltered list looks identical to a filtered
+       one and a product missing from it looks like it does not exist. */
+    if(data.catalogue_warning){
+      /* Both values are concatenated as TEXT and escaped inside message(). The source
+         string comes from the server, so it goes through the same escaping as the product
+         names rather than being trusted for being ours. */
+      message(`${data.catalogue_warning} (source: ${data.catalogue_source || "unknown"})`,
+              "warn");
+    }
+    render();
+  }catch(err){
+    message("Could not reach the server.", "error");
+  }
+}
+
+function visible(){
+  const q = $("search").value.trim().toLowerCase();
+  const onlyMissing = $("only-missing").checked;
+  const onlyActive = $("only-active").checked;
+  return rows.filter(p => {
+    if(onlyMissing && p.purchase_rate !== null) return false;
+    /* An inactive product is one the MRP sheet marks as no longer sold. It cannot reach a
+       shipment, so its missing price is history rather than a task — but it is still
+       listed when this is unticked, because a price that existed is worth keeping. */
+    if(onlyActive && !p.active) return false;
+    if(!q) return true;
+    return (p.item || "").toLowerCase().includes(q)
+      || (p.asin || "").toLowerCase().includes(q)
+      || (p.weight_label || "").toLowerCase().includes(q);
+  });
+}
+
+/* The missing-price badge. ONE implementation, called from render() and from the save
+   handler — the save handler used to recompute it inline and got it wrong, reporting
+   "71 without a price" and losing the active/total distinction the moment a price was
+   typed. Two copies of a rule is two chances to disagree. */
+function renderMissingBadge(){
+  const missingActive = rows.filter(p => p.purchase_rate === null && p.active).length;
+  const missingAll = rows.filter(p => p.purchase_rate === null).length;
+  const badge = $("count-missing");
+
+  if(missingActive){
+    badge.style.display = "";
+    /* The ACTIVE count leads, because that is the actionable one — a discontinued product
+       with no price can never reach a shipment. The total is still shown so the number is
+       not quietly smaller than reality. */
+    badge.textContent = missingActive === missingAll
+      ? `${missingActive} without a price`
+      : `${missingActive} active without a price (${missingAll} in total)`;
+  }else if(missingAll){
+    badge.style.display = "";
+    badge.textContent = `${missingAll} discontinued products have no price — not needed`;
+  }else{
+    badge.style.display = "none";
+  }
+}
+
+function render(){
+  const shown = visible();
+  $("count-total").textContent = `${shown.length} of ${rows.length} products`;
+  renderMissingBadge();
+
+  if(!shown.length){
+    $("listArea").innerHTML =
+      '<div class="card"><div class="empty-state">No product matches that search.</div></div>';
+    return;
+  }
+
+  /* Built as one HTML string for 271 rows, then wired with ONE delegated listener.
+     Per-row listeners on 271 rows re-attached on every keystroke is how a search box
+     starts to lag. Every interpolation goes through esc() — product names come from the
+     MRP sheet, which is a spreadsheet anyone can type into. */
+  const body = shown.map(p => {
+    const rate = p.purchase_rate === null ? "" : p.purchase_rate;
+    return `<tr data-asin="${esc(p.asin)}" class="${p.purchase_rate === null ? "unpriced" : ""}">
+      <td class="${p.active ? "" : "inactive"}">
+        <div class="p-name">${esc(p.item) || "<em>not in the catalogue</em>"}</div>
+        <div class="p-asin">${esc(p.asin)}${p.brand ? " · " + esc(p.brand) : ""}</div>
+      </td>
+      <td class="p-size">${esc(p.weight_label)}</td>
+      <td><input class="num ${p.purchase_rate === null ? "flag" : ""}" type="number"
+                 min="0" step="0.01" data-field="purchase_rate"
+                 value="${esc(rate)}" placeholder="—"/></td>
+      <td><input class="num wide" type="text" data-field="hsn_code"
+                 value="${esc(p.hsn_code || "")}"/></td>
+      <td><input class="num" type="number" min="0" max="100" step="0.01"
+                 data-field="gst_rate" value="${esc(p.gst_rate)}"/></td>
+      <td>${p.active ? "" : '<span class="tag">inactive</span>'}
+          ${p.in_catalogue ? "" : '<span class="tag">not in sheet</span>'}</td>
+      <td><span class="row-status" data-status></span></td>
+    </tr>`;
+  }).join("");
+
+  $("listArea").innerHTML = `<div class="table-wrap"><table>
+    <thead><tr>
+      <th>Product</th><th>Size</th><th>Purchase rate ₹</th>
+      <th>HSN</th><th>GST %</th><th></th><th></th>
+    </tr></thead>
+    <tbody>${body}</tbody>
+  </table></div>`;
+}
+
+/* Saved on `change` — when the field loses focus or the value is committed — rather than
+   on every keystroke. Typing "65" would otherwise save 6 and then 65, and the first of
+   those is a real price briefly stored against a real product. */
+$("listArea").addEventListener("change", async (event) => {
+  const input = event.target;
+  const field = input.dataset ? input.dataset.field : null;
+  if(!field) return;
+
+  const tr = input.closest("tr");
+  const asin = tr.dataset.asin;
+  const status = tr.querySelector("[data-status]");
+
+  const value = input.value.trim();
+  status.className = "row-status";
+  status.textContent = "saving…";
+
+  try{
+    const r = await fetch("/products-pricing/save", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      // Only the changed field travels. A full-row payload would let a blank cell
+      // elsewhere in the row overwrite a value that is already right.
+      body: JSON.stringify({asin: asin, [field]: value}),
+    });
+    const data = await r.json();
+    if(!r.ok){
+      status.className = "row-status bad";
+      status.textContent = "not saved";
+      message(data.error || "Could not save.", "error");
+      return;
+    }
+    status.className = "row-status ok";
+    status.textContent = "saved";
+    message("", "");
+
+    // Keep the in-memory copy honest, so the "missing" count and the red tint follow the
+    // edit without a reload.
+    const row = rows.find(p => p.asin === asin);
+    if(row){
+      row.purchase_rate = data.purchase_rate;
+      row.hsn_code = data.hsn_code;
+      row.gst_rate = data.gst_rate;
+      tr.classList.toggle("unpriced", data.purchase_rate === null);
+      input.classList.toggle("flag",
+        field === "purchase_rate" && data.purchase_rate === null);
+    }
+    renderMissingBadge();
+  }catch(err){
+    status.className = "row-status bad";
+    status.textContent = "not saved";
+    message("Could not reach the server. Nothing was saved.", "error");
+  }
+});
+
+$("search").addEventListener("input", render);
+$("only-missing").addEventListener("change", render);
+$("only-active").addEventListener("change", render);
+
+load();
+</script>
+</body>
+</html>

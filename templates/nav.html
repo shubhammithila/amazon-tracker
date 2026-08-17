@@ -47,8 +47,15 @@
   {% if can is none or 'shipment' in can %}
   <a href="/shipment-page" class="{{ 'active' if active == 'shipment' else '' }}">Shipment</a>
   {% endif %}
-  {# Users is administrator-only and is not an area, so it is gated on the flag
-     itself. Last, because it is a setup task rather than a daily one. #}
+  {# Products (pricing) and Users are administrator-only and are not areas, so both are
+     gated on the flag rather than on `can`. Last, because they are setup tasks rather
+     than daily ones.
+
+     Pricing cannot be an area grant: a purchase rate is the cost side of the business,
+     and the Accounts preset withholds purchase costs on purpose. #}
+  {% if can is none or can.is_admin %}
+  <a href="/pricing-page" class="{{ 'active' if active == 'pricing' else '' }}">Products</a>
+  {% endif %}
   {% if can is not none and can.is_admin %}
   <a href="/users-page" class="{{ 'active' if active == 'users' else '' }}">Users</a>
   {% endif %}

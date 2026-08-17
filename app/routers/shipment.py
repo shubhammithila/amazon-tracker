@@ -37,6 +37,7 @@ from app.invoice.hsn_codes import lookup_hsn
 from app.invoice.parser import get_fc_info, get_purchase_rate
 from app.models import Invoice
 from app.routers.auth import ROLE_ADMIN, require_admin, require_ops_or_admin
+from app import products
 from app.shipment import catalogue, documents, logic, repository
 
 router = APIRouter(prefix="/shipment")
@@ -506,6 +507,20 @@ async def generate_plan(
 #: The ship-from address, as Amazon accepts it. Read back from a real inbound plan on the
 #: live account rather than assembled from SUPPLIER_ADDRESS, because Amazon validated
 #: THIS exact shape — a hand-built variant risks a rejection at the one moment it matters.
+async def product_prices_for(db, line: dict) -> float:
+    """The purchase rate for one Amazon plan line, in rupees per unit.
+
+    A named helper rather than an inline call because both the missing-rate guard and the
+    compliance loop need the SAME number: if they disagreed, the guard would pass a
+    product whose declared value then went to Amazon as 0 — which is rejected with "We
+    encountered an internal error", a message that looks like a fault on their side.
+
+    `_asin` is the display-only field the plan-body builder carries; the msku is the
+    fallback, for a rate that exists in `pricing_data.json` under a SKU key only.
+    """
+    return await products.rate_for(db, line.get("_asin", ""), line.get("msku", ""))
+
+
 AMAZON_SOURCE_ADDRESS = {
     "name": "F2D TECH PRIVATE LIMITED, MITHILA FOODS",
     "companyName": "F2D TECH PRIVATE LIMITED, MITHILA FOODS",
@@ -770,7 +785,7 @@ async def create_amazon_shipment(
     # producing a misleading error halfway through.
     missing_rate = [
         line for line in preview["lines"]
-        if float(get_purchase_rate(line["msku"], line.get("_asin", "")) or 0) <= 0
+        if float(await product_prices_for(db, line) or 0) <= 0
     ]
     if missing_rate:
         names = ", ".join(
@@ -817,8 +832,8 @@ async def create_amazon_shipment(
     #
     compliance_failures = []
     for line in preview["lines"]:
-        rate = get_purchase_rate(line["msku"], line.get("_asin", ""))
-        hsn = lookup_hsn("", sku=line["msku"])
+        rate = await product_prices_for(db, line)
+        hsn = await products.tax_for(db, line.get("_asin", ""))
         try:
             await spapi.declare_item_compliance(
                 line["msku"],
@@ -2372,10 +2387,11 @@ async def build_invoice_payload(
         if units <= 0:
             continue
         title = _title_for(item)
-        # Reuse the invoice module's own lookups rather than reimplementing them,
-        # so a rate or HSN correction made through the invoice screen applies here
-        # too. lookup_hsn keys on the SKU, which is why fba_sku is persisted.
-        hsn = lookup_hsn(title, sku=item.fba_sku or "")
+        # The Products tab is the source of truth for HSN, GST and the purchase rate.
+        # Keyed by ASIN rather than by SKU: the merchant SKU is blank on 108 sheet rows,
+        # arrives from the uploaded CSV and gets edited by hand, while the ASIN identifies
+        # a product for its whole life. Falls back to 1106 at 5% — every F2D product today.
+        hsn = await products.tax_for(db, item.asin)
         lines.append(
             {
                 "sku": item.fba_sku or "",
@@ -2388,7 +2404,7 @@ async def build_invoice_payload(
                 "quantity": units,
                 "hsn_code": hsn["hsn_code"],
                 "gst_rate": hsn["gst_rate"],
-                "rate": get_purchase_rate(item.fba_sku or "", item.asin),
+                "rate": await products.rate_for(db, item.asin, item.fba_sku or ""),
                 "unit": "Pcs",
                 # Pack size in kg, so the invoice screen can total the shipment weight
                 # rather than the owner working it out on paper. Sent per LINE as well

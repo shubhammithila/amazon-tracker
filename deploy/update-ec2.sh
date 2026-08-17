@@ -305,8 +305,10 @@ def cols(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "product_prices" in tables:
+    print("9e4b1c7a2f56")                           # head: product_prices table
 elif "shipment_packing_days" in tables and "inbound_plan_id" in cols("shipment_packing_days"):
-    print("7c1a4e9b2d38")                           # head: Amazon shipment on a day
+    print("7c1a4e9b2d38")                           # Amazon shipment on a day
 elif "users" in tables:
     print("394fc6f28429")                           # users + per-area permissions
 elif "shipment_packing_entries" in tables and "cartons" not in cols("shipment_packing_entries"):

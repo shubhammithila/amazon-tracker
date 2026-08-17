@@ -26,7 +26,8 @@ CANONICAL_NAV = {
     "shipment": "/shipment-page",
 }
 
-ADMIN_PAGES = ["/", "/invoice-page", "/churn-page", "/projections-page", "/shipment-page"]
+ADMIN_PAGES = ["/", "/invoice-page", "/churn-page", "/projections-page", "/shipment-page",
+               "/pricing-page"]
 
 # Removed on request ("its of no use").
 REMOVED_PAGES = ["/history-page", "/keywords-page"]

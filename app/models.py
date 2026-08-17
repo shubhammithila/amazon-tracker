@@ -301,6 +301,50 @@ class ProductCategory(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ProductPrice(Base):
+    """Purchase rate, HSN code and GST rate for one ASIN. Edited on the Products tab.
+
+    **A table rather than the JSON file it replaces.** `pricing_data.json` holds 410 rates
+    and is TRACKED IN GIT, so writing to it at runtime creates exactly the problem
+    `hsn_master.json` already causes on every deploy: the file has to be stashed and
+    restored by hand or a checkout silently reverts real data. Rows here are safe from a
+    deploy.
+
+    Keyed by ASIN, not by merchant SKU. The SKU is the thing that changes — it is blank on
+    108 sheet rows, arrives from the uploaded CSV, and gets edited by hand on the plan —
+    while the ASIN identifies the product for its whole life. `pricing_data.json` is keyed
+    by both, which is why it has 410 entries for ~205 products.
+
+    A missing row means "not priced yet", which is a state the app must handle rather than
+    treat as zero: Amazon rejects an inbound shipment whose declared value is 0, and it
+    does so with "We encountered an internal error" — a message that looks like a fault on
+    their side. So price is nullable and the shipment flow refuses those products by name.
+    """
+    __tablename__ = "product_prices"
+    __table_args__ = (
+        # UNIQUE: one price per ASIN, and the upsert target.
+        Index("idx_product_prices_asin", "asin", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    asin = Column(String(20), nullable=False)
+    # Denormalised for the Products screen only. The catalogue is the source of truth for
+    # names and pack sizes; these are a snapshot so the table still reads sensibly when
+    # the MRP sheet is unreachable.
+    item = Column(Text)
+    fba_sku = Column(String(80))
+    weight = Column(Numeric(10, 3))
+    brand = Column(String(10))
+    # Nullable on purpose — see the class docstring. NULL is "not priced yet", 0 would be
+    # a declared value Amazon rejects.
+    purchase_rate = Column(Numeric(12, 2))
+    # 1106 at 5% for every F2D product today, but editable: a non-food line would be
+    # classified differently, and a wrong HSN on a GST document is worse than a blank one.
+    hsn_code = Column(String(10), default="1106")
+    gst_rate = Column(Numeric(5, 2), default=5)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ShipmentPackingDay(Base):
     """One calendar day of packing against a plan.
 

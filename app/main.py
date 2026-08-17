@@ -12,8 +12,8 @@ from app.config import get_settings
 from app.database import engine, Base
 from app import permissions
 from app.routers import (
-    admin_users, auth, churn, invoice, keywords, products, projections, scrape,
-    shipment, ws,
+    admin_users, auth, churn, invoice, keywords, product_prices, products,
+    projections, scrape, shipment, ws,
 )
 from app.routers.auth import (
     ForbiddenException,
@@ -92,6 +92,7 @@ app.include_router(churn.router)
 app.include_router(projections.router)
 app.include_router(shipment.router)
 app.include_router(admin_users.router)
+app.include_router(product_prices.router)
 
 
 @app.exception_handler(RedirectException)
@@ -189,6 +190,21 @@ async def ops_page(request: Request, role: str = Depends(require_packing)):
     second round trip.
     """
     return templates.TemplateResponse(request, "ops.html", {"active": "ops", "role": role})
+
+
+@app.get("/pricing-page", response_class=HTMLResponse)
+async def pricing_page(request: Request, grant=Depends(require_admin_grant)):
+    """Purchase rate, HSN and GST per product. Administrators only.
+
+    Admin rather than an area grant: a purchase rate is the cost side of the business, and
+    the Accounts preset deliberately withholds purchase costs for the same reason.
+
+    Takes the Grant so nav.html can render its own tab — passing None is what left the
+    Users page reachable only by typing the URL.
+    """
+    return templates.TemplateResponse(
+        request, "pricing.html", {"active": "pricing", "grant": grant}
+    )
 
 
 @app.get("/users-page", response_class=HTMLResponse)
