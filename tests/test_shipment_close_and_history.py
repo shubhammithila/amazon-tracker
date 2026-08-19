@@ -289,3 +289,52 @@ async def test_carrying_is_idempotent(db, plan_factory):
     assert second == []
     new_days = await repository.load_days_with_entries(db, new.id)
     assert len(new_days) == 1
+
+
+async def test_carrying_skips_a_date_the_target_plan_already_has(db, plan_factory):
+    """When the target plan has packed its own units for that date, the carry is skipped.
+
+    The UNIQUE index on (plan_id, pack_date) would reject the whole transaction if the
+    UPDATE were attempted, so the guard is mandatory rather than optional. More important
+    than avoiding the constraint error: the day being skipped must remain visible on the
+    closing plan rather than vanishing, because those are real boxes in the warehouse. A
+    carried day that silently dropped from the source without landing on the target is
+    stranded stock with no packing record.
+    """
+    source = await plan_factory()
+    target = await plan_factory(status=repository.STATUS_DRAFT)
+
+    # Pack the same date on both plans, with different ASINs and quantities so the
+    # two days are distinguishable.
+    await repository.save_packing_entries(
+        db, source.id, "2026-08-19",
+        [{"asin": "B0AAA00001", "units": 400}], cartons=9,
+    )
+    await repository.save_packing_entries(
+        db, target.id, "2026-08-19",
+        [{"asin": "B0AAA00002", "units": 100}], cartons=3,
+    )
+
+    moved = await repository.carry_days_to_plan(db, source.id, target.id, ["2026-08-19"])
+    assert moved == [], "nothing should move when the target already has that date"
+
+    # The source plan must still have its day with its original units intact. This is
+    # the most important assertion: a day silently dropped from a closing plan is
+    # stranded stock in a warehouse with no packing record.
+    source_days = await repository.load_days_with_entries(db, source.id)
+    assert len(source_days) == 1
+    assert source_days[0]["pack_date"] == "2026-08-19"
+    assert source_days[0]["total_units"] == 400
+    assert source_days[0]["entries"] == [
+        {"asin": "B0AAA00001", "units": 400, "note": None}
+    ]
+
+    # The target plan must still have exactly one day for that date, with ITS OWN units,
+    # proving the carry did not overwrite the target's own packing.
+    target_days = await repository.load_days_with_entries(db, target.id)
+    assert len(target_days) == 1
+    assert target_days[0]["pack_date"] == "2026-08-19"
+    assert target_days[0]["total_units"] == 100
+    assert target_days[0]["entries"] == [
+        {"asin": "B0AAA00002", "units": 100, "note": None}
+    ]

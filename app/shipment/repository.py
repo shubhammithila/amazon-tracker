@@ -219,7 +219,9 @@ async def carry_days_to_plan(
     Idempotent. A date already absent from the source plan is skipped rather than
     raising, so closing twice moves nothing twice — and a date already present on the
     TARGET is skipped too, because the UNIQUE index on (plan_id, pack_date) would
-    otherwise reject the whole transaction.
+    otherwise reject the whole transaction. Returns the dates actually moved: dates
+    already on the target, or missing from the source, are absent from the return value,
+    so a caller must not treat a short list as failure.
     """
     if not pack_dates:
         return []
@@ -253,7 +255,10 @@ async def carry_days_to_plan(
             continue
         day.plan_id = to_plan_id
         # Stamped only on the first move, so a day carried twice still points at where
-        # it was originally packed rather than at the intermediate plan.
+        # it was originally packed rather than at the intermediate plan. The
+        # reconciliation question is "why does this plan hold units for a date it never
+        # opened", and the answer is the plan the boxes were packed against, not the
+        # chain of carries.
         if day.carried_from_plan_id is None:
             day.carried_from_plan_id = from_plan_id
         moved.append(day.pack_date)
