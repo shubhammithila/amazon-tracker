@@ -1641,29 +1641,63 @@ def _shipment_source() -> str:
     ).read_text(encoding="utf-8")
 
 
-def test_the_close_confirm_names_what_will_be_carried():
-    """A confirm that says only "are you sure" teaches the owner to click through it.
+def _close_plan_body() -> str:
+    """Just the body of closePlan(), so assertions cannot pass on unrelated code.
 
-    Naming the dates is what makes the 19 Aug carry a decision rather than a surprise
-    found later on the wrong plan.
+    A whole-file substring search is nearly useless here: "confirm(" and "carried"
+    already appear elsewhere in this template, so a file-wide assertion stays green
+    even if closePlan's confirm is empty. Slicing to the function is what makes the
+    test able to fail.
     """
     source = _shipment_source()
-    assert "async function closePlan(" in source
-    assert "carried" in source
-    assert "confirm(" in source
+    start = source.index("async function closePlan(")
+    # The next top-level function declaration ends the body. Both spellings, because
+    # the following function may or may not be async.
+    rest = source[start + 1:]
+    ends = [i for i in (rest.find("\nasync function "), rest.find("\nfunction ")) if i != -1]
+    return rest[: min(ends)] if ends else rest
 
 
-def test_the_history_panel_reuses_the_existing_renderer():
-    """One renderer, so history cannot disagree with /active about order.
+def test_the_close_confirm_names_the_dates_and_quantities_that_will_move():
+    """A confirm that says only "are you sure" teaches the owner to click through it.
+
+    Naming the dates and their units is what makes the 19 Aug carry a decision rather
+    than a surprise found later on the wrong plan. Asserted against closePlan's OWN
+    body, and on the interpolations rather than on prose, so rewording the sentence
+    does not fail the test but dropping the data does.
+    """
+    body = _close_plan_body()
+    assert "confirm(" in body, "the close does not confirm at all"
+    assert "d.pack_date" in body, "the confirm does not name the dates being carried"
+    assert "d.total_units" in body, "the confirm does not say how many units move"
+    assert "d.total_cartons" in body, "the confirm does not say how many cartons move"
+    # The shipped-but-uninvoiced warning is the other half: those days do NOT move,
+    # and staying silent about them is the held-days bug again.
+    assert 'status === "shipped"' in body, (
+        "the confirm does not warn about shipped days with no invoice"
+    )
+
+
+def test_the_history_panel_does_not_add_a_second_item_renderer():
+    """One renderer, so history cannot disagree with /active about row order.
 
     A second render path is how the screen and the downloads drifted apart before,
     which is the complaint the single ORDER BY exists to answer.
+
+    Asserted by counting the calls that BUILD an item row. An earlier version of this
+    test counted `function renderItems(` — a function this template does not have, so
+    the count was 0 and the assertion was permanently true.
     """
     source = _shipment_source()
     assert "/shipment/plans" in source
     assert "/detail" in source
-    assert source.count("function renderItems(") <= 1, (
-        "history added a second item renderer, which can disagree with /active"
+    # openPlanDetail renders DAYS only. If it grew an item loop it would be a second
+    # renderer of the ordered rows, which is the drift being prevented.
+    detail_start = source.index("async function openPlanDetail(")
+    detail_body = source[detail_start:detail_start + 2000]
+    assert "data.items.map(" not in detail_body, (
+        "openPlanDetail renders items itself, which can disagree with /active about "
+        "row order — render days here and reuse the existing item renderer"
     )
 
 
@@ -1694,7 +1728,10 @@ def test_the_history_panel_escapes_labels_and_coerces_ids():
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `venv/Scripts/python -m pytest tests/test_shipment_close_and_history.py -q`
-Expected: FAIL — `assert "async function closePlan(" in source`.
+Expected: FAIL — `ValueError: substring not found` from `_close_plan_body()`, because
+`closePlan` does not exist yet. That the helper *raises* rather than returning an empty
+string is deliberate: a helper that silently returned "" would make every assertion in
+the test pass vacuously once the slice broke.
 
 - [ ] **Step 3: Add the Close button next to Finalise**
 
