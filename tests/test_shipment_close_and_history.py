@@ -338,3 +338,97 @@ async def test_carrying_skips_a_date_the_target_plan_already_has(db, plan_factor
     assert target_days[0]["entries"] == [
         {"asin": "B0AAA00002", "units": 100, "note": None}
     ]
+
+
+async def test_an_orphan_asin_gets_a_row_at_to_ship_zero(db, plan_factory):
+    """Packed units for an ASIN the new plan lacks must still get a plan row.
+
+    `packed_units_by_asin` aggregates by ASIN and never consults plan items, while the
+    invoice bridge builds its lines FROM plan items. So an orphaned ASIN means real
+    boxes ship with no GST line against them — the same understatement the
+    excluded-but-packed 409 exists to prevent. A row at To Ship 0 shows as over-packed,
+    reaches the invoice payload, and gets a line.
+    """
+    old = await plan_factory(items=[
+        {"asin": "B0GONE00001", "item": "Discontinued Sattu", "weight": 0.5,
+         "brand": "MF", "fba_sku": "MF-GONE-500G", "shipment_plan": 100},
+    ])
+    new = await plan_factory(items=[
+        {"asin": "B0AAA00001", "item": "Chana Sattu", "weight": 1.0,
+         "brand": "MF", "fba_sku": "MF-CH-1KG", "shipment_plan": 500},
+    ], status=repository.STATUS_DRAFT)
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-19", [{"asin": "B0GONE00001", "units": 60}], cartons=3,
+    )
+    day = await repository.get_day(db, old.id, "2026-08-19")
+    day.status = logic.STATUS_VERIFIED
+    await db.commit()
+
+    result = await repository.close_plan(db, old.id, new.id)
+
+    assert result["orphan_asins"] == ["B0GONE00001"]
+    items = await repository.load_plan_items(db, new.id)
+    orphan = next(i for i in items if i.asin == "B0GONE00001")
+    assert orphan.shipment_plan == 0
+    assert orphan.item == "Discontinued Sattu", "the product name did not travel"
+    assert orphan.fba_sku == "MF-GONE-500G", (
+        "the merchant SKU did not travel — Amazon keys on it and the invoice needs it"
+    )
+
+
+async def test_close_refuses_and_moves_nothing_when_a_day_is_blocked(db, plan_factory):
+    """A refusal that half-applied is worse than either outcome.
+
+    If the close moved three days and then refused on the fourth, the owner is left
+    with boxes split across two plans and no single screen showing them.
+    """
+    old = await plan_factory()
+    new = await plan_factory(status=repository.STATUS_DRAFT)
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-19", [{"asin": "B0AAA00001", "units": 400}], cartons=9,
+    )
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-20", [{"asin": "B0AAA00001", "units": 50}], cartons=2,
+    )
+    # Submit the first day so it's carriable and not blocking.
+    first_day = await repository.get_day(db, old.id, "2026-08-19")
+    first_day.status = logic.STATUS_VERIFIED
+    # Leave the second day blocked by the Amazon shipment.
+    blocked_day = await repository.get_day(db, old.id, "2026-08-20")
+    blocked_day.inbound_plan_id = "wf-half-created"
+    await db.commit()
+
+    result = await repository.close_plan(db, old.id, new.id)
+
+    assert result["closed"] is False
+    assert len(result["blocked"]) == 1
+    assert result["blocked"][0]["pack_date"] == "2026-08-20"
+    # Nothing moved, and the plan is still active.
+    assert [d["pack_date"] for d in await repository.load_days_with_entries(db, old.id)] == [
+        "2026-08-19", "2026-08-20",
+    ]
+    refreshed = await repository.get_plan(db, old.id)
+    assert refreshed.status == repository.STATUS_ACTIVE
+
+
+async def test_closing_stamps_closed_at_and_leaves_shipped_days_behind(db, plan_factory):
+    """Shipped days stay on the plan they shipped from — that is the history."""
+    old = await plan_factory()
+    new = await plan_factory(status=repository.STATUS_DRAFT)
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-18", [{"asin": "B0AAA00001", "units": 296}], cartons=16,
+    )
+    shipped = await repository.get_day(db, old.id, "2026-08-18")
+    shipped.status = logic.STATUS_SHIPPED
+    await db.commit()
+
+    result = await repository.close_plan(db, old.id, new.id)
+
+    assert result["closed"] is True
+    assert result["carried"] == []
+    closed = await repository.get_plan(db, old.id)
+    assert closed.status == repository.STATUS_CLOSED
+    assert closed.closed_at is not None
+    assert [d["pack_date"] for d in await repository.load_days_with_entries(db, old.id)] == [
+        "2026-08-18"
+    ]

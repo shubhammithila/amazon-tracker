@@ -268,6 +268,175 @@ async def carry_days_to_plan(
     return sorted(moved)
 
 
+async def ensure_rows_for_asins(
+    db: AsyncSession, plan_id: int, asins: list[str], source_plan_id: int
+) -> list[str]:
+    """Add To-Ship-0 rows so carried units have a plan row to sit on.
+
+    Returns the ASINs actually inserted.
+
+    A carried day can hold units for an ASIN the new plan does not list — the product
+    went inactive in the MRP sheet, or the row was excluded. Leaving it orphaned is a
+    GST understatement: ``packed_units_by_asin`` aggregates by ASIN and never consults
+    plan items, while the invoice bridge builds its lines FROM plan items, so those
+    boxes would ship with no line against them.
+
+    Identity fields are copied from the SOURCE plan's item rather than looked up, so
+    the row carries the product name and merchant SKU the units were packed under.
+    Amazon keys on the merchant SKU and the invoice needs the name; re-deriving either
+    from a catalogue that has since dropped the product would produce a blank.
+    """
+    if not asins:
+        return []
+
+    present = {
+        i.asin
+        for i in (
+            await db.execute(
+                select(ShipmentPlanItem).where(
+                    ShipmentPlanItem.plan_id == plan_id,
+                    ShipmentPlanItem.asin.in_(list(asins)),
+                )
+            )
+        ).scalars()
+    }
+    wanted = [a for a in asins if a not in present]
+    if not wanted:
+        return []
+
+    source = {
+        i.asin: i
+        for i in (
+            await db.execute(
+                select(ShipmentPlanItem).where(
+                    ShipmentPlanItem.plan_id == source_plan_id,
+                    ShipmentPlanItem.asin.in_(wanted),
+                )
+            )
+        ).scalars()
+    }
+
+    added: list[str] = []
+    seen_products: dict[str, str] = {}
+    for asin in wanted:
+        origin = source.get(asin)
+        product = (origin.item if origin else "") or ""
+        key = product.casefold()[:120]
+        if key:
+            seen_products.setdefault(key, product)
+        db.add(
+            ShipmentPlanItem(
+                plan_id=plan_id,
+                asin=asin,
+                fba_sku=(origin.fba_sku if origin else "") or "",
+                brand=(origin.brand if origin else "") or "",
+                item=product,
+                sort_product=key,
+                brand_rank=(
+                    origin.brand_rank
+                    if origin is not None
+                    else logic.brand_rank_for(None)
+                ),
+                weight=(origin.weight if origin else 0) or 0,
+                # Zero across the board: this row is not a plan, it is a home for boxes
+                # that already exist. It reads as over-packed, which is exactly right —
+                # units were packed against no plan.
+                sales_7d=0, projection=0, fba_stock=0, deficit=0,
+                shipment_plan=0, available=0,
+                s=False, m=False, b=False,
+            )
+        )
+        added.append(asin)
+
+    await db.commit()
+    await ensure_categories(db, seen_products)
+    return sorted(added)
+
+
+async def close_plan(
+    db: AsyncSession, plan_id: int, to_plan_id: int | None
+) -> dict:
+    """Retire a plan, carrying its packed-but-unshipped days forward.
+
+    Returns ``{"closed", "carried", "orphan_asins", "blocked", "shipped_uninvoiced",
+    "target_plan_id"}``.
+
+    Distinct from ``finalise_plan``: that promotes a DRAFT and closes whatever was
+    active as a side effect. This retires the ACTIVE plan when the owner decides it is
+    done, which may be before any replacement exists — the live case is exactly that
+    (sales data moved, a new plan is wanted, and one day is packed below the carton
+    threshold).
+
+    **Refuses entirely if any day is blocked, before moving anything.** A close that
+    carried three days and then refused on the fourth would leave the boxes split
+    across two plans with no single screen showing them.
+
+    ``to_plan_id`` of None means "no target yet": the caller is expected to have
+    created one. Nothing is carried in that case and the plan closes only if it has
+    nothing to carry, because closing while boxes have nowhere to go is how held stock
+    becomes lost stock.
+    """
+    plan = await get_plan(db, plan_id)
+    if plan is None:
+        return {
+            "closed": False, "carried": [], "orphan_asins": [], "blocked": [],
+            "shipped_uninvoiced": [], "target_plan_id": None, "missing": True,
+        }
+
+    days = await load_days_with_entries(db, plan_id)
+    split = logic.carriable_days(days)
+    shipped_uninvoiced = [d["pack_date"] for d in split["shipped_uninvoiced"]]
+
+    if split["blocked"]:
+        return {
+            "closed": False, "carried": [], "orphan_asins": [],
+            "blocked": split["blocked"],
+            "shipped_uninvoiced": shipped_uninvoiced,
+            "target_plan_id": to_plan_id,
+        }
+
+    to_carry = [d["pack_date"] for d in split["carry"]]
+    if to_carry and to_plan_id is None:
+        return {
+            "closed": False, "carried": [], "orphan_asins": [],
+            "blocked": [{
+                "pack_date": ", ".join(to_carry),
+                "reason": "there is no plan to carry these days onto",
+            }],
+            "shipped_uninvoiced": shipped_uninvoiced,
+            "target_plan_id": None,
+        }
+
+    orphans: list[str] = []
+    if to_carry:
+        # Rows FIRST, then the days. If the order were reversed a crash between them
+        # would leave carried units on a plan with no row to hold them, which is the
+        # GST-understatement state; this order leaves at worst an unused zero row.
+        carried_asins = sorted({
+            entry["asin"]
+            for day in split["carry"]
+            for entry in (day.get("entries") or [])
+            if entry.get("asin")
+        })
+        orphans = await ensure_rows_for_asins(
+            db, to_plan_id, carried_asins, source_plan_id=plan_id
+        )
+        await carry_days_to_plan(db, plan_id, to_plan_id, to_carry)
+
+    plan.status = STATUS_CLOSED
+    plan.closed_at = datetime.utcnow()
+    await db.commit()
+
+    return {
+        "closed": True,
+        "carried": sorted(to_carry),
+        "orphan_asins": orphans,
+        "blocked": [],
+        "shipped_uninvoiced": shipped_uninvoiced,
+        "target_plan_id": to_plan_id,
+    }
+
+
 async def get_draft_plan(db: AsyncSession) -> ShipmentPlan | None:
     """The plan being prepared, if any. Owner-only by construction.
 
