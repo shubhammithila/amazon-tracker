@@ -1019,7 +1019,12 @@ them — which is the GST-understatement state."
 - Test: `tests/test_shipment_close_and_history.py`
 
 **Interfaces:**
-- Produces: `repository.list_plans(db) -> list[dict]` with keys `id, label, status, created_at, closed_at, days, units, cartons, invoice_ids, carried_in, carried_out`.
+- Produces: `repository.list_plans(db) -> list[dict]` with keys `id, label, status, created_at, closed_at, days, units, cartons, invoice_numbers, carried_in, carried_out`.
+
+  `invoice_numbers` holds the GST numbers as strings ("ST/26-27/077"), never row ids. A
+  row id names nothing the owner can look up in his own records — the same mistake
+  `_invoice_numbers()` exists to prevent elsewhere in this codebase, where three refusals
+  interpolated a raw `invoice_id` and printed "already on invoice #5".
 
 - [ ] **Step 1: Write the failing test**
 
