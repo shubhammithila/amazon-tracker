@@ -525,25 +525,73 @@ async def test_the_plan_list_summarises_every_plan_newest_first(db, plan_factory
     assert by_id[old.id]["days"] == 1
     assert by_id[old.id]["units"] == 296
     assert by_id[old.id]["cartons"] == 16
+    assert new.id in by_id, (
+        "a plan with no packing days must still be listed or the history screen hides new drafts"
+    )
     assert by_id[new.id]["days"] == 0
 
 
 async def test_the_plan_list_reports_carry_lineage_in_both_directions(db, plan_factory):
-    """A day that moved must be visible from BOTH plans.
+    """A day that moved must be visible from BOTH plans, keyed correctly.
 
-    With only one direction, the date appears to vanish from the plan being reconciled.
+    The two dicts are keyed differently: `carried_in[holder]` and `carried_out[origin]`.
+    A two-plan setup cannot catch a swap where both are keyed by holder, because in that
+    setup holder and origin refer to different rows. A three-plan chain A→B→C exposes it:
+
+    - Plan A packs the day originally.
+    - Plan B receives it (A→B carry) and then closes onto C (B→C carry).
+    - The day now lives on C but `carried_from_plan_id` still points at A, not B.
+
+    This is deliberate: "original beats previous" for reconciliation. The question is
+    which plan the boxes were packed AGAINST, not which intermediate plan held them. So
+    after two carries:
+
+    - A.carried_out = 1 (A donated the day)
+    - B.carried_in = 0, B.carried_out = 0 (B was just a passthrough)
+    - C.carried_in = 1 (C received the day)
+
+    If the implementation mistakenly keyed `carried_out` by holder instead of origin, B
+    would show carried_out=1 and A would show 0, which this test now catches.
     """
-    old = await plan_factory()
-    new = await plan_factory(status=repository.STATUS_DRAFT)
+    plan_a = await plan_factory()
+    plan_b = await plan_factory(status=repository.STATUS_DRAFT)
+    plan_c = await plan_factory(status=repository.STATUS_DRAFT)
+
+    # Pack a day on plan A and verify it.
     await repository.save_packing_entries(
-        db, old.id, "2026-08-19", [{"asin": "B0AAA00001", "units": 400}], cartons=9,
+        db, plan_a.id, "2026-08-19", [{"asin": "B0AAA00001", "units": 400}], cartons=9,
     )
-    day = await repository.get_day(db, old.id, "2026-08-19")
-    day.status = logic.STATUS_VERIFIED
+    day_a = await repository.get_day(db, plan_a.id, "2026-08-19")
+    day_a.status = logic.STATUS_VERIFIED
     await db.commit()
 
-    await repository.close_plan(db, old.id, new.id)
+    # Close A onto B, carrying the day.
+    await repository.close_plan(db, plan_a.id, plan_b.id)
+
+    # Close B onto C, carrying the same day again.
+    await repository.close_plan(db, plan_b.id, plan_c.id)
 
     by_id = {r["id"]: r for r in await repository.list_plans(db)}
-    assert by_id[new.id]["carried_in"] == 1
-    assert by_id[old.id]["carried_out"] == 1
+
+    # Plan A donated the day originally. The lineage stamp is set only on the first carry
+    # and never changed, so even after two carries the day still points at A. A must show
+    # carried_out=1.
+    assert by_id[plan_a.id]["carried_out"] == 1, (
+        "plan A donated the day and must show carried_out=1"
+    )
+
+    # Plan B was just a passthrough: it received the day from A and immediately passed it
+    # to C. The day's carried_from_plan_id stayed A throughout, so B appears in neither
+    # direction.
+    assert by_id[plan_b.id]["carried_in"] == 0, (
+        "plan B received from A but the day still points at A, not B"
+    )
+    assert by_id[plan_b.id]["carried_out"] == 0, (
+        "plan B passed the day to C but is not the origin, so carried_out=0"
+    )
+
+    # Plan C holds the day now. It must show carried_in=1.
+    assert by_id[plan_c.id]["carried_in"] == 1, (
+        "plan C holds the carried day and must show carried_in=1"
+    )
+    assert by_id[plan_c.id]["carried_out"] == 0
