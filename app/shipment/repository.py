@@ -1127,3 +1127,77 @@ async def clear_inbound_plan(
         cleared += 1
     await db.commit()
     return cleared
+
+
+async def list_plans(db: AsyncSession) -> list[dict]:
+    """Every plan, newest first, summarised for the history list.
+
+    Aggregated in SQL rather than by loading each plan's days, because this is the
+    screen the owner opens to FIND a plan and it must not cost one query per plan.
+
+    ``carried_in`` counts days whose ``carried_from_plan_id`` points elsewhere;
+    ``carried_out`` counts days that ORIGINATED here and now live on another plan. Both
+    directions matter: with only one, a carried day looks as though it vanished from the
+    plan being reconciled.
+    """
+    totals = (
+        select(
+            ShipmentPackingDay.plan_id.label("plan_id"),
+            func.count(ShipmentPackingDay.id).label("days"),
+            func.coalesce(func.sum(ShipmentPackingDay.total_units), 0).label("units"),
+            func.coalesce(func.sum(ShipmentPackingDay.total_cartons), 0).label("cartons"),
+        )
+        .group_by(ShipmentPackingDay.plan_id)
+        .subquery()
+    )
+
+    rows = await db.execute(
+        select(ShipmentPlan, totals.c.days, totals.c.units, totals.c.cartons)
+        .outerjoin(totals, totals.c.plan_id == ShipmentPlan.id)
+        .order_by(ShipmentPlan.id.desc())
+    )
+
+    # One query for both lineage directions, keyed by the pair, rather than two
+    # aggregates that could disagree about a day.
+    lineage = await db.execute(
+        select(
+            ShipmentPackingDay.plan_id,
+            ShipmentPackingDay.carried_from_plan_id,
+            func.count(ShipmentPackingDay.id),
+        )
+        .where(ShipmentPackingDay.carried_from_plan_id.isnot(None))
+        .group_by(
+            ShipmentPackingDay.plan_id, ShipmentPackingDay.carried_from_plan_id
+        )
+    )
+    carried_in: dict[int, int] = {}
+    carried_out: dict[int, int] = {}
+    for holder, origin, count in lineage:
+        carried_in[holder] = carried_in.get(holder, 0) + int(count or 0)
+        carried_out[origin] = carried_out.get(origin, 0) + int(count or 0)
+
+    invoices = await db.execute(
+        select(ShipmentPackingDay.plan_id, Invoice.invoice_no)
+        .join(Invoice, Invoice.id == ShipmentPackingDay.invoice_id)
+        .distinct()
+    )
+    by_plan_invoices: dict[int, list[str]] = {}
+    for plan_id, invoice_no in invoices:
+        by_plan_invoices.setdefault(plan_id, []).append(invoice_no)
+
+    out: list[dict] = []
+    for plan, days, units, cartons in rows:
+        out.append({
+            "id": plan.id,
+            "label": plan.label,
+            "status": plan.status,
+            "created_at": plan.created_at.isoformat() if plan.created_at else None,
+            "closed_at": plan.closed_at.isoformat() if plan.closed_at else None,
+            "days": int(days or 0),
+            "units": int(units or 0),
+            "cartons": int(cartons or 0),
+            "invoice_numbers": sorted(by_plan_invoices.get(plan.id, [])),
+            "carried_in": carried_in.get(plan.id, 0),
+            "carried_out": carried_out.get(plan.id, 0),
+        })
+    return out

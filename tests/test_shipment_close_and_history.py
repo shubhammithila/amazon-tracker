@@ -500,3 +500,50 @@ async def test_a_plan_with_something_to_carry_refuses_when_no_target_exists(db, 
     assert days[0]["pack_date"] == "2026-08-19"
     assert days[0]["total_units"] == 400
     assert days[0]["total_cartons"] == 9
+
+
+# ─── History ─────────────────────────────────────────────────────────────────
+
+async def test_the_plan_list_summarises_every_plan_newest_first(db, plan_factory):
+    """Enough to choose from without opening each one.
+
+    Totals and invoice numbers are what a reconciliation scans; a bare list of labels
+    would mean opening all of them to find the month being checked.
+    """
+    old = await plan_factory()
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-18", [{"asin": "B0AAA00001", "units": 296}], cartons=16,
+    )
+    new = await plan_factory(status=repository.STATUS_DRAFT)
+
+    rows = await repository.list_plans(db)
+    by_id = {r["id"]: r for r in rows}
+
+    assert [r["id"] for r in rows] == sorted(by_id, reverse=True), (
+        "the list is not newest-first"
+    )
+    assert by_id[old.id]["days"] == 1
+    assert by_id[old.id]["units"] == 296
+    assert by_id[old.id]["cartons"] == 16
+    assert by_id[new.id]["days"] == 0
+
+
+async def test_the_plan_list_reports_carry_lineage_in_both_directions(db, plan_factory):
+    """A day that moved must be visible from BOTH plans.
+
+    With only one direction, the date appears to vanish from the plan being reconciled.
+    """
+    old = await plan_factory()
+    new = await plan_factory(status=repository.STATUS_DRAFT)
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-19", [{"asin": "B0AAA00001", "units": 400}], cartons=9,
+    )
+    day = await repository.get_day(db, old.id, "2026-08-19")
+    day.status = logic.STATUS_VERIFIED
+    await db.commit()
+
+    await repository.close_plan(db, old.id, new.id)
+
+    by_id = {r["id"]: r for r in await repository.list_plans(db)}
+    assert by_id[new.id]["carried_in"] == 1
+    assert by_id[old.id]["carried_out"] == 1
