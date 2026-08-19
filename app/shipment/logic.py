@@ -676,6 +676,96 @@ def carry_over(
     }
 
 
+#: Statuses a day may be carried onto the next plan from. `shipped` is absent and that
+#: absence is the arithmetic: `parse_stock_csv` sums the three afn-inbound columns into
+#: fba_stock, so a shipped day is ALREADY inside `deficit = projection - fba_stock`.
+#: Carrying it would count the same units twice, in every plan after.
+CARRIABLE_STATUSES = frozenset({STATUS_HELD, STATUS_SUBMITTED, STATUS_VERIFIED})
+
+
+def carriable_days(days: Sequence) -> dict:
+    """Split a closing plan's days into carry / blocked / shipped-uninvoiced.
+
+    Pure, and separate from the repository on purpose: this decides whether real boxes
+    move between plans, so it must be provable without a database.
+
+    Returns ``{"carry": [...], "blocked": [{"pack_date", "reason"}], "shipped_uninvoiced": [...]}``.
+
+    **carry** — packed but not shipped, and not invoiced. These are boxes on the floor
+    that Amazon has no record of, so the next plan cannot see them any other way. They
+    move as DAYS: every aggregation here reaches days through ``load_days(plan_id)``,
+    so updating that one column makes ``packed_units_by_asin`` count them (the packer is
+    told to box the remainder, not the whole plan), ``shippable_units_by_asin`` add
+    their cartons toward the threshold, and ``carry_over`` combine them with the new
+    plan's held days.
+
+    **blocked** — the close must refuse rather than move these:
+
+    * ``inbound_plan_id`` with no ``shipment_confirmation_id``: a plan is half-created
+      at Amazon, and ``clear_inbound_plan`` scopes its cleanup by (plan_id,
+      inbound_plan_id) — moving the day detaches it from the only query that can
+      cancel it.
+    * ``open``: the packer is still entering counts.
+
+    **shipped_uninvoiced** — nothing to carry (the units are at Amazon) but the owner
+    must be told, because closing used to make ``attach_invoice`` unreachable for them.
+
+    An empty day is neither carried nor blocked: a day row with no entries is
+    bookkeeping, not boxes, and moving it would put an idle date on the new plan.
+    """
+    carry, blocked, shipped_uninvoiced = [], [], []
+
+    for day in days:
+        def field(name, default=None):
+            return (
+                day.get(name, default)
+                if isinstance(day, Mapping)
+                else getattr(day, name, default)
+            )
+
+        status = field("status")
+        entries = field("entries") or []
+        units = packed_units(entries)
+
+        if status == STATUS_SHIPPED:
+            if not field("invoice_id"):
+                shipped_uninvoiced.append(day)
+            continue
+
+        if status == STATUS_OPEN:
+            if units:
+                blocked.append({
+                    "pack_date": field("pack_date") or "",
+                    "reason": "the day is still open — submit or clear it first",
+                })
+            continue
+
+        if status not in CARRIABLE_STATUSES:
+            continue
+        if field("invoice_id"):
+            continue
+        if not units:
+            continue
+
+        if field("inbound_plan_id") and not field("shipment_confirmation_id"):
+            blocked.append({
+                "pack_date": field("pack_date") or "",
+                "reason": (
+                    "an Amazon shipment is part-created for this day — confirm or "
+                    "cancel it before closing the plan"
+                ),
+            })
+            continue
+
+        carry.append(day)
+
+    return {
+        "carry": carry,
+        "blocked": blocked,
+        "shipped_uninvoiced": shipped_uninvoiced,
+    }
+
+
 # ─── The Amazon inbound-plan body ─────────────────────────────────────────────
 #
 # Pure, and deliberately so: this builds the request that would create a REAL shipment
