@@ -2575,9 +2575,22 @@ async def attach_invoice(
     if not pack_dates:
         return JSONResponse({"error": "pack_dates is required"}, status_code=400)
 
-    plan = await repository.get_active_plan(db)
+    # `plan_id` first, active as the fallback — the same pattern POST /items uses.
+    #
+    # This route USED to resolve only the active plan, and closing a plan therefore
+    # made an invoice unrecordable against its days: the owner's only remedy was
+    # editing the database. Close deliberately creates that state (a shipped day with
+    # no invoice stays on the plan it shipped from), so the id must be accepted.
+    raw_plan_id = body.get("plan_id")
+    plan = (
+        await repository.get_plan(db, int(raw_plan_id))
+        if raw_plan_id
+        else await repository.get_active_plan(db)
+    )
     if plan is None:
-        return JSONResponse({"error": "No active plan"}, status_code=404)
+        return JSONResponse(
+            {"error": "No such plan, and no active plan."}, status_code=404
+        )
 
     updated, already = [], []
     for pack_date in pack_dates:

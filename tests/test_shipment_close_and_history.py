@@ -595,3 +595,42 @@ async def test_the_plan_list_reports_carry_lineage_in_both_directions(db, plan_f
         "plan C holds the carried day and must show carried_in=1"
     )
     assert by_id[plan_c.id]["carried_out"] == 0
+
+
+# ─── The bug Close would otherwise create ────────────────────────────────────
+
+async def test_an_invoice_can_be_recorded_against_a_closed_plans_day(
+    auth_client, db, plan_factory
+):
+    """attach_invoice used to resolve the day through get_active_plan.
+
+    So closing a plan with a shipped-but-uninvoiced day made recording its invoice
+    impossible through the app — the owner would have to edit the database. Close makes
+    that state reachable deliberately, so the lookup must accept a plan id.
+    """
+    plan = await plan_factory()
+    await repository.save_packing_entries(
+        db, plan.id, "2026-08-18", [{"asin": "B0AAA00001", "units": 296}], cartons=16,
+    )
+    day = await repository.get_day(db, plan.id, "2026-08-18")
+    day.status = logic.STATUS_SHIPPED
+    await db.commit()
+
+    from app.models import Invoice
+    invoice = Invoice(invoice_no="ST/26-27/081", invoice_number=81)
+    db.add(invoice)
+    await db.commit()
+    await db.refresh(invoice)
+
+    await repository.close_plan(db, plan.id, None)
+    closed = await repository.get_plan(db, plan.id)
+    assert closed.status == repository.STATUS_CLOSED, "precondition: the plan closed"
+
+    r = await auth_client.post("/shipment/attach-invoice", json={
+        "invoice_id": invoice.id,
+        "pack_dates": ["2026-08-18"],
+        "plan_id": plan.id,
+    })
+    assert r.status_code == 200, r.text
+    await db.refresh(day)
+    assert day.invoice_id == invoice.id
