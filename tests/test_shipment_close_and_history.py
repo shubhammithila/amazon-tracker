@@ -432,3 +432,71 @@ async def test_closing_stamps_closed_at_and_leaves_shipped_days_behind(db, plan_
     assert [d["pack_date"] for d in await repository.load_days_with_entries(db, old.id)] == [
         "2026-08-18"
     ]
+
+
+async def test_a_plan_with_nothing_to_carry_closes_without_a_target(db, plan_factory):
+    """A fully-shipped plan must close even when no replacement exists yet.
+
+    The business case: the plan is finished, and requiring a carrier plan would mean
+    creating an empty plan for nothing. This guards the `if to_carry and to_plan_id is
+    None` early-return: a plan with NOTHING to carry must NOT hit that branch.
+    """
+    old = await plan_factory()
+    # Pack a day and mark it shipped — nothing to carry.
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-18", [{"asin": "B0AAA00001", "units": 296}], cartons=16,
+    )
+    shipped = await repository.get_day(db, old.id, "2026-08-18")
+    shipped.status = logic.STATUS_SHIPPED
+    await db.commit()
+
+    # Close with to_plan_id=None. Must succeed.
+    result = await repository.close_plan(db, old.id, to_plan_id=None)
+
+    assert result["closed"] is True, "plan with nothing to carry must close without a target"
+    assert result["carried"] == []
+    assert result["blocked"] == []
+
+    # Verify the plan is actually closed in the database.
+    closed = await repository.get_plan(db, old.id)
+    assert closed.status == repository.STATUS_CLOSED
+    assert closed.closed_at is not None
+
+
+async def test_a_plan_with_something_to_carry_refuses_when_no_target_exists(db, plan_factory):
+    """A plan with carriable days and no target must refuse to close.
+
+    The business risk: closing while packed boxes have nowhere to go is how held stock
+    becomes lost stock. The boxes are physically in the warehouse, but no screen would
+    mention them after the close. This guards the inverse: when the `if to_carry and
+    to_plan_id is None` branch DOES fire, the plan must stay open and the day must not
+    move.
+    """
+    old = await plan_factory()
+    # Pack a verified day — definitely carriable.
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-19", [{"asin": "B0AAA00001", "units": 400}], cartons=9,
+    )
+    day = await repository.get_day(db, old.id, "2026-08-19")
+    day.status = logic.STATUS_VERIFIED
+    await db.commit()
+
+    # Try to close with to_plan_id=None. Must refuse.
+    result = await repository.close_plan(db, old.id, to_plan_id=None)
+
+    assert result["closed"] is False, "plan with carriable days must refuse to close without a target"
+    assert result["carried"] == []
+    assert len(result["blocked"]) == 1, "the carriable days must be reported as blocked"
+    assert "2026-08-19" in result["blocked"][0]["pack_date"]
+    assert "no plan" in result["blocked"][0]["reason"].lower()
+
+    # Verify the plan is STILL active in the database.
+    still_active = await repository.get_plan(db, old.id)
+    assert still_active.status == repository.STATUS_ACTIVE, "refused close must leave plan active"
+
+    # Verify the day is STILL on the original plan with units intact.
+    days = await repository.load_days_with_entries(db, old.id)
+    assert len(days) == 1
+    assert days[0]["pack_date"] == "2026-08-19"
+    assert days[0]["total_units"] == 400
+    assert days[0]["total_cartons"] == 9
