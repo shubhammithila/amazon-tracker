@@ -204,6 +204,11 @@ class ShipmentPlan(Base):
     min_cartons = Column(Integer, default=25)
     min_units = Column(Integer, default=500)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # When the owner retired this plan. Distinct from a plan merely being superseded:
+    # `status` says WHAT it is, this says WHEN it stopped, which is what the history
+    # list sorts and labels by. Nullable, so no backfill is needed for plans closed
+    # before this column existed.
+    closed_at = Column(DateTime)
 
     items = relationship(
         "ShipmentPlanItem", back_populates="plan", lazy="selectin",
@@ -409,6 +414,15 @@ class ShipmentPackingDay(Base):
     # pick is a request, this is what actually happened.
     destination_warehouse_id = Column(String(10))
     destination_state = Column(String(50))
+    # The plan this day was packed against BEFORE it was carried forward, or NULL if
+    # it has always belonged to its current plan.
+    #
+    # A plain Integer, deliberately NOT a ForeignKey: the source plan can be deleted
+    # (DELETE /shipment/plan/{id} cascades), and a FK would either block that delete
+    # or null the lineage out. This column's only job is to explain, on screen and in
+    # a reconciliation, why a plan holds units for a date it never opened — so an id
+    # that no longer resolves is still better than no id at all.
+    carried_from_plan_id = Column(Integer)
 
     plan = relationship("ShipmentPlan", back_populates="days")
     entries = relationship(

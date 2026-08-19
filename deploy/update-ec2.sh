@@ -305,6 +305,8 @@ def cols(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "shipment_packing_days" in tables and "carried_from_plan_id" in cols("shipment_packing_days"):
+    print("b2f7c1a94e05")                           # head: close plans, carry days
 elif "product_prices" in tables:
     print("9e4b1c7a2f56")                           # head: product_prices table
 elif "shipment_packing_days" in tables and "inbound_plan_id" in cols("shipment_packing_days"):
