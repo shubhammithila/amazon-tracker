@@ -142,3 +142,75 @@ def test_shipped_but_uninvoiced_days_are_reported_separately():
     ]
     result = logic.carriable_days(days)
     assert [d["pack_date"] for d in result["shipped_uninvoiced"]] == ["2026-08-18"]
+
+
+def test_a_day_with_no_entries_neither_carries_nor_blocks():
+    """An unloaded ORM relationship must not raise inside packed_units.
+
+    The `entries` field is an ORM relationship that may be `None` if not
+    eager-loaded. The `or []` guard in line 727 is what makes this safe — without
+    it, `packed_units(None)` would raise, blocking every close on a relationship
+    loading bug rather than on the day's actual state. A `None` here means the
+    query did not JOIN entries, not that the day has zero entries, so it must
+    neither carry (unknown units) nor block (no boxes).
+    """
+    days = [_day("2026-08-20", logic.STATUS_HELD, units=100, entries=None)]
+    result = logic.carriable_days(days)
+    assert result["carry"] == [], "entries=None must not carry — units are unknown"
+    assert result["blocked"] == [], "entries=None must not block — no boxes exist"
+    assert result["shipped_uninvoiced"] == []
+
+
+def test_an_open_day_with_zero_units_does_not_block():
+    """An empty open day is bookkeeping, not work in progress.
+
+    The `if units:` guard on line 736 prevents an open day with no entries from
+    blocking the close. Without it, a zero-unit row created during a migration or a
+    mis-click would block every close until manually deleted, even though there are
+    no boxes to protect. Only open days WITH units should block, since only those
+    represent a packer mid-shift who might be adding more.
+    """
+    days = [
+        _day("2026-08-20", logic.STATUS_OPEN, units=150, cartons=5),
+        _day("2026-08-21", logic.STATUS_OPEN, units=0, cartons=0, entries=[]),
+    ]
+    result = logic.carriable_days(days)
+    assert len(result["blocked"]) == 1, "only the units-bearing open day should block"
+    assert result["blocked"][0]["pack_date"] == "2026-08-20"
+    assert "open" in result["blocked"][0]["reason"].lower()
+
+
+def test_an_open_day_with_an_amazon_shipment_blocks_as_open_not_amazon():
+    """The open check comes first, and that ordering is deliberate.
+
+    If a day is both open AND has an `inbound_plan_id`, the STATUS_OPEN block
+    (line 735) fires first, so the reason reports "open" not "amazon". Submitting
+    the day is more immediately actionable than unwinding a half-created Amazon
+    shipment, so the block must name the easier fix. Reordering those two checks
+    would make this test fail by reporting an Amazon shipment when the real blocker
+    is the packer's count.
+    """
+    days = [_day("2026-08-20", logic.STATUS_OPEN, inbound_plan_id="wf123", units=100)]
+    result = logic.carriable_days(days)
+    assert len(result["blocked"]) == 1
+    reason = result["blocked"][0]["reason"].lower()
+    assert "open" in reason, "must name the more actionable fix"
+    assert "amazon" not in reason, "must not mention the Amazon shipment"
+
+
+def test_an_unrecognised_status_fails_safe():
+    """A typo or a new status must neither carry nor block.
+
+    The `if status not in CARRIABLE_STATUSES: continue` line (743) is the fail-safe:
+    a day whose status is unrecognised (e.g. a typo like "verfiied", or a new status
+    added without updating this function) is silently skipped. That is correct:
+    carrying a day whose state is unknown could move boxes that should not move, and
+    blocking on it would refuse every close with no actionable error. Making the day
+    visibly absent (not in carry, not in blocked) is the safe failure mode — the
+    owner sees it on the old plan with an unexpected status and can investigate.
+    """
+    days = [_day("2026-08-20", "verfiied", units=100)]
+    result = logic.carriable_days(days)
+    assert result["carry"] == [], "unrecognised status must not carry — state unknown"
+    assert result["blocked"] == [], "unrecognised status must not block — would refuse all closes"
+    assert result["shipped_uninvoiced"] == []
