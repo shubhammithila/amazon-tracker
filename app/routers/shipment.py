@@ -2582,11 +2582,19 @@ async def attach_invoice(
     # editing the database. Close deliberately creates that state (a shipped day with
     # no invoice stays on the plan it shipped from), so the id must be accepted.
     raw_plan_id = body.get("plan_id")
-    plan = (
-        await repository.get_plan(db, int(raw_plan_id))
-        if raw_plan_id
-        else await repository.get_active_plan(db)
-    )
+    # Validate plan_id explicitly to avoid an unhandled 500 on a route that writes
+    # GST invoice attachments — a generic error gives the owner no idea which field
+    # was malformed, and these are legally-sequential tax documents.
+    if "plan_id" in body and raw_plan_id is not None:
+        try:
+            plan_id = int(raw_plan_id)
+        except (TypeError, ValueError):
+            return JSONResponse(
+                {"error": "plan_id must be an integer"}, status_code=400
+            )
+        plan = await repository.get_plan(db, plan_id)
+    else:
+        plan = await repository.get_active_plan(db)
     if plan is None:
         return JSONResponse(
             {"error": "No such plan, and no active plan."}, status_code=404

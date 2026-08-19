@@ -634,3 +634,44 @@ async def test_an_invoice_can_be_recorded_against_a_closed_plans_day(
     assert r.status_code == 200, r.text
     await db.refresh(day)
     assert day.invoice_id == invoice.id
+
+
+@pytest.mark.parametrize("malformed_plan_id", ["abc", []])
+async def test_attach_invoice_validates_plan_id_instead_of_casting_blind(
+    auth_client, plan_factory, db, malformed_plan_id
+):
+    """Malformed plan_id is refused with 400, not 500, naming the field.
+
+    This route writes GST invoice attachments — legally-sequential tax documents —
+    so an unhandled 500 that hides which field was wrong is worse here than
+    almost anywhere else in the app. The owner needs to know which field to fix.
+    """
+    plan = await plan_factory()
+    await repository.save_packing_entries(
+        db, plan.id, "2026-08-18", [{"asin": "B0AAA00001", "units": 100}], cartons=5,
+    )
+    day = await repository.get_day(db, plan.id, "2026-08-18")
+    day.status = logic.STATUS_VERIFIED
+    await db.commit()
+
+    from app.models import Invoice
+    invoice = Invoice(invoice_no="ST/26-27/099", invoice_number=99)
+    db.add(invoice)
+    await db.commit()
+    await db.refresh(invoice)
+
+    r = await auth_client.post("/shipment/attach-invoice", json={
+        "invoice_id": invoice.id,
+        "pack_dates": ["2026-08-18"],
+        "plan_id": malformed_plan_id,
+    })
+    # The bug was that this raised a 500 (unhandled TypeError or ValueError)
+    # instead of validating the field and returning a 400.
+    assert r.status_code == 400, (
+        f"Expected 400 for malformed plan_id={malformed_plan_id!r}, "
+        f"got {r.status_code} (500 is the bug)"
+    )
+    data = r.json()
+    assert "plan_id" in data.get("error", "").lower(), (
+        f"Error message should name the field 'plan_id', got: {data}"
+    )
