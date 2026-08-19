@@ -200,6 +200,69 @@ async def finalise_plan(db: AsyncSession, plan_id: int) -> ShipmentPlan | None:
     return plan
 
 
+async def carry_days_to_plan(
+    db: AsyncSession, from_plan_id: int, to_plan_id: int, pack_dates: list[str]
+) -> list[str]:
+    """Move packed days onto another plan. Returns the dates actually moved.
+
+    **The day moves; its units are not copied anywhere.** That is the whole design.
+    ``logic.remaining_for`` deliberately ignores ``available``, so adding the units to
+    the new plan's stock column would tell the packer to box them a second time — 400
+    already-packed units plus a 500-unit plan is 900 units of instruction. Because every
+    aggregation reaches days through ``load_days(plan_id)``, updating that one column
+    makes the new plan count them correctly with no new arithmetic at all.
+
+    Status is preserved, including `verified`: the owner's approval refers to numbers he
+    saw, and re-opening the day would discard it and block the invoice the day still
+    needs.
+
+    Idempotent. A date already absent from the source plan is skipped rather than
+    raising, so closing twice moves nothing twice — and a date already present on the
+    TARGET is skipped too, because the UNIQUE index on (plan_id, pack_date) would
+    otherwise reject the whole transaction.
+    """
+    if not pack_dates:
+        return []
+
+    existing_on_target = {
+        d.pack_date
+        for d in (
+            await db.execute(
+                select(ShipmentPackingDay).where(
+                    ShipmentPackingDay.plan_id == to_plan_id,
+                    ShipmentPackingDay.pack_date.in_(list(pack_dates)),
+                )
+            )
+        ).scalars()
+    }
+
+    result = await db.execute(
+        select(ShipmentPackingDay).where(
+            ShipmentPackingDay.plan_id == from_plan_id,
+            ShipmentPackingDay.pack_date.in_(list(pack_dates)),
+        )
+    )
+
+    moved: list[str] = []
+    for day in result.scalars():
+        if day.pack_date in existing_on_target:
+            logger.warning(
+                "carry: %s already exists on plan %s, left on plan %s",
+                day.pack_date, to_plan_id, from_plan_id,
+            )
+            continue
+        day.plan_id = to_plan_id
+        # Stamped only on the first move, so a day carried twice still points at where
+        # it was originally packed rather than at the intermediate plan.
+        if day.carried_from_plan_id is None:
+            day.carried_from_plan_id = from_plan_id
+        moved.append(day.pack_date)
+
+    if moved:
+        await db.commit()
+    return sorted(moved)
+
+
 async def get_draft_plan(db: AsyncSession) -> ShipmentPlan | None:
     """The plan being prepared, if any. Owner-only by construction.
 
@@ -754,6 +817,10 @@ async def load_days_with_entries(db: AsyncSession, plan_id: int) -> list[dict]:
                 "shipment_confirmation_id": day.shipment_confirmation_id,
                 "destination_warehouse_id": day.destination_warehouse_id,
                 "destination_state": day.destination_state,
+                # NULL unless this day was packed against a different plan and carried
+                # forward. The screen badges it, and a reconciliation needs it to explain
+                # why a plan holds units for a date it never opened.
+                "carried_from_plan_id": day.carried_from_plan_id,
                 # Units only. Cartons are a day-level fact and are already above as
                 # `total_cartons`; a per-entry key here would invite summing it back
                 # up into a number that means nothing.

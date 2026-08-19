@@ -214,3 +214,78 @@ def test_an_unrecognised_status_fails_safe():
     assert result["carry"] == [], "unrecognised status must not carry — state unknown"
     assert result["blocked"] == [], "unrecognised status must not block — would refuse all closes"
     assert result["shipped_uninvoiced"] == []
+
+
+# ─── Carrying a day between plans ────────────────────────────────────────────
+
+from app.shipment import repository
+
+
+async def test_carrying_a_day_moves_it_and_stamps_its_origin(db, plan_factory):
+    """One column update, and the lineage that explains it.
+
+    The day must appear on the new plan with its entries intact, and the old plan must
+    say where it went — otherwise a reconciliation of the old plan shows a date that
+    simply vanished.
+    """
+    old = await plan_factory()
+    new = await plan_factory(status=repository.STATUS_DRAFT)
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-19",
+        [{"asin": "B0AAA00001", "units": 400}], cartons=9,
+    )
+
+    moved = await repository.carry_days_to_plan(db, old.id, new.id, ["2026-08-19"])
+    assert moved == ["2026-08-19"]
+
+    old_days = await repository.load_days_with_entries(db, old.id)
+    new_days = await repository.load_days_with_entries(db, new.id)
+    assert [d["pack_date"] for d in old_days] == []
+    assert [d["pack_date"] for d in new_days] == ["2026-08-19"]
+    assert new_days[0]["total_units"] == 400
+    assert new_days[0]["total_cartons"] == 9, "the carton count did not travel"
+    assert new_days[0]["entries"] == [
+        {"asin": "B0AAA00001", "units": 400, "note": None}
+    ]
+    assert new_days[0]["carried_from_plan_id"] == old.id
+
+
+async def test_a_carried_day_keeps_its_verified_status(db, plan_factory):
+    """19 Aug is verified and must stay so, or the invoice it still needs is blocked.
+
+    Re-opening it would also throw away the owner's approval of numbers he did see.
+    """
+    old = await plan_factory()
+    new = await plan_factory(status=repository.STATUS_DRAFT)
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-19", [{"asin": "B0AAA00001", "units": 400}], cartons=9,
+    )
+    day = await repository.get_day(db, old.id, "2026-08-19")
+    day.status = logic.STATUS_VERIFIED
+    await db.commit()
+
+    await repository.carry_days_to_plan(db, old.id, new.id, ["2026-08-19"])
+
+    carried = await repository.get_day(db, new.id, "2026-08-19")
+    assert carried is not None
+    assert carried.status == logic.STATUS_VERIFIED
+
+
+async def test_carrying_is_idempotent(db, plan_factory):
+    """Closing twice must not move anything twice, or duplicate a date.
+
+    The UNIQUE index on (plan_id, pack_date) would reject the second insert, but the
+    second call should simply find nothing to do rather than raise.
+    """
+    old = await plan_factory()
+    new = await plan_factory(status=repository.STATUS_DRAFT)
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-19", [{"asin": "B0AAA00001", "units": 400}], cartons=9,
+    )
+
+    first = await repository.carry_days_to_plan(db, old.id, new.id, ["2026-08-19"])
+    second = await repository.carry_days_to_plan(db, old.id, new.id, ["2026-08-19"])
+    assert first == ["2026-08-19"]
+    assert second == []
+    new_days = await repository.load_days_with_entries(db, new.id)
+    assert len(new_days) == 1
