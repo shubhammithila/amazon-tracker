@@ -87,7 +87,10 @@ chmod +x deploy/setup-ec2.sh
 
 Open browser: `http://YOUR_EC2_PUBLIC_IP`
 
-- **Password**: `admin123` (change in `/opt/amazon-tracker/.env`)
+- **Password**: the random `APP_PASSWORD` that `setup-ec2.sh` printed, stored in
+  `/opt/amazon-tracker/.env`. There is no default: an unset `APP_PASSWORD` disables the
+  shared login entirely, and an unset `SECRET_KEY` stops the app from starting at all
+  (it signs the session cookie, and a cookie with no role resolves to admin).
 - The app auto-starts on boot
 - Daily scrapes run at 6 AM IST automatically
 

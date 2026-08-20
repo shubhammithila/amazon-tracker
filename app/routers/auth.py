@@ -392,7 +392,12 @@ async def login(
             )
         return await _reject()
 
-    if password == settings.app_password:
+    # `settings.app_password and` is load-bearing, not defensive noise. Both shared
+    # passwords now default to EMPTY (see app/config.py), and `password` arrives from
+    # `Form(...)`, which a blank field satisfies — so a bare `password == app_password`
+    # would let an empty form through as full admin on any deployment that had not set
+    # the variable. Unset must mean "this login does not exist".
+    if settings.app_password and password == settings.app_password:
         return _issue({"authenticated": True}, "/")
     if settings.ops_password and password == settings.ops_password:
         return _issue({"authenticated": True, "role": ROLE_OPS}, "/ops-page")

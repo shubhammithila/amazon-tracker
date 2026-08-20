@@ -31,6 +31,29 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # ── Refuse to start without a session signing key. ───────────────────────────
+    #
+    # `secret_key` signs the session cookie, and a cookie carrying no role resolves to
+    # ADMIN by design — that is what keeps every pre-existing session and test fixture
+    # working. So a guessable signing key is not a weak password, it is a complete
+    # authentication bypass: anyone holding the key mints an admin session without ever
+    # touching the login form.
+    #
+    # It used to default to the literal "change-me-in-production-use-random-bytes" in a
+    # PUBLIC repository, so any deployment that never set SECRET_KEY was signing with a
+    # value anyone could read. Failing at startup is the only safe behaviour: a warning in
+    # a log nobody reads is how that survives for months, and deploy/update-ec2.sh checks
+    # the app over HTTP after restarting, so a refusal here surfaces at once and rolls the
+    # deploy back rather than going live.
+    if not settings.secret_key:
+        raise RuntimeError(
+            "SECRET_KEY is not set. It signs the session cookie, and a cookie with no "
+            "role resolves to admin — so this is a full authentication bypass, not a "
+            "degraded mode. Generate one with:\n"
+            '  python -c "import secrets; print(secrets.token_hex(32))"\n'
+            "then add it to .env as SECRET_KEY=..."
+        )
+
     # create_all() only ever CREATEs missing tables — it never ALTERs an existing one.
     # Relying on it silently skipped new columns (products.use_by), which 500'd the whole
     # /products router. Alembic owns the schema; run `alembic upgrade head` before start.

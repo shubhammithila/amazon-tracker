@@ -131,7 +131,10 @@ if curl -s http://localhost:8000 > /dev/null 2>&1; then
     # Get public IP
     PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo "YOUR_EC2_IP")
     echo "  Access your app at: http://${PUBLIC_IP}"
-    echo "  Password: admin123 (change in .env!)"
+    # NOT a fixed password. This script generates a random APP_PASSWORD above, and the app
+    # now refuses a shared login that is unset — so there is no default to print. Printing
+    # one is exactly how "change this later" turned into a live, published admin password.
+    echo "  Password: the generated APP_PASSWORD printed above (also in .env)"
     echo ""
     echo "  Useful commands:"
     echo "    sudo systemctl status tracker   # Check status"

@@ -685,9 +685,33 @@ any failure. Four things it knows that cost two failed deploys to learn:
 > `git fetch origin <branch> && git checkout origin/<branch> -- deploy/update-ec2.sh`,
 > then deploy normally.
 
-`OPS_PASSWORD` is **not set** in the server's `.env`, so the shared packing login does
-not work there. Either add it, or create a named Packer account from `/users-page` —
-the latter is better, because it can be revoked per person.
+**The shared logins are EMPTY by default, and that is what makes "not set" safe.**
+
+This section used to say `OPS_PASSWORD` was not set in the server's `.env` "so the shared
+packing login does not work there". That was **false**, and the reason is worth keeping:
+unset did not mean disabled, it meant *the class default applied* — and the defaults in
+`app/config.py` were `admin123` and `ops123`, in a public repository.
+
+Measured, not assumed: a blank username with `admin123` returned **303 to `/` with a full
+admin session**, and it did so *with* named accounts present, because `auth.py` only takes
+the named-user path `if username.strip()`. Creating users adds accounts; it does not
+retire the shared door.
+
+Now all three default to `""`:
+
+- an unset `APP_PASSWORD`/`OPS_PASSWORD` **disables** that shared login (`login` skips a
+  falsy shared password, and the `settings.app_password and` guard stops a blank form
+  authenticating, since `Form(...)` accepts an empty string);
+- an unset `SECRET_KEY` **stops the app from starting**. It signs the session cookie, and
+  a cookie with no role resolves to admin by design, so a guessable key is a full
+  authentication bypass rather than a weaker mode. Failing loudly at startup is the only
+  safe behaviour — `update-ec2.sh` verifies over HTTP and rolls back, so a missing key
+  surfaces immediately instead of living in a log nobody reads.
+
+The shared passwords remain **supported on purpose**: there is no password-reset email and
+no console, so they are the only way back in if the `users` table is damaged by a deploy.
+They just have to be set deliberately. For day-to-day access prefer a named Packer account
+from `/users-page`, which can be revoked per person.
 
 **SP-API credentials ARE set** (`SP_API_CLIENT_ID`, `SP_API_CLIENT_SECRET`,
 `SP_API_REFRESH_TOKEN`, `SP_API_MARKETPLACE_ID`), and the `.env` is `chmod 600`. The

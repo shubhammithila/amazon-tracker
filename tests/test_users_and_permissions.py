@@ -1073,3 +1073,107 @@ def test_the_password_is_only_sent_when_it_has_a_value():
     assert "typed ? {password: typed} : {}" in source, (
         "the reset handler sends the password key unconditionally"
     )
+
+
+# ─── The shared logins default to EMPTY, and that is the security property ────
+#
+# These used to default to "admin123" / "ops123" in app/config.py, in a PUBLIC
+# repository. A default is not a placeholder: it is the value the app uses when the
+# variable is absent from .env, so an unset APP_PASSWORD meant a published admin
+# password on a live box.
+#
+# Measured before the change: a blank username with "admin123" returned 303 to `/` with
+# a full admin session — and it did so WITH named accounts present, because auth.py only
+# takes the named-user path when a username is actually typed.
+
+def test_the_shared_passwords_default_to_empty(monkeypatch):
+    """Unset must mean "this login does not exist", not "use a public string".
+
+    The SP-API credentials already work this way (`sp_api_client_id: str = ""`), and
+    `spapi_configured` reads as "not set up" rather than failing oddly. The shared
+    logins now match. They remain supported on purpose: this app has no password-reset
+    email and no console, so a shared password is the only way back in if the users
+    table is damaged by a deploy — it just has to be set deliberately.
+
+    The .env file AND the environment are both cleared. conftest.py exports
+    APP_PASSWORD/OPS_PASSWORD/SECRET_KEY for the rest of the suite, so `_env_file=None`
+    alone still reads those — the first version of this test failed on the environment's
+    values while the code was already correct.
+    """
+    from app.config import Settings
+
+    for name in ("APP_PASSWORD", "OPS_PASSWORD", "SECRET_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+    # What a deployment that forgot these variables entirely actually looks like.
+    fresh = Settings(_env_file=None)
+    assert fresh.app_password == "", (
+        "APP_PASSWORD defaults to a non-empty value; this repository is public, so that "
+        "value is a published admin password on any deployment that did not set it"
+    )
+    assert fresh.ops_password == ""
+    assert fresh.secret_key == "", (
+        "SECRET_KEY defaults to a non-empty value; it signs the session cookie and a "
+        "cookie with no role resolves to admin, so a known key is a full bypass"
+    )
+
+
+async def test_an_empty_password_is_never_accepted_as_a_shared_login(
+    client, db_schema, monkeypatch
+):
+    """The trap the empty default creates, and the guard that closes it.
+
+    `password: str = Form(...)` is satisfied by an EMPTY string, so once the defaults
+    became "", a bare `password == settings.app_password` would have let a blank form
+    through as full admin — turning a fix into a worse hole. The guard is the
+    `settings.app_password and` prefix on both shared-password comparisons.
+    """
+    from app.config import get_settings
+    from app.routers import auth as auth_module
+
+    # A deployment that set neither shared password.
+    monkeypatch.setattr(auth_module.settings, "app_password", "")
+    monkeypatch.setattr(auth_module.settings, "ops_password", "")
+
+    for label, payload in (
+        ("both blank", {"username": "", "password": ""}),
+        ("blank password only", {"password": ""}),
+    ):
+        r = await client.post("/login", data=payload, follow_redirects=False)
+        assert r.status_code == 401, (
+            f"an empty password was accepted ({label}) -> {r.status_code}; with the "
+            "shared passwords unset, a blank form must not authenticate anyone"
+        )
+
+
+async def test_named_accounts_do_not_disable_a_configured_shared_password(
+    client, db_schema, db
+):
+    """Documenting the real behaviour, because it is easy to assume the opposite.
+
+    Creating named users does NOT retire the shared login: `auth.py` only takes the
+    named path `if username.strip()`, so a blank username still reaches the shared
+    comparison. That is deliberate — it is the recovery path when the users table is
+    broken — but it means "we have proper accounts now" is not by itself a reason to
+    consider the shared password gone. It has to be unset in .env.
+    """
+    from app import users as users_repo
+    from app.routers import auth as auth_module
+
+    await users_repo.create(
+        db, username="anowner", full_name="An Owner",
+        password="a-real-password-1", areas=[], is_admin=True,
+    )
+    assert await users_repo.any_users_exist(db)
+
+    # conftest sets APP_PASSWORD=test-password, i.e. a deployment that DID set one.
+    assert auth_module.settings.app_password, "precondition: a shared password is set"
+    r = await client.post(
+        "/login",
+        data={"username": "", "password": auth_module.settings.app_password},
+        follow_redirects=False,
+    )
+    assert r.status_code in (302, 303), (
+        "a configured shared password stopped working once named accounts existed — "
+        "that is the documented recovery path and removing it needs its own decision"
+    )

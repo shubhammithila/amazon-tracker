@@ -3,12 +3,33 @@ from functools import lru_cache
 
 
 class Settings(BaseSettings):
-    app_password: str = "admin123"
+    # ── The shared logins. EMPTY BY DEFAULT, and that is the security property. ──
+    #
+    # These used to default to "admin123" and "ops123". A default is not a placeholder:
+    # it is the value the app actually uses when the variable is absent from .env — and
+    # this repository is public, so an unset APP_PASSWORD meant a published admin
+    # password on a live box. Measured, not assumed: a blank username with "admin123"
+    # returned 303 to `/` with a full admin session, and it did so even with named
+    # accounts present, because auth.py only takes the named path when a username is
+    # actually typed.
+    #
+    # Empty now means "this login does not exist" — `login` skips a shared password that
+    # is falsy, so a missing variable CLOSES the door instead of opening a known one. The
+    # SP-API credentials below already work this way.
+    #
+    # They are still supported, and deliberately so: this app has no password-reset email
+    # and no console, so a shared password is the only way back in if the users table is
+    # damaged by a deploy. It just has to be set on purpose.
+    app_password: str = ""
     # Second login for the operations employee: reaches only the packing-entry
     # screen (/ops-page) and its documents. Plan editing, verification and GST
-    # invoicing stay behind app_password. Empty string disables the ops login.
-    ops_password: str = "ops123"
-    secret_key: str = "change-me-in-production-use-random-bytes"
+    # invoicing stay behind app_password.
+    ops_password: str = ""
+    # Signs the session cookie. Empty means "not configured", and main.py refuses to
+    # start rather than signing with a guessable key — a forged cookie carrying no role
+    # resolves to ADMIN by design (that is what keeps every pre-existing session working),
+    # so a known signing key is a full authentication bypass, not a downgrade.
+    secret_key: str = ""
     database_url: str = "sqlite+aiosqlite:///./tracker.db"
 
     # The product master sheet. Column T ("Active", Y/N) decides which ASINs may
