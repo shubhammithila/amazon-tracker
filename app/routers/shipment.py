@@ -1314,6 +1314,153 @@ async def finalise_plan(
     return JSONResponse(payload)
 
 
+@router.post("/plan/{plan_id}/close")
+async def close_plan_route(
+    plan_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """Retire a plan, carrying its packed-but-unshipped days onto the next one.
+
+    Distinct from ``/finalise``, which promotes a draft. This is the owner deciding a
+    plan is done, which happens BEFORE a replacement exists in the case that prompted
+    it: sales data moved, a new plan is wanted, and the last packed day is below the
+    carton threshold so it cannot ship on its own.
+
+    The target is the current draft, or a new empty carrier plan when there is none.
+    Without the carrier, closing early would refuse and the boxes would have nowhere to
+    go — which is how held stock becomes lost stock.
+
+    Refuses with 409, having moved nothing, when a day is still open or has a
+    part-created Amazon inbound plan. Shipped-but-uninvoiced days do not block: they
+    stay on this plan and are named in the response, because the owner may well have
+    invoiced them outside the app.
+    """
+    plan = await repository.get_plan(db, plan_id)
+    if plan is None:
+        return JSONResponse({"error": "No such plan."}, status_code=404)
+    if plan.status == repository.STATUS_CLOSED:
+        return JSONResponse(
+            {"error": f"{plan.label or 'That plan'} is already closed."},
+            status_code=409,
+        )
+
+    days = await repository.load_days_with_entries(db, plan_id)
+    split = logic.carriable_days(days)
+
+    # Refuse BEFORE creating anything. `close_plan` refuses on the same condition, but
+    # by then a carrier plan would already exist — and an abandoned draft is not inert:
+    # `get_draft_plan` would hand it to the owner as the plan he is editing, and the next
+    # /generate silently deletes whatever draft it finds. So a refused close would leave
+    # a phantom plan on screen and then destroy it without a word.
+    #
+    # Checked here rather than only inside close_plan because this is the only layer that
+    # knows a plan is about to be created.
+    if split["blocked"]:
+        named = "; ".join(f"{b['pack_date']}: {b['reason']}" for b in split["blocked"])
+        return JSONResponse(
+            {
+                "error": f"The plan was not closed and nothing was moved. {named}",
+                "blocked": split["blocked"],
+            },
+            status_code=409,
+        )
+
+    # The target is resolved only when something actually needs carrying, so closing a
+    # fully-shipped plan does not leave an empty plan behind.
+    target_id = None
+    created_carrier = False
+    if split["carry"]:
+        draft = await repository.get_draft_plan(db)
+        if draft is not None:
+            target_id = draft.id
+        else:
+            carrier = await repository.create_plan(
+                db, [],
+                label=f"Carried from {plan.label or f'plan {plan_id}'}",
+                status=repository.STATUS_DRAFT,
+            )
+            target_id = carrier.id
+            created_carrier = True
+
+    result = await repository.close_plan(db, plan_id, target_id)
+
+    # Still checked: close_plan re-reads the days and can refuse for a reason that
+    # appeared between the two reads, and it owns the no-target refusal.
+    if not result["closed"]:
+        named = "; ".join(
+            f"{b['pack_date']}: {b['reason']}" for b in result["blocked"]
+        )
+        return JSONResponse(
+            {
+                "error": f"The plan was not closed and nothing was moved. {named}",
+                "blocked": result["blocked"],
+            },
+            status_code=409,
+        )
+
+    result["created_carrier_plan"] = created_carrier
+    warnings = []
+    if result["shipped_uninvoiced"]:
+        warnings.append(
+            f"{len(result['shipped_uninvoiced'])} shipped day(s) have no invoice "
+            f"({', '.join(result['shipped_uninvoiced'])}). They stay on this plan and "
+            "can still be invoiced from Plan history."
+        )
+    if result["orphan_asins"]:
+        warnings.append(
+            f"{len(result['orphan_asins'])} carried SKU(s) are not in the new plan and "
+            "were added with To Ship 0, so the packed boxes still reach an invoice: "
+            f"{', '.join(result['orphan_asins'])}."
+        )
+    if warnings:
+        result["warning"] = " ".join(warnings)
+    return JSONResponse(result)
+
+
+@router.get("/plans")
+async def list_plans_route(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """Every plan, newest first, for the history screen.
+
+    Admin only: the summary carries planned quantities, which are projections, and the
+    Accounts preset withholds those for the same reason it withholds purchase costs.
+    """
+    return JSONResponse({"plans": await repository.list_plans(db)})
+
+
+@router.get("/plan/{plan_id}/detail")
+async def plan_detail(
+    plan_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """One plan in full, in the SAME shape /active returns.
+
+    Deliberately identical, so the history screen renders through the existing code
+    rather than a second renderer that could disagree with it about order or any
+    computed number — the same reason all four documents share ``_document_rows``.
+    """
+    plan = await repository.get_plan(db, plan_id)
+    if plan is None:
+        return JSONResponse({"error": "No such plan."}, status_code=404)
+
+    items = await repository.load_plan_items(db, plan_id)
+    days = await repository.load_days_with_entries(db, plan_id)
+    payload = _plan_payload(plan, items, days)
+    payload["role"] = role
+    payload["read_only"] = plan.status == repository.STATUS_CLOSED
+    payload["plan"]["closed_at"] = (
+        plan.closed_at.isoformat() if plan.closed_at else None
+    )
+    return JSONResponse(payload)
+
+
 @router.post("/plan/{plan_id}/items/exclude")
 async def exclude_items(
     plan_id: int,
@@ -1896,9 +2043,22 @@ async def release_packing(
 # with the screen about either row order or a computed number — there is one
 # code path producing both, not two that happen to agree today.
 
-async def _document_rows(db: AsyncSession):
-    """(plan, item dicts in canonical order, days) or None if there is no plan."""
-    plan = await repository.get_active_plan(db)
+async def _document_rows(db: AsyncSession, plan_id: int | None = None):
+    """(plan, item dicts in canonical order, days) or None if there is no such plan.
+
+    ``plan_id`` defaults to the active plan, which is every existing caller's
+    behaviour. Passing one is what lets accounts reprint a CLOSED plan's packed sheet —
+    before this, every download resolved only the active plan, so the moment a plan
+    closed its documents became unavailable with the data still sitting in the table.
+
+    One function, so all five downloads inherit plan targeting together and none can
+    drift — the same single-source property load_plan_items has for row order.
+    """
+    plan = (
+        await repository.get_plan(db, plan_id)
+        if plan_id
+        else await repository.get_active_plan(db)
+    )
     if plan is None:
         return None
 
@@ -1973,6 +2133,7 @@ def _bad_format(fmt: str):
 async def download_plan(
     fmt: str,
     request: Request,
+    plan_id: int | None = None,
     db: AsyncSession = Depends(get_db),
     role: str = Depends(require_admin),
 ):
@@ -1985,7 +2146,7 @@ async def download_plan(
     if fmt not in ("xlsx", "pdf"):
         return _bad_format(fmt)
 
-    loaded = await _document_rows(db)
+    loaded = await _document_rows(db, plan_id)
     if loaded is None:
         return _no_plan()
     plan, rows, _days = loaded
@@ -2009,6 +2170,7 @@ async def download_packed(
     request: Request,
     date_from: str | None = None,
     date_to: str | None = None,
+    plan_id: int | None = None,
     db: AsyncSession = Depends(get_db),
     role: str = Depends(require_ops_or_admin),
 ):
@@ -2034,7 +2196,7 @@ async def download_packed(
         if value and not _valid_date(value):
             return JSONResponse({"error": "Dates must be YYYY-MM-DD"}, status_code=400)
 
-    loaded = await _document_rows(db)
+    loaded = await _document_rows(db, plan_id)
     if loaded is None:
         return _no_plan()
     plan, rows, days = loaded
@@ -2087,6 +2249,7 @@ async def download_remaining(
     fmt: str,
     request: Request,
     pack_date: str | None = None,
+    plan_id: int | None = None,
     db: AsyncSession = Depends(get_db),
     role: str = Depends(require_ops_or_admin),
 ):
@@ -2108,7 +2271,7 @@ async def download_remaining(
     if pack_date is not None and not _valid_date(pack_date):
         return JSONResponse({"error": "Date must be YYYY-MM-DD"}, status_code=400)
 
-    loaded = await _document_rows(db)
+    loaded = await _document_rows(db, plan_id)
     if loaded is None:
         return _no_plan()
     plan, rows, _days = loaded
@@ -2132,6 +2295,7 @@ async def download_shipment_file_xlsx(
     mode: str = "remaining",
     pack_dates: str = "",
     fc_code: str = "",
+    plan_id: int | None = None,
     db: AsyncSession = Depends(get_db),
     role: str = Depends(require_admin),
 ):
@@ -2181,7 +2345,7 @@ async def download_shipment_file_xlsx(
             status_code=400,
         )
 
-    loaded = await _document_rows(db)
+    loaded = await _document_rows(db, plan_id)
     if loaded is None:
         return _no_plan()
     _plan, rows, days = loaded

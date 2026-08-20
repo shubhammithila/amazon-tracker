@@ -675,3 +675,189 @@ async def test_attach_invoice_validates_plan_id_instead_of_casting_blind(
     assert "plan_id" in data.get("error", "").lower(), (
         f"Error message should name the field 'plan_id', got: {data}"
     )
+
+
+# ─── The routes ──────────────────────────────────────────────────────────────
+
+async def test_the_live_case_end_to_end(auth_client, db, plan_factory):
+    """19 Aug: 400 units, 9 cartons, verified, below the carton threshold.
+
+    The single most important assertion here is `remaining == 100`. If the carried
+    units had been added to `available` instead of the day being moved, the packer
+    would be told to box 500 more on top of the 400 already in cartons.
+    """
+    old = await plan_factory()
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-19", [{"asin": "B0AAA00001", "units": 400}], cartons=9,
+    )
+    day = await repository.get_day(db, old.id, "2026-08-19")
+    day.status = logic.STATUS_VERIFIED
+    await db.commit()
+
+    new = await plan_factory(status=repository.STATUS_DRAFT)
+
+    r = await auth_client.post(f"/shipment/plan/{old.id}/close")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["carried"] == ["2026-08-19"]
+    assert body["target_plan_id"] == new.id
+
+    detail = (await auth_client.get(f"/shipment/plan/{new.id}/detail")).json()
+    chana = next(i for i in detail["items"] if i["asin"] == "B0AAA00001")
+    assert chana["shipment_plan"] == 500
+    assert chana["packed"] == 400, "the carried boxes are not counted as packed"
+    assert chana["remaining"] == 100, (
+        "the packer is being told to box units that are already in cartons — the "
+        "carried units were added as stock instead of the day being moved"
+    )
+    carried_day = next(d for d in detail["days"] if d["pack_date"] == "2026-08-19")
+    assert carried_day["status"] == logic.STATUS_VERIFIED
+    assert carried_day["carried_from_plan_id"] == old.id
+
+
+async def test_close_creates_a_carrier_plan_when_there_is_no_draft(
+    auth_client, db, plan_factory
+):
+    """The owner closes before uploading the new CSV — the live sequence.
+
+    Without this the boxes would have nowhere to go and the close would refuse, which
+    is the state that makes held stock become lost stock.
+    """
+    old = await plan_factory()
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-19", [{"asin": "B0AAA00001", "units": 400}], cartons=9,
+    )
+    day = await repository.get_day(db, old.id, "2026-08-19")
+    day.status = logic.STATUS_VERIFIED
+    await db.commit()
+
+    r = await auth_client.post(f"/shipment/plan/{old.id}/close")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["target_plan_id"] not in (None, old.id)
+    assert body["created_carrier_plan"] is True
+
+    carried = await repository.get_day(db, body["target_plan_id"], "2026-08-19")
+    assert carried is not None
+
+
+async def test_close_refuses_a_blocked_day_over_http(auth_client, db, plan_factory):
+    old = await plan_factory()
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-20", [{"asin": "B0AAA00001", "units": 50}], cartons=2,
+    )
+    day = await repository.get_day(db, old.id, "2026-08-20")
+    day.inbound_plan_id = "wf-half-created"
+    await db.commit()
+
+    r = await auth_client.post(f"/shipment/plan/{old.id}/close")
+    assert r.status_code == 409
+    assert "2026-08-20" in r.json()["error"]
+    still_active = await repository.get_plan(db, old.id)
+    assert still_active.status == repository.STATUS_ACTIVE
+
+
+async def test_a_refused_close_leaves_no_phantom_carrier_plan(
+    auth_client, db, plan_factory
+):
+    """A refusal must not leave a plan behind, and an abandoned draft is not inert.
+
+    The route creates a carrier plan when there is no draft to carry days onto. Built
+    naively it created that plan and only THEN discovered a blocked day and refused —
+    leaving a draft nobody asked for. That draft is not harmless: ``get_draft_plan``
+    hands it to the owner as the plan he is editing, and the next ``/generate`` deletes
+    whatever draft it finds without a word. So the owner would see a phantom plan appear
+    after a failed close and vanish after his next upload.
+
+    Found by reading the route rather than by any test failing — every existing close
+    test had either a blocked day or a carriable one, never both, so nothing exercised
+    the path where a carrier is created and the close then refuses.
+    """
+    old = await plan_factory()
+    # One carriable day, so a carrier plan is wanted...
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-19", [{"asin": "B0AAA00001", "units": 400}], cartons=9,
+    )
+    carriable = await repository.get_day(db, old.id, "2026-08-19")
+    carriable.status = logic.STATUS_VERIFIED
+    # ...and one blocked day, so the close must refuse.
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-20", [{"asin": "B0AAA00001", "units": 50}], cartons=2,
+    )
+    blocked = await repository.get_day(db, old.id, "2026-08-20")
+    blocked.status = logic.STATUS_VERIFIED
+    blocked.inbound_plan_id = "wf-half-created"
+    await db.commit()
+
+    r = await auth_client.post(f"/shipment/plan/{old.id}/close")
+    assert r.status_code == 409, r.text
+
+    draft = await repository.get_draft_plan(db)
+    assert draft is None, (
+        f"a refused close left a phantom draft plan behind ({draft.label!r}), which the "
+        "owner would see as the plan he is editing and the next generate would silently "
+        "delete"
+    )
+    # And the original is untouched: both days still on it, still active.
+    assert [d["pack_date"] for d in await repository.load_days_with_entries(db, old.id)] == [
+        "2026-08-19", "2026-08-20",
+    ]
+    still_active = await repository.get_plan(db, old.id)
+    assert still_active.status == repository.STATUS_ACTIVE
+
+
+async def test_the_history_routes_are_admin_only(ops_client, plan_factory):
+    """Plan detail carries projections, which the Accounts preset withholds."""
+    plan = await plan_factory()
+    for method, path in (
+        ("get", "/shipment/plans"),
+        ("get", f"/shipment/plan/{plan.id}/detail"),
+        ("post", f"/shipment/plan/{plan.id}/close"),
+    ):
+        r = await getattr(ops_client, method)(path)
+        assert r.status_code in (401, 403), f"{path} -> {r.status_code}"
+
+
+@pytest.mark.parametrize("path", [
+    "/shipment/download/plan.xlsx",
+    "/shipment/download/packed.xlsx",
+    "/shipment/download/remaining.xlsx",
+    "/shipment/download/plan.pdf",
+    "/shipment/download/packed.pdf",
+    "/shipment/download/remaining.pdf",
+    # The Amazon upload sheet. A separate route from the other three — its own builder,
+    # no `fmt` segment — and so the one most likely to be forgotten. An earlier version
+    # of this list omitted it while the test still claimed "every download", which is
+    # precisely the hole the parametrisation exists to close. `mode=verified` because
+    # that is the mode the owner uses once a plan's days are approved.
+    "/shipment/download/shipment-file.xlsx?mode=verified",
+])
+async def test_every_download_can_target_a_closed_plan(
+    auth_client, db, plan_factory, path
+):
+    """Accounts asking for last month's packed sheet, after a new plan was finalised.
+
+    That request could not be served at all before: every download resolved only the
+    active plan, so closing one made its documents unavailable while the data sat in
+    the table untouched.
+
+    ALL SEVEN url shapes are listed rather than a representative few. The parametrisation
+    is the guard against a download that forgets plan targeting, and a list that quietly
+    skipped one could not be that guard.
+    """
+    old = await plan_factory()
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-18", [{"asin": "B0AAA00001", "units": 296}], cartons=16,
+    )
+    shipped = await repository.get_day(db, old.id, "2026-08-18")
+    shipped.status = logic.STATUS_SHIPPED
+    await db.commit()
+    await repository.close_plan(db, old.id, None)
+
+    # `&` when the path already carries a query string, `?` otherwise — the Amazon sheet
+    # needs its `mode`, so a hardcoded `?` would silently drop it and test a different
+    # request from the one named.
+    joiner = "&" if "?" in path else "?"
+    r = await auth_client.get(f"{path}{joiner}plan_id={old.id}")
+    assert r.status_code == 200, f"{path} could not serve a closed plan: {r.text[:200]}"
+    assert len(r.content) > 1000, "the document is suspiciously small"
