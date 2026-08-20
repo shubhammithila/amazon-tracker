@@ -127,6 +127,27 @@ h2{font-size:20px;font-weight:600;margin-bottom:4px}
 .badge.held{background:var(--yellow-soft);color:var(--yellow)}
 .badge.verified{background:var(--green-soft);color:var(--green)}
 .badge.shipped{background:var(--accent-soft);color:var(--accent)}
+/* A plan status, not a day status, but it shares the badge shape because it reads in the
+   same column of the history list. */
+.badge.closed{background:var(--surface2);color:var(--text-dim)}
+.badge.draft{background:var(--yellow-soft);color:var(--yellow)}
+.badge.active{background:var(--green-soft);color:var(--green)}
+.badge.carried{background:var(--blue-soft);color:var(--blue)}
+
+/* Plan history. Colour comes only from theme.css variables — tests/test_theme.py fails
+   any template that hardcodes a hex or rgba value. */
+.history-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;
+  padding:6px 0;border-bottom:1px solid var(--border);font-size:12.5px}
+.history-row:last-child{border-bottom:none}
+.history-row .h-inv{color:var(--accent);font-weight:600}
+.history-row .h-lineage{color:var(--text-muted);font-size:11px}
+.history-detail-inner{margin-top:10px;padding-top:10px;border-top:1px solid var(--border);
+  display:flex;flex-direction:column;gap:4px}
+.history-day{font-size:12.5px;color:var(--text-muted);display:flex;gap:8px;
+  align-items:center;flex-wrap:wrap}
+.history-day strong{color:var(--text)}
+.btn-link{background:none;border:none;padding:0;color:var(--accent);cursor:pointer;
+  font-size:12.5px;font-weight:600;text-align:left;text-decoration:underline}
 
 .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
 .chip{padding:5px 12px;border-radius:20px;border:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:12px;cursor:pointer}
@@ -342,6 +363,10 @@ td input[type="text"].sku-input{width:120px;font-size:11px}
 <div class="controls">
   <button class="btn-green" id="save-btn" onclick="saveItems()" disabled>💾 Save plan edits</button>
   <button class="btn" id="finalise-btn" onclick="finalisePlan()" style="display:none">✓ Finalise plan</button>
+  <!-- Distinct from Finalise, which promotes a DRAFT. This retires the ACTIVE plan and
+       carries its packed-but-unshipped days forward — what the owner does when sales
+       data has moved and the last packed day is below the carton threshold. -->
+  <button class="btn-outline" id="close-btn" onclick="closePlan()" style="display:none">Close plan</button>
   <button class="btn-outline" id="excluded-toggle" onclick="toggleExcluded()" style="display:none"></button>
   <button class="btn-outline" onclick="openCategories()">⚙ Sort priority</button>
   <button class="btn-danger" onclick="clearPlan()">Delete plan</button>
@@ -400,6 +425,25 @@ td input[type="text"].sku-input{width:120px;font-size:11px}
 <tfoot><tr id="tfoot-row"></tr></tfoot>
 </table>
 </div>
+</div>
+
+<!-- Plan history.
+     Closing a plan used to make it unreachable: every read went through
+     get_active_plan, so last month's packed sheet could not be reprinted and an
+     invoice could not be recorded against a shipped day. The data was always in the
+     table — only the way back to it was missing.
+
+     All three ids must exist in the markup even when empty: the render functions
+     return early on a missing container, which makes a whole feature silently
+     invisible. tests/test_template_render_targets.py checks this. -->
+<div class="card" id="history-card" style="padding:14px 16px">
+  <div class="controls" style="margin-bottom:8px">
+    <strong style="font-size:13px">Plan history</strong>
+    <span style="font-size:11px;color:var(--text-muted)">day-wise packing, invoice
+      numbers and Amazon shipment ids for every plan — for reconciliation</span>
+  </div>
+  <div id="history-list"></div>
+  <div id="history-detail"></div>
 </div>
 </main>
 
@@ -476,6 +520,10 @@ const catEdits = new Map();
    the destination <select> from fcChoices — starting them in parallel would race, and
    the bar would render with an empty picker whenever /shipment/fcs answered second. */
 loadFcs().then(load);
+/* History is independent of both — it reads /shipment/plans, not the active plan — so it
+   starts in parallel rather than waiting. Its own failure is swallowed inside
+   loadHistory(), so a slow or broken history query cannot delay the packing screen. */
+loadHistory();
 
 async function load(){
   // A fresh load means the owner has moved on from the last generate, so the
@@ -524,6 +572,10 @@ function adopt(data){
   document.getElementById("min-cartons").value = plan.min_cartons;
   document.getElementById("min-units").value = plan.min_units;
   document.getElementById("finalise-btn").style.display = isDraft() ? "" : "none";
+  // Only an ACTIVE plan can be closed: a draft is discarded by the next generate, and a
+  // closed plan closing again is the 409 the route already returns.
+  document.getElementById("close-btn").style.display =
+    (plan && plan.status === "active") ? "" : "none";
   renderBanners();
   renderSummary();
   renderDays();
@@ -855,8 +907,16 @@ function renderDays(){
            ${picked ? "checked" : ""}/> Include in invoice</label>`
       : "";
 
+    /* A day that was packed against a PREVIOUS plan and carried here when that plan
+       closed. Badged because otherwise a date appears on a plan that never opened it,
+       which reads as a bug — and during reconciliation it is the only thing that
+       explains why this plan holds units for a day it did not run. */
+    const carried = d.carried_from_plan_id
+      ? ` <span class="badge carried" title="packed against plan ${Number(d.carried_from_plan_id)}">carried in</span>`
+      : "";
+
     return `<div class="day ${st}${picked ? " picked" : ""}">
-      <div class="d-date" title="${dt}">${dayLabel(d.pack_date)} <span class="badge ${st}">${st}</span></div>
+      <div class="d-date" title="${dt}">${dayLabel(d.pack_date)} <span class="badge ${st}">${st}</span>${carried}</div>
       <div class="d-nums">${d.total_units.toLocaleString("en-IN")} units · ${d.total_cartons.toLocaleString("en-IN")} cartons${d.submitted_by ? " · by " + esc(d.submitted_by) : ""}</div>
       ${d.hold_reason ? `<div class="d-reason">${esc(d.hold_reason)}</div>` : ""}
       ${pick}
@@ -2114,6 +2174,128 @@ async function clearPlan(){
     document.getElementById("results").style.display = "none";
     document.getElementById("no-plan").style.display = "block";
     toast("Plan deleted", "success");
+  }catch(e){ toast(e.message, "error"); }
+}
+
+// ─── Closing a plan, and reading closed ones ────────────────────────────────
+
+/* Two escaping rules, both already used above and both load-bearing:
+
+   - every interpolated STRING goes through esc(): plan labels are owner-typed and
+     product names come from the MRP sheet, which is a spreadsheet anyone can type into;
+   - every interpolated NUMBER goes through Number(): not for escaping but for the
+     `undefined` failure. `e.cartons` printed "100/undefined" on the owner's screen
+     because JS renders a missing field silently rather than complaining. Number() on a
+     missing field yields NaN, which is visible. Plan ids also land inside onclick
+     attributes, where a string would be executable content rather than data. */
+
+async function closePlan(){
+  if(!plan) return;
+
+  /* The confirm NAMES the dates and quantities that will move. "Are you sure?" teaches
+     the owner to click through it, and a carried day discovered later on the wrong plan
+     reads as a bug rather than as something he agreed to.
+
+     Computed here from the days already on screen rather than by asking the server: the
+     answer has to appear in the confirm dialog, and a round trip first would mean a
+     visible pause before a dialog the owner may cancel. The server re-decides anyway —
+     this text is a preview, never the authority. */
+  const carriable = days.filter(d =>
+    ["held", "submitted", "verified"].includes(d.status)
+    && !d.invoice_id && d.total_units > 0);
+  const shippedNoInvoice = days.filter(d => d.status === "shipped" && !d.invoice_id);
+
+  let question = `Close ${plan.label || "this plan"}?`;
+  if(carriable.length){
+    question += `\n\n${carriable.length} packed day(s) move to the next plan, so the `
+      + `warehouse does not pack them again:\n`
+      + carriable.map(d => `  ${d.pack_date} — ${Number(d.total_units)} units, `
+          + `${Number(d.total_cartons)} cartons`).join("\n");
+  }else{
+    question += "\n\nNothing is packed and unshipped, so no days will move.";
+  }
+  if(shippedNoInvoice.length){
+    question += `\n\n⚠ ${shippedNoInvoice.length} shipped day(s) have no invoice `
+      + `(${shippedNoInvoice.map(d => d.pack_date).join(", ")}). They stay on this plan `
+      + `and can still be invoiced from Plan history.`;
+  }
+  if(!confirm(question)) return;
+
+  try{
+    const r = await fetch(`/shipment/plan/${Number(plan.id)}/close`, {method: "POST"});
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || "Could not close the plan");
+    let note = "Plan closed";
+    if(data.carried && data.carried.length){
+      note += ` — ${data.carried.length} day(s) carried forward`;
+    }
+    toast(note, "success");
+    // Shown separately and for longer than the toast: an orphan SKU added at To Ship 0,
+    // or a shipped day with no invoice, is something the owner has to act on later.
+    if(data.warning) alert(data.warning);
+    await load();
+    await loadHistory();
+  }catch(e){ toast(e.message, "error"); }
+}
+
+async function loadHistory(){
+  try{
+    const r = await fetch("/shipment/plans");
+    if(!r.ok) return;
+    const rows = (await r.json()).plans || [];
+    const box = document.getElementById("history-list");
+    if(!box) return;
+    box.innerHTML = rows.length ? rows.map(p => {
+      const lineage = [];
+      if(p.carried_in)  lineage.push(`${Number(p.carried_in)} carried in`);
+      if(p.carried_out) lineage.push(`${Number(p.carried_out)} carried out`);
+      const invoices = (p.invoice_numbers || []).join(", ");
+      return `<div class="history-row">
+        <button class="btn-link" onclick="openPlanDetail(${Number(p.id)})">${esc(p.label)}</button>
+        <span class="badge ${esc(p.status)}">${esc(p.status)}</span>
+        <span>${Number(p.days)} day(s) · ${Number(p.units).toLocaleString("en-IN")} units · ${Number(p.cartons)} cartons</span>
+        <span class="h-inv">${invoices ? esc(invoices) : ""}</span>
+        <span class="h-lineage">${esc(lineage.join(" · "))}</span>
+      </div>`;
+    }).join("") : '<span style="color:var(--text-muted);font-size:12px">No plans yet.</span>';
+  }catch(e){
+    /* History is a convenience. A failure here must not take the packing screen with
+       it, so it is swallowed rather than thrown — but the panel then stays empty, which
+       is visible, rather than showing stale numbers. */
+  }
+}
+
+async function openPlanDetail(planId){
+  try{
+    const r = await fetch(`/shipment/plan/${Number(planId)}/detail`);
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || "Could not load that plan");
+    const box = document.getElementById("history-detail");
+    if(!box) return;
+
+    /* DAYS only. The item rows are deliberately not rendered here: renderDays and the
+       plan table are the one renderer of the ordered rows, and a second one is exactly
+       how the screen and the downloads drifted apart before — the complaint the single
+       ORDER BY exists to answer. The packed sheet link below covers the per-SKU detail. */
+    box.innerHTML = `<div class="history-detail-inner">
+      <strong style="font-size:12.5px">${esc(data.plan.label)}</strong>
+      <span style="font-size:11px;color:var(--text-muted)">
+        ${Number(data.days.length)} packing day(s)${data.plan.closed_at
+          ? " · closed " + esc(String(data.plan.closed_at).slice(0, 10)) : ""}</span>
+      ${data.days.map(d => `<div class="history-day">
+        <strong>${esc(d.pack_date)}</strong>
+        <span class="badge ${esc(d.status)}">${esc(d.status)}</span>
+        ${Number(d.total_units).toLocaleString("en-IN")} units · ${Number(d.total_cartons)} cartons
+        ${d.invoice_no ? " · invoice " + esc(d.invoice_no) : ""}
+        ${d.shipment_confirmation_id ? " · " + esc(d.shipment_confirmation_id) : ""}
+        ${d.destination_warehouse_id ? " → " + esc(d.destination_warehouse_id) : ""}
+        ${d.carried_from_plan_id ? ' <span class="badge carried">carried in</span>' : ""}
+      </div>`).join("") || '<span style="color:var(--text-muted);font-size:12px">Nothing was packed against this plan.</span>'}
+      <div class="controls" style="margin-top:8px">
+        <button class="btn-outline" onclick="dl('/shipment/download/packed.xlsx?plan_id=${Number(planId)}')">⬇ Packed sheet</button>
+        <button class="btn-outline" onclick="dl('/shipment/download/plan.xlsx?plan_id=${Number(planId)}')">⬇ Plan sheet</button>
+      </div>
+    </div>`;
   }catch(e){ toast(e.message, "error"); }
 }
 

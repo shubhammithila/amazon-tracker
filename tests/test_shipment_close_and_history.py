@@ -861,3 +861,118 @@ async def test_every_download_can_target_a_closed_plan(
     r = await auth_client.get(f"{path}{joiner}plan_id={old.id}")
     assert r.status_code == 200, f"{path} could not serve a closed plan: {r.text[:200]}"
     assert len(r.content) > 1000, "the document is suspiciously small"
+
+
+# ─── The screen ──────────────────────────────────────────────────────────────
+
+def _shipment_source() -> str:
+    from pathlib import Path
+
+    return (
+        Path(__file__).resolve().parent.parent / "templates" / "shipment.html"
+    ).read_text(encoding="utf-8")
+
+
+def _close_plan_body() -> str:
+    """Just the body of closePlan(), so assertions cannot pass on unrelated code.
+
+    A whole-file substring search is nearly useless here: "confirm(" and "carried"
+    already appear elsewhere in this 2000-line template, so a file-wide assertion stays
+    green even if closePlan's confirm were empty. Slicing to the function is what makes
+    the test able to fail. It RAISES when closePlan is absent rather than returning "",
+    because a helper that returned "" would make every assertion pass vacuously.
+    """
+    source = _shipment_source()
+    start = source.index("async function closePlan(")
+    rest = source[start + 1:]
+    ends = [i for i in (rest.find("\nasync function "), rest.find("\nfunction ")) if i != -1]
+    return rest[: min(ends)] if ends else rest
+
+
+def test_the_close_confirm_names_the_dates_and_quantities_that_will_move():
+    """A confirm that says only "are you sure" teaches the owner to click through it.
+
+    Naming the dates and their units is what makes a carry a decision rather than a
+    surprise found later on the wrong plan. Asserted against closePlan's OWN body, and
+    on the interpolations rather than on prose, so rewording the sentence does not fail
+    the test but dropping the data does.
+    """
+    body = _close_plan_body()
+    assert "confirm(" in body, "the close does not confirm at all"
+    assert "d.pack_date" in body, "the confirm does not name the dates being carried"
+    assert "d.total_units" in body, "the confirm does not say how many units move"
+    assert "d.total_cartons" in body, "the confirm does not say how many cartons move"
+    # The other half: shipped-but-uninvoiced days do NOT move, and staying silent about
+    # them is the held-days bug again — boxes leave every screen with no invoice raised.
+    assert 'status === "shipped"' in body, (
+        "the confirm does not warn about shipped days with no invoice"
+    )
+
+
+def test_the_history_panel_does_not_add_a_second_item_renderer():
+    """One renderer, so history cannot disagree with /active about row order.
+
+    A second render path is how the screen and the downloads drifted apart before, which
+    is the complaint the single ORDER BY exists to answer. openPlanDetail renders DAYS;
+    if it grew an item loop it would be a second renderer of the ordered rows.
+    """
+    source = _shipment_source()
+    assert "/shipment/plans" in source
+    assert "/detail" in source
+    detail_start = source.index("async function openPlanDetail(")
+    detail_body = source[detail_start:detail_start + 2500]
+    assert "data.items.map(" not in detail_body, (
+        "openPlanDetail renders items itself, which can disagree with /active about row "
+        "order — render days here and reuse the existing item renderer"
+    )
+
+
+def test_a_carried_day_is_badged_on_its_card():
+    """Otherwise a date appears on a plan that never opened it, with no explanation.
+
+    During reconciliation the badge is the only thing that says why this plan holds
+    units for a day it did not run.
+
+    Sliced to renderDays' own body, and asserting the SOURCE PLAN is named in the badge.
+    A file-wide search for "carried in" passed while the badge was mutated away, because
+    openPlanDetail renders its own copy of the same words.
+    """
+    source = _shipment_source()
+    start = source.index("function renderDays(")
+    body = source[start:source.index("\nfunction ", start + 1)]
+    assert "carried_from_plan_id" in body, "the day card ignores the carry lineage"
+    assert "badge carried" in body, "the carried day has no badge"
+    # The source plan id travels in the tooltip: "carried in" alone does not tell the
+    # owner WHICH plan the boxes were packed against, which is the reconciliation question.
+    assert "Number(d.carried_from_plan_id)" in body, (
+        "the badge does not name the plan the day was carried from"
+    )
+
+
+def test_the_history_panel_escapes_labels_and_coerces_ids():
+    """Both halves of the rule this template already follows.
+
+    `esc` on the label: plan labels are owner-typed and product names come from the MRP
+    sheet, which is a spreadsheet anyone can type into.
+
+    `Number` on the plan id: it lands inside an `onclick` attribute, so a string there is
+    executable content rather than data. It is also the `undefined` guard — `e.cartons`
+    printed "100/undefined" on the owner's screen because JS renders a missing field
+    silently, which is what tests/test_shipment_admin_ui.py greps for.
+    """
+    source = _shipment_source()
+    assert "openPlanDetail(${Number(p.id)})" in source, (
+        "a plan id is interpolated into an onclick without Number()"
+    )
+    assert "${esc(p.label)}" in source, "a plan label is interpolated unescaped"
+
+
+def test_close_is_offered_only_on_an_active_plan():
+    """A draft is discarded by the next generate, and a closed plan closing again is the
+    409 the route already returns — so offering the button there is offering a click
+    that errors."""
+    source = _shipment_source()
+    assert 'id="close-btn"' in source
+    assert 'plan.status === "active"' in source, (
+        "the Close button's visibility is not tied to the plan being active"
+    )
