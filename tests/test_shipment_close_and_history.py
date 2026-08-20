@@ -1016,3 +1016,119 @@ async def test_the_draft_screen_counts_days_carried_onto_it(
         f"the draft screen says {chana['remaining']} still to pack, but 400 of the 500 "
         "are already in cartons — the packer would box them twice"
     )
+
+
+# ─── The bug that deleted real packed stock on production ────────────────────
+
+def _csvs(rows):
+    """The (sales, stock) CSV pair POST /shipment/generate expects."""
+    sales = "(Child) ASIN,Units Ordered\n" + "".join(
+        f"{asin},{units}\n" for asin, units, _ in rows
+    )
+    stock = "asin,sku,afn-fulfillable-quantity\n" + "".join(
+        f"{asin},{sku},0\n" for asin, _, sku in rows
+    )
+    return {
+        "sales_csv": ("sales.csv", sales.encode(), "text/csv"),
+        "stock_csv": ("stock.csv", stock.encode(), "text/csv"),
+    }
+
+
+@pytest.fixture
+def real_asin(no_live_product_sheet):
+    """An ASIN the generate route will actually emit a row for."""
+    from app.routers.shipment import FAMILIES
+
+    return sorted(FAMILIES)[0]
+
+
+async def test_generating_after_a_close_does_not_delete_the_carried_day(
+    auth_client, db, read_committed, real_asin
+):
+    """The production data loss, reproduced.
+
+    What the owner did: closed a plan (19 Aug, 400 units in 9 cartons, verified), then
+    uploaded the next CSV. What happened: the day was GONE — not on the closed plan, not
+    on the new one, not in the database at all. 400 units sat in 9 real cartons on the
+    warehouse floor with nothing in the app mentioning them.
+
+    Why: closing with no draft present creates a *carrier* draft and moves the day onto it.
+    ``generate_plan`` then calls ``delete_draft_plans()``, and ``ShipmentPlan.days``
+    cascades ``all, delete-orphan`` — so the day and its packing entries were deleted with
+    the draft. ``delete_draft_plans``' own docstring asserted this could not happen
+    ("no packing endpoint can reach a draft"), which was true until carry-forward existed.
+
+    A draft holding packing days must therefore survive, and its days must land on the
+    plan being generated.
+    """
+    old = await repository.create_plan(
+        db,
+        [{"asin": real_asin, "item": "Carried Product", "weight": 1.0, "brand": "MF",
+          "fba_sku": "MF-CARRY-1KG", "shipment_plan": 500, "deficit": 480}],
+        status=repository.STATUS_ACTIVE,
+    )
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-19", [{"asin": real_asin, "units": 400}], cartons=9,
+    )
+    day = await repository.get_day(db, old.id, "2026-08-19")
+    day.status = logic.STATUS_VERIFIED
+    await db.commit()
+
+    # Close with no draft present -> a carrier draft is created and holds the day.
+    close = await auth_client.post(f"/shipment/plan/{old.id}/close")
+    assert close.status_code == 200, close.text
+    assert close.json()["created_carrier_plan"] is True
+
+    # Now the next CSV upload, which is what destroyed it.
+    r = await auth_client.post(
+        "/shipment/generate", files=_csvs([(real_asin, 10, "MF-CARRY-1KG")]),
+        data={"multiplier": "5"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    surviving = [d["pack_date"] for d in body["days"]]
+    assert "2026-08-19" in surviving, (
+        "the carried day was deleted by the CSV upload — 400 units in 9 real cartons "
+        f"with no record anywhere. Days on the new plan: {surviving}"
+    )
+
+    carried = next(d for d in body["days"] if d["pack_date"] == "2026-08-19")
+    assert carried["total_units"] == 400, "the units did not survive"
+    assert carried["total_cartons"] == 9, "the carton count did not survive"
+    assert carried["status"] == logic.STATUS_VERIFIED, (
+        "the day lost its verified status, so the invoice it still needs is blocked"
+    )
+    assert carried["entries"], "the per-SKU entries were deleted with the draft"
+
+    # And it is counted, so the packer is not told to box it again.
+    row = next(i for i in body["items"] if i["asin"] == real_asin)
+    assert row["packed"] == 400, "the carried boxes are not counted as packed"
+
+    # The owner is TOLD, rather than discovering it by not finding the day.
+    assert "carried" in (body.get("warning") or "").lower(), (
+        f"the rescue is silent; warning was: {body.get('warning')!r}"
+    )
+
+    # No orphan carrier plan is left behind once its days have moved on.
+    drafts = [p for p in await repository.list_plans(db) if p["status"] == "draft"]
+    assert len(drafts) == 1, f"expected exactly one draft, got {len(drafts)}"
+
+
+async def test_an_empty_draft_is_still_discarded(auth_client, db, real_asin):
+    """The original purpose of delete_draft_plans must survive the fix.
+
+    Generating twice must not leave an orphan draft for `get_draft_plan` to choose
+    between — only a draft carrying real packing days is protected.
+    """
+    for _ in range(2):
+        r = await auth_client.post(
+            "/shipment/generate", files=_csvs([(real_asin, 10, "MF-X-1KG")]),
+            data={"multiplier": "5"},
+        )
+        assert r.status_code == 200, r.text
+
+    drafts = [p for p in await repository.list_plans(db) if p["status"] == "draft"]
+    assert len(drafts) == 1, (
+        f"generating twice left {len(drafts)} drafts; an empty one must still be dropped"
+    )

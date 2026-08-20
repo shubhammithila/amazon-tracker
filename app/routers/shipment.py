@@ -436,16 +436,44 @@ async def generate_plan(
 
     # A DRAFT, and the active plan is left completely alone. The owner removes
     # rows, fixes quantities and fills missing SKUs before the warehouse ever
-    # sees it; POST /plan/{id}/finalise is what promotes it. Any previous draft is
+    # sees it; POST /plan/{id}/finalise is what promotes it. Any previous EMPTY draft is
     # discarded first so there is only ever one to work on.
-    await repository.delete_draft_plans(db)
+    #
+    # A draft holding packing days is NOT discarded — it is kept and its days moved onto
+    # the plan being created. Deleting it destroyed 400 packed units in 9 cartons on
+    # production: closing a plan carries unshipped days onto a carrier draft, and the next
+    # CSV upload then deleted that draft with `days` cascading delete-orphan.
+    _deleted, carrier_ids = await repository.delete_draft_plans(db)
     plan = await repository.create_plan(
         db, items, multiplier=multiplier, status=repository.STATUS_DRAFT
     )
+
+    # Move the carried days onto the new draft, then retire the emptied carrier. Rows for
+    # any ASIN the new CSV does not list are inserted first, at To Ship 0, for the same
+    # reason close_plan does it: packed units with no plan row reach no GST invoice line.
+    rescued: list[str] = []
+    for carrier_id in carrier_ids:
+        carried_days = await repository.load_days_with_entries(db, carrier_id)
+        dates = [d["pack_date"] for d in carried_days]
+        if not dates:
+            continue
+        asins = sorted({
+            e["asin"] for d in carried_days for e in (d.get("entries") or [])
+            if e.get("asin")
+        })
+        await repository.ensure_rows_for_asins(
+            db, plan.id, asins, source_plan_id=carrier_id
+        )
+        rescued += await repository.carry_days_to_plan(db, carrier_id, plan.id, dates)
+        # Empty now, so the original reason for deleting a stale draft applies again.
+        await repository.delete_draft_plans(db)
+
     stored = await repository.load_plan_items(db, plan.id)
     missing_sku = await repository.count_items_missing_sku(db, plan.id)
 
-    payload = _plan_payload(plan, stored, [])
+    days = await repository.load_days_with_entries(db, plan.id)
+    payload = _plan_payload(plan, stored, days)
+    payload["carried_days"] = sorted(rescued)
     payload["missing_sku_count"] = missing_sku
     payload["abandoned_holds"] = abandoned_holds
     payload["skipped_inactive"] = skipped_inactive
@@ -498,6 +526,17 @@ async def generate_plan(
             f"({', '.join(h['pack_date'] for h in abandoned_holds)}). Those boxes "
             "are packed but were never shipped, and this new plan does not know "
             "about them — ship or write them off before packing against it."
+        )
+    if rescued:
+        # Said out loud, because the alternative is what happened on production: the days
+        # were silently deleted and the owner found out by not finding them.
+        carried_units = sum(
+            d["total_units"] for d in days if d["pack_date"] in rescued
+        )
+        warnings.append(
+            f"{len(rescued)} packed day(s) carried over from the plan you closed "
+            f"({', '.join(rescued)}, {carried_units} units) are on this new plan, so "
+            "they are counted as already packed and will not be packed again."
         )
     if warnings:
         payload["warning"] = " ".join(warnings)

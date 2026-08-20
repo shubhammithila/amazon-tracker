@@ -453,22 +453,59 @@ async def get_draft_plan(db: AsyncSession) -> ShipmentPlan | None:
     return result.scalar_one_or_none()
 
 
-async def delete_draft_plans(db: AsyncSession) -> int:
-    """Drop existing drafts before creating a new one.
+async def delete_draft_plans(db: AsyncSession) -> tuple[int, list[int]]:
+    """Delete drafts that hold nothing; REFUSE to delete one holding packing days.
 
-    Safe because no packing endpoint can reach a draft, so a draft can never
-    carry packing rows worth keeping. Without this, generating twice would leave
-    an orphan draft that `get_draft_plan` would then have to choose between.
+    Returns ``(deleted_count, kept_plan_ids)``.
+
+    **This function destroyed real packed stock on production, and the cause is the
+    sentence its docstring used to open with:** "safe because no packing endpoint can
+    reach a draft, so a draft can never carry packing rows worth keeping". True until
+    ``close_plan`` started carrying days ONTO a draft — including onto a *carrier* draft
+    it creates itself when no draft exists.
+
+    The sequence: the owner closed a plan, 19 Aug (400 units in 9 cartons, verified) was
+    carried onto a new carrier draft, and he then uploaded the next CSV. ``generate_plan``
+    calls this function first, ``ShipmentPlan.days`` cascades ``all, delete-orphan``, and
+    the day and its entries went with the draft. The boxes were real and on the floor;
+    nothing in the app mentioned them again.
+
+    So a draft carrying packing days is no longer disposable. It is KEPT and its id
+    returned, and the caller moves those days onto the plan it is about to create — the
+    same day-level carry ``close_plan`` performs, for the same reason: the units are
+    already in cartons and must not be packed twice.
+
+    An EMPTY draft is still deleted, which is this function's original purpose:
+    generating twice must not leave an orphan for ``get_draft_plan`` to choose between.
     """
     result = await db.execute(
         select(ShipmentPlan).where(ShipmentPlan.status == STATUS_DRAFT)
     )
     drafts = list(result.scalars())
+
+    deleted = 0
+    kept: list[int] = []
     for draft in drafts:
+        held = (
+            await db.execute(
+                select(func.count())
+                .select_from(ShipmentPackingDay)
+                .where(ShipmentPackingDay.plan_id == draft.id)
+            )
+        ).scalar() or 0
+        if held:
+            logger.warning(
+                "draft plan %s holds %d packing day(s); keeping it so the carried "
+                "boxes are not deleted with it", draft.id, held,
+            )
+            kept.append(draft.id)
+            continue
         await db.delete(draft)
-    if drafts:
+        deleted += 1
+
+    if deleted:
         await db.commit()
-    return len(drafts)
+    return deleted, kept
 
 
 async def set_item_excluded(
