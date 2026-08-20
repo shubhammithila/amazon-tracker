@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (951 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (1087 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -268,6 +268,56 @@ the warehouse starts packing plans the owner has not finished.
 > replacement sits invisible in draft. The close belongs in `finalise_plan`, which
 > is the moment the owner actually decides.
 > `test_generate_does_not_disturb_the_plan_being_packed` guards it.
+
+### Closing a plan, and carrying its boxes forward
+`POST /plan/{id}/close` retires the active plan. Packed-but-unshipped days — `held`,
+`submitted` or `verified`, with no confirmed Amazon shipment and no invoice — **move to
+the next plan**: `plan_id` is updated and `carried_from_plan_id` stamped. The target is
+the current draft, or a new empty carrier plan when there is none, because the owner
+closes *before* uploading the next CSV.
+
+**The DAY moves; its units are never copied.** `logic.remaining_for` ignores `available`
+by design (a test asserts its signature), so adding carried units there would tell the
+packer to box 400 already-boxed units a second time. Because every aggregation reaches
+days through `load_days(plan_id)`, moving that one column makes the new plan count them
+with no new arithmetic: 500 planned − 400 carried = **100 still to pack**.
+
+**Shipped days never carry.** `parse_stock_csv` sums three `afn-inbound-*` columns into
+`fba_stock`, so a shipped day is already inside `deficit = projection − fba_stock`, and
+carrying it would double-count. The unpacked remainder is not carried either, for the
+same reason — the fresh CSV recomputes need from current sales.
+
+Close **refuses with 409 having moved nothing** when a day is `open` or has an
+`inbound_plan_id` with no confirmation (`clear_inbound_plan` scopes its cleanup by that
+pair, so moving the day would orphan a plan Amazon holds). It **warns** about
+shipped-but-uninvoiced days rather than blocking — they may have been invoiced outside the
+app. Orphan ASINs get a To-Ship-0 row, inserted *before* the days move, so a crash leaves
+an unused zero row rather than packed units with no plan row to hold them — which is the
+GST-understatement state.
+
+> **The blocked check must run BEFORE the carrier plan is created.** Built the obvious way
+> it created the plan, then found the blocked day and refused, leaving a draft nobody asked
+> for — and an abandoned draft is not inert: `get_draft_plan` shows it as the plan being
+> edited, and the next `/generate` deletes whatever draft it finds without a word.
+> `test_a_refused_close_leaves_no_phantom_carrier_plan` guards it.
+
+> **`GET /draft` must LOAD its days, not pass `[]`.** That empty list was correct while a
+> draft could never have packing days, and became wrong the moment a close started
+> carrying days onto one. Found in a browser: after a close the draft screen read "500
+> still to pack" while `/plan/{id}/detail` said 100 for the same plan, and the carried day
+> was missing from the cards entirely.
+
+### Reading a closed plan
+`GET /plans` lists every plan with its day count, units, cartons, invoice numbers and
+carry lineage **in both directions** — with only one direction a carried day looks as
+though it vanished from the plan being reconciled. `GET /plan/{id}/detail` returns the same
+shape as `/active`, so the history panel reuses the existing renderer rather than a second
+one that could disagree about row order.
+
+All five downloads take `?plan_id=`, threaded through `_document_rows` alone, so accounts
+can reprint a closed plan's packed sheet. `attach-invoice` takes one too: it resolved only
+the active plan, so closing used to make an invoice unrecordable against a shipped day,
+with hand-editing the database the only way back.
 
 ### Removing rows
 `excluded_at` is stamped, not deleted, so a mis-click is one click back.
