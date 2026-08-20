@@ -976,3 +976,43 @@ def test_close_is_offered_only_on_an_active_plan():
     assert 'plan.status === "active"' in source, (
         "the Close button's visibility is not tied to the plan being active"
     )
+
+
+async def test_the_draft_screen_counts_days_carried_onto_it(
+    auth_client, db, plan_factory
+):
+    """GET /draft must load its days, not assume a draft has none.
+
+    Found in a browser, not by a test. `/draft` passed a hardcoded `[]` for days, which
+    was correct while no packing endpoint could reach a draft — and became wrong the
+    moment closing a plan started carrying days ONTO one.
+
+    The symptom was the whole feature inverted on the one screen the owner actually uses:
+    the draft showed Kulthi Sattu "500 still to pack" while `/plan/{id}/detail` said 100
+    for the same plan, and the carried day was absent from the cards. The packer would
+    have been told to box 400 units that were already in cartons.
+    """
+    old = await plan_factory()
+    await repository.save_packing_entries(
+        db, old.id, "2026-08-19", [{"asin": "B0AAA00001", "units": 400}], cartons=9,
+    )
+    day = await repository.get_day(db, old.id, "2026-08-19")
+    day.status = logic.STATUS_VERIFIED
+    await db.commit()
+    draft = await plan_factory(status=repository.STATUS_DRAFT)
+
+    await auth_client.post(f"/shipment/plan/{old.id}/close")
+
+    body = (await auth_client.get("/shipment/draft")).json()
+    assert body["plan"]["id"] == draft.id
+
+    carried = [d for d in body["days"] if d["pack_date"] == "2026-08-19"]
+    assert carried, "the carried day is missing from the draft screen entirely"
+    assert carried[0]["carried_from_plan_id"] == old.id
+
+    chana = next(i for i in body["items"] if i["asin"] == "B0AAA00001")
+    assert chana["packed"] == 400, "the draft screen does not count the carried boxes"
+    assert chana["remaining"] == 100, (
+        f"the draft screen says {chana['remaining']} still to pack, but 400 of the 500 "
+        "are already in cartons — the packer would box them twice"
+    )

@@ -1283,7 +1283,18 @@ async def get_draft(
     # include_excluded so the owner can see and restore what he removed. This is
     # one of only two places that should ever pass it.
     items = await repository.load_plan_items(db, plan.id, include_excluded=True)
-    payload = _plan_payload(plan, items, [])
+
+    # The days are LOADED, not passed as []. That empty list was correct while a draft
+    # could never have packing days — no packing endpoint can reach one — and it became
+    # wrong the moment closing a plan started carrying days ONTO a draft.
+    #
+    # Found in a browser: after a close, this screen showed Kulthi Sattu "500 still to
+    # pack" while /plan/{id}/detail said 100 for the same plan, and the carried day was
+    # missing from the cards entirely. The packer would have been told to box 400 units
+    # that were already in cartons — the exact failure the whole carry design exists to
+    # prevent, reintroduced by one hardcoded argument.
+    days = await repository.load_days_with_entries(db, plan.id)
+    payload = _plan_payload(plan, items, days)
     payload["role"] = role
     payload["missing_sku_count"] = await repository.count_items_missing_sku(db, plan.id)
     return JSONResponse(payload)
