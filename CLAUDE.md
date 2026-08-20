@@ -307,6 +307,27 @@ GST-understatement state.
 > still to pack" while `/plan/{id}/detail` said 100 for the same plan, and the carried day
 > was missing from the cards entirely.
 
+> **`delete_draft_plans` must never delete a draft that holds packing days — it DID, and
+> it destroyed real stock on production.** The owner closed a plan (19 Aug: 400 units in 9
+> cartons, verified), which carried the day onto a new *carrier* draft, and then uploaded
+> the next CSV. `generate_plan` calls `delete_draft_plans()` first and
+> `ShipmentPlan.days` cascades `all, delete-orphan`, so the day and its seven packing
+> entries were deleted with the draft. Not on the closed plan, not on the new one, not in
+> the database — 400 units in real cartons with nothing in the app mentioning them.
+>
+> The function's own docstring asserted it was safe *because* "no packing endpoint can
+> reach a draft, so a draft can never carry packing rows worth keeping". That was true when
+> it was written and was invalidated by the carry-forward feature itself. **A comment
+> stating an invariant is not the same as enforcing one**, and this is the second time the
+> same assumption broke something (`GET /draft` above was the first).
+>
+> Now: a draft holding days is kept, its days move onto the plan being generated, and the
+> emptied carrier is retired. An *empty* draft is still discarded, which was the original
+> purpose. `test_generating_after_a_close_does_not_delete_the_carried_day` reproduces the
+> exact sequence and fails with "Days on the new plan: []" against the old code.
+> Recovered from `/home/ubuntu/tracker-backups/` — which is why `update-ec2.sh` backing up
+> before every deploy is not ceremony.
+
 ### Reading a closed plan
 `GET /plans` lists every plan with its day count, units, cartons, invoice numbers and
 carry lineage **in both directions** — with only one direction a carried day looks as
