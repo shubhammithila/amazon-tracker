@@ -192,11 +192,12 @@ Nav gains an **Orders** tab via `templates/nav.html`, which is `include`d —
 
 ```
 TO PACK & SHIP TODAY — due 24 Aug or earlier            67 orders · 89 units
-  PRODUCT              SIZE   BR   QTY  ORDERS
-  Chana Sattu          500g   MF    24      22
-  Ragi Atta            1 kg   MF    12      12
+  PRODUCT              SIZE   BR   QTY  ORDERS      KG
+  Chana Sattu          500g   MF    24      22   12.00
+  Ragi Atta            1 kg   MF    12      12   12.00
+  Bengali Posta        100g   HF     2       2    0.20
   …
-  TOTAL                             89      67
+  TOTAL                             89      67   47.30
 
 WAITING FOR PICKUP — labelled, not yet collected          0 orders
   (empty until labels exist; the section says so rather than vanishing)
@@ -208,6 +209,23 @@ LATER — due 25 Aug onwards                               30 orders
 Aggregated by **product + weight + brand**, quantity-descending so the big picks lead.
 `ORDERS` is how many orders contain that line, which is what makes "24 units across 22
 orders" readable.
+
+**Both a size breakdown AND a kilogram total, because they answer different questions.**
+The size column tells the packer which shelf to visit — 500g and 1kg of one product are
+separate lines, never collapsed, or he goes to the wrong bin. The `KG` column is
+`pack size × quantity`, and its total is what the courier and the vehicle care about. One
+without the other leaves a real question unanswered: 24 pouches of 500g and 12 bags of 1kg
+are the same 12 kg but a completely different picking job.
+
+Verified against the live sheet: **all 271 catalogue ASINs carry a real weight — none is 0
+or missing** — so the kilogram total is always complete rather than quietly under-counting.
+It is **net weight**, exactly as `logic.shipment_weight` is on the shipment side: cartons,
+filler and tape are not in the catalogue, so a weighbridge reads higher. The column is
+labelled net for that reason — the same trap already documented for the invoice weight.
+
+**A line whose weight is unknown is excluded from the KG total AND named on screen**, never
+treated as 0. A 47 kg sheet that silently reports 40 is worse than one that says "47 kg,
+plus 2 lines with no pack size".
 
 **Overdue orders sit inside the first section, flagged red** — not in a fourth section. A
 missed deadline should make today's sheet louder, not hide in its own box.
@@ -249,6 +267,11 @@ feature's write-separation design exists to avoid.
   is qty 2, orders 1); the totals row equals the sum of the rows; and an order containing two
   different sizes of one product produces two lines, not one — collapsing sizes would send
   the packer to the wrong shelf.
+- **The KG column and the size lines are tested together**, on a case where they disagree:
+  24 × 500g and 12 × 1kg are both 12 kg, so a test that used equal weights could not tell a
+  correct total from one that summed pack sizes without multiplying by quantity.
+- A line whose pack size is unknown is EXCLUDED from the kilogram total and named on screen —
+  asserted directly, because treating it as 0 makes a 47 kg sheet quietly report 40.
 - IST bucketing on the real case: `2026-07-12T18:29Z` renders as `12 Jul 23:59`, and an order
   due `23:59 IST` today is in the "today" bucket, not tomorrow's.
 - A `1995-01-01` ship-by is bucketed as "no deadline" and never rendered as a date.
@@ -275,6 +298,9 @@ visible with the `orders` area and gone without it.
 Phase B (pickup scheduling, label download) pending the restricted role. No self-ship /
 own-courier route. No buyer PII — `BuyerInfo` is empty without the PII role, and street
 addresses are deliberately not sought; the picking sheet needs city and state only. No
-editing of order rows, and no local "packed" tick. No per-order weight totals: pack weight
-comes from the catalogue and is already implied by the size column, so a kilogram total
-would be a second number saying the same thing.
+editing of order rows, and no local "packed" tick.
+
+No **gross** weight and no carton count on this sheet. The KG column is net, from the
+catalogue; packaging weight is recorded nowhere in this app, and a guessed gross figure put
+in front of a courier is the same mistake as the per-SKU carton count that was removed from
+the packed sheet — a number the warehouse reads as a measurement when it is an invention.
