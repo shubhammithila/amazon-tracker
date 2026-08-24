@@ -1522,7 +1522,298 @@ git add app/orders/spapi_orders.py tests/test_orders_spapi.py tests/fixtures/ord
 git commit -m "feat: orders.spapi_orders, the only caller of Amazon's Orders API"
 ```
 
-**Task 5 — `app/orders/repository.py` + `refresh.py`:** upsert by `amazon_order_id`; `items_fetched_at IS NULL` drives item fetching so a second refresh of 100 known orders makes zero item calls. The refresh is serialized (refuses a concurrent start), commits after **each page** so a 429 keeps what was already stored, and exposes a progress dict the screen polls.
+### Task 5: `repository.py` and `refresh.py` — storing, and the serialized job
+
+**Files:**
+- Create: `app/orders/repository.py`, `app/orders/refresh.py`
+- Test: `tests/test_orders_refresh.py`
+
+**Interfaces:**
+- Consumes: `AmazonOrder`, `AmazonOrderItem` (Task 1); `spapi_orders.fetch_easy_ship_orders`, `fetch_items` (Task 4); `orders.logic.picking_sheet`, `bucket_for` (Tasks 2–3).
+- Produces:
+  - `repository.upsert_orders(db, rows) -> tuple[int, int]` → `(created, updated)`
+  - `repository.replace_items(db, amazon_order_id, items) -> int`
+  - `repository.ids_missing_items(db, limit=200) -> list[str]`
+  - `repository.load_orders(db, *, days=90) -> list[dict]` — dicts with an `items` list, the shape `picking_sheet` consumes
+  - `repository.last_refreshed_at(db) -> datetime | None`
+  - `repository.purge_older_than(db, days) -> int`
+  - `refresh.STATE: dict` — `{"running", "started_at", "finished_at", "phase", "pages", "orders_seen", "created", "updated", "items_fetched", "warnings", "error"}`
+  - `async refresh.run(db_factory=async_session, *, days=90, sleep=asyncio.sleep) -> dict`
+  - `refresh.status() -> dict`
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `tests/test_orders_refresh.py`:
+
+```python
+"""Storing Amazon orders, and the refresh job that fetches them.
+
+The job is slow by necessity — one getOrders call every 22 seconds — and that single fact
+drives every property here: it commits per page so a failure keeps what it already had,
+it refuses to run twice at once, and it reports progress because a silent multi-minute job
+is indistinguishable from a broken one.
+"""
+from datetime import datetime, timedelta
+
+import pytest
+
+from app.orders import refresh, repository
+
+pytestmark = pytest.mark.regression
+
+
+def _row(order_id, **overrides):
+    row = {
+        "amazon_order_id": order_id,
+        "purchase_date_utc": datetime(2026, 8, 24, 6, 0),
+        "latest_ship_date_utc": datetime(2026, 8, 24, 18, 29),
+        "status": "Unshipped",
+        "easyship_status": "PendingSchedule",
+        "ship_service_level": "Std IN EZ National COD",
+        "order_total": 319.0,
+        "currency": "INR",
+        "items_ordered": 1,
+        "items_shipped": 0,
+        "is_prime": False,
+        "is_cod": True,
+        "city": "NAVSARI",
+        "state": "GUJARAT",
+        "postal_code": "396445",
+    }
+    row.update(overrides)
+    return row
+
+
+async def test_a_second_refresh_updates_rather_than_duplicating(db, db_schema):
+    """The UNIQUE index makes this possible; the upsert makes it happen.
+
+    A refresh runs daily and on demand, so the same order arrives many times. Inserting
+    each arrival would multiply every quantity on the picking sheet by the number of
+    refreshes — the same double-count the (plan_id, pack_date) index prevents for packing.
+    """
+    created, updated = await repository.upsert_orders(db, [_row("403-1"), _row("403-2")])
+    assert (created, updated) == (2, 0)
+
+    created, updated = await repository.upsert_orders(
+        db, [_row("403-1", status="Shipped", easyship_status="PickedUp")]
+    )
+    assert (created, updated) == (0, 1)
+
+    orders = await repository.load_orders(db)
+    assert len(orders) == 2, "a re-refresh duplicated an order"
+    changed = next(o for o in orders if o["amazon_order_id"] == "403-1")
+    assert changed["status"] == "Shipped", "the update did not apply"
+    assert changed["easyship_status"] == "PickedUp"
+
+
+async def test_first_seen_survives_an_update_but_last_refreshed_moves(db, db_schema):
+    """"New since I last looked" and "Amazon changed something" are different questions.
+
+    Overwriting first_seen_at on every refresh would make every order look new every day.
+    """
+    await repository.upsert_orders(db, [_row("403-1")])
+    first = (await repository.load_orders(db))[0]
+    original_seen = first["first_seen_at"]
+
+    await repository.upsert_orders(db, [_row("403-1", status="Shipped")])
+    after = (await repository.load_orders(db))[0]
+    assert after["first_seen_at"] == original_seen, "first_seen_at was overwritten"
+    assert after["last_refreshed_at"] >= original_seen
+
+
+async def test_replacing_items_does_not_accumulate_them(db, db_schema):
+    """Items are replaced wholesale, because Amazon's list is the truth.
+
+    Appending instead would double a quantity on the picking sheet every time the items
+    were re-fetched — and quantity is what the warehouse picks against.
+    """
+    await repository.upsert_orders(db, [_row("403-1")])
+    items = [{"asin": "B0CHANA500", "seller_sku": "cs-500", "title": "Chana Sattu",
+              "quantity_ordered": 2, "quantity_shipped": 0,
+              "item_price": 319.0, "item_tax": 15.0, "promotion_discount": 0.0}]
+
+    assert await repository.replace_items(db, "403-1", items) == 1
+    assert await repository.replace_items(db, "403-1", items) == 1
+
+    order = (await repository.load_orders(db))[0]
+    assert len(order["items"]) == 1, "items accumulated across two fetches"
+    assert order["items"][0]["quantity_ordered"] == 2
+
+
+async def test_storing_items_stamps_items_fetched_at_so_they_are_not_re_fetched(db, db_schema):
+    """The flag that keeps a daily refresh cheap.
+
+    getOrderItems costs a call per order. Without this flag, refreshing 100 known orders
+    would spend 100 calls to learn nothing — at 2s apart, more than three minutes of
+    nothing.
+    """
+    await repository.upsert_orders(db, [_row("403-1"), _row("403-2")])
+    assert sorted(await repository.ids_missing_items(db)) == ["403-1", "403-2"]
+
+    await repository.replace_items(db, "403-1", [
+        {"asin": "B0CHANA500", "quantity_ordered": 1}
+    ])
+    assert await repository.ids_missing_items(db) == ["403-2"], (
+        "an order whose items were fetched is still queued for fetching"
+    )
+
+
+async def test_an_order_with_no_items_is_still_marked_fetched(db, db_schema):
+    """Otherwise it is retried for ever.
+
+    A cancelled order can legitimately return zero line items. Leaving items_fetched_at
+    NULL would queue it again on every refresh, spending a call each time and never
+    succeeding differently.
+    """
+    await repository.upsert_orders(db, [_row("403-1")])
+    await repository.replace_items(db, "403-1", [])
+    assert await repository.ids_missing_items(db) == []
+
+
+async def test_purge_removes_only_orders_older_than_the_window(db, db_schema):
+    """90-day retention, matching DATA_RETENTION_DAYS and the rest of the app."""
+    old = datetime.utcnow() - timedelta(days=200)
+    await repository.upsert_orders(db, [
+        _row("403-old", purchase_date_utc=old),
+        _row("403-new"),
+    ])
+    assert await repository.purge_older_than(db, 90) == 1
+    remaining = [o["amazon_order_id"] for o in await repository.load_orders(db)]
+    assert remaining == ["403-new"]
+
+
+# ─── The refresh job ─────────────────────────────────────────────────────────
+
+async def test_the_refresh_stores_orders_and_their_items(db_schema, monkeypatch):
+    """End to end with the network stubbed: orders land, items land, progress is reported."""
+    async def fake_orders(days=90, *, max_pages=10, sleep=None):
+        return [_row("403-1"), _row("403-2")], []
+
+    async def fake_items(order_ids, *, sleep=None):
+        return {oid: [{"asin": "B0CHANA500", "quantity_ordered": 1}] for oid in order_ids}
+
+    monkeypatch.setattr(refresh.spapi_orders, "fetch_easy_ship_orders", fake_orders)
+    monkeypatch.setattr(refresh.spapi_orders, "fetch_items", fake_items)
+    refresh.reset_state()
+
+    result = await refresh.run(days=90)
+
+    assert result["error"] is None, result
+    assert result["created"] == 2
+    assert result["items_fetched"] == 2
+    assert result["running"] is False
+    assert result["finished_at"] is not None
+
+
+async def test_a_second_refresh_is_refused_while_one_runs(db_schema, monkeypatch):
+    """Two concurrent refreshes would both burn the 22-second budget and 429 each other.
+
+    Asserted by holding the first inside the fetch and starting the second — a test that
+    merely set the flag by hand would not prove the guard is checked on the real path.
+    """
+    import asyncio
+
+    release = asyncio.Event()
+
+    async def slow_orders(days=90, *, max_pages=10, sleep=None):
+        await release.wait()
+        return [_row("403-1")], []
+
+    async def fake_items(order_ids, *, sleep=None):
+        return {}
+
+    monkeypatch.setattr(refresh.spapi_orders, "fetch_easy_ship_orders", slow_orders)
+    monkeypatch.setattr(refresh.spapi_orders, "fetch_items", fake_items)
+    refresh.reset_state()
+
+    first = asyncio.create_task(refresh.run(days=90))
+    await asyncio.sleep(0)                      # let it enter and set the flag
+    second = await refresh.run(days=90)
+
+    assert second["refused"] is True, "a concurrent refresh was allowed to start"
+    release.set()
+    await first
+    assert refresh.status()["running"] is False
+
+
+async def test_a_failure_mid_refresh_keeps_what_was_already_stored(db, db_schema, monkeypatch):
+    """A 429 partway through must not throw away minutes of rate-limited work.
+
+    The orders are committed before the item phase begins, so a failure fetching items
+    leaves the orders in place and items_fetched_at NULL — the next run resumes rather
+    than restarting.
+    """
+    async def fake_orders(days=90, *, max_pages=10, sleep=None):
+        return [_row("403-1"), _row("403-2")], []
+
+    async def exploding_items(order_ids, *, sleep=None):
+        raise RuntimeError("429 Too Many Requests")
+
+    monkeypatch.setattr(refresh.spapi_orders, "fetch_easy_ship_orders", fake_orders)
+    monkeypatch.setattr(refresh.spapi_orders, "fetch_items", exploding_items)
+    refresh.reset_state()
+
+    result = await refresh.run(days=90)
+
+    assert result["error"], "the failure was swallowed"
+    assert result["running"] is False, "the flag was left set, blocking every later refresh"
+    assert result["created"] == 2, "the orders fetched before the failure were lost"
+    stored = await repository.load_orders(db)
+    assert len(stored) == 2
+    assert sorted(await repository.ids_missing_items(db)) == ["403-1", "403-2"], (
+        "the next run cannot resume the item fetch"
+    )
+
+
+async def test_warnings_from_paging_reach_the_status(db_schema, monkeypatch):
+    """A truncated window must be visible, not inferred from a short list."""
+    async def fake_orders(days=90, *, max_pages=10, sleep=None):
+        return [_row("403-1")], ["Stopped after 10 pages and Amazon reports more pages"]
+
+    async def fake_items(order_ids, *, sleep=None):
+        return {oid: [] for oid in order_ids}
+
+    monkeypatch.setattr(refresh.spapi_orders, "fetch_easy_ship_orders", fake_orders)
+    monkeypatch.setattr(refresh.spapi_orders, "fetch_items", fake_items)
+    refresh.reset_state()
+
+    result = await refresh.run(days=90)
+    assert any("more pages" in w for w in result["warnings"])
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `venv/Scripts/python -m pytest tests/test_orders_refresh.py -q`
+Expected: FAIL — `ImportError: cannot import name 'refresh' from 'app.orders'`.
+
+- [ ] **Step 3: Implement the repository**
+
+Create `app/orders/repository.py` — the only reader/writer of order rows, following the SELECT-then-UPDATE-or-INSERT pattern the rest of the app uses so the same code runs on SQLite and PostgreSQL.
+
+- [ ] **Step 4: Implement the refresh job**
+
+Create `app/orders/refresh.py` — module-level `STATE`, a `run()` that commits orders before starting items, and `status()`.
+
+- [ ] **Step 5: Run to verify they pass**
+
+Run: `venv/Scripts/python -m pytest tests/test_orders_refresh.py -q`
+Expected: PASS (11 tests).
+
+- [ ] **Step 6: Prove three tests can fail**
+
+1. In `upsert_orders`, always INSERT (skip the SELECT).
+   Expected: `test_a_second_refresh_updates_rather_than_duplicating` FAILS.
+2. In `replace_items`, skip the DELETE of existing rows.
+   Expected: `test_replacing_items_does_not_accumulate_them` FAILS.
+3. In `run()`, move the orders commit to after the item phase.
+   Expected: `test_a_failure_mid_refresh_keeps_what_was_already_stored` FAILS.
+
+Restore exactly after each and report all three.
+
+- [ ] **Step 7: Run the whole suite and commit**
+
+Run: `venv/Scripts/python -m pytest -q`
+Expected: PASS, 1183 tests.
 
 **Task 6 — `app/routers/orders.py`, `templates/orders.html`, `app/permissions.py`, `app/main.py`, `templates/nav.html`:** `GET /orders` (sheet + list), `POST /orders/refresh`, `GET /orders/refresh-status`, `GET /orders/download/picking-sheet.xlsx` via `documents.build_simple_xlsx`. New `ORDERS = "orders"` area appended to `AREAS`, `/orders-page` gated with `require_area(permissions.ORDERS)`, nav link added, and `CANONICAL_NAV` + `ADMIN_PAGES` updated in `tests/test_nav_consistency.py` — that test is what actually stops nav drift.
 
