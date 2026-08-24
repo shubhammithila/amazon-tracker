@@ -133,3 +133,124 @@ def bucket_for(order, today: date) -> str:
     if due is not None and due <= today:
         return BUCKET_TODAY
     return BUCKET_LATER
+
+
+#: The sections a picking sheet renders, in the order the warehouse works them. `done` is
+#: absent on purpose: a finished order needs nothing, and a section for it is a section
+#: the packer scrolls past every morning.
+SHEET_SECTIONS = (BUCKET_TODAY, BUCKET_PICKUP, BUCKET_LATER)
+
+
+def _catalogue_entry(catalogue, asin: str) -> dict | None:
+    return (catalogue or {}).get((asin or "").strip().upper())
+
+
+def picking_sheet(orders: Sequence, catalogue: Mapping, today: date) -> dict:
+    """Today's work, aggregated by product + pack size + brand.
+
+    Returns::
+
+        {"sections": {bucket: {"lines": [...], "totals": {...}}},
+         "unknown_asins": [asin, ...]}
+
+    Each line carries ``product, weight, weight_label, brand, quantity, orders, kg,
+    known``; each totals block carries ``quantity, orders, kg, lines_without_weight,
+    overdue_orders``.
+
+    Four properties are load-bearing:
+
+    **Product PLUS pack size is the key.** 500 g and 1 kg of one product are different
+    shelves, so they are different lines. Keying on the name alone would send the packer
+    to one bin for a pick that needs two.
+
+    **`orders` counts ORDERS, not lines.** Two units of one SKU in one order is quantity
+    2, orders 1. That distinction is what makes "24 units across 22 orders" mean
+    something: it is the parcel count as well as the pick count.
+
+    **`kg` is pack size x quantity, and NET.** Cartons, filler and tape are not in the
+    catalogue, so a weighbridge reads higher — the same caveat ``logic.shipment_weight``
+    carries on the shipment side. A line whose pack size is unknown is EXCLUDED from the
+    kilogram total and counted in ``lines_without_weight``: treating it as 0 makes a
+    47 kg sheet quietly report 40, and a wrong weight reaches a courier.
+
+    **An unknown ASIN is kept, flagged, and named.** A row missing from a picking sheet is
+    stock nobody packs, discovered when Amazon reports a late shipment.
+    """
+    buckets: dict[str, dict] = {
+        name: {"lines": {}, "orders": set(), "overdue": set()} for name in SHEET_SECTIONS
+    }
+    unknown: set[str] = set()
+
+    for order in orders:
+        bucket = bucket_for(order, today)
+        if bucket not in buckets:
+            continue
+        holder = buckets[bucket]
+        order_id = _field(order, "amazon_order_id") or ""
+        holder["orders"].add(order_id)
+
+        due = ship_by_date(order)
+        if bucket == BUCKET_TODAY and due is not None and due < today:
+            holder["overdue"].add(order_id)
+
+        for item in _field(order, "items") or []:
+            asin = (_field(item, "asin") or "").strip().upper()
+            if not asin:
+                continue
+            quantity = int(_field(item, "quantity_ordered") or 0)
+            if quantity <= 0:
+                continue
+
+            entry = _catalogue_entry(catalogue, asin)
+            if entry is None:
+                unknown.add(asin)
+                product = (_field(item, "title") or asin)[:60]
+                weight, brand, known = 0.0, "", False
+            else:
+                product = entry.get("name") or asin
+                weight = float(entry.get("weight") or 0)
+                raw_brand = str(entry.get("brand") or "")
+                # "MF"/"HF" as the rest of the app writes them, from the sheet's full
+                # names. Substring, not equality: the sheet says "Mithila Foods".
+                brand = "MF" if "mithila" in raw_brand.lower() else ("HF" if raw_brand else "")
+                known = True
+
+            key = (product, weight, brand, known)
+            line = holder["lines"].setdefault(
+                key, {"product": product, "weight": weight, "brand": brand,
+                      "known": known, "quantity": 0, "orders": set()}
+            )
+            line["quantity"] += quantity
+            line["orders"].add(order_id)
+
+    sections: dict[str, dict] = {}
+    for name in SHEET_SECTIONS:
+        holder = buckets[name]
+        lines = []
+        for line in holder["lines"].values():
+            weight = float(line["weight"] or 0)
+            lines.append({
+                "product": line["product"],
+                "weight": weight,
+                "weight_label": weight_label(weight) if weight else "",
+                "brand": line["brand"],
+                "quantity": line["quantity"],
+                "orders": len(line["orders"]),
+                "kg": round(weight * line["quantity"], 3) if weight else None,
+                "known": line["known"],
+            })
+        # Quantity descending, then product name, so the big picks lead and the order is
+        # deterministic between two renders of the same data.
+        lines.sort(key=lambda row: (-row["quantity"], row["product"].casefold()))
+        sections[name] = {
+            "lines": lines,
+            "totals": {
+                "quantity": sum(row["quantity"] for row in lines),
+                "orders": len(holder["orders"]),
+                "kg": round(sum(row["kg"] or 0 for row in lines), 3),
+                "lines_without_weight": sum(1 for row in lines if row["kg"] is None),
+                "overdue_orders": len(holder["overdue"]),
+            },
+        }
+
+    return {"sections": sections, "unknown_asins": sorted(unknown)}
