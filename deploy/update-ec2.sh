@@ -305,10 +305,12 @@ def cols(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "amazon_orders" in tables:
+    print("c3d8e5f21a47")                           # head: amazon order cache
 elif "shipment_packing_days" in tables and "carried_from_plan_id" in cols("shipment_packing_days"):
-    print("b2f7c1a94e05")                           # head: close plans, carry days
+    print("b2f7c1a94e05")                           # close plans, carry days
 elif "product_prices" in tables:
-    print("9e4b1c7a2f56")                           # head: product_prices table
+    print("9e4b1c7a2f56")                           # product_prices table
 elif "shipment_packing_days" in tables and "inbound_plan_id" in cols("shipment_packing_days"):
     print("7c1a4e9b2d38")                           # Amazon shipment on a day
 elif "users" in tables:

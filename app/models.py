@@ -515,3 +515,95 @@ class Invoice(Base):
     total_amount = Column(Numeric(12, 2))
     invoice_data = Column(Text)  # Full JSON of the invoice
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AmazonOrder(Base):
+    """One Amazon order, as Amazon last reported it.
+
+    **A cache of Amazon's data, not a record of our own.** Nothing in this app edits
+    these rows: if a value looks wrong the fix is a refresh, which is why there is no
+    editing anywhere in the Orders feature and no local "packed" tick. A second source
+    of truth about whether an order shipped is the class of bug the shipment feature's
+    write-separation design exists to avoid.
+
+    Stored rather than fetched per request because `getOrders` is rate-limited to
+    **0.045 requests/second** — one call every 22 seconds, measured from the live
+    account. A page that called it would hang, and two people opening the tab would 429.
+    """
+    __tablename__ = "amazon_orders"
+
+    id = Column(Integer, primary_key=True)
+    #: Amazon's own id ("403-7588486-5589960"). UNIQUE so a re-refresh UPDATES rather
+    #: than duplicating — the same reasoning as the (plan_id, pack_date) index on
+    #: packing days, where a repeated save from a warehouse phone must not double-count.
+    amazon_order_id = Column(String(20), unique=True, nullable=False, index=True)
+
+    # ── Timestamps: stored UTC, rendered IST. See app.orders.logic.to_ist. ──
+    #
+    # The `_utc` suffix is load-bearing. Every real LatestShipDate is 18:29Z = 23:59 IST,
+    # so a reader who renders these directly shows every deadline 5.5 hours early.
+    purchase_date_utc = Column(DateTime)
+    latest_ship_date_utc = Column(DateTime)
+
+    status = Column(String(20))              # Unshipped / Shipped / Canceled …
+    easyship_status = Column(String(30))     # PendingSchedule / PickedUp / Delivered …
+    #: Contains "EZ" for Easy Ship. This is the field that identifies the channel —
+    #: FulfillmentChannel is MFN for both Easy Ship and plain self-ship.
+    ship_service_level = Column(String(60))
+
+    order_total = Column(Numeric(12, 2))
+    currency = Column(String(5))
+    items_ordered = Column(Integer, default=0)
+    items_shipped = Column(Integer, default=0)
+    is_prime = Column(Boolean, default=False)
+    #: True when ship_service_level mentions COD. Read off the service level rather than
+    #: PaymentMethod, which reads "Other" on real COD orders.
+    is_cod = Column(Boolean, default=False)
+
+    # Destination, coarse. City/state/postcode is all Amazon gives without the PII role,
+    # and it is all a picking sheet needs — no buyer name, no street address.
+    city = Column(String(60))
+    state = Column(String(60))
+    postal_code = Column(String(12))
+
+    #: When this app first saw the order, so "new since I last looked" is answerable
+    #: separately from "Amazon changed something".
+    first_seen_at = Column(DateTime, default=datetime.utcnow)
+    last_refreshed_at = Column(DateTime, default=datetime.utcnow)
+    #: NULL until the line items have been fetched. The refresh calls getOrderItems only
+    #: where this is NULL, so re-refreshing 100 known orders costs zero item calls.
+    items_fetched_at = Column(DateTime)
+
+    items = relationship(
+        "AmazonOrderItem", back_populates="order", lazy="selectin",
+        cascade="all, delete-orphan",
+    )
+
+
+class AmazonOrderItem(Base):
+    """One line of an Amazon order.
+
+    **The ASIN is the key, not the SellerSKU.** Measured: an order carries
+    `SellerSKU: "R-bss 1 kg"`, which is absent from `pricing_data.json`, while its
+    `ASIN: "B0G2MKVVB8"` is in the catalogue. Easy Ship SKUs are a different namespace
+    from FBA SKUs, so joining on SKU matches nothing and renders every row as an unknown
+    product. The SKU is still stored — it is what Amazon's label shows — but it is not
+    how the product is identified.
+    """
+    __tablename__ = "amazon_order_items"
+    __table_args__ = (
+        Index("idx_amazon_order_items_order_asin", "order_id", "asin"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    order_id = Column(Integer, ForeignKey("amazon_orders.id"), nullable=False)
+    asin = Column(String(10), nullable=False)
+    seller_sku = Column(String(80))
+    title = Column(Text)
+    quantity_ordered = Column(Integer, default=0)
+    quantity_shipped = Column(Integer, default=0)
+    item_price = Column(Numeric(12, 2))
+    item_tax = Column(Numeric(12, 2))
+    promotion_discount = Column(Numeric(12, 2))
+
+    order = relationship("AmazonOrder", back_populates="items")
