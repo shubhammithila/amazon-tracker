@@ -1,4 +1,4 @@
-# Orders tab: Amazon Easy Ship orders, read-only (phase A)
+# Orders tab: a daily picking sheet from Amazon Easy Ship orders (phase A)
 
 Design agreed 2026-08-24. Status: approved, not yet implemented.
 
@@ -7,6 +7,24 @@ Design agreed 2026-08-24. Status: approved, not yet implemented.
 Asked for: *"I want to build an orders tab now in this app which will fetch easy ship
 orders from amazon and display them in a tabular format. I want to make a orders tab from
 where I can bulk ship my orders and download shipping labels."*
+
+And, crucially, the reason: *"after the orders are packed and shipped on the portal my
+warehouse team is able to reconcile the data. the orders which have to be shipped today.
+item wise weight wise qty totalled. total number of orders of each item and total orders."*
+
+**That second statement is the feature.** This is not an order log — it is a **daily picking
+sheet** that the warehouse prints, plus a reconciliation view. The order table is the raw
+material; the aggregate is the product. Prototyped against live data and it works:
+
+```
+=== PICKING SHEET (sample of 5 real orders) ===
+PRODUCT              SIZE    BR   QTY  ORDERS
+Ragi Atta            1 kg    MF     2       2
+Chana Sattu          500g    MF     1       1
+Posta                100g    HF     1       1
+Roasted Chana        500g    MF     1       1
+TOTAL                               5       5 orders
+```
 
 **Bulk shipping and label download are not buildable today.** Probed against the live
 account: `getOrders` returns 200, but every Easy Ship endpoint returns
@@ -39,13 +57,14 @@ party's role: RDT delegation is application-to-application and initiated by the 
 holder.
 
 **Decisions taken (yours):** read-only tab now, role application in parallel · fetch line
-items as well as orders · 30-day rolling retention.
+items as well as orders · **90-day** rolling retention · no ship button at all · an
+`orders` permission area so the warehouse can see the picking sheet.
 
 ## Two measured constraints that force the architecture
 
 **1. `getOrders` is rate-limited to 0.045 req/sec — one call every 22 seconds.**
 Amazon returned `x-amzn-RateLimit-Limit: 0.04512`. 100 orders came back with a
-`NextToken`, so 30 days needs paging, and a full fetch takes minutes. Fetching on page load
+`NextToken`, so 90 days needs paging, and a full fetch takes minutes. Fetching on page load
 would hang the screen for 22s per page and 429 as soon as two people opened it.
 
 **2. Every `LatestShipDate` is `18:29 UTC`, which is `23:59 IST`.**
@@ -61,9 +80,9 @@ and `bsr_history` via the 06:00 scheduled scrape — followed rather than reinve
 
 ```
 APScheduler job (daily) + a manual "Refresh now" button
-    ↓  getOrders      — paged, 22s apart, FulfillmentChannels=MFN
+    ↓  getOrders      — paged, 22s apart, then filtered to ShipServiceLevel containing EZ
     ↓  getOrderItems  — only for orders with items_fetched_at IS NULL
-amazon_orders + amazon_order_items   (30-day rolling)
+amazon_orders + amazon_order_items   (90-day rolling)
     ↓
 GET /orders  →  local rows only, instant
 ```
@@ -104,20 +123,64 @@ reasoning as the `(plan_id, pack_date)` index on packing days.
 `*_utc`; one helper does the conversion for rendering. Naming the columns is half the guard:
 a future reader cannot mistake the stored value for local time.
 
-**The join to the existing catalogue is by ASIN, never by SellerSKU.** Measured: an order
-carries `SellerSKU: "R-bss 1 kg"`, which is absent from `pricing_data.json`, while its
-`ASIN: "B0G2MKVVB8"` *is* in `product_families.json`. Easy Ship SKUs are a different
-namespace from FBA SKUs. Joining on SKU would match nothing and render every row as an
-unknown product. `seller_sku` is still stored — it is what Amazon's label and the packer
-show — but it is not the key.
+**The join to the catalogue is by ASIN, never by SellerSKU.** Measured: an order carries
+`SellerSKU: "R-bss 1 kg"`, absent from `pricing_data.json`, while its `ASIN: "B0G2MKVVB8"`
+*is* in the catalogue. Easy Ship SKUs are a different namespace from FBA SKUs. Joining on
+SKU would match nothing and render every row as an unknown product. `seller_sku` is still
+stored — it is what Amazon's label shows — but it is not the key.
+
+**Product name and weight come from the LIVE MRP sheet** (`app/shipment/catalogue.py`),
+not from `product_families.json`. Measured: the live sheet holds **271** ASINs and names the
+product `"Chana Sattu"`; the static file holds **205** and calls the same thing `"sattu"`.
+Using the file would give the warehouse worse names on its picking sheet and miss 66
+products entirely. `catalogue.load_catalogue()` already degrades sheet → cached copy →
+static file and reports which, so a Google outage does not empty the sheet.
+
+**An ASIN the catalogue does not know is shown, not dropped** — with its raw title and
+SellerSKU, flagged as unrecognised. A missing row on a picking sheet is stock that never
+gets packed; a flagged row is a question someone answers.
 
 **These rows are a cache of Amazon's data, not a record of our own.** If a value is wrong
 the fix is a refresh, not an edit, which is why the feature has no editing at all.
 `first_seen_at` distinguishes "new since I last looked" from "Amazon changed it".
 
-**Retention:** 30 days rolling, purged by the job that already prunes `price_history`,
-reusing the existing `DATA_RETENTION_DAYS` machinery rather than adding a second retention
-concept.
+**Retention:** 90 days rolling, matching the app's existing `DATA_RETENTION_DAYS=90` and
+purged by the job that already prunes `price_history`, rather than adding a second
+retention concept.
+
+**Easy Ship orders only, filtered on `ShipServiceLevel` containing `EZ`** — not on
+`FulfillmentChannel=MFN`. Measured: three `S02-…` orders came back as MFN with
+`ShipServiceLevel: "Standard"` and a ship-by of **1 January 1995**, a sentinel from a
+different channel. Bucketing those by date would put a 31-year-overdue row at the top of
+the packer's sheet every morning. A 1995 date is treated as "no deadline" and never
+rendered as one.
+
+## The two groups the warehouse actually works from
+
+Asked for: *"unshipped due today and waiting for pickup due today, and the rest of them
+separately … the orders which have been shipped on the portal and generated labels which
+are waiting for pickup today, and the orders which are unshipped on the portal but need to
+be shipped since it is to be shipped today."*
+
+Those are **two different physical actions**, and `EasyShipShipmentStatus` distinguishes
+them:
+
+| Group | The physical job | Detected by |
+|---|---|---|
+| **To pack & ship** | pick, pack, generate the label in Seller Central | `OrderStatus` Unshipped/PartiallyShipped **and** `EasyShipShipmentStatus = PendingSchedule` |
+| **Waiting for pickup** | already boxed and labelled — hand to the courier | an Easy Ship status that is neither pending nor finished |
+| Done / not actionable | — | `PickedUp`, `Delivered`, `ReturnedToSeller`, `LabelCanceled`, `Canceled` |
+
+Measured 2026-08-24: **97 unshipped Easy Ship orders, every one `PendingSchedule`** —
+nothing labelled and awaiting pickup, consistent with a morning before packing starts.
+
+> **The "waiting for pickup" bucket is defined by exclusion, deliberately.** Across 90 days
+> this account only ever showed `PendingSchedule`, `PickedUp`, `Delivered`,
+> `ReturnedToSeller` and `LabelCanceled` — never `LabelGenerated` or `ReadyForPickup`,
+> presumably because labels are generated and collected the same day. Hardcoding two status
+> strings that may never appear would silently produce an always-empty section. So the
+> bucket is "actionable but not pending", and the raw status is rendered on the row so an
+> unexpected value is visible rather than mis-bucketed.
 
 ## The screen
 
@@ -125,59 +188,93 @@ Nav gains an **Orders** tab via `templates/nav.html`, which is `include`d —
 `tests/test_nav_consistency.py` exists because the nav was once copy-pasted and
 `projections.html` silently lost the Shipment link.
 
-One table, **Unshipped first** by default. Same reasoning as unpriced-active-first on the
-Products tab: the screen exists to surface what needs action, and sorting by date buries
-the two orders that must go out today among 98 delivered ones.
+**Default view: the picking sheet**, three sections on one page.
 
 ```
-ORDER          DATE (IST)     SHIP BY (IST)   STATUS      EASY SHIP   ITEMS                TOTAL  DESTINATION
-403-758…5960   24 Aug 11:59   26 Aug 23:59    Unshipped   —           Chana Sattu 1kg ×2   ₹738   NAVSARI, GUJARAT
-405-966…6768   23 Aug 09:14   25 Aug 23:59    Shipped     Delivered   Black Sesame 1kg     ₹247   DUMKA, JHARKHAND
+TO PACK & SHIP TODAY — due 24 Aug or earlier            67 orders · 89 units
+  PRODUCT              SIZE   BR   QTY  ORDERS
+  Chana Sattu          500g   MF    24      22
+  Ragi Atta            1 kg   MF    12      12
+  …
+  TOTAL                             89      67
+
+WAITING FOR PICKUP — labelled, not yet collected          0 orders
+  (empty until labels exist; the section says so rather than vanishing)
+
+LATER — due 25 Aug onwards                               30 orders
+  (collapsed)
 ```
 
-Status chips (`Unshipped / Shipped / Cancelled / All`), a search box over order id, SKU,
-title and city, and an Excel export of the current view through the existing `openpyxl`
-helpers.
+Aggregated by **product + weight + brand**, quantity-descending so the big picks lead.
+`ORDERS` is how many orders contain that line, which is what makes "24 units across 22
+orders" readable.
+
+**Overdue orders sit inside the first section, flagged red** — not in a fourth section. A
+missed deadline should make today's sheet louder, not hide in its own box.
+
+**Buckets are computed at render time from today in IST**, never stored. A sheet opened
+tomorrow is correct without a refresh having run.
+
+**Second view: the order list**, for reconciliation — order id, dates, status, Easy Ship
+status, items, total, destination. Status chips, search over order id / SKU / title / city,
+Excel export via the existing `documents.build_simple_xlsx`.
+
+Both views come from the same stored rows, and the aggregate is computed by **one pure
+function** so the sheet and the list cannot disagree — the same single-source property
+`logic.sort_key` has for row order.
 
 A **refresh banner**: "Refreshed 14 minutes ago · 3 new orders", with a *Refresh now*
-button that disables while running and polls progress.
+button that disables while running and polls progress. Prominent, because reconciliation
+against a stale sheet is the failure mode here: an order shipped in Seller Central leaves
+the picking sheet only on the next refresh.
 
-**Access: admin only.** Orders carry order totals and buyer destinations. Giving the
-warehouse this screen means adding an `orders` area to `app/permissions.py`, which is
-per-area and deny-by-default — worth doing deliberately in phase B when there is a ship
-button worth granting. Admin-only today is the safe default and widening later needs no
-data migration.
+**Access: a new `orders` area in `app/permissions.py`.** The warehouse needs the picking
+sheet, so this is granted per person like every other area — deny-by-default, read from the
+database on every request, so revoking is immediate. Admin passes as always.
 
-**Deliberately absent:** no editing, no ship button, no label download. Those are phase B
-and would 403 today, and a button that always errors reads as a broken app rather than a
-missing permission. The table reserves a row-actions column so they slot in without a
-rewrite.
+**Deliberately absent:** no ship button, no label download (phase B, and 403 today — a
+control that always errors reads as a broken app). No local "packed" tick: Amazon's status
+is the single source of truth, and a second one would be the class of bug the shipment
+feature's write-separation design exists to avoid.
 
 ## Verification
 
 **Automated**
 - The SP-API client is tested against fixtures **recorded from the real payloads probed on
-  2026-08-24**, not invented shapes. Invented fixtures are exactly what would have missed
-  the `SellerSKU` namespace surprise.
-- IST conversion unit-tested on the real case: `2026-07-12T18:29Z` must render as
-  `12 Jul 23:59`, not `12 Jul 18:29`.
-- Refresh refuses to run twice concurrently.
-- A 429 partway through paging keeps the pages already stored, and the next refresh
-  resumes rather than restarting.
-- `getOrderItems` is called only for orders with `items_fetched_at IS NULL`, so a second
-  refresh of 100 known orders makes zero item calls.
-- The ASIN join resolves against `product_families.json`; a SKU-based join is asserted
-  *absent*, so reintroducing it fails.
-- Nav consistency, theme (no hardcoded colour, no second `:root`) and render-target guards,
-  as for every screen.
+  2026-08-24**, not invented shapes. Invented fixtures are what would have missed the
+  `SellerSKU` namespace difference and the 1995 sentinel date.
+- **The aggregate is the feature, so it gets the most tests.** One pure function takes order
+  rows plus the catalogue and returns the picking sheet. Asserted: quantities sum per
+  product+weight+brand; `ORDERS` counts orders not lines (two units of one SKU in one order
+  is qty 2, orders 1); the totals row equals the sum of the rows; and an order containing two
+  different sizes of one product produces two lines, not one — collapsing sizes would send
+  the packer to the wrong shelf.
+- IST bucketing on the real case: `2026-07-12T18:29Z` renders as `12 Jul 23:59`, and an order
+  due `23:59 IST` today is in the "today" bucket, not tomorrow's.
+- A `1995-01-01` ship-by is bucketed as "no deadline" and never rendered as a date.
+- Only `EZ` service levels appear; the three `S02-…` `"Standard"` orders are excluded.
+- An ASIN absent from the catalogue still appears on the sheet, flagged — asserted directly,
+  because the failure mode is silent omission of stock that must be packed.
+- `getOrderItems` is called only where `items_fetched_at IS NULL`, so refreshing 100 known
+  orders makes zero item calls.
+- Refresh refuses to run concurrently; a 429 partway through paging keeps the pages already
+  stored and the next run resumes.
+- A SKU-based catalogue join is asserted **absent**, so reintroducing it fails.
+- The `orders` permission area denies by default: a user without it gets 403/redirect, and
+  granting it takes effect on the next request (read from the DB, never the cookie).
+- Nav consistency, theme (no hardcoded colour, no second `:root`) and render-target guards.
 
-**Manual**, on `http://localhost:8020`: run a refresh and watch progress · confirm ship-by
-reads 23:59 not 18:29 · confirm Unshipped sorts first · search by city and by SKU · export
-to Excel · confirm the tab 403s or redirects for an ops-only login.
+**Manual**, on `http://localhost:8020`: run a refresh and watch progress · confirm the
+picking sheet totals match a hand count of one product · confirm ship-by reads 23:59 not
+18:29 · confirm the three sections split as expected · print the sheet and check it is
+legible on paper · export to Excel · sign in as the warehouse account and confirm the tab is
+visible with the `orders` area and gone without it.
 
 ## Out of scope
 
 Phase B (pickup scheduling, label download) pending the restricted role. No self-ship /
 own-courier route. No buyer PII — `BuyerInfo` is empty without the PII role, and street
-addresses are deliberately not sought. No editing of order rows. No `orders` permission
-area until there is an action to grant.
+addresses are deliberately not sought; the picking sheet needs city and state only. No
+editing of order rows, and no local "packed" tick. No per-order weight totals: pack weight
+comes from the catalogue and is already implied by the size column, so a kilogram total
+would be a second number saying the same thing.
