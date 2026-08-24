@@ -47,6 +47,9 @@
   {% if can is none or 'shipment' in can %}
   <a href="/shipment-page" class="{{ 'active' if active == 'shipment' else '' }}">Shipment</a>
   {% endif %}
+  {% if can is none or 'orders' in can %}
+  <a href="/orders-page" class="{{ 'active' if active == 'orders' else '' }}">Orders</a>
+  {% endif %}
   {# Products (pricing) and Users are administrator-only and are not areas, so both are
      gated on the flag rather than on `can`. Last, because they are setup tasks rather
      than daily ones.

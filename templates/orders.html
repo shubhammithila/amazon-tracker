@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Orders — Amazon Tracker</title>
+{#
+  Amazon Easy Ship orders: today's picking sheet, and the order list for reconciliation.
+
+  Asked for: "after the orders are packed and shipped on the portal my warehouse team is
+  able to reconcile the data. the orders which have to be shipped today. item wise weight
+  wise qty totalled. total number of orders of each item and total orders."
+
+  So the PICKING SHEET is the default view and the order list is second. Five things are
+  deliberate:
+
+  1. **Two sections, two physical jobs.** "To pack & ship" needs picking and labelling;
+     "Waiting for pickup" is already boxed and just needs handing over. One combined
+     "not done" list would merge two different mornings' work.
+
+  2. **The empty section is still shown.** Nothing is labelled on a normal morning, so
+     that section reads zero — and a section that vanished would look like a bug rather
+     than an empty queue.
+
+  3. **Sizes never collapse.** 500g and 1kg of one product are separate lines, or the
+     packer visits the wrong shelf. The KG column is what the courier needs, and it is
+     NET — packaging is not in the catalogue.
+
+  4. **Every time is IST.** Amazon sends 18:29Z, which is 23:59 IST — end of day in
+     India. Rendering UTC would show every deadline 5.5 hours early on the one screen
+     whose job is "what must go out today". The server converts; this page never does.
+
+  5. **The refresh banner is prominent.** An order shipped in Seller Central leaves the
+     sheet only on the next refresh, so a stale sheet is this feature's main failure
+     mode. Refreshing pages Amazon at one call every 22 seconds, so it is a background
+     job the page polls — not something that can happen on load.
+#}
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px}
+header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
+header h1{font-size:16px;font-weight:600}
+.nav-links{display:flex;gap:16px;margin-left:32px}
+.nav-links a{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
+.nav-links a:hover,.nav-links a.active{color:var(--text);border-color:var(--accent)}
+.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:13px;text-decoration:none}
+main{max-width:1180px;margin:0 auto;padding:16px 20px}
+h2{font-size:19px;font-weight:600;margin-bottom:2px}
+.subtitle{color:var(--text-muted);font-size:12.5px;margin-bottom:12px;line-height:1.5}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;box-shadow:var(--shadow)}
+
+.banner{border-radius:8px;padding:10px 13px;font-size:12.5px;margin-bottom:10px;line-height:1.55}
+.banner.warn{background:var(--yellow-soft);border:1px solid var(--yellow);color:var(--yellow)}
+.banner.good{background:var(--green-soft);border:1px solid var(--green);color:var(--green)}
+.banner.error{background:var(--red-soft);border:1px solid var(--red);color:var(--red)}
+.banner.info{background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue)}
+
+.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+.btn:disabled{opacity:.55;cursor:not-allowed}
+.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border-strong);border-radius:8px;padding:7px 13px;font-size:12.5px;cursor:pointer}
+.chip{padding:5px 12px;border-radius:20px;border:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:12px;cursor:pointer}
+.chip.active{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+.search-input{flex:1 1 240px;min-width:180px;background:var(--bg);border:1px solid var(--border-strong);
+  border-radius:8px;color:var(--text);padding:8px 12px;font-size:13.5px}
+.search-input:focus{outline:none;border-color:var(--accent)}
+
+/* The section heading carries its own totals, so a printed page is self-describing. */
+.section{margin-bottom:14px}
+.section h3{font-size:14px;font-weight:700;margin-bottom:2px}
+.section .totals{font-size:12.5px;color:var(--text-muted);margin-bottom:8px}
+.section.urgent h3{color:var(--red)}
+.empty-note{font-size:12.5px;color:var(--text-muted);padding:8px 0}
+
+table{width:100%;border-collapse:separate;border-spacing:0}
+thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;font-size:10.5px;
+  font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:left;white-space:nowrap;
+  border-bottom:2px solid var(--border-strong)}
+tbody td{padding:6px 10px;font-size:13px;border-bottom:1px solid var(--border);white-space:nowrap}
+tbody tr:hover{background:var(--accent-soft)}
+tfoot td{padding:7px 10px;font-size:13px;font-weight:700;border-top:2px solid var(--border-strong)}
+.num{text-align:right}
+.p-name{font-weight:600}
+.p-size{font-weight:600}
+.tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;background:var(--surface2);color:var(--text-muted)}
+.tag.unknown{background:var(--yellow-soft);color:var(--yellow)}
+.tag.overdue{background:var(--red-soft);color:var(--red)}
+.tag.cod{background:var(--blue-soft);color:var(--blue)}
+.o-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+.o-items{white-space:normal;font-size:12px;color:var(--text-muted)}
+</style>
+<link rel="stylesheet" href="/static/theme.css"/>
+</head>
+<body>
+<header>
+<span>📦</span><h1>Amazon Tracker v2</h1>
+{% include "nav.html" %}
+<div class="header-right"><a href="/logout">Logout</a></div>
+</header>
+<main>
+<h2>Orders &amp; picking sheet</h2>
+<p class="subtitle">Amazon Easy Ship orders, refreshed from Amazon in the background.
+  Every time is IST. Pack against the sheet, then ship and print labels in Seller
+  Central — an order leaves this sheet on the next refresh after you ship it.</p>
+
+<div id="messages"></div>
+
+<div class="card">
+  <div class="controls" style="margin-bottom:0">
+    <button class="btn" id="refresh-btn" onclick="startRefresh()">↻ Refresh now</button>
+    <span id="refresh-note" style="font-size:12px;color:var(--text-muted)">—</span>
+  </div>
+</div>
+
+<div class="controls">
+  <button class="chip active" id="view-sheet" onclick="setView('sheet')">Picking sheet</button>
+  <button class="chip" id="view-list" onclick="setView('list')">Order list</button>
+</div>
+
+<div id="sheet-view"></div>
+
+<div id="list-view" style="display:none">
+  <div class="card">
+    <div class="controls" style="margin-bottom:0">
+      <input class="search-input" id="search" type="search"
+             placeholder="Search order id, product, SKU or city…"/>
+      <button class="chip active" data-status="open" onclick="setStatus('open')">Open</button>
+      <button class="chip" data-status="all" onclick="setStatus('all')">All</button>
+      <span class="tag" id="list-count">—</span>
+    </div>
+  </div>
+  <div id="list-area"></div>
+</div>
+</main>
+
+<script>
+/* ── State ──────────────────────────────────────────────────────────────────
+   `data` is the server's payload held as-is. The server already computed the sheet, the
+   IST times and the buckets, so this page renders and filters but never aggregates —
+   a second aggregation here is how a printed sheet and a screen start disagreeing
+   about a quantity. */
+let data = null;
+let view = "sheet";
+let statusFilter = "open";
+let polling = null;
+
+const $ = id => document.getElementById(id);
+
+function esc(s){
+  return String(s == null ? "" : s)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+}
+
+function message(text, cls){
+  $("messages").innerHTML = text
+    ? `<div class="banner ${cls || "info"}">${esc(text)}</div>` : "";
+}
+
+function ago(iso){
+  if(!iso) return "never";
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if(mins < 1) return "just now";
+  if(mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
+  const hours = Math.round(mins / 60);
+  if(hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  return `${Math.round(hours / 24)} day(s) ago`;
+}
+
+function timeIST(iso){
+  if(!iso) return "";
+  // The server already converted to IST and sent an offset-bearing string. Formatting
+  // with an explicit timeZone keeps it IST even on a laptop set to another zone —
+  // a warehouse deadline must not shift because someone is travelling.
+  return new Date(iso).toLocaleString("en-IN", {
+    day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
+    hour12: false, timeZone: "Asia/Kolkata",
+  });
+}
+
+async function load(){
+  try{
+    const r = await fetch("/orders");
+    if(!r.ok){ message("Could not load orders.", "error"); return; }
+    data = await r.json();
+    /* The catalogue can fall back to a cached copy or the static file when the MRP sheet
+       is unreachable. Said out loud, because a product whose name is missing looks like a
+       data problem rather than a Google outage. */
+    if(data.catalogue_warning){
+      message(`${data.catalogue_warning} (product names from: ${data.catalogue_source})`, "warn");
+    }
+    render();
+    renderRefresh(data.refresh, data.last_refreshed_at);
+  }catch(err){
+    message("Could not reach the server.", "error");
+  }
+}
+
+function setView(next){
+  view = next;
+  $("view-sheet").classList.toggle("active", next === "sheet");
+  $("view-list").classList.toggle("active", next === "list");
+  $("sheet-view").style.display = next === "sheet" ? "" : "none";
+  $("list-view").style.display = next === "list" ? "" : "none";
+  render();
+}
+
+function setStatus(next){
+  statusFilter = next;
+  document.querySelectorAll("[data-status]").forEach(el =>
+    el.classList.toggle("active", el.dataset.status === next));
+  render();
+}
+
+/* ── The picking sheet ──────────────────────────────────────────────────────
+   Rendered from data.sheet exactly as the server built it. EVERY section is drawn,
+   including empty ones: on a normal morning nothing is labelled yet, so "Waiting for
+   pickup" reads zero — and a section that disappeared would look like a bug rather than
+   an empty queue. */
+function renderSheet(){
+  if(!data) return;
+  const order = ["to_pack", "awaiting_pickup", "later"];
+  $("sheet-view").innerHTML = order.map(key => {
+    const section = data.sheet.sections[key];
+    if(!section) return "";
+    const t = section.totals;
+    const label = data.section_labels[key] || key;
+    const urgent = key === "to_pack" && t.overdue_orders > 0;
+
+    const bits = [`${Number(t.orders)} order(s)`,
+                  `${Number(t.quantity)} unit(s)`,
+                  `${Number(t.kg)} kg net`];
+    if(t.overdue_orders) bits.push(`${Number(t.overdue_orders)} OVERDUE`);
+    if(t.lines_without_weight) bits.push(`${Number(t.lines_without_weight)} line(s) with no pack size`);
+
+    const rows = section.lines.map(l => `<tr>
+      <td class="p-name">${esc(l.product)}${l.known ? "" : ' <span class="tag unknown">not in catalogue</span>'}</td>
+      <td class="p-size">${esc(l.weight_label)}</td>
+      <td>${esc(l.brand)}</td>
+      <td class="num">${Number(l.quantity)}</td>
+      <td class="num">${Number(l.orders)}</td>
+      <td class="num">${l.kg === null ? "" : Number(l.kg).toFixed(2)}</td>
+    </tr>`).join("");
+
+    const body = section.lines.length
+      ? `<table>
+          <thead><tr>
+            <th>Product</th><th>Size</th><th>Brand</th>
+            <th class="num">Units</th><th class="num">Orders</th><th class="num">Net kg</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+          <tfoot><tr>
+            <td>TOTAL</td><td></td><td></td>
+            <td class="num">${Number(t.quantity)}</td>
+            <td class="num">${Number(t.orders)}</td>
+            <td class="num">${Number(t.kg).toFixed(2)}</td>
+          </tr></tfoot>
+         </table>`
+      : `<div class="empty-note">Nothing here right now.</div>`;
+
+    return `<div class="card section ${urgent ? "urgent" : ""}">
+      <h3>${esc(label)}</h3>
+      <div class="totals">${esc(bits.join(" · "))}</div>
+      ${body}
+      ${section.lines.length ? `<div class="controls" style="margin:8px 0 0">
+        <button class="btn-outline"
+                onclick="dl('/orders/download/picking-sheet.xlsx?bucket=${esc(key)}')">⬇ Excel</button>
+      </div>` : ""}
+    </div>`;
+  }).join("");
+
+  if(data.sheet.unknown_asins && data.sheet.unknown_asins.length){
+    $("sheet-view").innerHTML += `<div class="banner warn">
+      ${Number(data.sheet.unknown_asins.length)} ASIN(s) are not in the product sheet, so they have
+      no pack size and are excluded from the kilogram totals:
+      ${esc(data.sheet.unknown_asins.join(", "))}. Add them to the MRP sheet.</div>`;
+  }
+}
+
+/* ── The order list, for reconciliation ─────────────────────────────────────── */
+function visibleOrders(){
+  const q = $("search").value.trim().toLowerCase();
+  return (data.orders || []).filter(o => {
+    if(statusFilter === "open" && !["to_pack", "awaiting_pickup", "later"].includes(o.bucket)) return false;
+    if(!q) return true;
+    // Built for matching only and never inserted into the DOM, so it needs no escaping.
+    // The same fields ARE escaped where they are rendered, in renderList below.
+    const haystack = [o.amazon_order_id, o.city, o.state, o.status, o.easyship_status]
+      .concat((o.items || []).map(i => `${i.title} ${i.seller_sku} ${i.asin}`));
+    return haystack.join(" ").toLowerCase().includes(q);
+  });
+}
+
+function renderList(){
+  if(!data) return;
+  const rows = visibleOrders();
+  $("list-count").textContent = `${Number(rows.length)} of ${Number(data.total_orders)}`;
+  if(!rows.length){
+    $("list-area").innerHTML = '<div class="card"><div class="empty-note">No order matches.</div></div>';
+    return;
+  }
+  $("list-area").innerHTML = `<div class="card"><table>
+    <thead><tr>
+      <th>Order</th><th>Placed (IST)</th><th>Ship by (IST)</th>
+      <th>Status</th><th>Easy Ship</th><th>Items</th>
+      <th class="num">Total</th><th>Destination</th>
+    </tr></thead>
+    <tbody>${rows.map(o => `<tr>
+      <td class="o-id">${esc(o.amazon_order_id)}
+        ${o.is_cod ? '<span class="tag cod">COD</span>' : ""}</td>
+      <td>${esc(timeIST(o.purchase_date_ist))}</td>
+      <td>${o.ship_by_ist ? esc(timeIST(o.ship_by_ist)) : "—"}
+        ${o.overdue ? '<span class="tag overdue">overdue</span>' : ""}</td>
+      <td>${esc(o.status)}</td>
+      <td>${esc(o.easyship_status || "—")}</td>
+      <td class="o-items">${esc((o.items || []).map(i =>
+          `${i.title || i.asin} ×${Number(i.quantity_ordered)}`).join("; ")) || "—"}</td>
+      <td class="num">${o.order_total === null ? "" : esc(o.currency || "") + " " + Number(o.order_total).toFixed(2)}</td>
+      <td>${esc([o.city, o.state].filter(Boolean).join(", "))}</td>
+    </tr>`).join("")}</tbody>
+  </table></div>`;
+}
+
+function render(){
+  if(view === "sheet") renderSheet(); else renderList();
+}
+
+/* ── Refreshing ─────────────────────────────────────────────────────────────
+   A full refresh pages Amazon at ONE CALL EVERY 22 SECONDS, so it is a background job
+   and this page polls it. The button disables while it runs — not decoration: a second
+   refresh would burn the same rate budget and 429 the first. */
+function renderRefresh(state, lastAt){
+  const running = !!(state && state.running);
+  $("refresh-btn").disabled = running;
+  $("refresh-btn").textContent = running ? "Refreshing…" : "↻ Refresh now";
+
+  const bits = [];
+  if(running){
+    bits.push(`fetching (${esc(state.phase)})`);
+    if(state.orders_seen) bits.push(`${Number(state.orders_seen)} order(s) seen`);
+  }else{
+    bits.push(`refreshed ${ago(lastAt)}`);
+    if(state && state.created) bits.push(`${Number(state.created)} new`);
+    if(state && state.updated) bits.push(`${Number(state.updated)} updated`);
+  }
+  $("refresh-note").textContent = bits.join(" · ");
+
+  if(state && state.error) message(`Refresh failed: ${state.error}`, "error");
+  else if(state && (state.warnings || []).length) message(state.warnings.join(" "), "warn");
+}
+
+async function startRefresh(){
+  try{
+    const r = await fetch("/orders/refresh", {method: "POST"});
+    const body = await r.json();
+    if(!r.ok){ message(body.error || "Could not start the refresh.", "warn"); return; }
+    message("Refreshing from Amazon. This takes a few minutes — Amazon allows one "
+            + "request every 22 seconds, so the page will update as it goes.", "info");
+    renderRefresh(body.refresh, data && data.last_refreshed_at);
+    poll();
+  }catch(err){ message("Could not reach the server.", "error"); }
+}
+
+function poll(){
+  if(polling) clearInterval(polling);
+  polling = setInterval(async () => {
+    try{
+      const state = await (await fetch("/orders/refresh-status")).json();
+      renderRefresh(state, data && data.last_refreshed_at);
+      if(!state.running){
+        clearInterval(polling); polling = null;
+        await load();          // reload the rows the refresh just wrote
+      }
+    }catch(err){ clearInterval(polling); polling = null; }
+  }, 4000);
+}
+
+function dl(url){ window.location.href = url; }
+
+$("search").addEventListener("input", render);
+
+load();
+</script>
+</body>
+</html>

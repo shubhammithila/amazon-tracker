@@ -33,6 +33,11 @@ PORTFOLIO = "portfolio"
 PROJECTIONS = "projections"
 SHIPMENT = "shipment"
 PACKING = "packing"
+#: Amazon Easy Ship orders and the daily picking sheet. An AREA rather than admin-only,
+#: because the warehouse is who needs it — the sheet is what they pick against. It carries
+#: order totals and destination cities, but no buyer names or street addresses: Amazon
+#: withholds those without the PII role and this feature does not ask for them.
+ORDERS = "orders"
 
 #: Display order is deliberate: it matches the nav, so the tick list on the Users
 #: screen reads down in the same order as the tabs it controls.
@@ -43,6 +48,7 @@ AREAS: list[tuple[str, str, str]] = [
     (PROJECTIONS, "Projections", "Sales forecasts and reorder alerts."),
     (SHIPMENT, "Shipment", "Plan what ships: quantities, verification, Amazon upload."),
     (PACKING, "Daily packing", "Record units and cartons packed. The warehouse screen."),
+    (ORDERS, "Orders", "Amazon Easy Ship orders and today's picking sheet."),
 ]
 
 AREA_KEYS = frozenset(key for key, _label, _help in AREAS)

@@ -12,7 +12,7 @@ from app.config import get_settings
 from app.database import engine, Base
 from app import permissions
 from app.routers import (
-    admin_users, auth, churn, invoice, keywords, product_prices, products,
+    admin_users, auth, churn, invoice, keywords, orders, product_prices, products,
     projections, scrape, shipment, ws,
 )
 from app.routers.auth import (
@@ -116,6 +116,7 @@ app.include_router(projections.router)
 app.include_router(shipment.router)
 app.include_router(admin_users.router)
 app.include_router(product_prices.router)
+app.include_router(orders.router)
 
 
 @app.exception_handler(RedirectException)
@@ -193,6 +194,19 @@ async def shipment_page(
 ):
     return templates.TemplateResponse(
         request, "shipment.html", {"active": "shipment", "grant": grant}
+    )
+
+
+@app.get("/orders-page", response_class=HTMLResponse)
+async def orders_page(
+    request: Request, grant=Depends(require_area(permissions.ORDERS))
+):
+    """Amazon Easy Ship orders and today's picking sheet.
+
+    An area grant rather than admin-only: the warehouse is who picks against this sheet.
+    """
+    return templates.TemplateResponse(
+        request, "orders.html", {"active": "orders", "grant": grant}
     )
 
 
