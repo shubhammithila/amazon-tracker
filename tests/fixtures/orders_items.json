@@ -1,0 +1,40 @@
+{
+  "payload": {
+    "OrderItems": [
+      {
+        "ProductInfo": {
+          "NumberOfItems": "1"
+        },
+        "BuyerInfo": {},
+        "ItemTax": {
+          "CurrencyCode": "INR",
+          "Amount": "10.43"
+        },
+        "QuantityShipped": 0,
+        "ItemPrice": {
+          "CurrencyCode": "INR",
+          "Amount": "208.57"
+        },
+        "ASIN": "B0CWGXYLT6",
+        "SellerSKU": "0.5kg cs 1",
+        "Title": "MITHILA FOODS 500 g Authentic Bihari Chana Sattu | High Protein, Fiber, Superfood | 100% Fresh Natural Roasted Gram Channa Flour | Hydrating, Instant Energy Booster | Traditional Flavor From Bihar",
+        "SerialNumberRequired": false,
+        "IsGift": "false",
+        "ConditionSubtypeId": "New",
+        "IsTransparency": false,
+        "QuantityOrdered": 1,
+        "PromotionDiscountTax": {
+          "CurrencyCode": "INR",
+          "Amount": "0.00"
+        },
+        "ConditionId": "New",
+        "PromotionDiscount": {
+          "CurrencyCode": "INR",
+          "Amount": "0.00"
+        },
+        "OrderItemId": "66601180632842"
+      }
+    ],
+    "AmazonOrderId": "407-7509309-5915523"
+  }
+}

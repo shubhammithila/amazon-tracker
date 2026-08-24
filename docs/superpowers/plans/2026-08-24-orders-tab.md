@@ -1037,7 +1037,490 @@ Mutation-verified on the size key, the order count and the multiplication."
 
 Tasks 4–7 cover the SP-API client, the repository and refresh job, the router, the screen, and the scheduler/deploy gate. They are specified in the same shape as Tasks 1–3 and are written into this file as they are reached, so the plan stays reviewable in one sitting rather than arriving as one unreadable document.
 
-**Task 4 — `app/orders/spapi_orders.py`:** the only caller of the Orders API. Reuses `app/shipment/spapi.py`'s `_access_token` and `_payload_or_raise` rather than re-implementing auth. Pages `getOrders` with a **22-second** gap (`0.045 req/sec`, measured), filters to `is_easy_ship`, and fetches `getOrderItems` only for orders the caller names. Tested against fixtures recorded from the live account on 2026-08-24 — `tests/fixtures/orders_page1.json`, `orders_items.json` — because invented fixtures would have missed both the `SellerSKU` namespace and the 1995 sentinel.
+### Task 4: `app/orders/spapi_orders.py` — the only caller of the Orders API
+
+**Files:**
+- Create: `app/orders/spapi_orders.py`
+- Test: `tests/test_orders_spapi.py`
+- Fixtures (already captured from the live account, 2026-08-25): `tests/fixtures/orders_unshipped.json`, `tests/fixtures/orders_items.json`
+
+**Interfaces:**
+- Consumes: `app.shipment.spapi._get` (existing — attaches the token, types errors, and reuses one `httpx.AsyncClient` when passed; measured 3 calls in 2.5 s reused vs ~1.2 s each fresh), `app.shipment.spapi.SpApiError`, `SpApiNotConfigured`; `app.orders.logic.is_easy_ship`.
+- Produces:
+  - `ORDERS_MIN_INTERVAL = 22.0`
+  - `parse_order(payload: dict) -> dict` — one API order into the column shape
+  - `parse_items(payload: dict) -> list[dict]`
+  - `async fetch_easy_ship_orders(days: int = 90, *, max_pages: int = 10, sleep=asyncio.sleep) -> tuple[list[dict], list[str]]` returning `(orders, warnings)`
+  - `async fetch_items(order_ids: Sequence[str], *, sleep=asyncio.sleep) -> dict[str, list[dict]]`
+
+The captured fixtures contain, verified: both `Std IN EZ National COD` / `Std IN EZ Metro COD` **and** two `Standard` orders; the `1995-01-01T00:00:00Z` sentinel; a real `SellerSKU` (`"0.5kg cs 1"`) against `ASIN B0CWGXYLT6`; `BuyerInfo: {}` and an address of city/state/postcode only.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `tests/test_orders_spapi.py`:
+
+```python
+"""Parsing and paging the Orders API, against payloads recorded from the live account.
+
+The fixtures in tests/fixtures/orders_*.json were captured on 2026-08-25, not written by
+hand. That matters: invented payloads would have missed the two facts that shaped this
+feature — that `SellerSKU` is a different namespace from the FBA SKUs in
+`pricing_data.json`, and that a non-Easy-Ship order carries a `1995-01-01` ship-by
+sentinel which reads as 31 years overdue if treated as a date.
+
+No test here touches the network. `fetch_easy_ship_orders` takes an injectable sleep so
+the 22-second rate limit is asserted rather than waited for.
+"""
+import json
+from pathlib import Path
+
+import pytest
+
+from app.orders import spapi_orders
+
+pytestmark = pytest.mark.regression
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def _fixture(name: str) -> dict:
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+def test_the_fixtures_carry_the_cases_that_shaped_the_design():
+    """A guard on the other tests: fixtures that lost these are fixtures that prove nothing.
+
+    If someone re-captures them from a quiet day with no `Standard` orders, the EZ filter
+    test would pass against input that could not exercise it.
+    """
+    orders = _fixture("orders_unshipped.json")["payload"]["Orders"]
+    levels = {o.get("ShipServiceLevel") for o in orders}
+    assert any("EZ" in (level or "") for level in levels), "no Easy Ship order in the fixture"
+    assert "Standard" in levels, "no non-Easy-Ship order, so the EZ filter is untested"
+    assert any(o.get("LatestShipDate", "").startswith("1995") for o in orders), (
+        "the 1995 sentinel is absent, so the sentinel handling is untested"
+    )
+
+
+def test_an_order_payload_maps_onto_the_column_shape():
+    """Field names come from Amazon; column names are ours. This is the only translation.
+
+    Asserted against a real payload so a renamed or newly-absent Amazon field fails here,
+    in one place, rather than as a NULL column discovered on the picking sheet.
+    """
+    orders = _fixture("orders_unshipped.json")["payload"]["Orders"]
+    ez = next(o for o in orders if "EZ" in (o.get("ShipServiceLevel") or ""))
+    row = spapi_orders.parse_order(ez)
+
+    assert row["amazon_order_id"] == ez["AmazonOrderId"]
+    assert row["status"] == ez["OrderStatus"]
+    assert row["ship_service_level"] == ez["ShipServiceLevel"]
+    # Timestamps are parsed to naive UTC datetimes, matching the *_utc columns.
+    assert row["latest_ship_date_utc"].tzinfo is None
+    assert row["latest_ship_date_utc"].hour == 18, "the UTC hour must survive parsing"
+    assert row["order_total"] == pytest.approx(float(ez["OrderTotal"]["Amount"]))
+    assert row["city"] == ez["ShippingAddress"]["City"]
+    # COD is read off the service level, because PaymentMethod reads "Other" on real
+    # COD orders — measured.
+    assert row["is_cod"] is ("COD" in ez["ShipServiceLevel"].upper())
+
+
+def test_a_missing_order_total_does_not_raise():
+    """A cancelled order can arrive without OrderTotal or ShippingAddress.
+
+    The refresh must not die on one odd order: that would lose the whole page, and with a
+    22-second rate limit a lost page is minutes of work.
+    """
+    row = spapi_orders.parse_order({"AmazonOrderId": "403-1", "OrderStatus": "Canceled"})
+    assert row["amazon_order_id"] == "403-1"
+    assert row["order_total"] is None
+    assert row["city"] is None
+    assert row["latest_ship_date_utc"] is None
+
+
+def test_item_payloads_keep_the_sku_but_key_on_the_asin():
+    """The real SellerSKU is "0.5kg cs 1" — not in pricing_data.json, but its ASIN is.
+
+    Both are stored: the ASIN is how the product is identified, the SKU is what Amazon's
+    label shows.
+    """
+    items = spapi_orders.parse_items(_fixture("orders_items.json"))
+    assert items, "no items parsed"
+    first = items[0]
+    assert first["asin"].startswith("B0")
+    assert first["seller_sku"]
+    assert first["quantity_ordered"] >= 1
+
+
+async def test_paging_waits_the_rate_limit_between_calls_and_filters_to_easy_ship(monkeypatch):
+    """Two pages means one wait of at least 22 seconds, and only EZ orders survive.
+
+    Amazon returned `x-amzn-RateLimit-Limit: 0.04512` on the live call — one request every
+    22.2 seconds. Paging without the wait earns a 429, and on a 90-day window that costs
+    the whole refresh.
+
+    The sleep is injected, so this asserts the delay without spending it.
+    """
+    page = _fixture("orders_unshipped.json")["payload"]["Orders"]
+    calls, slept = [], []
+
+    async def fake_get(path, params=None, client=None):
+        calls.append(params or {})
+        if len(calls) == 1:
+            return {"payload": {"Orders": page, "NextToken": "tok-2"}}
+        return {"payload": {"Orders": page}}
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(spapi_orders.spapi, "_get", fake_get)
+
+    orders, warnings = await spapi_orders.fetch_easy_ship_orders(
+        days=90, max_pages=5, sleep=fake_sleep
+    )
+
+    assert len(calls) == 2, "did not follow NextToken"
+    assert calls[1].get("NextToken") == "tok-2"
+    assert slept and min(slept) >= spapi_orders.ORDERS_MIN_INTERVAL, (
+        f"paged without waiting the rate limit: slept {slept}"
+    )
+    assert orders, "no orders returned"
+    assert all(o["ship_service_level"] and "EZ" in o["ship_service_level"].upper().split()
+               for o in orders), "a non-Easy-Ship order survived the filter"
+    assert not any(o["amazon_order_id"].startswith("S02-") for o in orders)
+
+
+async def test_paging_stops_at_max_pages_and_says_so(monkeypatch):
+    """An unbounded loop against a rate-limited API is an hours-long request.
+
+    Amazon keeps returning NextToken while there is more; without a cap a first run on a
+    large history would page for as long as the tokens last. The cap is REPORTED, so the
+    owner knows the window was truncated rather than believing he saw everything.
+    """
+    page = _fixture("orders_unshipped.json")["payload"]["Orders"]
+
+    async def fake_get(path, params=None, client=None):
+        return {"payload": {"Orders": page, "NextToken": "always-more"}}
+
+    async def fake_sleep(seconds):
+        return None
+
+    monkeypatch.setattr(spapi_orders.spapi, "_get", fake_get)
+    orders, warnings = await spapi_orders.fetch_easy_ship_orders(
+        days=90, max_pages=3, sleep=fake_sleep
+    )
+    assert any("more pages" in w.lower() for w in warnings), warnings
+
+
+async def test_fetch_items_asks_only_for_the_ids_it_is_given(monkeypatch):
+    """The caller decides which orders need items, and it passes only unfetched ones.
+
+    getOrderItems is cheaper than getOrders but not free, and re-fetching items for 100
+    known orders would spend the budget for nothing.
+    """
+    payload = _fixture("orders_items.json")
+    asked = []
+
+    async def fake_get(path, params=None, client=None):
+        asked.append(path)
+        return payload
+
+    async def fake_sleep(seconds):
+        return None
+
+    monkeypatch.setattr(spapi_orders.spapi, "_get", fake_get)
+    result = await spapi_orders.fetch_items(["403-A", "403-B"], sleep=fake_sleep)
+
+    assert sorted(result) == ["403-A", "403-B"]
+    assert len(asked) == 2
+    assert all("/orderItems" in path for path in asked)
+
+
+async def test_one_failing_order_does_not_lose_the_others(monkeypatch):
+    """A 404 on one order must not abandon the batch.
+
+    An order can be cancelled between the list call and the item call. Losing the whole
+    batch for that would waste minutes of rate-limited work.
+    """
+    from app.shipment.spapi import SpApiError
+
+    payload = _fixture("orders_items.json")
+
+    async def fake_get(path, params=None, client=None):
+        if "403-BAD" in path:
+            raise SpApiError("order not found", status=404)
+        return payload
+
+    async def fake_sleep(seconds):
+        return None
+
+    monkeypatch.setattr(spapi_orders.spapi, "_get", fake_get)
+    result = await spapi_orders.fetch_items(["403-BAD", "403-OK"], sleep=fake_sleep)
+
+    assert "403-OK" in result, "a good order was lost because another failed"
+    assert "403-BAD" not in result
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `venv/Scripts/python -m pytest tests/test_orders_spapi.py -q`
+Expected: FAIL — `ModuleNotFoundError: No module named 'app.orders.spapi_orders'`.
+
+- [ ] **Step 3: Implement the client**
+
+Create `app/orders/spapi_orders.py`:
+
+```python
+"""The only caller of Amazon's Orders API.
+
+Auth, error typing and connection reuse come from ``app.shipment.spapi`` rather than being
+re-implemented: one token cache and one error type across the app means an auth failure
+reads the same wherever it happens.
+
+**Everything here is rate-limited by one number.** Amazon returned
+``x-amzn-RateLimit-Limit: 0.04512`` for ``getOrders`` — one request every 22.2 seconds. A
+90-day window pages, so a full fetch is minutes of wall-clock time. That single fact is
+why orders are cached in the database and why this module is never called from a request
+handler.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Sequence
+from datetime import datetime, timedelta, timezone
+
+from app.config import get_settings
+from app.orders.logic import is_easy_ship
+from app.shipment import spapi
+from app.shipment.spapi import SpApiError
+
+logger = logging.getLogger(__name__)
+
+#: Seconds between getOrders calls. Amazon reports 0.04512 req/sec = one per 22.2s;
+#: rounded UP to 22.5 because undershooting earns a 429 that costs the whole page.
+ORDERS_MIN_INTERVAL = 22.5
+
+#: getOrderItems is documented at ~0.5 req/sec and measured far cheaper than getOrders,
+#: but a burst of 100 would still trip it. 2s is comfortable for the 3-4 new orders a day
+#: this account actually sees.
+ITEMS_MIN_INTERVAL = 2.0
+
+#: Both statuses that still need packing. PartiallyShipped is included because a partly
+#: shipped order still has units on the floor.
+OPEN_STATUSES = "Unshipped,PartiallyShipped"
+
+
+def _dt(value) -> datetime | None:
+    """An Amazon ISO-8601 timestamp as a NAIVE UTC datetime.
+
+    Naive to match the `*_utc` columns, which SQLAlchemy stores without a timezone. The
+    conversion to IST happens once, at render time, in ``orders.logic.to_ist`` — storing
+    IST here would put local time in a column named `_utc` and mislead every later reader.
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        logger.warning("orders: could not parse timestamp %r", value)
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _money(block) -> float | None:
+    """The amount out of an Amazon money block, or None.
+
+    None rather than 0.0: a cancelled order genuinely has no total, and 0.0 would render
+    as a real ₹0 order on the reconciliation list.
+    """
+    if not isinstance(block, dict):
+        return None
+    try:
+        return float(block.get("Amount"))
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_order(payload: dict) -> dict:
+    """One API order as the `amazon_orders` column shape.
+
+    The ONLY place Amazon's field names are translated to ours, so a renamed field fails
+    in one test rather than surfacing as a NULL column on the picking sheet.
+
+    **Every field is optional.** A cancelled order arrives without `OrderTotal` or
+    `ShippingAddress`, and dying on one odd order would lose the whole page — which, at 22
+    seconds a page, is minutes of work.
+    """
+    address = payload.get("ShippingAddress") or {}
+    level = payload.get("ShipServiceLevel") or ""
+    return {
+        "amazon_order_id": payload.get("AmazonOrderId") or "",
+        "purchase_date_utc": _dt(payload.get("PurchaseDate")),
+        "latest_ship_date_utc": _dt(payload.get("LatestShipDate")),
+        "status": payload.get("OrderStatus"),
+        "easyship_status": payload.get("EasyShipShipmentStatus"),
+        "ship_service_level": level,
+        "order_total": _money(payload.get("OrderTotal")),
+        "currency": (payload.get("OrderTotal") or {}).get("CurrencyCode"),
+        "items_ordered": int(payload.get("NumberOfItemsUnshipped") or 0)
+                         + int(payload.get("NumberOfItemsShipped") or 0),
+        "items_shipped": int(payload.get("NumberOfItemsShipped") or 0),
+        "is_prime": bool(payload.get("IsPrime")),
+        # Read off the service level, not PaymentMethod: measured, PaymentMethod reads
+        # "Other" on real COD orders while the level says "Std IN EZ National COD".
+        "is_cod": "COD" in level.upper(),
+        "city": address.get("City"),
+        "state": address.get("StateOrRegion"),
+        "postal_code": address.get("PostalCode"),
+    }
+
+
+def parse_items(payload: dict) -> list[dict]:
+    """The `amazon_order_items` rows out of a getOrderItems response.
+
+    A zero-quantity line is dropped: it contributes nothing to a pick and would add a
+    0-unit row to the picking sheet.
+    """
+    rows = []
+    for item in (payload.get("payload") or {}).get("OrderItems") or []:
+        asin = (item.get("ASIN") or "").strip().upper()
+        quantity = int(item.get("QuantityOrdered") or 0)
+        if not asin or quantity <= 0:
+            continue
+        rows.append({
+            "asin": asin,
+            "seller_sku": item.get("SellerSKU"),
+            "title": item.get("Title"),
+            "quantity_ordered": quantity,
+            "quantity_shipped": int(item.get("QuantityShipped") or 0),
+            "item_price": _money(item.get("ItemPrice")),
+            "item_tax": _money(item.get("ItemTax")),
+            "promotion_discount": _money(item.get("PromotionDiscount")),
+        })
+    return rows
+
+
+async def fetch_easy_ship_orders(
+    days: int = 90,
+    *,
+    max_pages: int = 10,
+    sleep=asyncio.sleep,
+) -> tuple[list[dict], list[str]]:
+    """Every Easy Ship order created in the last `days`, paged. Returns (orders, warnings).
+
+    **Waits `ORDERS_MIN_INTERVAL` between pages.** Not politeness: Amazon allows one call
+    every 22.2 seconds and a 429 costs the page. `sleep` is injectable so tests assert the
+    delay without spending it.
+
+    **Filters to Easy Ship on the SERVICE LEVEL.** `FulfillmentChannel` reads MFN for both
+    Easy Ship and plain self-ship, and the non-Easy-Ship orders carry a 1995 ship-by
+    sentinel that would sit at the top of the packer's sheet as 31 years overdue.
+
+    **`max_pages` is a cap, and reaching it is REPORTED.** Amazon keeps issuing NextToken
+    while more exists; unbounded, a first run could page for as long as the tokens last.
+    A silent truncation would have the owner believe he had seen every order.
+    """
+    settings = get_settings()
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    params: dict = {
+        "MarketplaceIds": settings.sp_api_marketplace_id,
+        "CreatedAfter": since,
+        "OrderStatuses": OPEN_STATUSES,
+    }
+    orders: list[dict] = []
+    warnings: list[str] = []
+    seen_ids: set[str] = set()
+    token: str | None = None
+
+    for page in range(max_pages):
+        if page:
+            # The wait belongs BEFORE the call, not after the last one: sleeping after the
+            # final page would add 22 idle seconds to every refresh.
+            await sleep(ORDERS_MIN_INTERVAL)
+            params = {
+                "MarketplaceIds": settings.sp_api_marketplace_id,
+                "NextToken": token,
+            }
+
+        payload = (await spapi._get("/orders/v0/orders", params=params)).get("payload") or {}
+        raw = payload.get("Orders") or []
+        for item in raw:
+            row = parse_order(item)
+            if not row["amazon_order_id"] or row["amazon_order_id"] in seen_ids:
+                continue
+            if not is_easy_ship(row["ship_service_level"]):
+                continue
+            seen_ids.add(row["amazon_order_id"])
+            orders.append(row)
+
+        token = payload.get("NextToken")
+        if not token:
+            break
+    else:
+        if token:
+            warnings.append(
+                f"Stopped after {max_pages} pages and Amazon reports more pages of orders. "
+                "Older orders were not fetched — run the refresh again to continue."
+            )
+
+    logger.info("orders: fetched %d Easy Ship order(s) in %d page(s)", len(orders), page + 1)
+    return orders, warnings
+
+
+async def fetch_items(
+    order_ids: Sequence[str], *, sleep=asyncio.sleep
+) -> dict[str, list[dict]]:
+    """Line items for the named orders. `{order_id: [item, ...]}`.
+
+    The CALLER decides which orders need items — it passes only those whose
+    `items_fetched_at` is NULL — so re-refreshing 100 known orders costs zero calls here.
+
+    **One order failing does not abandon the batch.** An order can be cancelled between
+    the list call and this one, and losing every other order's items to a single 404 would
+    waste minutes of rate-limited work. The failure is logged and that order is simply
+    absent from the result, so the caller leaves its `items_fetched_at` NULL and retries
+    next time.
+    """
+    out: dict[str, list[dict]] = {}
+    for index, order_id in enumerate(order_ids):
+        if index:
+            await sleep(ITEMS_MIN_INTERVAL)
+        try:
+            payload = await spapi._get(f"/orders/v0/orders/{order_id}/orderItems")
+        except SpApiError as exc:            # noqa: BLE001 - logged, and retried next run
+            logger.warning("orders: items for %s failed (%s)", order_id, exc)
+            continue
+        out[order_id] = parse_items(payload)
+    return out
+```
+
+- [ ] **Step 4: Run to verify they pass**
+
+Run: `venv/Scripts/python -m pytest tests/test_orders_spapi.py -q`
+Expected: PASS (8 tests).
+
+- [ ] **Step 5: Prove two of the tests can fail**
+
+1. Change the paging loop to skip the wait: delete `await sleep(ORDERS_MIN_INTERVAL)`.
+   Expected: `test_paging_waits_the_rate_limit_between_calls_and_filters_to_easy_ship` FAILS.
+2. Remove the `if not is_easy_ship(...): continue` filter.
+   Expected: the same test FAILS on the `S02-` assertion.
+
+Restore exactly after each, and report both outcomes.
+
+- [ ] **Step 6: Run the whole suite and commit**
+
+Run: `venv/Scripts/python -m pytest -q`
+Expected: PASS, 1172 tests.
+
+```bash
+git add app/orders/spapi_orders.py tests/test_orders_spapi.py tests/fixtures/orders_unshipped.json tests/fixtures/orders_items.json
+git commit -m "feat: orders.spapi_orders, the only caller of Amazon's Orders API"
+```
 
 **Task 5 — `app/orders/repository.py` + `refresh.py`:** upsert by `amazon_order_id`; `items_fetched_at IS NULL` drives item fetching so a second refresh of 100 known orders makes zero item calls. The refresh is serialized (refuses a concurrent start), commits after **each page** so a 429 keeps what was already stored, and exposes a progress dict the screen polls.
 

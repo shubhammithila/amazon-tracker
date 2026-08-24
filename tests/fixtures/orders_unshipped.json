@@ -1,0 +1,289 @@
+{
+  "payload": {
+    "Orders": [
+      {
+        "BuyerInfo": {},
+        "AmazonOrderId": "407-7509309-5915523",
+        "EarliestDeliveryDate": "2026-08-31T18:30:00Z",
+        "EarliestShipDate": "2026-08-24T18:30:00Z",
+        "SalesChannel": "Amazon.in",
+        "AutomatedShippingSettings": {
+          "HasAutomatedShippingSettings": false
+        },
+        "OrderStatus": "Unshipped",
+        "NumberOfItemsShipped": 0,
+        "OrderType": "StandardOrder",
+        "IsPremiumOrder": false,
+        "IsPrime": true,
+        "FulfillmentChannel": "MFN",
+        "NumberOfItemsUnshipped": 1,
+        "HasRegulatedItems": false,
+        "IsReplacementOrder": "false",
+        "IsSoldByAB": false,
+        "LatestShipDate": "2026-08-25T18:29:59Z",
+        "ShipServiceLevel": "Std IN EZ National COD",
+        "DefaultShipFromLocationAddress": {
+          "AddressLine2": "C/O DINESH PRASAD SAH, new babu para,near dadi shyam mandi",
+          "StateOrRegion": "JHARKHAND",
+          "AddressLine1": "F2D TECH PRIVATE LIMITED, 1st floor VISHWANATH SAH",
+          "PostalCode": "814101",
+          "City": "Dumka",
+          "CountryCode": "IN",
+          "Name": "F2D TECH PRIVATE LIMITED"
+        },
+        "IsISPU": false,
+        "MarketplaceId": "A21TJRUUN4KGV",
+        "LatestDeliveryDate": "2026-09-01T18:29:59Z",
+        "PurchaseDate": "2026-08-17T13:56:47Z",
+        "ShippingAddress": {
+          "StateOrRegion": "TAMIL NADU",
+          "PostalCode": "600119",
+          "City": "CHENNAI",
+          "CountryCode": "IN"
+        },
+        "IsAccessPointOrder": false,
+        "PaymentMethod": "Other",
+        "IsBusinessOrder": false,
+        "OrderTotal": {
+          "CurrencyCode": "INR",
+          "Amount": "219.00"
+        },
+        "EasyShipShipmentStatus": "PendingSchedule",
+        "PaymentMethodDetails": [
+          "Standard"
+        ],
+        "IsGlobalExpressEnabled": false,
+        "LastUpdateDate": "2026-08-21T08:20:06Z",
+        "ShipmentServiceLevelCategory": "Standard"
+      },
+      {
+        "BuyerInfo": {},
+        "AmazonOrderId": "408-4355418-1181156",
+        "EarliestDeliveryDate": "2026-08-31T18:30:00Z",
+        "EarliestShipDate": "2026-08-24T18:30:00Z",
+        "SalesChannel": "Amazon.in",
+        "AutomatedShippingSettings": {
+          "HasAutomatedShippingSettings": false
+        },
+        "OrderStatus": "Unshipped",
+        "NumberOfItemsShipped": 0,
+        "OrderType": "StandardOrder",
+        "IsPremiumOrder": false,
+        "IsPrime": true,
+        "FulfillmentChannel": "MFN",
+        "NumberOfItemsUnshipped": 1,
+        "HasRegulatedItems": false,
+        "IsReplacementOrder": "false",
+        "IsSoldByAB": false,
+        "LatestShipDate": "2026-08-25T18:29:59Z",
+        "ShipServiceLevel": "Std IN EZ National COD",
+        "DefaultShipFromLocationAddress": {
+          "AddressLine2": "C/O DINESH PRASAD SAH, new babu para,near dadi shyam mandi",
+          "StateOrRegion": "JHARKHAND",
+          "AddressLine1": "F2D TECH PRIVATE LIMITED, 1st floor VISHWANATH SAH",
+          "PostalCode": "814101",
+          "City": "Dumka",
+          "CountryCode": "IN",
+          "Name": "F2D TECH PRIVATE LIMITED"
+        },
+        "IsISPU": false,
+        "MarketplaceId": "A21TJRUUN4KGV",
+        "LatestDeliveryDate": "2026-09-01T18:29:59Z",
+        "PurchaseDate": "2026-08-17T13:57:03Z",
+        "ShippingAddress": {
+          "StateOrRegion": "DELHI",
+          "PostalCode": "110024",
+          "City": "NEW DELHI",
+          "CountryCode": "IN"
+        },
+        "IsAccessPointOrder": false,
+        "PaymentMethod": "Other",
+        "IsBusinessOrder": false,
+        "OrderTotal": {
+          "CurrencyCode": "INR",
+          "Amount": "389.00"
+        },
+        "EasyShipShipmentStatus": "PendingSchedule",
+        "PaymentMethodDetails": [
+          "Standard"
+        ],
+        "IsGlobalExpressEnabled": false,
+        "LastUpdateDate": "2026-08-17T14:12:25Z",
+        "ShipmentServiceLevelCategory": "Standard"
+      },
+      {
+        "BuyerInfo": {},
+        "AmazonOrderId": "171-1997811-6881915",
+        "EarliestDeliveryDate": "2026-08-31T18:30:00Z",
+        "EarliestShipDate": "2026-08-25T18:30:00Z",
+        "SalesChannel": "Amazon.in",
+        "AutomatedShippingSettings": {
+          "HasAutomatedShippingSettings": false
+        },
+        "OrderStatus": "Unshipped",
+        "NumberOfItemsShipped": 0,
+        "OrderType": "StandardOrder",
+        "IsPremiumOrder": false,
+        "IsPrime": true,
+        "FulfillmentChannel": "MFN",
+        "NumberOfItemsUnshipped": 1,
+        "HasRegulatedItems": false,
+        "IsReplacementOrder": "false",
+        "IsSoldByAB": false,
+        "LatestShipDate": "2026-08-26T18:29:59Z",
+        "PaymentExecutionDetail": [
+          {
+            "Payment": {
+              "CurrencyCode": "INR",
+              "Amount": "300.02"
+            },
+            "PaymentMethod": "COD"
+          }
+        ],
+        "ShipServiceLevel": "Std IN EZ Metro COD",
+        "DefaultShipFromLocationAddress": {
+          "AddressLine2": "C/O DINESH PRASAD SAH, new babu para,near dadi shyam mandi",
+          "StateOrRegion": "JHARKHAND",
+          "AddressLine1": "F2D TECH PRIVATE LIMITED, 1st floor VISHWANATH SAH",
+          "PostalCode": "814101",
+          "City": "Dumka",
+          "CountryCode": "IN",
+          "Name": "F2D TECH PRIVATE LIMITED"
+        },
+        "IsISPU": false,
+        "MarketplaceId": "A21TJRUUN4KGV",
+        "LatestDeliveryDate": "2026-09-01T18:29:59Z",
+        "PurchaseDate": "2026-08-17T13:58:48Z",
+        "ShippingAddress": {
+          "StateOrRegion": "UTTAR PRADESH",
+          "PostalCode": "271002",
+          "City": "GONDA",
+          "CountryCode": "IN"
+        },
+        "IsAccessPointOrder": false,
+        "PaymentMethod": "COD",
+        "IsBusinessOrder": false,
+        "OrderTotal": {
+          "CurrencyCode": "INR",
+          "Amount": "293.02"
+        },
+        "EasyShipShipmentStatus": "PendingSchedule",
+        "PaymentMethodDetails": [
+          "CashOnDelivery"
+        ],
+        "IsGlobalExpressEnabled": false,
+        "LastUpdateDate": "2026-08-17T14:14:05Z",
+        "ShipmentServiceLevelCategory": "Standard"
+      },
+      {
+        "BuyerInfo": {},
+        "AmazonOrderId": "403-6094542-7549932",
+        "EarliestDeliveryDate": "2026-08-31T18:30:00Z",
+        "EarliestShipDate": "2026-08-24T18:30:00Z",
+        "SalesChannel": "Amazon.in",
+        "AutomatedShippingSettings": {
+          "HasAutomatedShippingSettings": false
+        },
+        "OrderStatus": "Unshipped",
+        "NumberOfItemsShipped": 0,
+        "OrderType": "StandardOrder",
+        "IsPremiumOrder": false,
+        "IsPrime": true,
+        "FulfillmentChannel": "MFN",
+        "NumberOfItemsUnshipped": 1,
+        "HasRegulatedItems": false,
+        "IsReplacementOrder": "false",
+        "IsSoldByAB": false,
+        "LatestShipDate": "2026-08-25T18:29:59Z",
+        "ShipServiceLevel": "Std IN EZ National COD",
+        "DefaultShipFromLocationAddress": {
+          "AddressLine2": "C/O DINESH PRASAD SAH, new babu para,near dadi shyam mandi",
+          "StateOrRegion": "JHARKHAND",
+          "AddressLine1": "F2D TECH PRIVATE LIMITED, 1st floor VISHWANATH SAH",
+          "PostalCode": "814101",
+          "City": "Dumka",
+          "CountryCode": "IN",
+          "Name": "F2D TECH PRIVATE LIMITED"
+        },
+        "IsISPU": false,
+        "MarketplaceId": "A21TJRUUN4KGV",
+        "LatestDeliveryDate": "2026-09-01T18:29:59Z",
+        "PurchaseDate": "2026-08-17T14:12:33Z",
+        "ShippingAddress": {
+          "StateOrRegion": "MAHARASHTRA",
+          "PostalCode": "400088",
+          "City": "Mumbai",
+          "CountryCode": "IN"
+        },
+        "IsAccessPointOrder": false,
+        "PaymentMethod": "Other",
+        "IsBusinessOrder": false,
+        "OrderTotal": {
+          "CurrencyCode": "INR",
+          "Amount": "214.62"
+        },
+        "EasyShipShipmentStatus": "PendingSchedule",
+        "PaymentMethodDetails": [
+          "Standard"
+        ],
+        "IsGlobalExpressEnabled": false,
+        "LastUpdateDate": "2026-08-19T07:10:02Z",
+        "ShipmentServiceLevelCategory": "Standard"
+      },
+      {
+        "BuyerInfo": {},
+        "AmazonOrderId": "S02-3329874-1174519",
+        "EarliestShipDate": "1995-01-01T00:00:00Z",
+        "SalesChannel": "Non-Amazon",
+        "OrderStatus": "Unshipped",
+        "NumberOfItemsShipped": 0,
+        "OrderType": "StandardOrder",
+        "IsPremiumOrder": false,
+        "IsPrime": false,
+        "FulfillmentChannel": "AFN",
+        "NumberOfItemsUnshipped": 1,
+        "HasRegulatedItems": false,
+        "IsReplacementOrder": "false",
+        "IsSoldByAB": false,
+        "LatestShipDate": "1995-01-01T00:00:00Z",
+        "ShipServiceLevel": "Standard",
+        "IsISPU": false,
+        "MarketplaceId": "A21TJRUUN4KGV",
+        "PurchaseDate": "2026-08-08T14:42:01Z",
+        "IsAccessPointOrder": false,
+        "SellerOrderId": "Xq88eFj881",
+        "IsBusinessOrder": false,
+        "IsGlobalExpressEnabled": false,
+        "LastUpdateDate": "2026-08-24T16:26:26Z",
+        "ShipmentServiceLevelCategory": "Standard"
+      },
+      {
+        "BuyerInfo": {},
+        "AmazonOrderId": "S02-1006632-8876955",
+        "EarliestShipDate": "1995-01-01T00:00:00Z",
+        "SalesChannel": "Non-Amazon",
+        "OrderStatus": "Unshipped",
+        "NumberOfItemsShipped": 0,
+        "OrderType": "StandardOrder",
+        "IsPremiumOrder": false,
+        "IsPrime": false,
+        "FulfillmentChannel": "AFN",
+        "NumberOfItemsUnshipped": 1,
+        "HasRegulatedItems": false,
+        "IsReplacementOrder": "false",
+        "IsSoldByAB": false,
+        "LatestShipDate": "1995-01-01T00:00:00Z",
+        "ShipServiceLevel": "Standard",
+        "IsISPU": false,
+        "MarketplaceId": "A21TJRUUN4KGV",
+        "PurchaseDate": "2026-08-15T12:51:01Z",
+        "IsAccessPointOrder": false,
+        "SellerOrderId": "Xq8fcOD613",
+        "IsBusinessOrder": false,
+        "IsGlobalExpressEnabled": false,
+        "LastUpdateDate": "2026-08-24T15:13:25Z",
+        "ShipmentServiceLevelCategory": "Standard"
+      }
+    ]
+  }
+}
