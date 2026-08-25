@@ -226,27 +226,33 @@ def _orders_source() -> str:
     ).read_text(encoding="utf-8")
 
 
-def test_the_ship_by_date_is_not_rendered_through_a_time_formatter():
+def test_no_calendar_date_is_rendered_through_a_time_formatter():
     """A date put through a time formatter lands on the WRONG DAY.
 
-    `ship_by_ist` is a calendar date ("2026-08-25") because a ship-by deadline is a day.
-    The template first rendered it with `timeIST()`, whose `new Date("2026-08-25")` is
-    parsed as UTC midnight — printing "26 Aug, 05:30", five and a half hours into the
-    following day, in the column the warehouse plans against.
+    An IST calendar date ("2026-08-25") is a DAY, and `new Date("2026-08-25")` is UTC
+    midnight by specification — so a time formatter printed "26 Aug, 05:30", five and a half
+    hours into the following day, in the column the warehouse plans against. Found in a
+    browser, not by a test: the server was correct and the formatter was correct, and only
+    their combination was wrong.
 
-    Found in a browser, not by a test: the server was correct and the formatter was
-    correct, and only their combination was wrong. So this asserts the pairing.
+    Asserted as a PROHIBITION on the pairing rather than on one call site. The original
+    version pinned `esc(dateIST(o.ship_by_ist))`, which broke the moment the screen became a
+    dispatch sheet — every order there is due today, so the column went away and the test
+    failed while the bug it guards was still absent. A rule about which formatter may touch a
+    date survives the screen being redesigned; a rule about one expression does not.
     """
+    import re
+
     source = _orders_source()
-    assert "esc(dateIST(o.ship_by_ist))" in source, (
-        "the ship-by date is not rendered with dateIST"
+    # Any *_ist / *_date field fed to the time formatter is the bug.
+    offenders = re.findall(r"timeIST\(\s*[A-Za-z_.]*(?:pack_date|ship_by|_date_ist)\b", source)
+    assert not offenders, (
+        f"a calendar date is being formatted as a time, which shifts it a day: {offenders}"
     )
-    assert "timeIST(o.ship_by_ist)" not in source, (
-        "the ship-by DATE is being formatted as a time, which shifts it into the next day"
-    )
-    # The other direction: a real instant must keep the time formatter.
-    assert "timeIST(o.purchase_date_ist)" in source, (
-        "the purchase timestamp lost its time formatting"
+    # And the date helper must still exist to be used at all.
+    assert "function dateIST(" in source, "dateIST was removed"
+    assert "dateIST(" in source.replace("function dateIST(", ""), (
+        "dateIST is defined but never called, so a date is being rendered some other way"
     )
 
 
@@ -321,3 +327,127 @@ async def test_the_orders_payload_survives_a_running_refresh(auth_client, db):
         json.dumps(r.json())
     finally:
         refresh.reset_state()
+
+
+# ─── Today's dispatch: the warehouse's screen ────────────────────────────────
+
+
+def _dispatched(order_id, **overrides):
+    """An order that IS today's dispatch: due today, and labelled by Amazon."""
+    return _row(order_id, status="Shipped", easyship_status="PendingPickUp", **overrides)
+
+
+async def test_the_dispatch_route_returns_parents_sizes_and_packed(auth_client, db):
+    """One payload behind the screen and the PDF, so paper and monitor cannot disagree."""
+    await repository.upsert_orders(db, [_dispatched("403-1")])
+    await repository.replace_items(db, "403-1", [
+        {"asin": KNOWN_ASIN, "seller_sku": "cs-500", "title": "Chana Sattu",
+         "quantity_ordered": 4}
+    ])
+
+    body = (await auth_client.get("/orders/dispatch")).json()
+
+    assert body["pack_date"] == body["today_ist"], "the save date is not today in IST"
+    parents = body["sheet"]["parents"]
+    assert len(parents) == 1
+    assert parents[0]["product"] == "Chana Sattu"
+    assert parents[0]["units"] == 4
+    assert parents[0]["kg"] == pytest.approx(2.0)          # 4 x 0.5 kg
+    assert parents[0]["sizes"][0]["packed"] == 0, "nothing has been packed yet"
+    assert body["sheet"]["orders"][0]["amazon_order_id"] == "403-1"
+
+
+async def test_the_dispatch_route_excludes_the_ecom_teams_orders(auth_client, db):
+    """An order still in `Unshipped` is theirs to ship on Seller Central.
+
+    `_row`'s default IS that state, which is why this seeds it plainly: the sheet must come
+    back empty rather than showing the floor work it cannot do.
+    """
+    await _seed(db)                                        # default: Unshipped/PendingSchedule
+    body = (await auth_client.get("/orders/dispatch")).json()
+    assert body["sheet"]["parents"] == [], "an unshipped order reached the dispatch sheet"
+    assert body["sheet"]["totals"]["orders"] == 0
+
+
+async def test_packed_counts_round_trip_through_the_route(auth_client, db):
+    """Type, save, reload — the number has to still be there."""
+    await repository.upsert_orders(db, [_dispatched("403-1")])
+    await repository.replace_items(db, "403-1", [
+        {"asin": KNOWN_ASIN, "quantity_ordered": 10}
+    ])
+    today = datetime.now(logic.IST).date().isoformat()
+
+    r = await auth_client.post(
+        f"/orders/packed/{today}", json={"entries": [{"asin": KNOWN_ASIN, "units": 6}]}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["packed"][KNOWN_ASIN] == 6
+
+    body = (await auth_client.get("/orders/dispatch")).json()
+    size = body["sheet"]["parents"][0]["sizes"][0]
+    assert size["packed"] == 6
+    assert size["remaining"] == 4
+
+
+async def test_saving_against_another_day_is_refused(auth_client, db):
+    """The SERVER decides what today is, not the browser.
+
+    A laptop set to another timezone — or a page left open past midnight IST — would
+    otherwise file this morning's count against yesterday, a silent off-by-one-day nobody
+    notices until the numbers are being reconciled. Refused with the real date, so the screen
+    can say "reload" instead of quietly moving the work.
+    """
+    await _seed(db)
+    r = await auth_client.post(
+        "/orders/packed/2026-01-01", json={"entries": [{"asin": KNOWN_ASIN, "units": 3}]}
+    )
+    assert r.status_code == 409, r.text
+    assert r.json()["pack_date"] == datetime.now(logic.IST).date().isoformat()
+
+
+async def test_a_malformed_packed_body_is_refused(auth_client, db):
+    """`entries` must be a list. A bare object would silently save nothing."""
+    await _seed(db)
+    today = datetime.now(logic.IST).date().isoformat()
+    r = await auth_client.post(f"/orders/packed/{today}", json={"entries": {"asin": "x"}})
+    assert r.status_code == 400, r.text
+
+
+async def test_the_dispatch_sheet_downloads_as_a_pdf(auth_client, db):
+    """The floor's copy. A PDF because it is read at a bench and ticked with a pen."""
+    await repository.upsert_orders(db, [_dispatched("403-1")])
+    await repository.replace_items(db, "403-1", [
+        {"asin": KNOWN_ASIN, "seller_sku": "cs-500", "quantity_ordered": 3}
+    ])
+
+    r = await auth_client.get("/orders/download/dispatch.pdf")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "application/pdf"
+    assert r.content.startswith(b"%PDF-"), "not a PDF"
+    assert len(r.content) > 1000, "the PDF is suspiciously small"
+
+
+async def test_an_empty_dispatch_day_still_produces_a_readable_pdf(auth_client, db):
+    """Nothing due is a normal morning, not an error.
+
+    Asserted because an empty table is exactly where a document builder raises — and the
+    download failing would read as a broken app on the quietest day of the week.
+    """
+    await _seed(db)                                        # nothing dispatched
+    r = await auth_client.get("/orders/download/dispatch.pdf")
+    assert r.status_code == 200, r.text
+    assert r.content.startswith(b"%PDF-")
+
+
+async def test_ops_may_reach_the_dispatch_screen_but_is_not_told_it_is_admin(
+    auth_client, db
+):
+    """`is_admin` gates the owner's three extra groups on the screen.
+
+    The flag travels in the payload only so the page can decide what to draw; the guard that
+    matters is on the routes. An admin session must report True, or the owner loses the
+    picking sheet he still needs.
+    """
+    await _seed(db)
+    body = (await auth_client.get("/orders/dispatch")).json()
+    assert body["is_admin"] is True, "an admin session was not told so"

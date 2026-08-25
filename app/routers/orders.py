@@ -1,4 +1,4 @@
-"""The Orders tab: today's picking sheet, and the order list for reconciliation.
+"""The Orders tab: today's dispatch for the warehouse, and the picking sheet for the owner.
 
 Asked for: *"after the orders are packed and shipped on the portal my warehouse team is
 able to reconcile the data. the orders which have to be shipped today. item wise weight
@@ -9,9 +9,11 @@ request every 22 seconds — a page that called it would hang, and two people op
 would 429. `POST /refresh` starts the background job and returns immediately; the screen
 polls `/refresh-status`.
 
-Read-only by construction: no route writes an order. These rows are a cache of Amazon's
-data, so a wrong value is fixed by refreshing, not editing — a local edit would create a
-second source of truth about whether an order shipped.
+**No route writes an ORDER.** Amazon's rows are a cache: a wrong value is fixed by
+refreshing, not editing, because a local edit would create a second source of truth about
+whether an order shipped. The one exception is `POST /packed/{pack_date}`, which writes the
+warehouse's own units-packed counts — a fact Amazon does not have, and one that never
+changes an order's status or reaches an invoice.
 """
 import logging
 from datetime import datetime
@@ -219,5 +221,136 @@ async def download_picking_sheet(
     return StreamingResponse(
         stream,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ─── Today's dispatch: the warehouse's screen ────────────────────────────────
+#
+# The picking sheet above answers the owner's question ("what state is everything in").
+# These answer the floor's: "what goes out today, and how much of it have we packed."
+
+
+async def _dispatch(db: AsyncSession):
+    """Today's dispatch sheet with the warehouse's packed counts. Returns (sheet, meta).
+
+    ONE function behind the screen and the PDF, so a printed sheet cannot disagree with the
+    monitor about a quantity — the same reasoning `_sheet_and_orders` carries, and the reason
+    the shipment feature funnels all five of its downloads through `_document_rows`.
+
+    Today is taken in IST at call time and never stored, so a screen left open overnight is
+    correct in the morning without a refresh having run.
+    """
+    today = datetime.now(logic.IST).date()
+    pack_date = today.isoformat()
+    orders = await repository.load_orders(db, days=WINDOW_DAYS)
+    sheet_catalogue, warning, source = await catalogue.load_catalogue()
+    packed = await repository.load_packed(db, pack_date)
+    sheet = logic.dispatch_sheet(orders, sheet_catalogue, today, packed=packed)
+    return sheet, {
+        "source": source, "warning": warning, "today": pack_date, "pack_date": pack_date,
+    }
+
+
+@router.get("/dispatch")
+async def dispatch(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    grant=Depends(require_area(permissions.ORDERS)),
+):
+    """Today's dispatch: parent products, their pack sizes, and what has been packed.
+
+    Local rows only — no Amazon call. `is_admin` travels in the payload so the screen can
+    decide whether to offer the owner's other sections; the guard that actually matters is
+    on the routes themselves.
+    """
+    sheet, meta = await _dispatch(db)
+    last = await repository.last_refreshed_at(db)
+    return JSONResponse({
+        "sheet": sheet,
+        "pack_date": meta["pack_date"],
+        "today_ist": meta["today"],
+        "catalogue_source": meta["source"],
+        "catalogue_warning": meta["warning"],
+        "last_refreshed_at": last.isoformat() if last else None,
+        "refresh": refresh.status(),
+        "is_admin": bool(getattr(grant, "is_admin", False)),
+    })
+
+
+@router.post("/packed/{pack_date}")
+async def save_packed(
+    pack_date: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    grant=Depends(require_area(permissions.ORDERS)),
+):
+    """Record units packed against ASINs for today. `{"entries": [{"asin", "units"}]}`.
+
+    **The date must be TODAY in IST, and the server decides what today is.** A browser on a
+    laptop set to another timezone would otherwise file this morning's count against
+    yesterday — a silent off-by-one-day that nobody would notice until the numbers were being
+    reconciled. The path carries the date so the request is explicit and idempotent, not so
+    the client can choose it.
+
+    Writing the past is refused rather than silently redirected: if the screen has been open
+    since before midnight, the honest answer is "reload", not "I moved your numbers".
+    """
+    today = datetime.now(logic.IST).date().isoformat()
+    if pack_date != today:
+        return JSONResponse(
+            {
+                "error": f"That page is for {pack_date}, but today is {today} (IST). "
+                         "Reload the page before entering more counts.",
+                "pack_date": today,
+            },
+            status_code=409,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:                       # noqa: BLE001 - a malformed body is a 400
+        return JSONResponse({"error": "Expected a JSON body."}, status_code=400)
+
+    entries = (body or {}).get("entries")
+    if not isinstance(entries, list):
+        return JSONResponse(
+            {"error": "entries must be a list of {asin, units} objects."}, status_code=400
+        )
+
+    packed = await repository.save_packed(db, pack_date, entries)
+    # The whole map goes back, not just what was sent: the screen re-renders from the
+    # committed truth rather than from what it believes it saved, because a warehouse phone
+    # can lose a response and a stale total is what gets acted on.
+    logger.info("orders: packed counts saved for %s (%d SKU(s))", pack_date, len(packed))
+    return JSONResponse({"status": "saved", "pack_date": pack_date, "packed": packed})
+
+
+@router.get("/download/dispatch.pdf")
+async def download_dispatch(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    grant=Depends(require_area(permissions.ORDERS)),
+):
+    """The dispatch sheet as a PDF: parent summary, then every order.
+
+    Built through the same `_dispatch` the screen uses, so the paper and the monitor cannot
+    disagree. A PDF rather than Excel because this one is read on the floor and ticked with a
+    pen — the Excel downloads exist for accounts.
+    """
+    sheet, meta = await _dispatch(db)
+    totals = sheet["totals"]
+    subtitle = (
+        f"{meta['today']} (IST) · {totals['orders']} orders · {totals['units']} units · "
+        f"{totals['kg']} kg net · {totals['parents']} product(s)"
+    )
+    if totals["sizes_without_weight"]:
+        subtitle += f" · {totals['sizes_without_weight']} line(s) with no pack size"
+
+    stream = documents.build_dispatch_pdf(sheet, subtitle)
+    filename = f"dispatch-{meta['today']}.pdf"
+    return StreamingResponse(
+        stream,
+        media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

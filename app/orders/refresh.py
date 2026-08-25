@@ -45,6 +45,9 @@ def reset_state() -> None:
         "updated": 0,
         "items_fetched": 0,
         "reconciled": 0,
+        "percent": 0,
+        "items_total": 0,
+        "items_done": 0,
         "warnings": [],
         "error": None,
         "refused": False,
@@ -52,6 +55,36 @@ def reset_state() -> None:
 
 
 reset_state()
+
+#: Where each phase starts and ends on the 0-100 bar.
+#:
+#: **The weighting is not even, because the phases are not.** Paging costs 22.5 seconds a
+#: call and the item phase 2.2 seconds an order, but there are hundreds of orders and only a
+#: handful of pages — on the measured account a full run is roughly 2 minutes of paging and 8
+#: of items. The item phase therefore gets the larger share of the bar.
+#:
+#: The honest asymmetry: **only the item phase has a real denominator.** `len(pending)` is
+#: known before the first call, while Amazon reveals `NextToken` one page at a time, so
+#: paging progress is a fraction of the page CAP — a ceiling, usually not reached. That makes
+#: the first half of the bar an estimate and the second half exact, so the first half is
+#: clamped to never step backwards when a pass ends early.
+PHASE_BOUNDS = {
+    "orders": (0, 50),
+    "reconcile": (50, 60),
+    "items": (60, 100),
+}
+
+
+def _set_percent(value: float) -> None:
+    """Publish a whole-number percent that never goes DOWN.
+
+    Monotonic because a bar that jumps backwards reads as a fault: the actionable pass may
+    stop at page 2 of 8 having exhausted its token, which would otherwise send 12% back to 0
+    when the pending pass starts its own page 1 of 2.
+    """
+    percent = max(0, min(100, int(value)))
+    if percent > int(STATE.get("percent") or 0):
+        STATE["percent"] = percent
 
 
 def status() -> dict:
@@ -111,8 +144,14 @@ async def run(
     STATE.update({"running": True, "started_at": datetime.utcnow(), "phase": "orders"})
 
     try:
+        def on_page(pages_done, page_cap, orders_so_far):
+            STATE["pages"] = pages_done
+            STATE["orders_seen"] = orders_so_far
+            low, high = PHASE_BOUNDS["orders"]
+            _set_percent(low + (high - low) * pages_done / max(1, page_cap))
+
         orders, warnings = await spapi_orders.fetch_easy_ship_orders(
-            days=days, max_pages=max_pages, sleep=sleep
+            days=days, max_pages=max_pages, sleep=sleep, on_page=on_page
         )
         STATE["orders_seen"] = len(orders)
         STATE["warnings"] = list(warnings)
@@ -121,6 +160,7 @@ async def run(
         async with db_factory() as db:
             created, updated = await repository.upsert_orders(db, orders)
         STATE.update({"created": created, "updated": updated, "phase": "reconcile"})
+        _set_percent(PHASE_BOUNDS["reconcile"][0])
 
         # ── Correct the rows that dropped OUT of the fetch ──
         #
@@ -152,6 +192,7 @@ async def run(
                 STATE["reconciled"] = len(corrected)
 
         STATE["phase"] = "items"
+        _set_percent(PHASE_BOUNDS["items"][0])
 
         # Actionable orders get the item budget first. Items are what the picking sheet
         # counts, and an order with none is invisible on it even though its section counts
@@ -162,13 +203,25 @@ async def run(
                 db, priority_statuses=spapi_orders.ACTIONABLE_STATUS_SET
             )
         if pending:
-            fetched = await spapi_orders.fetch_items(pending, sleep=sleep)
+            STATE["items_total"] = len(pending)
+
+            def on_item(done, total):
+                STATE["items_done"] = done
+                low, high = PHASE_BOUNDS["items"]
+                _set_percent(low + (high - low) * done / max(1, total))
+
+            fetched = await spapi_orders.fetch_items(
+                pending, sleep=sleep, on_item=on_item
+            )
             async with db_factory() as db:
                 for order_id, items in fetched.items():
                     await repository.replace_items(db, order_id, items)
             STATE["items_fetched"] = len(fetched)
 
         STATE["phase"] = "done"
+        # 100 explicitly rather than by arithmetic: the item phase can stop early on a run of
+        # quota errors, and a bar stuck at 87% next to the word "done" reads as a hang.
+        STATE["percent"] = 100
         logger.info(
             "orders refresh: %d order(s) seen, %d new, %d updated, %d reconciled, "
             "%d itemised",

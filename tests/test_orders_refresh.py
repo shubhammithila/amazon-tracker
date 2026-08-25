@@ -144,10 +144,10 @@ async def test_purge_removes_only_orders_older_than_the_window(db, db_schema):
 
 async def test_the_refresh_stores_orders_and_their_items(db_schema, monkeypatch):
     """End to end with the network stubbed: orders land, items land, progress is reported."""
-    async def fake_orders(days=90, *, max_pages=10, sleep=None):
+    async def fake_orders(days=90, *, max_pages=10, sleep=None, on_page=None):
         return [_row("403-1"), _row("403-2")], []
 
-    async def fake_items(order_ids, *, sleep=None):
+    async def fake_items(order_ids, *, sleep=None, on_item=None):
         return {oid: [{"asin": "B0CHANA500", "quantity_ordered": 1}] for oid in order_ids}
 
     monkeypatch.setattr(refresh.spapi_orders, "fetch_easy_ship_orders", fake_orders)
@@ -171,11 +171,11 @@ async def test_a_second_refresh_is_refused_while_one_runs(db_schema, monkeypatch
     """
     release = asyncio.Event()
 
-    async def slow_orders(days=90, *, max_pages=10, sleep=None):
+    async def slow_orders(days=90, *, max_pages=10, sleep=None, on_page=None):
         await release.wait()
         return [_row("403-1")], []
 
-    async def fake_items(order_ids, *, sleep=None):
+    async def fake_items(order_ids, *, sleep=None, on_item=None):
         return {}
 
     monkeypatch.setattr(refresh.spapi_orders, "fetch_easy_ship_orders", slow_orders)
@@ -199,10 +199,10 @@ async def test_a_failure_mid_refresh_keeps_what_was_already_stored(db, db_schema
     leaves the orders in place and items_fetched_at NULL — the next run resumes rather
     than restarting.
     """
-    async def fake_orders(days=90, *, max_pages=10, sleep=None):
+    async def fake_orders(days=90, *, max_pages=10, sleep=None, on_page=None):
         return [_row("403-1"), _row("403-2")], []
 
-    async def exploding_items(order_ids, *, sleep=None):
+    async def exploding_items(order_ids, *, sleep=None, on_item=None):
         raise RuntimeError("429 Too Many Requests")
 
     monkeypatch.setattr(refresh.spapi_orders, "fetch_easy_ship_orders", fake_orders)
@@ -223,10 +223,10 @@ async def test_a_failure_mid_refresh_keeps_what_was_already_stored(db, db_schema
 
 async def test_warnings_from_paging_reach_the_status(db_schema, monkeypatch):
     """A truncated window must be visible, not inferred from a short list."""
-    async def fake_orders(days=90, *, max_pages=10, sleep=None):
+    async def fake_orders(days=90, *, max_pages=10, sleep=None, on_page=None):
         return [_row("403-1")], ["Stopped after 10 pages and Amazon reports more pages"]
 
-    async def fake_items(order_ids, *, sleep=None):
+    async def fake_items(order_ids, *, sleep=None, on_item=None):
         return {oid: [] for oid in order_ids}
 
     monkeypatch.setattr(refresh.spapi_orders, "fetch_easy_ship_orders", fake_orders)
@@ -292,13 +292,13 @@ async def test_the_refresh_actually_asks_for_actionable_items_first(
         seen["priority_statuses"] = priority_statuses
         return await real(db_, limit, priority_statuses=priority_statuses)
 
-    async def fake_orders(days=90, *, max_pages=10, sleep=None):
+    async def fake_orders(days=90, *, max_pages=10, sleep=None, on_page=None):
         return [_row("403-pickup", status="Shipped", easyship_status="PendingPickUp")], []
 
-    async def fake_items(order_ids, *, sleep=None):
+    async def fake_items(order_ids, *, sleep=None, on_item=None):
         return {oid: [] for oid in order_ids}
 
-    async def fake_by_id(order_ids, *, sleep=None):
+    async def fake_by_id(order_ids, *, sleep=None, on_item=None):
         return []
 
     monkeypatch.setattr(refresh.repository, "ids_missing_items", spy)
@@ -339,17 +339,17 @@ async def test_an_order_that_dropped_out_of_the_fetch_is_re_read_not_guessed(
         _row("403-GONE", status="Shipped", easyship_status="PendingPickUp"),
     ])
 
-    async def fake_orders(days=90, *, max_pages=10, sleep=None):
+    async def fake_orders(days=90, *, max_pages=10, sleep=None, on_page=None):
         # Amazon returns only the order that is still awaiting pickup.
         return [_row("403-HERE", status="Shipped", easyship_status="PendingPickUp")], []
 
     asked = []
 
-    async def fake_by_id(order_ids, *, sleep=None):
+    async def fake_by_id(order_ids, *, sleep=None, on_item=None):
         asked.extend(order_ids)
         return [_row("403-GONE", status="Shipped", easyship_status="Delivered")]
 
-    async def fake_items(order_ids, *, sleep=None):
+    async def fake_items(order_ids, *, sleep=None, on_item=None):
         return {}
 
     monkeypatch.setattr(refresh.spapi_orders, "fetch_easy_ship_orders", fake_orders)
@@ -383,16 +383,16 @@ async def test_a_fetch_that_returned_nothing_reconciles_nothing(db, db_schema, m
         _row("403-1", status="Shipped", easyship_status="PendingPickUp"),
     ])
 
-    async def empty_orders(days=90, *, max_pages=10, sleep=None):
+    async def empty_orders(days=90, *, max_pages=10, sleep=None, on_page=None):
         return [], []
 
     called = []
 
-    async def fake_by_id(order_ids, *, sleep=None):
+    async def fake_by_id(order_ids, *, sleep=None, on_item=None):
         called.append(order_ids)
         return []
 
-    async def fake_items(order_ids, *, sleep=None):
+    async def fake_items(order_ids, *, sleep=None, on_item=None):
         return {}
 
     monkeypatch.setattr(refresh.spapi_orders, "fetch_easy_ship_orders", empty_orders)
@@ -418,16 +418,16 @@ async def test_a_finished_order_is_not_re_read_every_refresh(db, db_schema, monk
         _row("403-open", status="Unshipped", easyship_status="PendingSchedule"),
     ])
 
-    async def fake_orders(days=90, *, max_pages=10, sleep=None):
+    async def fake_orders(days=90, *, max_pages=10, sleep=None, on_page=None):
         return [_row("403-open", status="Unshipped", easyship_status="PendingSchedule")], []
 
     called = []
 
-    async def fake_by_id(order_ids, *, sleep=None):
+    async def fake_by_id(order_ids, *, sleep=None, on_item=None):
         called.append(list(order_ids))
         return []
 
-    async def fake_items(order_ids, *, sleep=None):
+    async def fake_items(order_ids, *, sleep=None, on_item=None):
         return {}
 
     monkeypatch.setattr(refresh.spapi_orders, "fetch_easy_ship_orders", fake_orders)
@@ -493,3 +493,141 @@ async def test_the_scheduled_sweep_purges_old_orders(db, db_schema, monkeypatch)
         await db.execute(select(func.count()).select_from(AmazonOrderItem))
     ).scalar()
     assert orphans == 0, f"{orphans} item row(s) survived their order"
+
+
+# ─── Progress reporting: the % bar ───────────────────────────────────────────
+#
+# A refresh is minutes long — 22.5 seconds a page, then 2.2 seconds an order. A silent job
+# is indistinguishable from a broken one, which is why the owner asked for a bar.
+
+
+async def test_the_percent_climbs_through_the_phases_and_ends_at_100(db_schema, monkeypatch):
+    """Each phase moves the bar, and "done" is exactly 100.
+
+    100 is set explicitly rather than computed: the item phase can stop early on a run of
+    quota errors, and a bar frozen at 87% beside the word "done" reads as a hang.
+    """
+    seen = []
+
+    async def fake_orders(days=90, *, max_pages=10, sleep=None, on_page=None):
+        if on_page:
+            on_page(1, 4, 50)
+            seen.append(("page", refresh.STATE["percent"]))
+            on_page(2, 4, 90)
+            seen.append(("page", refresh.STATE["percent"]))
+        return [_row("403-1")], []
+
+    async def fake_items(order_ids, *, sleep=None, on_item=None):
+        total = len(order_ids)
+        for index, _oid in enumerate(order_ids, start=1):
+            if on_item:
+                on_item(index, total)
+                seen.append(("item", refresh.STATE["percent"]))
+        return {oid: [] for oid in order_ids}
+
+    async def fake_by_id(order_ids, *, sleep=None):
+        return []
+
+    monkeypatch.setattr(refresh.spapi_orders, "fetch_easy_ship_orders", fake_orders)
+    monkeypatch.setattr(refresh.spapi_orders, "fetch_items", fake_items)
+    monkeypatch.setattr(refresh.spapi_orders, "fetch_orders_by_id", fake_by_id)
+    refresh.reset_state()
+
+    result = await refresh.run(days=90, sleep=_no_sleep)
+
+    page_percents = [value for kind, value in seen if kind == "page"]
+    item_percents = [value for kind, value in seen if kind == "item"]
+    assert page_percents == sorted(page_percents), f"paging went backwards: {page_percents}"
+    assert page_percents and page_percents[-1] > 0, "paging reported no progress at all"
+    assert item_percents and max(item_percents) > max(page_percents), (
+        "the item phase did not advance the bar past the paging phase"
+    )
+    assert result["percent"] == 100, f"a finished refresh reported {result['percent']}%"
+
+
+async def test_the_percent_never_steps_backwards(db_schema, monkeypatch):
+    """A bar that jumps back reads as a fault.
+
+    Real cause, not hypothetical: the actionable pass can exhaust its token at page 2 of 8,
+    and then the PENDING pass starts its own page 1 of 2 — a naive `pages/cap` would drop
+    12% back to 25% of a smaller phase, or worse, to 0.
+    """
+    percents = []
+
+    async def fake_orders(days=90, *, max_pages=10, sleep=None, on_page=None):
+        if on_page:
+            # 7 of 8 pages = 43% of a 0-50 phase. Then the pending pass reports its OWN
+            # page 1 of 2, which computes to 25% — genuinely lower, which is the whole
+            # point. An earlier version of this test used 4-of-8 and 1-of-2: both land on
+            # exactly 25.0, so it passed with the guard deleted and proved nothing.
+            on_page(7, 8, 100)
+            percents.append(refresh.STATE["percent"])
+            on_page(1, 2, 6)
+            percents.append(refresh.STATE["percent"])
+        return [_row("403-1")], []
+
+    async def fake_items(order_ids, *, sleep=None, on_item=None):
+        return {}
+
+    async def fake_by_id(order_ids, *, sleep=None):
+        return []
+
+    monkeypatch.setattr(refresh.spapi_orders, "fetch_easy_ship_orders", fake_orders)
+    monkeypatch.setattr(refresh.spapi_orders, "fetch_items", fake_items)
+    monkeypatch.setattr(refresh.spapi_orders, "fetch_orders_by_id", fake_by_id)
+    refresh.reset_state()
+
+    await refresh.run(days=90, sleep=_no_sleep)
+
+    assert percents[1] >= percents[0], (
+        f"the bar went backwards when a pass restarted: {percents}"
+    )
+
+
+async def test_the_item_phase_publishes_a_real_denominator(db_schema, monkeypatch):
+    """`items_done of items_total` is exact, and the screen says so.
+
+    Worth asserting separately from the percentage: this is the only phase where the total is
+    known before the work starts, so it is the only honest count the banner can show.
+    """
+    async def fake_orders(days=90, *, max_pages=10, sleep=None, on_page=None):
+        return [_row("403-1"), _row("403-2"), _row("403-3")], []
+
+    async def fake_items(order_ids, *, sleep=None, on_item=None):
+        total = len(order_ids)
+        for index, _oid in enumerate(order_ids, start=1):
+            if on_item:
+                on_item(index, total)
+        return {oid: [] for oid in order_ids}
+
+    async def fake_by_id(order_ids, *, sleep=None):
+        return []
+
+    monkeypatch.setattr(refresh.spapi_orders, "fetch_easy_ship_orders", fake_orders)
+    monkeypatch.setattr(refresh.spapi_orders, "fetch_items", fake_items)
+    monkeypatch.setattr(refresh.spapi_orders, "fetch_orders_by_id", fake_by_id)
+    refresh.reset_state()
+
+    result = await refresh.run(days=90, sleep=_no_sleep)
+
+    assert result["items_total"] == 3
+    assert result["items_done"] == 3
+
+
+async def test_the_progress_snapshot_is_json_safe(db_schema, monkeypatch):
+    """The screen polls this every 3 seconds; a 500 here is a dead bar.
+
+    The same defect already bit once — `status()` returned raw datetimes and the 409 path
+    raised "Object of type datetime is not JSON serializable" on production.
+    """
+    import json
+
+    refresh.reset_state()
+    refresh.STATE.update({
+        "running": True, "started_at": datetime.utcnow(), "percent": 42,
+        "items_total": 10, "items_done": 4, "phase": "items",
+    })
+    try:
+        json.dumps(refresh.status())
+    finally:
+        refresh.reset_state()

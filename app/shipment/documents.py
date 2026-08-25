@@ -667,3 +667,203 @@ def _page_footer(canvas, doc):
         f"Page {canvas.getPageNumber()} · printed {date.today().isoformat()}",
     )
     canvas.restoreState()
+
+
+# ─── The dispatch sheet: today's parcels, for the warehouse floor ─────────────
+
+#: Millimetres of indent on a size row, so the nesting reads without a tree glyph.
+_NEST_INDENT_MM = 6
+
+
+def build_dispatch_pdf(sheet: dict, subtitle: str) -> io.BytesIO:
+    """Today's dispatch as two tables on one portrait page.
+
+    Asked for as *"Each parent item total weight orders … uske niche 500g, 1kg - kitne kitne
+    units. sort it total weight wise"*, plus a list of *"all orders with order id, name,
+    product and qty"*.
+
+    **Two sections in one document, not two downloads.** They are read together: the summary
+    says how much of each product to bring to the bench, the order list is what gets checked
+    off against the parcels. Two files get separated on a warehouse bench — the same reason
+    `_page_footer` prints "page 1 of 3".
+
+    **A PDF has no dropdown, so nesting is indentation plus weight.** A parent row carries the
+    product name and its total kilograms in bold; its pack sizes sit indented beneath in the
+    recessive style, heaviest first. That is the paper equivalent of a collapsible row, and it
+    keeps one product's sizes contiguous so a packer visits one shelf once.
+
+    **A separate function rather than a parameter on `build_simple_pdf`.** That builds one flat
+    table with one totals row and cannot express a parent/child relationship; bending it would
+    make both callers harder to read than having two.
+
+    Every cell is a `Paragraph`. reportlab draws a bare string at full width straight over the
+    next column's gridline — the bug that printed merchant SKUs on top of product names on a
+    real 117-row plan, with the whole suite green because the bytes were still a valid PDF of
+    a plausible size.
+    """
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, Spacer, Table
+
+    buffer = io.BytesIO()
+    doc, elements = _pdf_document(buffer, "Dispatch sheet", subtitle, landscape_mode=False)
+    styles = _paragraph_styles()
+
+    # ── Section 1: parent products, heaviest first, sizes nested ──
+    summary_headers = ["Product", "Size", "Units", "Orders", "Net kg", "Packed"]
+    summary_rows: list[list] = []
+    #: Table row indices (header included) that are PARENT rows, so the style can rule above
+    #: each group. Collected while building, since only this loop knows which is which.
+    parent_row_indices: list[int] = []
+
+    for parent in sheet.get("parents") or []:
+        parent_row_indices.append(len(summary_rows) + 1)      # +1 for the header row
+        summary_rows.append([
+            Paragraph(_escape(parent["product"]), styles["loud"]),
+            Paragraph(_escape(parent.get("brand") or ""), styles["quiet"]),
+            Paragraph(str(int(parent["units"])), styles["quantity"]),
+            Paragraph(str(int(parent["orders"])), styles["quantity"]),
+            Paragraph(f"{float(parent['kg'] or 0):.2f}", styles["quantity"]),
+            Paragraph(str(int(parent.get("packed") or 0)), styles["quantity"]),
+        ])
+        for size in parent.get("sizes") or []:
+            # An unweighed size shows blank, never "0.00": a zero reads as a measurement,
+            # and this number is handed to a courier.
+            kg = "" if size["kg"] is None else f"{float(size['kg']):.2f}"
+            indent = f'<para leftIndent="{_NEST_INDENT_MM * mm:.1f}">'
+            label = _escape(size.get("seller_sku") or size.get("asin") or "")
+            summary_rows.append([
+                Paragraph(f"{indent}{label}</para>", styles["quiet"]),
+                Paragraph(_escape(size["weight_label"] or "—"), styles["plain"]),
+                Paragraph(str(int(size["units"])), styles["plain"]),
+                Paragraph(str(int(size["orders"])), styles["plain"]),
+                Paragraph(kg, styles["plain"]),
+                Paragraph(str(int(size.get("packed") or 0)), styles["plain"]),
+            ])
+
+    blank = len(summary_headers) - 1
+    if not summary_rows:
+        summary_rows = [
+            [Paragraph("Nothing to dispatch today.", styles["plain"])]
+            + [Paragraph("", styles["plain"])] * blank
+        ]
+
+    totals = sheet.get("totals") or {}
+    summary_rows.append([
+        Paragraph("TOTAL", styles["totals"]),
+        Paragraph("", styles["totals"]),
+        Paragraph(str(int(totals.get("units") or 0)), styles["totals_qty"]),
+        Paragraph(str(int(totals.get("orders") or 0)), styles["totals_qty"]),
+        Paragraph(f"{float(totals.get('kg') or 0):.2f}", styles["totals_qty"]),
+        Paragraph(str(int(totals.get("packed") or 0)), styles["totals_qty"]),
+    ])
+
+    summary = Table(
+        [[_head_cell(head) for head in summary_headers]] + summary_rows,
+        colWidths=_dispatch_widths([72, 24, 20, 20, 26, 22]),
+        repeatRows=1,
+    )
+    summary.setStyle(
+        _dispatch_table_style(
+            totals_row=len(summary_rows),          # header offset already counted
+            parent_rows=parent_row_indices,
+        )
+    )
+    elements.append(summary)
+
+    # ── Section 2: every order, in the same parent order as the summary ──
+    elements.append(Spacer(1, 7 * mm))
+    elements.append(Paragraph("Orders", styles["loud"]))
+    elements.append(Spacer(1, 2 * mm))
+
+    order_headers = ["Order", "Name", "Product (SKU)", "Qty", "Destination"]
+    order_rows = []
+    for row in sheet.get("orders") or []:
+        product = " · ".join(
+            part for part in (row.get("weight_label"), row.get("seller_sku")) if part
+        )
+        destination = ", ".join(
+            part for part in (row.get("city"), row.get("state")) if part
+        )
+        order_rows.append([
+            Paragraph(_escape(row["amazon_order_id"]), styles["quiet"]),
+            Paragraph(_escape(row["parent"]), styles["plain"]),
+            Paragraph(_escape(product), styles["quiet"]),
+            Paragraph(str(int(row["quantity"])), styles["quantity"]),
+            Paragraph(_escape(destination), styles["plain"]),
+        ])
+    if not order_rows:
+        order_rows = [
+            [Paragraph("No orders.", styles["plain"])]
+            + [Paragraph("", styles["plain"])] * (len(order_headers) - 1)
+        ]
+
+    order_table = Table(
+        [[_head_cell(head) for head in order_headers]] + order_rows,
+        colWidths=_dispatch_widths([34, 44, 52, 14, 40]),
+        repeatRows=1,
+    )
+    order_table.setStyle(_dispatch_table_style())
+    elements.append(order_table)
+
+    doc.build(elements, onFirstPage=_page_footer, onLaterPages=_page_footer)
+    buffer.seek(0)
+    return buffer
+
+
+def _dispatch_widths(widths: list[float]) -> list:
+    """A millimetre layout scaled to exactly the printable width.
+
+    Fixed proportions rather than `_pdf_column_widths`, which measures the widest cell per
+    column. That is right for the plan documents, where a merchant SKU can genuinely need
+    68 mm — but here the first column holds BOTH a product name and an indented SKU, so a
+    measured width would size it for the longer of two different kinds of content and starve
+    the number columns. Those are bounded by construction (integers, two-decimal kilograms),
+    so fixing them is safe.
+
+    Scaled rather than hardcoded to 190 mm, so one column can be re-tuned by eye without
+    every other number having to be recomputed to stop the row overflowing the page.
+    """
+    from reportlab.lib.units import mm
+
+    total = sum(widths)
+    if total <= 0:
+        return [w * mm for w in widths]
+    return [w * _PAGE_WIDTH_MM / total * mm for w in widths]
+
+
+def _dispatch_table_style(
+    totals_row: int | None = None, parent_rows: list[int] | None = None
+):
+    """`_pdf_table_style`'s look, plus a rule above each parent, minus the zebra striping.
+
+    Striping fights the nesting: alternating bands make a parent and its first size read as
+    two unrelated rows, when the entire point of the layout is that they belong together. A
+    hairline above each parent group keeps your place on the page the way striping does,
+    while also showing the structure.
+    """
+    from reportlab.lib import colors
+    from reportlab.platypus import TableStyle
+
+    rule = colors.Color(0.85, 0.87, 0.90)
+    commands = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.Color(*HEADER_RGB)),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("LINEBELOW", (0, 1), (-1, -1), 0.25, rule),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.8, colors.Color(*HEADER_RGB)),
+    ]
+    for index in parent_rows or []:
+        commands.append(
+            ("LINEABOVE", (0, index), (-1, index), 0.7, colors.Color(0.55, 0.6, 0.66))
+        )
+    if totals_row is not None:
+        commands += [
+            ("LINEABOVE", (0, totals_row), (-1, totals_row), 0.9,
+             colors.Color(0.3, 0.34, 0.4)),
+            ("BACKGROUND", (0, totals_row), (-1, totals_row),
+             colors.Color(0.93, 0.94, 0.96)),
+        ]
+    return TableStyle(commands)

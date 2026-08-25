@@ -4,40 +4,39 @@
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>Orders — Amazon Tracker</title>
 {#
-  Amazon Easy Ship orders: today's picking sheet, and the order list for reconciliation.
+  Amazon Easy Ship orders, as the WAREHOUSE reads them: today's dispatch.
 
-  Asked for: "after the orders are packed and shipped on the portal my warehouse team is
-  able to reconcile the data. the orders which have to be shipped today. item wise weight
-  wise qty totalled. total number of orders of each item and total orders."
+  Asked for: "Lets show them only the data which is waiting for pickup. Rest of the orders
+  are the responsibility of the ecom team to ship on portal" … "Each parent item total
+  weight orders … uske niche 500g, 1kg - kitne kitne units. sort it total weight wise" …
+  "user should be able to put how many units has he packed against each sku."
 
-  So the PICKING SHEET is the default view and the order list is second. Five things are
-  deliberate:
+  Six things are deliberate:
 
-  1. **Four sections, four different situations.** "To pack & ship" needs picking and
-     labelling; "Waiting for pickup" is already boxed and needs handing to the courier;
-     "Later" is not due yet; "Pending payment" cannot be touched at all. One combined
-     "not done" list would merge four different jobs.
+  1. **Today's dispatch is the default and, for ops, the only view.** An order still in
+     `Unshipped` belongs to the ecom team, who ship it on Seller Central; putting it here
+     asks the floor to box something with no label. The owner's four-section picking sheet
+     is still reachable, but only for an administrator.
 
-     The pickup section reads `EasyShipShipmentStatus: PendingPickUp` — and Amazon marks
-     those orders `Shipped`, which is why it was empty for a day while Seller Central
-     showed 247 of them.
+  2. **A dispatched order does NOT leave the list.** Measured on production: 200 of 264
+     orders flipped from `PendingPickUp` to `PickedUp` overnight. Keyed on "not yet
+     collected" this screen would empty itself through the day and take the packed tally
+     with it, so the rule is ship-by == today AND labelled.
 
-  2. **The empty section is still shown.** Nothing is labelled on a normal morning, so
-     that section reads zero — and a section that vanished would look like a bug rather
-     than an empty queue.
+  3. **Parent product, then pack sizes beneath, heaviest first.** Weight is what fills the
+     vehicle. Sizes never collapse — 500 g and 1 kg live on different shelves — but they
+     roll up, because "how much ABC Sattu today" is the question being asked.
 
-  3. **Sizes never collapse.** 500g and 1kg of one product are separate lines, or the
-     packer visits the wrong shelf. The KG column is what the courier needs, and it is
-     NET — packaging is not in the catalogue.
+  4. **Packed units are OURS.** Amazon does not know how many units are in a box on this
+     floor. Typing here writes no status, raises no invoice and contradicts nothing.
 
-  4. **Every time is IST.** Amazon sends 18:29Z, which is 23:59 IST — end of day in
-     India. Rendering UTC would show every deadline 5.5 hours early on the one screen
-     whose job is "what must go out today". The server converts; this page never does.
+  5. **Over-packing warns and never blocks.** The boxes physically exist; refusing the
+     entry would leave real stock unrecorded. Same rule as `logic.over_packed`.
 
-  5. **The refresh banner is prominent.** An order shipped in Seller Central leaves the
-     sheet only on the next refresh, so a stale sheet is this feature's main failure
-     mode. Refreshing pages Amazon at one call every 22 seconds, so it is a background
-     job the page polls — not something that can happen on load.
+  6. **Every time is IST.** Amazon sends 18:29Z = 23:59 IST, end of day in India. The
+     server converts; this page never does. `dateIST` splits the string rather than parsing
+     it, because `new Date("2026-08-25")` is UTC midnight and rendered 05:30 the NEXT
+     morning in the column the warehouse plans against.
 #}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -69,29 +68,59 @@ h2{font-size:19px;font-weight:600;margin-bottom:2px}
   border-radius:8px;color:var(--text);padding:8px 12px;font-size:13.5px}
 .search-input:focus{outline:none;border-color:var(--accent)}
 
-/* The section heading carries its own totals, so a printed page is self-describing. */
-.section{margin-bottom:14px}
-.section h3{font-size:14px;font-weight:700;margin-bottom:2px}
-.section .totals{font-size:12.5px;color:var(--text-muted);margin-bottom:8px}
-.section.urgent h3{color:var(--red)}
-.empty-note{font-size:12.5px;color:var(--text-muted);padding:8px 0}
+/* The progress bar reuses index.html's classes rather than inventing a third bar. */
+#progress-wrap{display:none;margin-top:10px}
+.progress-bar-bg{height:6px;background:var(--bg);border-radius:99px;overflow:hidden;margin-bottom:6px}
+.progress-bar-fill{height:100%;background:var(--accent);border-radius:99px;width:0%;transition:width .4s}
+#progress-label{font-size:12px;color:var(--text-muted)}
+
+/* Headline numbers: what the shift is against. */
+.kpis{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.kpi{flex:1 1 130px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+.kpi .v{font-size:22px;font-weight:700;line-height:1.15}
+.kpi .k{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+.kpi.done .v{color:var(--green)}
+.kpi.left .v{color:var(--accent)}
 
 table{width:100%;border-collapse:separate;border-spacing:0}
 thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;font-size:10.5px;
   font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:left;white-space:nowrap;
   border-bottom:2px solid var(--border-strong)}
 tbody td{padding:6px 10px;font-size:13px;border-bottom:1px solid var(--border);white-space:nowrap}
-tbody tr:hover{background:var(--accent-soft)}
 tfoot td{padding:7px 10px;font-size:13px;font-weight:700;border-top:2px solid var(--border-strong)}
 .num{text-align:right}
-.p-name{font-weight:600}
+
+/* Parent / size nesting. The parent row is the heading, so it carries the weight. */
+tr.parent{cursor:pointer}
+tr.parent td{background:var(--surface2);font-weight:700;font-size:13.5px;border-top:1px solid var(--border-strong)}
+tr.parent:hover td{background:var(--accent-soft)}
+tr.size td{font-size:12.5px}
+tr.size td:first-child{padding-left:28px;color:var(--text-muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+.twisty{display:inline-block;width:12px;color:var(--text-muted);font-size:10px}
+tr.size.hidden{display:none}
 .p-size{font-weight:600}
+
+.qty{width:74px;background:var(--bg);border:1px solid var(--border-strong);border-radius:6px;
+  color:var(--text);padding:5px 7px;font-size:13.5px;text-align:right;font-weight:600}
+.qty:focus{outline:none;border-color:var(--accent)}
+.qty.over{border-color:var(--red);color:var(--red)}
+tr.over td{background:var(--red-soft)}
+
 .tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;background:var(--surface2);color:var(--text-muted)}
 .tag.unknown{background:var(--yellow-soft);color:var(--yellow)}
-.tag.overdue{background:var(--red-soft);color:var(--red)}
-.tag.cod{background:var(--blue-soft);color:var(--blue)}
+.tag.over{background:var(--red-soft);color:var(--red)}
+.tag.ok{background:var(--green-soft);color:var(--green)}
 .o-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
-.o-items{white-space:normal;font-size:12px;color:var(--text-muted)}
+.empty-note{font-size:12.5px;color:var(--text-muted);padding:8px 0}
+
+/* The save bar follows the packing screen: fixed, and only present when there is
+   something unsaved. A dialog would be dismissed; a bar is a standing fact. */
+.savebar{position:fixed;left:0;right:0;bottom:0;background:var(--surface);border-top:1px solid var(--border-strong);
+  padding:10px 20px;display:none;align-items:center;gap:12px;box-shadow:var(--shadow-lg);z-index:200}
+.savebar.show{display:flex}
+.savebar .count{font-size:13px;color:var(--text-muted);margin-right:auto}
+.section-title{font-size:14px;font-weight:700;margin-bottom:2px}
+.section-sub{font-size:12.5px;color:var(--text-muted);margin-bottom:8px}
 </style>
 <link rel="stylesheet" href="/static/theme.css"/>
 </head>
@@ -102,53 +131,73 @@ tfoot td{padding:7px 10px;font-size:13px;font-weight:700;border-top:2px solid va
 <div class="header-right"><a href="/logout">Logout</a></div>
 </header>
 <main>
-<h2>Orders &amp; picking sheet</h2>
-<p class="subtitle">Amazon Easy Ship orders, refreshed from Amazon in the background.
-  Every time is IST. Pack against the sheet, then ship and print labels in Seller
-  Central — an order leaves this sheet on the next refresh after you ship it.</p>
+<h2>Today&rsquo;s dispatch</h2>
+<p class="subtitle">Easy Ship orders whose pickup slot is <strong>today</strong> and that are
+  already shipped on Seller Central. Orders still sitting in <em>Unshipped</em> are the ecom
+  team&rsquo;s to ship on the portal and are not listed here. Every time is IST.</p>
 
 <div id="messages"></div>
 
 <div class="card">
   <div class="controls" style="margin-bottom:0">
     <button class="btn" id="refresh-btn" onclick="startRefresh()">↻ Refresh now</button>
+    <button class="btn-outline" onclick="dl('/orders/download/dispatch.pdf')">⬇ PDF sheet</button>
     <span id="refresh-note" style="font-size:12px;color:var(--text-muted)">—</span>
   </div>
-</div>
-
-<div class="controls">
-  <button class="chip active" id="view-sheet" onclick="setView('sheet')">Picking sheet</button>
-  <button class="chip" id="view-list" onclick="setView('list')">Order list</button>
-</div>
-
-<div id="sheet-view"></div>
-
-<div id="list-view" style="display:none">
-  <div class="card">
-    <div class="controls" style="margin-bottom:0">
-      <input class="search-input" id="search" type="search"
-             placeholder="Search order id, product, SKU or city…"/>
-      <button class="chip active" data-status="open" onclick="setStatus('open')">Open</button>
-      <button class="chip" data-status="all" onclick="setStatus('all')">All</button>
-      <span class="tag" id="list-count">—</span>
-    </div>
+  <div id="progress-wrap">
+    <div class="progress-bar-bg"><div class="progress-bar-fill" id="progress-fill"></div></div>
+    <div id="progress-label">Starting…</div>
   </div>
-  <div id="list-area"></div>
+</div>
+
+<div class="kpis" id="kpis"></div>
+
+<div id="dispatch-view"></div>
+
+<div class="card">
+  <div class="controls" style="margin-bottom:0">
+    <input class="search-input" id="search" type="search"
+           placeholder="Search order id, product, SKU or city…"/>
+    <span class="tag" id="order-count">—</span>
+  </div>
+</div>
+<div id="orders-area"></div>
+
+{# The owner's view. Admin-only: these three groups are the ecom team's work, and showing
+   them to the floor is what this redesign removed. Gated on the flag the way nav.html
+   gates Products and Users. #}
+<div id="admin-area" style="display:none">
+  <div class="controls" style="margin-top:18px">
+    <button class="chip" id="toggle-other" onclick="toggleOther()">Show the other groups</button>
+    <span style="font-size:12px;color:var(--text-muted)">to pack · later · pending payment
+      — the ecom team&rsquo;s queue</span>
+  </div>
+  <div id="other-view" style="display:none"></div>
 </div>
 </main>
 
+<div class="savebar" id="savebar">
+  <span class="count" id="save-count"></span>
+  <button class="btn" id="save-btn" onclick="save()">Save packed counts</button>
+</div>
+
 <script>
 /* ── State ──────────────────────────────────────────────────────────────────
-   `data` is the server's payload held as-is. The server already computed the sheet, the
-   IST times and the buckets, so this page renders and filters but never aggregates —
-   a second aggregation here is how a printed sheet and a screen start disagreeing
-   about a quantity. */
-let data = null;
-let view = "sheet";
-let statusFilter = "open";
+   The server computed the sheet, the IST dates and the rollups. This page renders and
+   filters but never aggregates — a second aggregation here is how a printed sheet and a
+   screen start disagreeing about a quantity, which is the failure `_dispatch` exists to
+   prevent by being the one code path behind both. */
+let data = null;          // GET /orders/dispatch
+let other = null;         // GET /orders — the admin picking sheet, loaded on demand
 let polling = null;
+let saving = false;
+let showOther = false;
+const dirty = new Set();  // ASINs whose packed count has been typed but not saved
+const packed = {};        // asin -> units, as edited in the browser
+const collapsed = new Set();
 
 const $ = id => document.getElementById(id);
+const n = v => Number(v || 0);
 
 function esc(s){
   return String(s == null ? "" : s)
@@ -171,26 +220,13 @@ function ago(iso){
   return `${Math.round(hours / 24)} day(s) ago`;
 }
 
-function timeIST(iso){
-  if(!iso) return "";
-  // An offset-bearing instant, formatted with an explicit timeZone so it stays IST even
-  // on a laptop set elsewhere — a warehouse deadline must not shift because someone is
-  // travelling.
-  return new Date(iso).toLocaleString("en-IN", {
-    day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
-    hour12: false, timeZone: "Asia/Kolkata",
-  });
-}
+/* A DATE, rendered as a date. NEVER passed through a time formatter.
 
-/* A DATE, rendered as a date. NEVER passed through timeIST().
-
-   `ship_by_ist` is a calendar date ("2026-08-25"), because a ship-by deadline is a DAY —
-   Amazon's 18:29Z is simply "end of that day in India". Running it through the time
-   formatter read it as UTC midnight and printed "26 Aug, 05:30": five and a half hours
-   into the WRONG DAY, on the column the warehouse plans against. Found in a browser, not
-   by a test, because both sides were individually correct.
-
-   Split rather than parsed, so no timezone is applied to a value that carries none. */
+   `ship_by_ist` is a calendar date ("2026-08-25") because a ship-by deadline is a DAY —
+   Amazon's 18:29Z is "end of that day in India". Running it through a time formatter read
+   it as UTC midnight and printed "26 Aug, 05:30": five and a half hours into the WRONG DAY,
+   on the column the warehouse plans against. Found in a browser, because both halves were
+   individually correct. Split, so no timezone is applied to a value carrying none. */
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 function dateIST(isoDate){
   if(!isoDate) return "";
@@ -201,15 +237,21 @@ function dateIST(isoDate){
 
 async function load(){
   try{
-    const r = await fetch("/orders");
-    if(!r.ok){ message("Could not load orders.", "error"); return; }
+    const r = await fetch("/orders/dispatch");
+    if(!r.ok){ message("Could not load today's dispatch.", "error"); return; }
     data = await r.json();
-    /* The catalogue can fall back to a cached copy or the static file when the MRP sheet
-       is unreachable. Said out loud, because a product whose name is missing looks like a
-       data problem rather than a Google outage. */
+    /* The catalogue can fall back to a cached copy or the static file when the MRP sheet is
+       unreachable. Said out loud, because a product with no name looks like a data problem
+       rather than a Google outage. */
     if(data.catalogue_warning){
       message(`${data.catalogue_warning} (product names from: ${data.catalogue_source})`, "warn");
     }
+    /* Server counts win on load. Anything typed and not yet saved is kept, so a reload
+       triggered by a finishing refresh cannot silently discard the packer's work. */
+    (data.sheet.parents || []).forEach(p => (p.sizes || []).forEach(s => {
+      if(!dirty.has(s.asin)) packed[s.asin] = n(s.packed);
+    }));
+    $("admin-area").style.display = data.is_admin ? "" : "none";
     render();
     renderRefresh(data.refresh, data.last_refreshed_at);
   }catch(err){
@@ -217,162 +259,363 @@ async function load(){
   }
 }
 
-function setView(next){
-  view = next;
-  $("view-sheet").classList.toggle("active", next === "sheet");
-  $("view-list").classList.toggle("active", next === "list");
-  $("sheet-view").style.display = next === "sheet" ? "" : "none";
-  $("list-view").style.display = next === "list" ? "" : "none";
-  render();
+/* ── Today's dispatch ─────────────────────────────────────────────────────── */
+function sizeRow(size, parentKey){
+  const units = n(size.units);
+  const done = n(packed[size.asin]);
+  const over = Math.max(0, done - units);
+  const left = Math.max(0, units - done);
+  const hidden = collapsed.has(parentKey) ? " hidden" : "";
+  return `<tr class="size${hidden}${over ? " over" : ""}" data-parent="${esc(parentKey)}">
+    <td>${esc(size.seller_sku || size.asin)}</td>
+    <td class="p-size">${esc(size.weight_label || "—")}</td>
+    <td class="num">${units}</td>
+    <td class="num">${n(size.orders)}</td>
+    <td class="num">${size.kg === null ? "" : n(size.kg).toFixed(2)}</td>
+    <td class="num"><input class="qty${over ? " over" : ""}" type="number" min="0"
+        inputmode="numeric" value="${done || ""}" placeholder="0"
+        aria-label="Units packed for ${esc(size.seller_sku || size.asin)}"
+        data-asin="${esc(size.asin)}"/></td>
+    <td class="num" data-left="${esc(size.asin)}">${
+      over ? `<span class="tag over">+${over} over</span>` : left
+    }</td>
+  </tr>`;
 }
 
-function setStatus(next){
-  statusFilter = next;
-  document.querySelectorAll("[data-status]").forEach(el =>
-    el.classList.toggle("active", el.dataset.status === next));
-  render();
-}
+function renderDispatch(){
+  const sheet = data.sheet;
+  const t = sheet.totals;
 
-/* ── The picking sheet ──────────────────────────────────────────────────────
-   Rendered from data.sheet exactly as the server built it. EVERY section is drawn,
-   including empty ones: on a normal morning nothing is labelled yet, so "Waiting for
-   pickup" reads zero — and a section that disappeared would look like a bug rather than
-   an empty queue. */
-function renderSheet(){
-  if(!data) return;
-  /* Section order matches the working day: pack what is due, hand over what is boxed,
-     then look ahead. Pending payment is last because nothing can be done about it. */
-  const order = ["to_pack", "awaiting_pickup", "later", "pending_payment"];
-  $("sheet-view").innerHTML = order.map(key => {
-    const section = data.sheet.sections[key];
-    if(!section) return "";
-    const t = section.totals;
-    const label = data.section_labels[key] || key;
-    const urgent = key === "to_pack" && t.overdue_orders > 0;
+  $("kpis").innerHTML = `
+    <div class="kpi"><div class="v">${n(t.orders)}</div><div class="k">Orders today</div></div>
+    <div class="kpi"><div class="v">${n(t.units)}</div><div class="k">Units</div></div>
+    <div class="kpi"><div class="v">${n(t.kg).toFixed(1)}</div><div class="k">Net kg</div></div>
+    <div class="kpi done"><div class="v" id="kpi-packed">${totalPacked()}</div><div class="k">Packed</div></div>
+    <div class="kpi left"><div class="v" id="kpi-left">${totalLeft()}</div><div class="k">Still to pack</div></div>`;
 
-    const bits = [`${Number(t.orders)} order(s)`,
-                  `${Number(t.quantity)} unit(s)`,
-                  `${Number(t.kg)} kg net`];
-    if(key === "pending_payment"){
-      bits.push("payment not confirmed — cannot be packed yet");
-    }
-    if(t.overdue_orders) bits.push(`${Number(t.overdue_orders)} OVERDUE`);
-    if(t.lines_without_weight) bits.push(`${Number(t.lines_without_weight)} line(s) with no pack size`);
-
-    const rows = section.lines.map(l => `<tr>
-      <td class="p-name">${esc(l.product)}${l.known ? "" : ' <span class="tag unknown">not in catalogue</span>'}</td>
-      <td class="p-size">${esc(l.weight_label)}</td>
-      <td>${esc(l.brand)}</td>
-      <td class="num">${Number(l.quantity)}</td>
-      <td class="num">${Number(l.orders)}</td>
-      <td class="num">${l.kg === null ? "" : Number(l.kg).toFixed(2)}</td>
-    </tr>`).join("");
-
-    const body = section.lines.length
-      ? `<table>
-          <thead><tr>
-            <th>Product</th><th>Size</th><th>Brand</th>
-            <th class="num">Units</th><th class="num">Orders</th><th class="num">Net kg</th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-          <tfoot><tr>
-            <td>TOTAL</td><td></td><td></td>
-            <td class="num">${Number(t.quantity)}</td>
-            <td class="num">${Number(t.orders)}</td>
-            <td class="num">${Number(t.kg).toFixed(2)}</td>
-          </tr></tfoot>
-         </table>`
-      : `<div class="empty-note">Nothing here right now.</div>`;
-
-    return `<div class="card section ${urgent ? "urgent" : ""}">
-      <h3>${esc(label)}</h3>
-      <div class="totals">${esc(bits.join(" · "))}</div>
-      ${body}
-      ${section.lines.length ? `<div class="controls" style="margin:8px 0 0">
-        <button class="btn-outline"
-                onclick="dl('/orders/download/picking-sheet.xlsx?bucket=${esc(key)}')">⬇ Excel</button>
-      </div>` : ""}
-    </div>`;
-  }).join("");
-
-  if(data.sheet.unknown_asins && data.sheet.unknown_asins.length){
-    $("sheet-view").innerHTML += `<div class="banner warn">
-      ${Number(data.sheet.unknown_asins.length)} ASIN(s) are not in the product sheet, so they have
-      no pack size and are excluded from the kilogram totals:
-      ${esc(data.sheet.unknown_asins.join(", "))}. Add them to the MRP sheet.</div>`;
-  }
-}
-
-/* ── The order list, for reconciliation ─────────────────────────────────────── */
-function visibleOrders(){
-  const q = $("search").value.trim().toLowerCase();
-  return (data.orders || []).filter(o => {
-    if(statusFilter === "open" && !["to_pack", "awaiting_pickup", "later"].includes(o.bucket)) return false;
-    if(!q) return true;
-    // Built for matching only and never inserted into the DOM, so it needs no escaping.
-    // The same fields ARE escaped where they are rendered, in renderList below.
-    const haystack = [o.amazon_order_id, o.city, o.state, o.status, o.easyship_status]
-      .concat((o.items || []).map(i => `${i.title} ${i.seller_sku} ${i.asin}`));
-    return haystack.join(" ").toLowerCase().includes(q);
-  });
-}
-
-function renderList(){
-  if(!data) return;
-  const rows = visibleOrders();
-  $("list-count").textContent = `${Number(rows.length)} of ${Number(data.total_orders)}`;
-  if(!rows.length){
-    $("list-area").innerHTML = '<div class="card"><div class="empty-note">No order matches.</div></div>';
+  if(!(sheet.parents || []).length){
+    $("dispatch-view").innerHTML = `<div class="card"><div class="empty-note">
+      Nothing is due for dispatch today. Orders appear here once the ecom team has shipped
+      them on Seller Central and Amazon has generated a label.</div></div>`;
     return;
   }
-  $("list-area").innerHTML = `<div class="card"><table>
-    <thead><tr>
-      <th>Order</th><th>Placed (IST)</th><th>Ship by (IST)</th>
-      <th>Status</th><th>Easy Ship</th><th>Items</th>
-      <th class="num">Total</th><th>Destination</th>
-    </tr></thead>
-    <tbody>${rows.map(o => `<tr>
-      <td class="o-id">${esc(o.amazon_order_id)}
-        ${o.is_cod ? '<span class="tag cod">COD</span>' : ""}</td>
-      <td>${esc(timeIST(o.purchase_date_ist))}</td>
-      <td>${o.ship_by_ist ? esc(dateIST(o.ship_by_ist)) : "—"}
-        ${o.overdue ? '<span class="tag overdue">overdue</span>' : ""}</td>
-      <td>${esc(o.status)}</td>
-      <td>${esc(o.easyship_status || "—")}</td>
-      <td class="o-items">${esc((o.items || []).map(i =>
-          `${i.title || i.asin} ×${Number(i.quantity_ordered)}`).join("; ")) || "—"}</td>
-      <td class="num">${o.order_total === null ? "" : esc(o.currency || "") + " " + Number(o.order_total).toFixed(2)}</td>
-      <td>${esc([o.city, o.state].filter(Boolean).join(", "))}</td>
-    </tr>`).join("")}</tbody>
-  </table></div>`;
+
+  const body = sheet.parents.map(p => {
+    const key = p.product;
+    const open = !collapsed.has(key);
+    return `<tr class="parent" data-toggle="${esc(key)}">
+      <td><span class="twisty">${open ? "▼" : "▶"}</span>${esc(p.product)}
+        ${p.known ? "" : ' <span class="tag unknown">not in catalogue</span>'}</td>
+      <td>${esc(p.brand || "")}</td>
+      <td class="num">${n(p.units)}</td>
+      <td class="num">${n(p.orders)}</td>
+      <td class="num">${n(p.kg).toFixed(2)}</td>
+      <td class="num" data-parent-packed="${esc(key)}">${parentPacked(p)}</td>
+      <td class="num" data-parent-left="${esc(key)}">${parentLeft(p)}</td>
+    </tr>` + (p.sizes || []).map(s => sizeRow(s, key)).join("");
+  }).join("");
+
+  $("dispatch-view").innerHTML = `<div class="card">
+    <div class="section-title">By product — heaviest first</div>
+    <div class="section-sub">Tap a product to fold its pack sizes. Type what you have packed
+      against each size; it saves against today (${esc(dateIST(data.pack_date))}) and stays
+      even after the courier collects.</div>
+    <table>
+      <thead><tr>
+        <th>Product / SKU</th><th>Size</th>
+        <th class="num">Units</th><th class="num">Orders</th><th class="num">Net kg</th>
+        <th class="num">Packed</th><th class="num">Left</th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+      <tfoot><tr>
+        <td>TOTAL</td><td></td>
+        <td class="num">${n(t.units)}</td>
+        <td class="num">${n(t.orders)}</td>
+        <td class="num">${n(t.kg).toFixed(2)}</td>
+        <td class="num" id="foot-packed">${totalPacked()}</td>
+        <td class="num" id="foot-left">${totalLeft()}</td>
+      </tr></tfoot>
+    </table>
+    ${t.sizes_without_weight ? `<div class="banner warn" style="margin:8px 0 0">
+      ${n(t.sizes_without_weight)} line(s) have no pack size, so they are counted in units but
+      left out of the kilogram total — a 0 there would read as a real weight.</div>` : ""}
+  </div>`;
+
+  if((sheet.unknown_asins || []).length){
+    $("dispatch-view").innerHTML += `<div class="banner warn">
+      ${n(sheet.unknown_asins.length)} ASIN(s) are not in the product sheet, so they have no
+      name or pack size here: ${esc(sheet.unknown_asins.join(", "))}. Add them to the MRP
+      sheet.</div>`;
+  }
+}
+
+function totalPacked(){
+  return Object.values(packed).reduce((a, b) => a + n(b), 0);
+}
+function totalLeft(){
+  let left = 0;
+  (data.sheet.parents || []).forEach(p => (p.sizes || []).forEach(s => {
+    left += Math.max(0, n(s.units) - n(packed[s.asin]));
+  }));
+  return left;
+}
+function parentPacked(p){
+  return (p.sizes || []).reduce((a, s) => a + n(packed[s.asin]), 0);
+}
+function parentLeft(p){
+  return (p.sizes || []).reduce(
+    (a, s) => a + Math.max(0, n(s.units) - n(packed[s.asin])), 0);
+}
+
+/* ── The order list ───────────────────────────────────────────────────────── */
+function visibleOrders(){
+  const q = $("search").value.trim().toLowerCase();
+  const rows = (data.sheet.orders || []);
+  if(!q) return rows;
+  // Built for matching only and never inserted into the DOM, so it needs no escaping.
+  // The same fields ARE escaped where they are rendered, below.
+  return rows.filter(o => [o.amazon_order_id, o.parent, o.seller_sku, o.asin,
+                           o.city, o.state].join(" ").toLowerCase().includes(q));
+}
+
+function renderOrders(){
+  const rows = visibleOrders();
+  const total = (data.sheet.orders || []).length;
+  $("order-count").textContent = `${rows.length} of ${total} line(s)`;
+  if(!rows.length){
+    $("orders-area").innerHTML =
+      '<div class="card"><div class="empty-note">No order matches.</div></div>';
+    return;
+  }
+  $("orders-area").innerHTML = `<div class="card">
+    <div class="section-title">Orders</div>
+    <div class="section-sub">Grouped in the same order as the summary above, so the two read
+      together. This is what the PDF prints.</div>
+    <table>
+      <thead><tr>
+        <th>Order</th><th>Name</th><th>Product (SKU)</th>
+        <th class="num">Qty</th><th>Destination</th><th>Amazon status</th>
+      </tr></thead>
+      <tbody>${rows.map(o => `<tr>
+        <td class="o-id">${esc(o.amazon_order_id)}</td>
+        <td>${esc(o.parent)}</td>
+        <td>${esc([o.weight_label, o.seller_sku].filter(Boolean).join(" · "))}</td>
+        <td class="num">${n(o.quantity)}</td>
+        <td>${esc([o.city, o.state].filter(Boolean).join(", "))}</td>
+        <td><span class="tag">${esc(o.easyship_status || "—")}</span></td>
+      </tr>`).join("")}</tbody>
+    </table>
+  </div>`;
 }
 
 function render(){
-  if(view === "sheet") renderSheet(); else renderList();
+  if(!data) return;
+  renderDispatch();
+  renderOrders();
+  renderSaveBar();
+  if(showOther) renderOther();
+}
+
+/* ── The owner's other groups, admin only ─────────────────────────────────── */
+async function toggleOther(){
+  showOther = !showOther;
+  $("other-view").style.display = showOther ? "" : "none";
+  $("toggle-other").classList.toggle("active", showOther);
+  $("toggle-other").textContent = showOther
+    ? "Hide the other groups" : "Show the other groups";
+  if(showOther && !other){
+    try{
+      const r = await fetch("/orders");
+      if(r.ok) other = await r.json();
+    }catch(err){ /* the dispatch screen still works; this panel is extra */ }
+  }
+  if(showOther) renderOther();
+}
+
+function renderOther(){
+  if(!other){ $("other-view").innerHTML =
+    '<div class="card"><div class="empty-note">Loading…</div></div>'; return; }
+  // `awaiting_pickup` is deliberately absent: that IS today's dispatch above, and showing
+  // it twice under two different rules is how two numbers for one thing start to disagree.
+  const keys = ["to_pack", "later", "pending_payment"];
+  $("other-view").innerHTML = keys.map(key => {
+    const section = other.sheet.sections[key];
+    if(!section) return "";
+    const t = section.totals;
+    const bits = [`${n(t.orders)} order(s)`, `${n(t.quantity)} unit(s)`,
+                  `${n(t.kg)} kg net`];
+    if(t.overdue_orders) bits.push(`${n(t.overdue_orders)} OVERDUE`);
+    return `<div class="card">
+      <div class="section-title">${esc(other.section_labels[key] || key)}</div>
+      <div class="section-sub">${esc(bits.join(" · "))}</div>
+      ${section.lines.length ? `<table>
+        <thead><tr><th>Product</th><th>Size</th>
+          <th class="num">Units</th><th class="num">Orders</th><th class="num">Net kg</th>
+        </tr></thead>
+        <tbody>${section.lines.map(l => `<tr>
+          <td>${esc(l.product)}</td><td class="p-size">${esc(l.weight_label)}</td>
+          <td class="num">${n(l.quantity)}</td><td class="num">${n(l.orders)}</td>
+          <td class="num">${l.kg === null ? "" : n(l.kg).toFixed(2)}</td>
+        </tr>`).join("")}</tbody></table>`
+        : '<div class="empty-note">Nothing here right now.</div>'}
+    </div>`;
+  }).join("");
+}
+
+/* ── Typing packed counts ─────────────────────────────────────────────────────
+   ONE delegated listener rather than inline handlers, because product names and SKUs come
+   from an uploaded sheet — an inline `onchange` built from that string is an injection
+   waiting to happen. Same reason ops.html delegates.
+
+   Totals are recomputed here as he types. A server round trip per keystroke would mean the
+   over-pack warning arrived only after a save, by which time he has boxed more of it. */
+$("dispatch-view").addEventListener("input", e => {
+  const box = e.target;
+  const asin = box.dataset && box.dataset.asin;
+  if(!asin) return;
+
+  packed[asin] = Math.max(0, Math.floor(Number(box.value) || 0));
+  dirty.add(asin);
+  refreshDerived(asin, box);
+  renderSaveBar();
+});
+
+$("dispatch-view").addEventListener("click", e => {
+  const row = e.target.closest("tr.parent");
+  if(!row) return;
+  // A click INSIDE the number box must not fold the group away underneath the cursor.
+  if(e.target.closest("input")) return;
+  const key = row.dataset.toggle;
+  if(collapsed.has(key)) collapsed.delete(key); else collapsed.add(key);
+  renderDispatch();
+});
+
+/* Update only the cells that changed, not the whole table: re-rendering would blur the
+   input the packer is typing into and lose his caret position mid-number. */
+function refreshDerived(asin, box){
+  let size = null, parent = null;
+  (data.sheet.parents || []).forEach(p => (p.sizes || []).forEach(s => {
+    if(s.asin === asin){ size = s; parent = p; }
+  }));
+  if(!size) return;
+
+  const done = n(packed[asin]);
+  const over = Math.max(0, done - n(size.units));
+  const tr = box.closest("tr");
+  if(tr) tr.classList.toggle("over", over > 0);
+  box.classList.toggle("over", over > 0);
+
+  const leftCell = document.querySelector(`[data-left="${CSS.escape(asin)}"]`);
+  if(leftCell){
+    leftCell.innerHTML = over > 0
+      ? `<span class="tag over">+${over} over</span>`
+      : String(Math.max(0, n(size.units) - done));
+  }
+  const pp = document.querySelector(`[data-parent-packed="${CSS.escape(parent.product)}"]`);
+  if(pp) pp.textContent = String(parentPacked(parent));
+  const pl = document.querySelector(`[data-parent-left="${CSS.escape(parent.product)}"]`);
+  if(pl) pl.textContent = String(parentLeft(parent));
+
+  ["kpi-packed", "foot-packed"].forEach(id => {
+    if($(id)) $(id).textContent = String(totalPacked());
+  });
+  ["kpi-left", "foot-left"].forEach(id => {
+    if($(id)) $(id).textContent = String(totalLeft());
+  });
+  renderOverWarning();
+}
+
+/* Over-packing warns and never blocks: the boxes physically exist, and refusing the entry
+   would leave real stock unrecorded. Only the owner can resolve it, and only two ways —
+   the surplus ships and appears on an invoice at the packed quantity, or it comes back. */
+function renderOverWarning(){
+  const over = [];
+  (data.sheet.parents || []).forEach(p => (p.sizes || []).forEach(s => {
+    const excess = n(packed[s.asin]) - n(s.units);
+    if(excess > 0) over.push(`${p.product} ${s.weight_label || s.asin}: +${excess}`);
+  }));
+  if(!over.length){ message("", "info"); return; }
+  message(`Packed more than today's orders need — ${over.join("; ")}. The counts are kept `
+          + "as entered; check whether those parcels belong to tomorrow.", "warn");
+}
+
+function renderSaveBar(){
+  const count = dirty.size;
+  $("savebar").classList.toggle("show", count > 0);
+  $("save-count").textContent = saving
+    ? "Saving…"
+    : `${count} SKU${count === 1 ? "" : "s"} not saved yet`;
+  $("save-btn").disabled = saving || !count;
+}
+
+async function save(){
+  if(saving || !dirty.size) return;
+  const entries = [...dirty].map(asin => ({asin, units: n(packed[asin])}));
+  saving = true; renderSaveBar();
+  try{
+    const r = await fetch(`/orders/packed/${data.pack_date}`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({entries}),
+    });
+    const body = await r.json();
+    if(!r.ok){
+      // 409 means the IST day rolled over while this page was open. Said plainly, because
+      // the honest fix is a reload — silently refiling the count onto a new date would put
+      // this morning's work on the wrong day.
+      message(body.error || "Could not save the packed counts.", "error");
+      return;
+    }
+    dirty.clear();
+    Object.keys(body.packed || {}).forEach(asin => { packed[asin] = n(body.packed[asin]); });
+    message("Packed counts saved.", "good");
+  }catch(err){
+    message("Could not reach the server. Your counts are still on screen — try Save again.",
+            "error");
+  }finally{
+    saving = false; renderSaveBar();
+  }
 }
 
 /* ── Refreshing ─────────────────────────────────────────────────────────────
-   A full refresh pages Amazon at ONE CALL EVERY 22 SECONDS, so it is a background job
-   and this page polls it. The button disables while it runs — not decoration: a second
-   refresh would burn the same rate budget and 429 the first. */
+   A full refresh pages Amazon at ONE CALL EVERY 22 SECONDS and then fetches items at one
+   every 2.2, so it is a background job this page polls. The percentage is the server's:
+   the item phase has a real denominator and paging does not, so guessing here would be a
+   second, worse estimate. */
 function renderRefresh(state, lastAt){
   const running = !!(state && state.running);
   $("refresh-btn").disabled = running;
   $("refresh-btn").textContent = running ? "Refreshing…" : "↻ Refresh now";
+  $("progress-wrap").style.display = running ? "block" : "none";
 
-  const bits = [];
   if(running){
-    bits.push(`fetching (${esc(state.phase)})`);
-    if(state.orders_seen) bits.push(`${Number(state.orders_seen)} order(s) seen`);
+    const percent = Math.max(0, Math.min(100, n(state.percent)));
+    $("progress-fill").style.width = `${percent}%`;
+    const bits = [`${percent}%`, phaseLabel(state.phase)];
+    if(state.phase === "items" && n(state.items_total)){
+      bits.push(`${n(state.items_done)} of ${n(state.items_total)} orders itemised`);
+    }else if(n(state.orders_seen)){
+      bits.push(`${n(state.orders_seen)} order(s) seen`);
+    }
+    $("progress-label").textContent = bits.join(" · ");
+    $("refresh-note").textContent = "this takes a few minutes";
   }else{
-    bits.push(`refreshed ${ago(lastAt)}`);
-    if(state && state.created) bits.push(`${Number(state.created)} new`);
-    if(state && state.updated) bits.push(`${Number(state.updated)} updated`);
+    const bits = [`refreshed ${ago(lastAt)}`];
+    if(state && state.created) bits.push(`${n(state.created)} new`);
+    if(state && state.updated) bits.push(`${n(state.updated)} updated`);
+    if(state && state.reconciled) bits.push(`${n(state.reconciled)} corrected`);
+    $("refresh-note").textContent = bits.join(" · ");
   }
-  $("refresh-note").textContent = bits.join(" · ");
 
   if(state && state.error) message(`Refresh failed: ${state.error}`, "error");
   else if(state && (state.warnings || []).length) message(state.warnings.join(" "), "warn");
+}
+
+function phaseLabel(phase){
+  return ({orders: "reading orders from Amazon",
+           reconcile: "checking orders that changed",
+           items: "fetching order contents",
+           done: "finishing"})[phase] || String(phase || "");
 }
 
 async function startRefresh(){
@@ -380,8 +623,6 @@ async function startRefresh(){
     const r = await fetch("/orders/refresh", {method: "POST"});
     const body = await r.json();
     if(!r.ok){ message(body.error || "Could not start the refresh.", "warn"); return; }
-    message("Refreshing from Amazon. This takes a few minutes — Amazon allows one "
-            + "request every 22 seconds, so the page will update as it goes.", "info");
     renderRefresh(body.refresh, data && data.last_refreshed_at);
     poll();
   }catch(err){ message("Could not reach the server.", "error"); }
@@ -395,15 +636,21 @@ function poll(){
       renderRefresh(state, data && data.last_refreshed_at);
       if(!state.running){
         clearInterval(polling); polling = null;
-        await load();          // reload the rows the refresh just wrote
+        other = null;                 // the admin panel's copy is stale now
+        await load();                 // reload the rows the refresh just wrote
       }
     }catch(err){ clearInterval(polling); polling = null; }
-  }, 4000);
+  }, 3000);
 }
 
 function dl(url){ window.location.href = url; }
 
-$("search").addEventListener("input", render);
+$("search").addEventListener("input", renderOrders);
+
+/* An unsaved count is real work: warn before it is lost to a closed tab. */
+window.addEventListener("beforeunload", e => {
+  if(dirty.size){ e.preventDefault(); e.returnValue = ""; }
+});
 
 load();
 </script>

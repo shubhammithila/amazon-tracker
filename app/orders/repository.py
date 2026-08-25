@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import case, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AmazonOrder, AmazonOrderItem
+from app.models import AmazonOrder, AmazonOrderItem, OrderPackedEntry
 
 logger = logging.getLogger(__name__)
 
@@ -283,3 +283,81 @@ async def purge_older_than(db: AsyncSession, days: int) -> int:
     if rows:
         await db.commit()
     return len(rows)
+
+
+# ─── Packed units: the ONLY rows in this module the app writes for itself ─────
+#
+# Everything above is a cache of Amazon's data — refreshed, never edited. These two
+# functions are the exception, and the boundary is worth keeping visible: "how many units
+# are in boxes on this floor" is a fact Amazon does not have, so recording it locally is
+# not a second source of truth about whether an order shipped. Nothing here writes an
+# order's status and no invoice is raised from it.
+
+
+async def load_packed(db: AsyncSession, pack_date: str) -> dict[str, int]:
+    """`{asin: units}` packed on one IST day. Empty when nothing has been entered.
+
+    A dict rather than rows, because every caller wants to look up one ASIN while rendering
+    a line — and `dispatch_sheet` takes exactly this shape.
+    """
+    rows = await db.execute(
+        select(OrderPackedEntry.asin, OrderPackedEntry.units)
+        .where(OrderPackedEntry.pack_date == pack_date)
+    )
+    return {asin: int(units or 0) for asin, units in rows.all()}
+
+
+async def save_packed(
+    db: AsyncSession, pack_date: str, entries: list[dict]
+) -> dict[str, int]:
+    """Upsert packed units for one day. Returns the day's full `{asin: units}` afterwards.
+
+    SELECT-then-UPDATE-or-INSERT, matching ``shipment.repository.save_packing_entries`` —
+    the same idiom for the same two reasons: it is dialect-neutral, and the UNIQUE index on
+    (pack_date, asin) is the real guarantee that a repeated save from a warehouse phone
+    updates one row instead of double-counting.
+
+    **A zero deletes the row rather than storing 0.** Correcting a mistyped count should
+    remove the line, not leave a 0 that still reads as "this SKU was counted today".
+
+    The full map is returned rather than nothing, so the screen re-renders from the committed
+    truth instead of trusting what it just sent — the packer's phone can lose a response.
+    """
+    by_asin: dict[str, int] = {}
+    for raw in entries or []:
+        if not isinstance(raw, dict):
+            continue
+        asin = str(raw.get("asin") or "").strip().upper()
+        if not asin:
+            continue
+        # A repeated ASIN in one payload: last wins, as on the packing screen.
+        by_asin[asin] = max(0, int(raw.get("units") or 0))
+
+    if not by_asin:
+        return await load_packed(db, pack_date)
+
+    existing = {
+        row.asin: row
+        for row in (
+            await db.execute(
+                select(OrderPackedEntry).where(
+                    OrderPackedEntry.pack_date == pack_date,
+                    OrderPackedEntry.asin.in_(sorted(by_asin)),
+                )
+            )
+        ).scalars()
+    }
+
+    for asin, units in by_asin.items():
+        row = existing.get(asin)
+        if units == 0:
+            if row is not None:
+                await db.delete(row)
+            continue
+        if row is None:
+            db.add(OrderPackedEntry(pack_date=pack_date, asin=asin, units=units))
+        else:
+            row.units = units
+
+    await db.commit()
+    return await load_packed(db, pack_date)

@@ -75,6 +75,22 @@ PENDING_ORDER = frozenset({"Pending"})
 #: backwards is what made the 247 waiting-for-pickup orders invisible.
 SHIPPED_ORDER = frozenset({"Shipped"})
 
+#: Easy Ship statuses that mean Amazon HAS a label for the order — so it has been shipped on
+#: the portal and is the warehouse's parcel rather than the ecom team's to-do.
+#:
+#: **`PendingSchedule` is deliberately absent.** No label yet means the order is still
+#: sitting in Unshipped on Seller Central, which is the ecom team's job; putting it on the
+#: warehouse's dispatch sheet would ask the floor to box something that has no label to stick
+#: on it.
+#:
+#: `LabelCanceled` is absent too: the label existed and was withdrawn, so there is no parcel.
+LABELLED_EASYSHIP = frozenset({
+    "PendingPickUp",                            # labelled, courier has not come yet
+    "PickedUp", "OutForDelivery", "Delivered",   # collected — still today's dispatch
+    "ReturningToSeller", "ReturnedToSeller",     # went out, coming back
+    "LabelGenerated", "ReadyForPickup",          # documented aliases; never seen here
+})
+
 
 def _field(row, name, default=None):
     """Read a field from either a dict or an ORM row.
@@ -293,3 +309,237 @@ def picking_sheet(orders: Sequence, catalogue: Mapping, today: date) -> dict:
         }
 
     return {"sections": sections, "unknown_asins": sorted(unknown)}
+
+
+# ─── Today's dispatch: the warehouse's own question ──────────────────────────
+#
+# `bucket_for` answers "what state is this order in", and every order gets exactly ONE
+# bucket. The warehouse asks something different — "is this parcel part of today's
+# dispatch?" — and that question CROSSES two buckets: a labelled order not yet collected is
+# `awaiting_pickup`, and the same order an hour after the courier came is `done`.
+#
+# So this is a separate predicate rather than a change to `bucket_for`. Editing the bucketing
+# would silently move the picking sheet's four section totals and its Excel export, and it is
+# pinned by the tests that caught the 247-order bug. An orthogonal question costs nothing.
+
+
+def is_todays_dispatch(order, today: date) -> bool:
+    """Is this order part of today's physical dispatch?
+
+    Two conditions, and both matter:
+
+    * **The ship-by date is today.** That is the pickup slot — every real `LatestShipDate`
+      on this account is `18:29Z` = `23:59 IST`, so "due today" is a calendar day in India.
+    * **Amazon has a label** (`LABELLED_EASYSHIP`). An order still in `Unshipped` /
+      `PendingSchedule` belongs to the ecom team, who ship it on Seller Central; the
+      warehouse cannot box a parcel that has no label yet.
+
+    **Collected orders stay.** This is the whole point, and it is why the rule is not simply
+    "awaiting pickup": measured on production, 200 of 264 orders flipped from `PendingPickUp`
+    to `PickedUp` overnight. A list keyed on "not yet collected" therefore empties itself
+    through the day and takes the day's packed tally with it — so the floor would lose the
+    record of what it packed at the moment the courier arrived. What was packed this morning
+    is still what was packed this morning.
+    """
+    if (_field(order, "easyship_status") or "").strip() not in LABELLED_EASYSHIP:
+        return False
+    return ship_by_date(order) == today
+
+
+def _brand_code(raw_brand) -> str:
+    """"MF"/"HF" as the rest of the app writes them, from the sheet's full names.
+
+    Substring rather than equality, because the sheet says "Mithila Foods".
+    """
+    text = str(raw_brand or "")
+    return "MF" if "mithila" in text.lower() else ("HF" if text else "")
+
+
+def dispatch_sheet(
+    orders: Sequence, catalogue: Mapping, today: date, packed: Mapping | None = None
+) -> dict:
+    """Today's dispatch, grouped parent product → pack size, heaviest first.
+
+    Asked for as: *"Each parent item total weight orders. like ABC sattu ka aaj ka kitna
+    total weight ka order hai … uske niche 500g, 1kg - kitne kitne units. sort it total
+    weight wise."*
+
+    Returns::
+
+        {"parents": [{"product", "brand", "kg", "units", "orders", "packed",
+                      "sizes": [{...}]}],
+         "orders":  [{"amazon_order_id", "parent", "product", "seller_sku", ...}],
+         "totals":  {...},
+         "unknown_asins": [...]}
+
+    Four properties are load-bearing:
+
+    **The PARENT is the catalogue name; the SIZE is the pack.** "ABC Sattu" is one heading
+    with 500 g and 1 kg beneath it, because that is how the owner thinks about the day's
+    volume — while the packer still needs the sizes apart, since they live on different
+    shelves.
+
+    **Sorted by KILOGRAMS descending**, parents and sizes both. Weight is what fills the
+    vehicle, so the heaviest line is the one worth reading first. Quantity would put 21
+    sachets above 15 kg of rice.
+
+    **`kg` is pack size x quantity, and NET.** Cartons, filler and tape are not in the
+    catalogue, so a weighbridge reads higher — the same caveat ``picking_sheet`` and
+    ``shipment_weight`` carry. A size with no known pack weight is EXCLUDED from the kilogram
+    total and counted in ``sizes_without_weight``: treating it as 0 makes a 47 kg sheet
+    quietly report 40, and a wrong weight reaches a courier.
+
+    **`packed` comes from OUR rows, not Amazon's.** It is the warehouse's own progress note
+    against each ASIN and it never contradicts Amazon: no status is written, no invoice is
+    raised from it. Amazon genuinely does not know how many units are in a box on this floor.
+    """
+    packed_by_asin = {
+        str(asin or "").strip().upper(): int(units or 0)
+        for asin, units in (packed or {}).items()
+    }
+
+    # (parent, weight) -> size accumulator. Keyed on the pair because two sizes of one
+    # product must never collapse, and two products of one weight must never merge.
+    sizes: dict[tuple, dict] = {}
+    order_rows: list[dict] = []
+    unknown: set[str] = set()
+    order_ids: set[str] = set()
+
+    for order in orders:
+        if not is_todays_dispatch(order, today):
+            continue
+        order_id = _field(order, "amazon_order_id") or ""
+        order_ids.add(order_id)
+
+        for item in _field(order, "items") or []:
+            asin = (_field(item, "asin") or "").strip().upper()
+            if not asin:
+                continue
+            quantity = int(_field(item, "quantity_ordered") or 0)
+            if quantity <= 0:
+                continue
+
+            entry = _catalogue_entry(catalogue, asin)
+            if entry is None:
+                # Kept and NAMED rather than dropped: a row missing from a dispatch sheet is
+                # a parcel nobody packs, discovered when Amazon reports a late shipment.
+                unknown.add(asin)
+                parent = (_field(item, "title") or asin)[:60]
+                weight, brand, known = 0.0, "", False
+            else:
+                parent = entry.get("name") or asin
+                weight = float(entry.get("weight") or 0)
+                brand = _brand_code(entry.get("brand"))
+                known = True
+
+            seller_sku = _field(item, "seller_sku") or ""
+            key = (parent, weight, known)
+            size = sizes.setdefault(key, {
+                "parent": parent, "weight": weight, "brand": brand, "known": known,
+                "asins": {}, "units": 0, "orders": set(), "seller_skus": set(),
+            })
+            size["units"] += quantity
+            size["orders"].add(order_id)
+            size["asins"][asin] = size["asins"].get(asin, 0) + quantity
+            if seller_sku:
+                size["seller_skus"].add(seller_sku)
+
+            order_rows.append({
+                "amazon_order_id": order_id,
+                "parent": parent,
+                "weight": weight,
+                "weight_label": weight_label(weight) if weight else "",
+                "seller_sku": seller_sku,
+                "asin": asin,
+                "quantity": quantity,
+                "known": known,
+                "city": _field(order, "city") or "",
+                "state": _field(order, "state") or "",
+                "easyship_status": _field(order, "easyship_status") or "",
+            })
+
+    # ── Roll the sizes up into parents ──
+    parents: dict[str, dict] = {}
+    for size in sizes.values():
+        weight = float(size["weight"] or 0)
+        # One ASIN per (parent, size) in practice; if the catalogue ever maps two, the
+        # heavier-selling one names the row and both are still counted in `units`.
+        asin = max(size["asins"].items(), key=lambda kv: kv[1])[0] if size["asins"] else ""
+        packed_units = sum(packed_by_asin.get(a, 0) for a in size["asins"])
+        row = {
+            "asin": asin,
+            "weight": weight,
+            "weight_label": weight_label(weight) if weight else "",
+            "seller_sku": sorted(size["seller_skus"])[0] if size["seller_skus"] else "",
+            "units": size["units"],
+            "orders": len(size["orders"]),
+            "kg": round(weight * size["units"], 3) if weight else None,
+            "packed": packed_units,
+            # Clamped at 0 the way `remaining_for` is: this number reaches a printed sheet,
+            # and "-5 to pack" is not a quantity. Over-packing is reported separately.
+            "remaining": max(0, size["units"] - packed_units),
+            "over_packed": max(0, packed_units - size["units"]),
+            "known": size["known"],
+        }
+        parent = parents.setdefault(size["parent"], {
+            "product": size["parent"], "brand": size["brand"], "known": size["known"],
+            "sizes": [], "units": 0, "kg": 0.0, "packed": 0, "orders": set(),
+        })
+        parent["sizes"].append(row)
+        parent["units"] += row["units"]
+        parent["kg"] += row["kg"] or 0
+        parent["packed"] += packed_units
+        parent["orders"] |= size["orders"]
+
+    parent_rows = []
+    for parent in parents.values():
+        parent["sizes"].sort(key=_size_sort_key)
+        parent_rows.append({
+            "product": parent["product"],
+            "brand": parent["brand"],
+            "known": parent["known"],
+            "units": parent["units"],
+            "kg": round(parent["kg"], 3),
+            "packed": parent["packed"],
+            "remaining": max(0, parent["units"] - parent["packed"]),
+            "orders": len(parent["orders"]),
+            "sizes": parent["sizes"],
+        })
+    # Heaviest parent first — weight is what fills the vehicle. Name breaks the tie so two
+    # renders of the same data agree.
+    parent_rows.sort(key=lambda row: (-row["kg"], row["product"].casefold()))
+
+    # The order list follows the SAME parent order as the summary, so the two halves of the
+    # printed sheet read together instead of being two independent sorts.
+    parent_order = {row["product"]: index for index, row in enumerate(parent_rows)}
+    order_rows.sort(key=lambda row: (
+        parent_order.get(row["parent"], len(parent_order)),
+        -float(row["weight"] or 0),
+        row["amazon_order_id"],
+    ))
+
+    all_sizes = [size for row in parent_rows for size in row["sizes"]]
+    return {
+        "parents": parent_rows,
+        "orders": order_rows,
+        "totals": {
+            "orders": len(order_ids),
+            "units": sum(size["units"] for size in all_sizes),
+            "kg": round(sum(size["kg"] or 0 for size in all_sizes), 3),
+            "packed": sum(size["packed"] for size in all_sizes),
+            "remaining": sum(size["remaining"] for size in all_sizes),
+            "over_packed": sum(size["over_packed"] for size in all_sizes),
+            "sizes_without_weight": sum(1 for size in all_sizes if size["kg"] is None),
+            "parents": len(parent_rows),
+        },
+        "unknown_asins": sorted(unknown),
+    }
+
+
+def _size_sort_key(size: dict) -> tuple:
+    """Heaviest size first within a parent; label breaks the tie.
+
+    A size with no known pack weight sorts last rather than first: `None` would compare as
+    the lightest under `-kg` and put the one row nobody can weigh at the top of the sheet.
+    """
+    return (-(size["kg"] or 0), -(float(size["weight"] or 0)), size["weight_label"])

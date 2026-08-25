@@ -212,6 +212,7 @@ async def _page_orders(
     sleep,
     seen_ids: set[str],
     label: str,
+    on_page=None,
 ) -> tuple[list[dict], bool]:
     """Page one `getOrders` query to exhaustion or `max_pages`. Returns (orders, truncated).
 
@@ -222,6 +223,10 @@ async def _page_orders(
     `seen_ids` is shared ACROSS passes by the caller: the pending pass and the actionable
     pass can legitimately return the same order if its payment confirms mid-refresh, and the
     first answer is the one already paid for.
+
+    `on_page(pages_done, max_pages, orders_so_far)` is called after each page, so the caller
+    can publish progress while a multi-minute pass is still running. Optional, because the
+    parsing tests have no interest in it.
     """
     settings = get_settings()
     orders: list[dict] = []
@@ -249,6 +254,12 @@ async def _page_orders(
             seen_ids.add(row["amazon_order_id"])
             orders.append(row)
 
+        if on_page is not None:
+            # Reported per page rather than at the end: a page costs 22.5 seconds, so a
+            # progress bar that only moved when the pass finished would sit still for
+            # minutes — which is what the owner reads as "it has hung".
+            on_page(pages, max_pages, len(orders))
+
         token = payload.get("NextToken")
         if not token:
             break
@@ -262,6 +273,7 @@ async def fetch_easy_ship_orders(
     *,
     max_pages: int = 10,
     sleep=asyncio.sleep,
+    on_page=None,
 ) -> tuple[list[dict], list[str]]:
     """Every Easy Ship order that needs the warehouse's attention. Returns (orders, warnings).
 
@@ -311,6 +323,7 @@ async def fetch_easy_ship_orders(
         sleep=sleep,
         seen_ids=seen_ids,
         label="actionable",
+        on_page=on_page,
     )
     orders.extend(actionable)
     if truncated:
@@ -334,6 +347,7 @@ async def fetch_easy_ship_orders(
         sleep=sleep,
         seen_ids=seen_ids,
         label="pending payment",
+        on_page=on_page,
     )
     orders.extend(pending)
     if pending_truncated:
@@ -392,7 +406,7 @@ async def fetch_orders_by_id(
 
 
 async def fetch_items(
-    order_ids: Sequence[str], *, sleep=asyncio.sleep
+    order_ids: Sequence[str], *, sleep=asyncio.sleep, on_item=None
 ) -> dict[str, list[dict]]:
     """Line items for the named orders. `{order_id: [item, ...]}`.
 
@@ -417,6 +431,7 @@ async def fetch_items(
     """
     out: dict[str, list[dict]] = {}
     consecutive_throttles = 0
+    total = len(order_ids)
     for index, order_id in enumerate(order_ids):
         if index:
             await sleep(ITEMS_MIN_INTERVAL)
@@ -433,7 +448,13 @@ async def fetch_items(
                         consecutive_throttles, len(order_ids) - index - 1,
                     )
                     break
+            # Reported even on failure, so the bar keeps moving through a run of 404s
+            # instead of freezing on a number that will never be reached.
+            if on_item is not None:
+                on_item(index + 1, total)
             continue
         consecutive_throttles = 0
         out[order_id] = parse_items(payload)
+        if on_item is not None:
+            on_item(index + 1, total)
     return out

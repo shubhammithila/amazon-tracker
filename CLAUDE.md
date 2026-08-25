@@ -83,7 +83,7 @@ app/
 ├── main.py              # FastAPI app entry point
 ├── config.py            # Settings (pydantic-settings, .env)
 ├── database.py          # Async SQLAlchemy engine
-├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry)
+├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry, AmazonOrder/AmazonOrderItem/OrderPackedEntry)
 ├── scheduler.py         # APScheduler (scrape 06:00, keywords 07:30, orders every 30m)
 ├── utils.py             # Date parsing helpers
 ├── routers/
@@ -749,12 +749,82 @@ pydantic-settings, httpx, lxml, pandas, openpyxl, apscheduler,
 python-multipart, itsdangerous, jinja2, aiofiles, reportlab
 ```
 
-## Orders tab — the daily picking sheet
+## Orders tab — today's dispatch
 
-`/orders-page`. Amazon Easy Ship orders, aggregated into what the warehouse actually picks
-against: **item + pack size + brand, with units, order counts and a net kilogram total**,
-split into four sections (to pack · awaiting pickup · later · pending payment). Asked for as
-*"the orders which have to be shipped today, item wise weight wise qty totalled"*.
+`/orders-page`. **The default and, for the warehouse, the only view is today's dispatch**:
+parent product → pack size, sorted by kilograms, with a units-packed box per SKU and a
+printable PDF. Asked for as *"show them only the data which is waiting for pickup — rest of
+the orders are the responsibility of the ecom team to ship on portal"* and *"Each parent item
+total weight orders … uske niche 500g, 1kg - kitne kitne units. sort it total weight wise"*.
+
+The owner's four-section picking sheet (to pack · awaiting pickup · later · pending payment)
+still exists behind an **admin-only** toggle, because those three other groups are the ecom
+team's queue and showing them to the floor is what this redesign removed.
+
+### "Today's dispatch" is NOT "awaiting pickup", and that distinction is measured
+The rule is **ship-by == today AND Amazon has a label** (`logic.is_todays_dispatch`,
+`LABELLED_EASYSHIP`). Verified on the live account on 2026-08-25:
+
+| ship_by (IST) | status | Easy Ship status | orders |
+|---|---|---|---|
+| **25 Aug** | Shipped | **PickedUp** | **200** |
+| **25 Aug** | Shipped | **PendingPickUp** | **64** |
+| 25 Aug | Pending | — | 3 |
+| 26–31 Aug | Unshipped | PendingSchedule | 128 |
+
+264 orders is the day's work. All 264 had a ship-by of exactly today — none past, none
+future, none missing — so `== today` is unambiguous.
+
+> **Keying on "not yet collected" empties the screen mid-shift.** The first version used the
+> `awaiting_pickup` bucket, and overnight Amazon flipped 200 of those 264 orders to
+> `PickedUp`: the list drained 264 → 64 and would have taken the day's packed tally with it.
+> The reconcile pass was working correctly — the *question* was wrong. A collected order was
+> still packed today, so it stays. `test_a_packed_count_survives_the_order_being_collected`
+> pins it.
+
+**`bucket_for` is deliberately untouched.** It assigns one bucket per order, and today's
+dispatch *crosses two of them* (`PendingPickUp` → `awaiting_pickup`, `PickedUp` → `done`), so
+this is a separate predicate rather than a change to the bucketing. Folding it in would
+silently move the owner's four section totals and the Excel export, both pinned by the tests
+that caught the 247-order bug.
+
+**An `Unshipped` order never appears.** No label means it is still on Seller Central for the
+ecom team; putting it on the floor's sheet asks someone to box a parcel with nothing to stick
+on it.
+
+### Packed counts are the warehouse's own, and the only rows here the app writes
+`order_packed_entries`, UNIQUE on **(pack_date, asin)**. Amazon does not know how many units
+are in a box on this floor, so this is not a second source of truth — it writes no status and
+reaches no invoice. Keyed on the **IST calendar date** decided by the server, not the browser:
+`POST /orders/packed/{date}` refuses any date but today with a 409 naming the real one, since
+a laptop in another timezone (or a page open past midnight) would otherwise file this
+morning's count against yesterday.
+
+Deliberately *not* a copy of `ShipmentPackingDay` — no status lifecycle, cartons, hold
+threshold or submit/verify. Those exist because that data reaches a GST invoice; this does
+not, and unused columns invite a future reader to wire them up.
+
+Over-packing **warns and never blocks**, the same rule as `logic.over_packed`: the boxes
+physically exist, and refusing the entry would leave real stock unrecorded. `remaining` clamps
+at 0 because it reaches a printed sheet; the excess is reported separately as `over_packed`.
+
+### The refresh reports a real percentage
+`refresh.PHASE_BOUNDS` splits the bar 0–50 paging, 50–60 reconcile, 60–100 items. The
+weighting is uneven because the phases are: a full run is ~2 minutes of paging and ~8 of
+items. Only the item phase has a true denominator (`len(pending)`, known before the first
+call) — Amazon reveals `NextToken` one page at a time, so paging progress is a fraction of the
+page *cap*. The percentage is therefore **monotonic**: the actionable pass can stop at page 2
+of 8 and the pending pass then starts its own page 1 of 2, which would otherwise send the bar
+backwards, and a bar that jumps back reads as a fault.
+
+### The PDF is one document with two sections
+`documents.build_dispatch_pdf` — parent summary (heaviest first, sizes indented beneath) then
+every order line, grouped in the same parent order. One file, not two: they are read together
+at a bench, and two files get separated. A PDF has no dropdown, so nesting is indentation plus
+weight. `build_simple_pdf` cannot express parent/child rows, which is why this is a sibling
+function. Every cell is a `Paragraph` — reportlab draws a bare string straight over the next
+column's gridline, the bug that printed SKUs on top of product names with the whole suite
+green.
 
 ### It is a cache, refreshed in the background — never fetched on request
 `getOrders` is rate-limited to **0.045 req/sec — one call every 22.5 seconds**, measured
@@ -849,18 +919,27 @@ neither is ever sent here. An unrecognised status on a `Shipped` order is filed 
 than guessed into a picking section: absent from the sheet is recoverable, a phantom pick is a
 wasted trip and a doubt about every other row.
 
-All four sections render even when empty: one that vanished would read as a bug rather than an
-empty queue.
+All four sections render even when empty — on the admin panel, which is where they now live:
+one that vanished would read as a bug rather than an empty queue. `awaiting_pickup` is
+deliberately absent from that panel, because it IS today's dispatch above and showing the same
+parcels twice under two different rules is how two numbers for one thing start to disagree.
 
-### Read-only, and deliberately so
+### Read-only towards AMAZON, and deliberately so
 No ship button, no label download. **Every Easy Ship endpoint returns 403** — the app lacks
 `Direct to Consumer Shipping (Restricted)`, and an RDT scoped to Easy Ship is refused with
 *"Application do not have access to some or all requested resource"*. `GET_EASYSHIP_DOCUMENTS`,
 `/mfn/v0` and `/shipping/v2` are all 403 too. The role is being applied for; a control that
 always errors would read as a broken app.
 
-There is also no local "packed" tick: Amazon's status is the single source of truth, and a
-second one is the class of bug the shipment feature's write separation exists to avoid.
+**Nothing overwrites an order status**, and there is no local "shipped" or "delivered" tick:
+Amazon's status is the single source of truth for what Amazon knows, and a second one is the
+class of bug the shipment feature's write separation exists to avoid.
+
+> The units-packed counter added later is not that second source of truth, and the distinction
+> is worth keeping straight: it records something Amazon has **no opinion about** — how many
+> units are physically boxed on this floor right now. It writes no order row, no status and no
+> invoice. An earlier note here said "no local packed tick" flatly; that was right when the
+> screen only mirrored Amazon and became wrong when the warehouse needed its own worksheet.
 
 > **Real-time is possible but needs AWS.** `ORDER_CHANGE` notifications are reachable —
 > `GET /notifications/v1/subscriptions/ORDER_CHANGE` returns 404 ("no subscription"), not

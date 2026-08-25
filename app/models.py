@@ -607,3 +607,44 @@ class AmazonOrderItem(Base):
     promotion_discount = Column(Numeric(12, 2))
 
     order = relationship("AmazonOrder", back_populates="items")
+
+
+class OrderPackedEntry(Base):
+    """Units the warehouse has packed against one ASIN on one day. **Ours, not Amazon's.**
+
+    The only table in the Orders feature the app writes for itself, and the boundary is
+    deliberate: every other row here is a cache of Amazon's data, refreshed rather than
+    edited. This is a fact Amazon does not have — how many units are physically in boxes on
+    this floor right now — so recording it locally is not a second source of truth about
+    whether an order shipped. Nothing here changes an order's status, and no invoice is
+    raised from it.
+
+    **Keyed on the DATE, not on the order set.** Measured on production: 200 of 264 orders
+    flipped from `PendingPickUp` to `PickedUp` overnight, so a tally attached to
+    "not yet collected" orders would erase itself mid-shift the moment the courier arrived.
+    A calendar day is stable, and it makes "what did we pack on Monday" answerable.
+
+    `pack_date` is an explicit `String(10)`, matching `ShipmentPackingDay.pack_date` and for
+    the same reason: the app runs in IST while `datetime.utcnow` is 5.5 hours behind, so a
+    date derived from a timestamp lands on the wrong day for five and a half hours every
+    night. The server decides the date from IST and stores it as text.
+
+    UNIQUE on (pack_date, asin), which is what makes a repeated save from a warehouse phone
+    an UPDATE rather than a double-count — the same guarantee (day_id, asin) gives packing
+    entries.
+
+    Deliberately NOT a copy of `ShipmentPackingDay`: no status lifecycle, no cartons, no hold
+    threshold, no submit/verify. Those exist on the shipment side because that data reaches a
+    GST invoice. This does not, and unused columns invite a future reader to wire them up.
+    """
+    __tablename__ = "order_packed_entries"
+    __table_args__ = (
+        Index("idx_order_packed_date_asin", "pack_date", "asin", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    #: IST calendar date, "YYYY-MM-DD". See the class docstring for why it is text.
+    pack_date = Column(String(10), nullable=False)
+    asin = Column(String(10), nullable=False)
+    units = Column(Integer, default=0)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
