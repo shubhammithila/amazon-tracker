@@ -36,7 +36,7 @@ Three questions are being asked of the same day's data, and they belong to diffe
   will later be fed by an inventory tab.
 - Tab 2 is **flat** — no parent rows — in the existing sort order.
 - Tab 3's statuses **auto-update**, via the 30-minute scheduled refresh plus a 60-second
-  local re-read. `SCHEDULER_ENABLED` gets turned on.
+  local re-read. The orders job gets its **own flag** — see below.
 - Every tab has a **search box**.
 - **No Tracking ID column** (see below).
 - Undo = revert a row to its last saved value, plus "discard all unsaved".
@@ -192,6 +192,49 @@ every 30 min — a status change surfaces within ~31 minutes with no reload. The
 tab 3 only and **never re-renders a tab with inputs**, or it would eat the packer's
 keystrokes mid-number.
 
+### The orders job gets its own flag
+
+`SCHEDULER_ENABLED` is `false` on production, so nothing scheduled runs today. Turning it on
+would also wake the **06:00 product scrape** (10 async workers), the **07:30 keyword track**
+and the **09:15 retention purge** — three dormant jobs on a 951 MB box with no swap that has
+already OOM-killed a `pip install`. Waking them as a side effect of a UI change is not a
+decision this feature gets to make.
+
+So a new setting, `ORDER_REFRESH_ENABLED`, gates the orders job alone:
+
+```python
+# app/scheduler.py — setup_scheduler()
+if settings.scheduler_enabled:
+    ...          # scrape, keywords, purge — unchanged, still off
+if settings.scheduler_enabled or settings.order_refresh_enabled:
+    scheduler.add_job(scheduled_order_refresh, IntervalTrigger(minutes=30), ...)
+```
+
+`OR`, not a replacement: an installation that already turns `SCHEDULER_ENABLED` on keeps its
+order refresh without having to learn a second flag. The scheduler itself must also start when
+only the orders flag is set — `setup_scheduler` opens with
+
+```python
+if not settings.scheduler_enabled:
+    return
+```
+
+which would skip the orders job too, so **that guard has to move down** to the three jobs it
+protects rather than being deleted.
+
+**Default `False`, and the asymmetry with `scheduler_enabled` is deliberate.** That one
+defaults to `True` (`app/config.py:52`) — production sets it to `false` explicitly. So:
+
+| | `SCHEDULER_ENABLED` | `ORDER_REFRESH_ENABLED` | orders job |
+|---|---|---|---|
+| fresh install | `True` (default) | `False` (default) | **runs** — via the OR |
+| production today | `false` (explicit) | unset | does not run |
+| production after this change | `false` (unchanged) | **`true`** (added to `.env`) | **runs** |
+
+A fresh install therefore behaves exactly as it does today, and production changes only
+because one line is added to its `.env`. The new flag is only load-bearing where the master
+flag is off, which is precisely this box.
+
 ## Downloads
 
 ```
@@ -250,10 +293,16 @@ the detector and asserts the true head.
 
 `app/orders/logic.py` · `app/orders/repository.py` · `app/routers/orders.py` ·
 `app/models.py` · `app/shipment/documents.py` · `templates/orders.html` ·
+`app/scheduler.py` · `app/config.py` ·
 `alembic/versions/<rev>_product_raw_stock.py` · `deploy/update-ec2.sh` · `CLAUDE.md`
 
 Tests: `tests/test_orders_dispatch.py` · `tests/test_orders_api.py` ·
-`tests/test_schema_migrations.py` · `tests/test_theme.py` (new template)
+`tests/test_schema_migrations.py` · `tests/test_retention_and_scheduler.py` ·
+`tests/test_theme.py` (new template)
+
+**Deploy note.** One line goes into production's `.env`:
+`echo 'ORDER_REFRESH_ENABLED=true' >> /opt/amazon-tracker/.env`, then restart. Worth doing
+after the code is deployed, not before, so the first scheduled run has the new tables.
 
 ## Verification
 
@@ -271,6 +320,11 @@ Tests: `tests/test_orders_dispatch.py` · `tests/test_orders_api.py` ·
 - A repeated raw-stock save updates one row — the UNIQUE index is what guarantees it.
 - All five downloads report the same units, kg and row order as the screen.
 - Tab 3's 60 s poll touches no tab containing an input (asserted on the template).
+- **The orders job runs with `SCHEDULER_ENABLED=false` and `ORDER_REFRESH_ENABLED=true`**, and
+  the scrape / keyword / purge jobs do **not** — asserted on the registered job ids, so a
+  refactor that moved the early return back to the top fails here rather than on the box.
+- The reverse case too: `SCHEDULER_ENABLED=true` alone still registers the orders job, so no
+  existing installation loses it.
 - `is_todays_dispatch` and `bucket_for` unchanged: the 247-bug and 264-order tests pass
   untouched.
 
