@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import case, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AmazonOrder, AmazonOrderItem
@@ -127,8 +127,10 @@ async def replace_items(db: AsyncSession, amazon_order_id: str, items: list[dict
     return stored
 
 
-async def ids_missing_items(db: AsyncSession, limit: int = 200) -> list[str]:
-    """Order ids whose line items have never been fetched, oldest first.
+async def ids_missing_items(
+    db: AsyncSession, limit: int = 200, *, priority_statuses: set[str] | None = None
+) -> list[str]:
+    """Order ids whose line items have never been fetched. Actionable orders FIRST.
 
     This is what keeps a daily refresh cheap: `getOrderItems` costs a call per order, so
     re-fetching 100 known orders would spend 100 calls to learn nothing — over three
@@ -136,11 +138,64 @@ async def ids_missing_items(db: AsyncSession, limit: int = 200) -> list[str]:
 
     Capped, because a first run against 90 days of history would otherwise queue hundreds
     of calls into one job. The remainder is picked up by the next refresh.
+
+    **`priority_statuses` decides who wins that cap, and it decides whether the sheet adds
+    up.** Items are what the picking sheet counts, and ordering by purchase date alone spent
+    the budget on whatever was newest — measured on the live account, 165 of 378 orders were
+    `Delivered` or `ReturnedToSeller`, which appear in no section at all. They crowded out
+    orders awaiting pickup, so the sheet reported 168 units across 265 orders: fewer units
+    than orders, for products nobody buys in fractions.
+
+    An order with no items is INVISIBLE on the sheet even when its own section counts it, so
+    this ordering is the difference between a sheet the warehouse can pick against and one
+    that silently understates the work.
     """
+    query = select(AmazonOrder.amazon_order_id).where(AmazonOrder.items_fetched_at.is_(None))
+
+    if priority_statuses:
+        # A CASE expression rather than two queries: one round trip, and the cap then applies
+        # to the merged ordering instead of being split between them by hand.
+        actionable_first = case(
+            (AmazonOrder.easyship_status.in_(sorted(priority_statuses)), 0), else_=1
+        )
+        query = query.order_by(actionable_first, AmazonOrder.purchase_date_utc.desc())
+    else:
+        query = query.order_by(AmazonOrder.purchase_date_utc.desc())
+
+    rows = await db.execute(query.limit(limit))
+    return list(rows.scalars())
+
+
+async def ids_needing_reconcile(
+    db: AsyncSession, fetched_ids: set[str], statuses: set[str], limit: int = 200
+) -> list[str]:
+    """Locally-actionable orders that a complete fetch did NOT return, oldest first.
+
+    **These are the rows that would otherwise lie.** The refresh asks Amazon only for orders
+    with work outstanding, so an order that has been picked up drops out of the answer. Its
+    local row still reads `PendingPickUp`, and nothing in a plain upsert would ever correct
+    it — the packer would keep being told to hand over a parcel the courier already took.
+
+    Absence is only meaningful because that fetch is COMPLETE: the actionable query exhausts
+    its `NextToken` in 4 pages, so an order we hold as actionable and Amazon did not return
+    has genuinely changed. The caller re-reads these by id rather than assuming what they
+    became — inferring "probably picked up" would be inventing Amazon's data, which is the
+    one thing this cache must never do.
+
+    `fetched_ids` empty means the fetch returned nothing at all — a failure, not an empty
+    warehouse — so nothing is reconciled. Treating a failed fetch as "everything changed"
+    would spend the whole rate budget re-reading rows that were already right.
+    """
+    if not fetched_ids or not statuses:
+        return []
+
     rows = await db.execute(
         select(AmazonOrder.amazon_order_id)
-        .where(AmazonOrder.items_fetched_at.is_(None))
-        .order_by(AmazonOrder.purchase_date_utc.desc())
+        .where(
+            AmazonOrder.easyship_status.in_(sorted(statuses)),
+            AmazonOrder.amazon_order_id.notin_(sorted(fetched_ids)),
+        )
+        .order_by(AmazonOrder.last_refreshed_at.asc())
         .limit(limit)
     )
     return list(rows.scalars())

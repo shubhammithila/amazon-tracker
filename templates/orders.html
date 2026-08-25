@@ -13,9 +13,14 @@
   So the PICKING SHEET is the default view and the order list is second. Five things are
   deliberate:
 
-  1. **Two sections, two physical jobs.** "To pack & ship" needs picking and labelling;
-     "Waiting for pickup" is already boxed and just needs handing over. One combined
-     "not done" list would merge two different mornings' work.
+  1. **Four sections, four different situations.** "To pack & ship" needs picking and
+     labelling; "Waiting for pickup" is already boxed and needs handing to the courier;
+     "Later" is not due yet; "Pending payment" cannot be touched at all. One combined
+     "not done" list would merge four different jobs.
+
+     The pickup section reads `EasyShipShipmentStatus: PendingPickUp` — and Amazon marks
+     those orders `Shipped`, which is why it was empty for a day while Seller Central
+     showed 247 of them.
 
   2. **The empty section is still shown.** Nothing is labelled on a normal morning, so
      that section reads zero — and a section that vanished would look like a bug rather
@@ -235,7 +240,9 @@ function setStatus(next){
    an empty queue. */
 function renderSheet(){
   if(!data) return;
-  const order = ["to_pack", "awaiting_pickup", "later"];
+  /* Section order matches the working day: pack what is due, hand over what is boxed,
+     then look ahead. Pending payment is last because nothing can be done about it. */
+  const order = ["to_pack", "awaiting_pickup", "later", "pending_payment"];
   $("sheet-view").innerHTML = order.map(key => {
     const section = data.sheet.sections[key];
     if(!section) return "";
@@ -246,6 +253,9 @@ function renderSheet(){
     const bits = [`${Number(t.orders)} order(s)`,
                   `${Number(t.quantity)} unit(s)`,
                   `${Number(t.kg)} kg net`];
+    if(key === "pending_payment"){
+      bits.push("payment not confirmed — cannot be packed yet");
+    }
     if(t.overdue_orders) bits.push(`${Number(t.overdue_orders)} OVERDUE`);
     if(t.lines_without_weight) bits.push(`${Number(t.lines_without_weight)} line(s) with no pack size`);
 

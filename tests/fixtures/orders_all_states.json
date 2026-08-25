@@ -1,0 +1,365 @@
+{
+  "payload": {
+    "Orders": [
+      {
+        "BuyerInfo": {},
+        "AmazonOrderId": "404-6309041-2351555",
+        "EarliestShipDate": "2026-08-24T18:29:59Z",
+        "SalesChannel": "Amazon.in",
+        "OrderStatus": "Pending",
+        "NumberOfItemsShipped": 0,
+        "OrderType": "StandardOrder",
+        "IsPremiumOrder": false,
+        "IsPrime": false,
+        "FulfillmentChannel": "AFN",
+        "NumberOfItemsUnshipped": 1,
+        "HasRegulatedItems": false,
+        "IsReplacementOrder": "false",
+        "IsSoldByAB": false,
+        "LatestShipDate": "2026-08-24T18:29:59Z",
+        "ShipServiceLevel": "Expedited",
+        "IsISPU": false,
+        "MarketplaceId": "A21TJRUUN4KGV",
+        "PurchaseDate": "2026-08-23T07:05:59Z",
+        "IsAccessPointOrder": false,
+        "SellerOrderId": "404-6309041-2351555",
+        "PaymentMethod": "Other",
+        "IsBusinessOrder": false,
+        "PaymentMethodDetails": [
+          "Standard"
+        ],
+        "IsGlobalExpressEnabled": false,
+        "LastUpdateDate": "2026-08-23T07:10:53Z",
+        "ShipmentServiceLevelCategory": "Expedited"
+      },
+      {
+        "BuyerInfo": {},
+        "AmazonOrderId": "406-1386955-5048343",
+        "EarliestShipDate": "2026-08-23T18:29:59Z",
+        "SalesChannel": "Amazon.in",
+        "OrderStatus": "Shipped",
+        "NumberOfItemsShipped": 1,
+        "OrderType": "StandardOrder",
+        "IsPremiumOrder": false,
+        "IsPrime": false,
+        "FulfillmentChannel": "AFN",
+        "NumberOfItemsUnshipped": 0,
+        "HasRegulatedItems": false,
+        "IsReplacementOrder": "false",
+        "IsSoldByAB": false,
+        "LatestShipDate": "2026-08-23T18:29:59Z",
+        "ShipServiceLevel": "Expedited",
+        "IsISPU": false,
+        "MarketplaceId": "A21TJRUUN4KGV",
+        "PurchaseDate": "2026-08-22T07:50:52Z",
+        "ShippingAddress": {
+          "StateOrRegion": "Maharashtra",
+          "PostalCode": "401107",
+          "City": "Thane",
+          "CountryCode": "IN"
+        },
+        "IsAccessPointOrder": false,
+        "SellerOrderId": "406-1386955-5048343",
+        "PaymentMethod": "Other",
+        "IsBusinessOrder": false,
+        "OrderTotal": {
+          "CurrencyCode": "INR",
+          "Amount": "327.00"
+        },
+        "PaymentMethodDetails": [
+          "Standard"
+        ],
+        "IsGlobalExpressEnabled": false,
+        "LastUpdateDate": "2026-08-23T07:12:10Z",
+        "ShipmentServiceLevelCategory": "Expedited"
+      },
+      {
+        "BuyerInfo": {},
+        "AmazonOrderId": "406-3032858-7840344",
+        "EarliestDeliveryDate": "2026-09-03T18:30:00Z",
+        "EarliestShipDate": "2026-08-27T18:30:00Z",
+        "SalesChannel": "Amazon.in",
+        "AutomatedShippingSettings": {
+          "HasAutomatedShippingSettings": false
+        },
+        "OrderStatus": "Unshipped",
+        "NumberOfItemsShipped": 0,
+        "OrderType": "StandardOrder",
+        "IsPremiumOrder": false,
+        "IsPrime": false,
+        "FulfillmentChannel": "MFN",
+        "NumberOfItemsUnshipped": 2,
+        "HasRegulatedItems": false,
+        "IsReplacementOrder": "false",
+        "IsSoldByAB": false,
+        "LatestShipDate": "2026-08-28T18:29:59Z",
+        "ShipServiceLevel": "Std IN EZ National COD",
+        "DefaultShipFromLocationAddress": {
+          "AddressLine2": "C/O DINESH PRASAD SAH, new babu para,near dadi shyam mandi",
+          "StateOrRegion": "JHARKHAND",
+          "AddressLine1": "F2D TECH PRIVATE LIMITED, 1st floor VISHWANATH SAH",
+          "PostalCode": "814101",
+          "City": "Dumka",
+          "CountryCode": "IN",
+          "Name": "F2D TECH PRIVATE LIMITED"
+        },
+        "IsISPU": false,
+        "MarketplaceId": "A21TJRUUN4KGV",
+        "LatestDeliveryDate": "2026-09-04T18:29:59Z",
+        "PurchaseDate": "2026-08-22T12:18:47Z",
+        "ShippingAddress": {
+          "StateOrRegion": "TELANGANA",
+          "PostalCode": "500049",
+          "City": "HYDERABAD",
+          "CountryCode": "IN"
+        },
+        "IsAccessPointOrder": false,
+        "PaymentMethod": "Other",
+        "IsBusinessOrder": false,
+        "OrderTotal": {
+          "CurrencyCode": "INR",
+          "Amount": "264.00"
+        },
+        "EasyShipShipmentStatus": "PendingSchedule",
+        "PaymentMethodDetails": [
+          "Standard"
+        ],
+        "IsGlobalExpressEnabled": false,
+        "LastUpdateDate": "2026-08-23T07:16:51Z",
+        "ShipmentServiceLevelCategory": "Standard"
+      },
+      {
+        "BuyerInfo": {},
+        "AmazonOrderId": "405-8481783-0233145",
+        "EarliestDeliveryDate": "2026-08-30T18:30:00Z",
+        "EarliestShipDate": "2026-08-21T18:30:00Z",
+        "SalesChannel": "Amazon.in",
+        "AutomatedShippingSettings": {
+          "HasAutomatedShippingSettings": false
+        },
+        "OrderStatus": "Shipped",
+        "NumberOfItemsShipped": 1,
+        "OrderType": "StandardOrder",
+        "IsPremiumOrder": false,
+        "IsPrime": true,
+        "FulfillmentChannel": "MFN",
+        "NumberOfItemsUnshipped": 0,
+        "HasRegulatedItems": false,
+        "IsReplacementOrder": "false",
+        "IsSoldByAB": false,
+        "LatestShipDate": "2026-08-22T18:29:59Z",
+        "ShipServiceLevel": "Std IN EZ National COD",
+        "DefaultShipFromLocationAddress": {
+          "AddressLine2": "null",
+          "StateOrRegion": "JHARKHAND",
+          "AddressLine1": "null",
+          "PostalCode": "814101",
+          "City": "Dumka",
+          "CountryCode": "IN",
+          "Name": "null"
+        },
+        "IsISPU": false,
+        "MarketplaceId": "A21TJRUUN4KGV",
+        "LatestDeliveryDate": "2026-08-31T18:29:59Z",
+        "PurchaseDate": "2026-08-14T15:58:35Z",
+        "ShippingAddress": {
+          "StateOrRegion": "MADHYA PRADESH",
+          "PostalCode": "470661",
+          "City": "DAMOH",
+          "CountryCode": "IN"
+        },
+        "IsAccessPointOrder": false,
+        "PaymentMethod": "Other",
+        "IsBusinessOrder": false,
+        "OrderTotal": {
+          "CurrencyCode": "INR",
+          "Amount": "189.00"
+        },
+        "EasyShipShipmentStatus": "ReturningToSeller",
+        "PaymentMethodDetails": [
+          "Standard"
+        ],
+        "IsGlobalExpressEnabled": false,
+        "LastUpdateDate": "2026-08-23T07:20:25Z",
+        "ShipmentServiceLevelCategory": "Standard"
+      },
+      {
+        "BuyerInfo": {},
+        "AmazonOrderId": "404-3270774-3511565",
+        "EarliestDeliveryDate": "2026-08-23T18:30:00Z",
+        "EarliestShipDate": "2026-08-16T18:30:00Z",
+        "SalesChannel": "Amazon.in",
+        "AutomatedShippingSettings": {
+          "HasAutomatedShippingSettings": false
+        },
+        "OrderStatus": "Shipped",
+        "NumberOfItemsShipped": 1,
+        "OrderType": "StandardOrder",
+        "IsPremiumOrder": false,
+        "IsPrime": true,
+        "FulfillmentChannel": "MFN",
+        "NumberOfItemsUnshipped": 0,
+        "HasRegulatedItems": false,
+        "IsReplacementOrder": "false",
+        "IsSoldByAB": false,
+        "LatestShipDate": "2026-08-17T18:29:59Z",
+        "ShipServiceLevel": "Std IN EZ National COD",
+        "DefaultShipFromLocationAddress": {
+          "AddressLine2": "null",
+          "StateOrRegion": "JHARKHAND",
+          "AddressLine1": "null",
+          "PostalCode": "814101",
+          "City": "Dumka",
+          "CountryCode": "IN",
+          "Name": "null"
+        },
+        "IsISPU": false,
+        "MarketplaceId": "A21TJRUUN4KGV",
+        "LatestDeliveryDate": "2026-08-24T18:29:59Z",
+        "PurchaseDate": "2026-08-13T06:54:30Z",
+        "ShippingAddress": {
+          "StateOrRegion": "TELANGANA",
+          "PostalCode": "502345",
+          "City": "MEDAK",
+          "CountryCode": "IN"
+        },
+        "IsAccessPointOrder": false,
+        "PaymentMethod": "Other",
+        "IsBusinessOrder": false,
+        "OrderTotal": {
+          "CurrencyCode": "INR",
+          "Amount": "227.00"
+        },
+        "EasyShipShipmentStatus": "Delivered",
+        "PaymentMethodDetails": [
+          "Standard"
+        ],
+        "IsGlobalExpressEnabled": false,
+        "LastUpdateDate": "2026-08-23T07:21:23Z",
+        "ShipmentServiceLevelCategory": "Standard"
+      },
+      {
+        "BuyerInfo": {},
+        "AmazonOrderId": "404-4074544-8788342",
+        "EarliestShipDate": "2026-08-23T18:30:00Z",
+        "SalesChannel": "Amazon.in",
+        "AutomatedShippingSettings": {
+          "HasAutomatedShippingSettings": false
+        },
+        "OrderStatus": "Canceled",
+        "NumberOfItemsShipped": 0,
+        "OrderType": "StandardOrder",
+        "IsPremiumOrder": false,
+        "IsPrime": false,
+        "FulfillmentChannel": "MFN",
+        "NumberOfItemsUnshipped": 0,
+        "HasRegulatedItems": false,
+        "IsReplacementOrder": "false",
+        "IsSoldByAB": false,
+        "LatestShipDate": "2026-08-24T18:29:59Z",
+        "ShipServiceLevel": "Std IN EZ National COD",
+        "IsISPU": false,
+        "MarketplaceId": "A21TJRUUN4KGV",
+        "PurchaseDate": "2026-08-23T04:45:12Z",
+        "IsAccessPointOrder": false,
+        "IsBusinessOrder": false,
+        "OrderTotal": {
+          "CurrencyCode": "INR",
+          "Amount": "480.00"
+        },
+        "PaymentMethodDetails": [
+          "Standard"
+        ],
+        "IsGlobalExpressEnabled": false,
+        "LastUpdateDate": "2026-08-23T07:33:38Z",
+        "ShipmentServiceLevelCategory": "Standard"
+      },
+      {
+        "BuyerInfo": {},
+        "AmazonOrderId": "406-1424298-5737152",
+        "EarliestDeliveryDate": "2026-08-27T18:30:00Z",
+        "EarliestShipDate": "2026-08-19T18:30:00Z",
+        "SalesChannel": "Amazon.in",
+        "AutomatedShippingSettings": {
+          "HasAutomatedShippingSettings": false
+        },
+        "OrderStatus": "Shipped",
+        "NumberOfItemsShipped": 1,
+        "OrderType": "StandardOrder",
+        "IsPremiumOrder": false,
+        "IsPrime": true,
+        "FulfillmentChannel": "MFN",
+        "NumberOfItemsUnshipped": 0,
+        "HasRegulatedItems": false,
+        "IsReplacementOrder": "false",
+        "IsSoldByAB": false,
+        "LatestShipDate": "2026-08-20T18:29:59Z",
+        "ShipServiceLevel": "Std IN EZ National COD",
+        "DefaultShipFromLocationAddress": {
+          "AddressLine2": "null",
+          "StateOrRegion": "JHARKHAND",
+          "AddressLine1": "null",
+          "PostalCode": "814101",
+          "City": "Dumka",
+          "CountryCode": "IN",
+          "Name": "null"
+        },
+        "IsISPU": false,
+        "MarketplaceId": "A21TJRUUN4KGV",
+        "LatestDeliveryDate": "2026-08-28T18:29:59Z",
+        "PurchaseDate": "2026-08-12T17:58:28Z",
+        "ShippingAddress": {
+          "StateOrRegion": "ANDHRA PRADESH",
+          "PostalCode": "530040",
+          "City": "VISAKHAPATNAM",
+          "CountryCode": "IN"
+        },
+        "IsAccessPointOrder": false,
+        "PaymentMethod": "Other",
+        "IsBusinessOrder": false,
+        "OrderTotal": {
+          "CurrencyCode": "INR",
+          "Amount": "414.00"
+        },
+        "EasyShipShipmentStatus": "PickedUp",
+        "PaymentMethodDetails": [
+          "Standard"
+        ],
+        "IsGlobalExpressEnabled": false,
+        "LastUpdateDate": "2026-08-23T07:37:26Z",
+        "ShipmentServiceLevelCategory": "Standard"
+      },
+      {
+        "BuyerInfo": {},
+        "AmazonOrderId": "403-5079291-2801147",
+        "EarliestShipDate": "2026-08-23T18:29:59Z",
+        "SalesChannel": "Amazon.in",
+        "OrderStatus": "Canceled",
+        "NumberOfItemsShipped": 0,
+        "OrderType": "StandardOrder",
+        "IsPremiumOrder": false,
+        "IsPrime": false,
+        "FulfillmentChannel": "AFN",
+        "NumberOfItemsUnshipped": 0,
+        "HasRegulatedItems": false,
+        "IsReplacementOrder": "false",
+        "IsSoldByAB": false,
+        "LatestShipDate": "2026-08-23T18:29:59Z",
+        "ShipServiceLevel": "Expedited",
+        "IsISPU": false,
+        "MarketplaceId": "A21TJRUUN4KGV",
+        "PurchaseDate": "2026-08-23T08:47:53Z",
+        "IsAccessPointOrder": false,
+        "SellerOrderId": "403-5079291-2801147",
+        "PaymentMethod": "Other",
+        "IsBusinessOrder": false,
+        "PaymentMethodDetails": [
+          "Standard"
+        ],
+        "IsGlobalExpressEnabled": false,
+        "LastUpdateDate": "2026-08-23T08:50:41Z",
+        "ShipmentServiceLevelCategory": "Expedited"
+      }
+    ]
+  }
+}

@@ -24,15 +24,25 @@ scheduler = AsyncIOScheduler()
 #: for the manual button and for the 90-day backfill.
 ORDER_REFRESH_MINUTES = 30
 
-#: Days back a ROUTINE refresh looks. Short on purpose: anything still open was placed
-#: recently, and re-paging 90 days every half hour would spend minutes re-learning shipped
-#: orders that cannot change. The manual button does the deep backfill.
-ORDER_REFRESH_DAYS = 14
+#: Days back a routine refresh looks, on LastUpdatedAfter.
+#:
+#: **Wide on purpose, which is the opposite of what it used to be.** While the fetch was
+#: bounded by DATE this was 14 days to keep the cost down, and that was the bug: `getOrders`
+#: pages oldest-first, so 14 days of open orders returned page after page of `Delivered`
+#: while the orders needing work sat past the page cap. The fetch is now bounded by
+#: `EasyShipShipmentStatuses` instead, so the window no longer drives the cost — measured,
+#: the complete actionable set is 371 orders in 4 pages regardless of how far back we ask.
+#:
+#: A wide window is now the SAFE choice: an order that has been unshipped for three weeks is
+#: exactly the one a narrow window would silently drop.
+ORDER_REFRESH_DAYS = 90
 
-#: Pages per routine run. Amazon caps a page at 100 orders and 97 are currently open with
-#: NextToken set, so ONE page would silently miss orders the moment the backlog passed 100.
-#: This must stay comfortably above the largest plausible open-order count.
-ORDER_REFRESH_PAGES = 4
+#: Pages per pass, a SAFETY CEILING rather than the usual cost. Amazon caps a page at 100
+#: orders and the measured actionable set is 371 in 4 pages, so 8 is roughly double the
+#: current backlog — the headroom matters because truncation is worst exactly when the
+#: warehouse is busiest, which is when the sheet matters most. Reaching it is reported on
+#: screen rather than silently truncating.
+ORDER_REFRESH_PAGES = 8
 
 
 async def scheduled_product_scrape():
@@ -171,15 +181,17 @@ async def scheduled_order_refresh():
     3.8% of that: 48 runs of up to 3 pages. The manual Refresh button on the Orders tab
     spends one more call when someone wants it sooner.
 
-    **It pages, and that is not optional.** Amazon caps a page at 100 orders and there are
-    currently 97 open ones, with `NextToken` set — so a single-page refresh would silently
-    miss orders as soon as the backlog crossed 100. `ORDER_REFRESH_PAGES` must stay
-    comfortably above the number of orders that can be open at once.
+    **It pages, and that is not optional.** Amazon caps a page at 100 orders and the
+    measured actionable backlog is 371, so a single-page refresh would miss most of it.
+    `ORDER_REFRESH_PAGES` must stay comfortably above the number of orders that can need
+    work at once.
 
-    **A short window on the routine run.** Routine refreshes look back
-    `ORDER_REFRESH_DAYS`, which is enough to catch anything still open; the 90-day
-    backfill is what the manual button does. Paging 90 days every half hour would spend
-    minutes to re-learn months of shipped orders that cannot change.
+    **The window is wide because the fetch is bounded by STATUS, not by date.** This used to
+    look back 14 days to keep the cost down, and that was precisely the bug: `getOrders`
+    pages oldest-first, so a date-bounded window filled with `Delivered` orders and the ones
+    needing work fell past the page cap. Filtering on `EasyShipShipmentStatuses` bounds the
+    result by relevance, which makes a 90-day window cost the same 4 pages as a 14-day one
+    while also catching an order that has been unshipped for three weeks.
 
     Skipped silently when a refresh is already running — `refresh.run` refuses and returns
     rather than raising, so an overlap with a long manual backfill is a no-op instead of an
@@ -206,9 +218,9 @@ async def scheduled_order_refresh():
         logger.warning("Order refresh failed: %s", result["error"])
     else:
         logger.info(
-            "Order refresh: %d seen, %d new, %d updated, %d itemised",
+            "Order refresh: %d seen, %d new, %d updated, %d reconciled, %d itemised",
             result["orders_seen"], result["created"], result["updated"],
-            result["items_fetched"],
+            result.get("reconciled", 0), result["items_fetched"],
         )
 
 

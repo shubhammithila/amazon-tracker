@@ -228,21 +228,44 @@ def test_the_order_refresh_runs_every_thirty_minutes(monkeypatch):
     assert "0:30:00" in jobs["order_refresh"], jobs["order_refresh"]
 
 
-def test_the_routine_order_refresh_pages_more_than_one_page():
-    """One page is 100 orders, and there are already 97 open.
+def test_the_routine_order_refresh_pages_past_the_measured_backlog():
+    """One page is 100 orders and the measured actionable backlog is 371.
 
-    Amazon caps a page at 100 and returns NextToken when more exists, so a single-page
-    routine refresh would silently stop seeing new orders the moment the open backlog
-    passed 100 — the packer's sheet would just quietly go stale.
+    Amazon caps a page at 100 and returns NextToken when more exists, so too low a cap makes
+    the packer's sheet quietly incomplete — and it does so worst when the warehouse is
+    busiest, which is when the sheet matters most.
     """
     from app import scheduler as sched
 
-    assert sched.ORDER_REFRESH_PAGES >= 2, (
-        "a one-page routine refresh misses orders once the backlog exceeds 100"
+    assert sched.ORDER_REFRESH_PAGES >= 4, (
+        "the measured actionable set is 371 orders in 4 pages, so a lower cap truncates "
+        "today's picking sheet"
     )
-    # And the routine window stays short: re-paging 90 days every 30 minutes would spend
-    # minutes re-learning shipped orders that cannot change.
-    assert sched.ORDER_REFRESH_DAYS <= 30
+
+
+def test_the_routine_window_is_wide_because_the_fetch_is_bounded_by_status():
+    """The constraint this test used to assert is what CAUSED the 371-order bug.
+
+    It previously required `ORDER_REFRESH_DAYS <= 30`, on the reasoning that a short window
+    kept a date-bounded fetch cheap. But `getOrders` pages OLDEST-FIRST with no sort
+    parameter, so a short window did not mean recent orders — it meant 6 pages of
+    `Delivered` while 371 orders waited unseen.
+
+    The fetch is now bounded by `EasyShipShipmentStatuses`, so the window no longer drives
+    the cost, and a wide one is the safe choice: an order unshipped for three weeks is
+    exactly the one a narrow window would drop.
+    """
+    from app import scheduler as sched
+    from app.orders import spapi_orders
+
+    assert sched.ORDER_REFRESH_DAYS >= 60, (
+        "a narrow routine window silently drops orders that have been open a long time — "
+        "and it buys nothing now that the status filter bounds the result"
+    )
+    assert spapi_orders.ACTIONABLE_EASYSHIP_STATUSES, (
+        "the wide window is only affordable because the fetch filters on status; without "
+        "that filter this window would page through months of delivered orders"
+    )
 
 
 async def test_the_order_refresh_skips_when_spapi_is_not_configured(

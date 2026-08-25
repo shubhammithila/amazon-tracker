@@ -753,20 +753,60 @@ python-multipart, itsdangerous, jinja2, aiofiles, reportlab
 
 `/orders-page`. Amazon Easy Ship orders, aggregated into what the warehouse actually picks
 against: **item + pack size + brand, with units, order counts and a net kilogram total**,
-split into three sections. Asked for as *"the orders which have to be shipped today, item
-wise weight wise qty totalled"*.
+split into four sections (to pack · awaiting pickup · later · pending payment). Asked for as
+*"the orders which have to be shipped today, item wise weight wise qty totalled"*.
 
 ### It is a cache, refreshed in the background — never fetched on request
 `getOrders` is rate-limited to **0.045 req/sec — one call every 22.5 seconds**, measured
 (`x-amzn-RateLimit-Limit: 0.04512`). A page that called Amazon would hang, and two people
 opening the tab would 429. So `app/orders/` stores orders locally and every route reads
-rows. A scheduled job refreshes every **30 minutes** (14 days, 4 pages ≈ 3.8% of the daily
-budget); the *Refresh now* button does the deep 90-day backfill and the screen polls
-progress.
+rows. A scheduled job refreshes every **30 minutes** (90 days, 8 pages); the *Refresh now*
+button pages deeper and the screen polls progress.
 
-**The routine refresh MUST page.** Amazon caps a page at 100 orders and 97 are currently
-open with `NextToken` set, so a one-page refresh would silently stop seeing new orders the
-moment the backlog passed 100 — the sheet would just quietly go stale.
+**The routine refresh MUST page.** Amazon caps a page at 100 orders and the measured
+actionable backlog is 371, so a one-page refresh sees a quarter of the work.
+
+### The fetch is bounded by STATUS, not by date — and that took four attempts
+Seller Central showed **247 waiting for pickup, 114 unshipped, 12 pending** while every
+section of the sheet read zero. Four independent causes, each of which hid the others:
+
+1. `OPEN_STATUSES` asked only for `Unshipped` — but Amazon marks an order `Shipped` the
+   instant a label exists, so the entire awaiting-pickup set was never requested.
+2. The bucketing keyed on `LabelGenerated` / `ReadyForPickup`, names from Amazon's **docs**.
+   The value amazon.in actually sends is **`PendingPickUp`**.
+3. `bucket_for` branched on the ORDER status first, so every `Shipped` order — labelled this
+   morning or delivered a fortnight ago — landed in `done`.
+4. **`getOrders` pages OLDEST-FIRST and has no sort parameter.** With the first three fixed,
+   a 14-day window over open statuses still spent 6 pages and returned 165 orders that were
+   every one `Delivered`. Paging to reach today would have cost minutes per refresh and got
+   worse with every order shipped; narrowing the window could not help either, because 100+
+   orders change status daily.
+
+The fix for (4) is `EasyShipShipmentStatuses=PendingSchedule,PendingPickUp`, which bounds the
+answer by **relevance instead of date**. Measured: page 1 goes from 100 `Delivered` to 97
+`PendingSchedule` + 3 `PendingPickUp`, and the complete actionable set is **371 orders in 4
+pages** regardless of window. That inverted the tuning — `ORDER_REFRESH_DAYS` went from 14 to
+**90**, because a wide window is now free and a narrow one silently drops an order that has
+been open three weeks. `FulfillmentChannels=MFN` drops FBA at Amazon's end: the unfiltered
+`Pending` page held 100 FBA `Expedited` orders and not one Easy Ship order.
+
+**Pending-payment orders need their own pass.** They carry no `EasyShipShipmentStatus` at
+all, so the actionable filter excludes all 6 of them by construction.
+
+**Filtering creates the opposite bug, so there is a reconcile pass.** An order that gets
+picked up DISAPPEARS from the actionable query, and an upsert only corrects rows it was
+given — so its local row would read "waiting for pickup" for ever. Rows we hold as actionable
+that a *complete* fetch did not return are re-read **by id** (`AmazonOrderIds`, verified to
+work with no date filter, 50 per call). Amazon is asked what they became rather than assumed
+picked up: this table is a cache of Amazon's data, and guessing would make it a second source
+of truth. An empty fetch reconciles nothing — that is a failure, not an empty warehouse.
+
+**Actionable orders win the item budget.** Items are what the sheet counts, and an order with
+none is invisible on it even though its section counts the order. Ordered by purchase date
+alone, 165 delivered orders took the 200-call cap and the sheet read *168 units across 265
+orders* — fewer units than orders. `ids_missing_items(priority_statuses=…)` fixes the
+ordering; a separate test asserts `refresh.run` actually **passes** it, because the first
+version implemented the ordering and never used it.
 
 ### Four facts measured against the live account, each of which the obvious code gets wrong
 - **Easy Ship is `ShipServiceLevel` containing `EZ`, not `FulfillmentChannel == "MFN"`.**
@@ -788,12 +828,20 @@ moment the backlog passed 100 — the sheet would just quietly go stale.
   `product_families.json` (205, and it calls Chana Sattu just "sattu").
 
 ### The two actionable sections are two different physical jobs
-`EasyShipShipmentStatus` distinguishes them: `PendingSchedule` means no label yet, so the
-job is pick-pack-label; anything else still open means labelled and awaiting the courier.
-**The pickup bucket is defined by exclusion**, because 90 days of this account never showed
-`LabelGenerated` or `ReadyForPickup` — hardcoding those strings would produce a permanently
-empty section. All three sections render even when empty: one that vanished would read as a
-bug rather than an empty queue.
+`EasyShipShipmentStatus` distinguishes them, and **it decides the bucket before the order
+status is consulted** — that ordering is cause (3) above. `PendingSchedule` means no label
+yet, so the job is pick-pack-label; `PendingPickUp` means labelled and boxed, so the job is
+hand it to the courier. Both arrive under different ORDER statuses (`Unshipped` and
+`Shipped`), which is exactly why the order status cannot lead.
+
+`PendingPickUp` is **measured, not documented**. The doc names `LabelGenerated` and
+`ReadyForPickup` are kept as aliases — harmless, possibly right on another marketplace — but
+neither is ever sent here. An unrecognised status on a `Shipped` order is filed `done` rather
+than guessed into a picking section: absent from the sheet is recoverable, a phantom pick is a
+wasted trip and a doubt about every other row.
+
+All four sections render even when empty: one that vanished would read as a bug rather than an
+empty queue.
 
 ### Read-only, and deliberately so
 No ship button, no label download. **Every Easy Ship endpoint returns 403** — the app lacks

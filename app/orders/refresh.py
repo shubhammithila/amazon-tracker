@@ -44,6 +44,7 @@ def reset_state() -> None:
         "created": 0,
         "updated": 0,
         "items_fetched": 0,
+        "reconciled": 0,
         "warnings": [],
         "error": None,
         "refused": False,
@@ -119,10 +120,47 @@ async def run(
         # Committed here, deliberately, before any item call. See the docstring.
         async with db_factory() as db:
             created, updated = await repository.upsert_orders(db, orders)
-        STATE.update({"created": created, "updated": updated, "phase": "items"})
+        STATE.update({"created": created, "updated": updated, "phase": "reconcile"})
 
+        # ── Correct the rows that dropped OUT of the fetch ──
+        #
+        # The fetch asks only for orders with work outstanding, so an order that has been
+        # picked up is simply absent from the answer — and an upsert can only ever correct
+        # rows it was given. Without this pass a delivered order would sit on the
+        # "waiting for pickup" list for ever, which is the same class of failure as the 247
+        # invisible orders, just in the opposite direction.
+        #
+        # Amazon is asked what those orders ARE rather than being assumed picked up: this
+        # table is a cache of Amazon's data, and guessing a status would make it a second
+        # source of truth.
+        fetched_ids = {
+            row["amazon_order_id"] for row in orders if row.get("amazon_order_id")
+        }
         async with db_factory() as db:
-            pending = await repository.ids_missing_items(db)
+            stale = await repository.ids_needing_reconcile(
+                db,
+                fetched_ids,
+                spapi_orders.ACTIONABLE_STATUS_SET,
+                limit=spapi_orders.RECONCILE_LIMIT,
+            )
+        if stale:
+            await sleep(spapi_orders.ORDERS_MIN_INTERVAL)
+            corrected = await spapi_orders.fetch_orders_by_id(stale, sleep=sleep)
+            if corrected:
+                async with db_factory() as db:
+                    await repository.upsert_orders(db, corrected)
+                STATE["reconciled"] = len(corrected)
+
+        STATE["phase"] = "items"
+
+        # Actionable orders get the item budget first. Items are what the picking sheet
+        # counts, and an order with none is invisible on it even though its section counts
+        # the order — measured, that reported 168 units across 265 orders because delivered
+        # orders had taken the cap.
+        async with db_factory() as db:
+            pending = await repository.ids_missing_items(
+                db, priority_statuses=spapi_orders.ACTIONABLE_STATUS_SET
+            )
         if pending:
             fetched = await spapi_orders.fetch_items(pending, sleep=sleep)
             async with db_factory() as db:
@@ -132,8 +170,9 @@ async def run(
 
         STATE["phase"] = "done"
         logger.info(
-            "orders refresh: %d order(s) seen, %d new, %d updated, %d itemised",
-            len(orders), created, updated, STATE["items_fetched"],
+            "orders refresh: %d order(s) seen, %d new, %d updated, %d reconciled, "
+            "%d itemised",
+            len(orders), created, updated, STATE["reconciled"], STATE["items_fetched"],
         )
     except Exception as exc:                    # noqa: BLE001 - reported, not hidden
         # Reported rather than raised: the caller is a background job or a button, and a

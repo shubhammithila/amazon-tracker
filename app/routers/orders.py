@@ -33,10 +33,11 @@ logger = logging.getLogger(__name__)
 #: the app rather than introducing a second retention concept.
 WINDOW_DAYS = 90
 
-#: Pages the MANUAL refresh will walk. Higher than the half-hourly job's cap because this
-#: is the deep backfill — 90 days at 100 orders a page. Each page costs 22.5 seconds, so 12
-#: pages is about four and a half minutes, which is why the banner reports progress and the
-#: button disables itself rather than the request being awaited.
+#: Pages the MANUAL refresh will walk, per pass. Higher than the half-hourly job's cap
+#: because pressing the button means "get everything, I am watching" — but not dramatically
+#: higher, because the fetch is bounded by `EasyShipShipmentStatuses` rather than by date:
+#: the measured actionable set is 371 orders in 4 pages, and pages beyond the last one cost
+#: 22.5 seconds each to learn nothing. This was 20 while the fetch was date-bounded.
 BACKFILL_PAGES = 12
 
 #: The section headings the warehouse reads, and the order they are worked in. Defined here
@@ -45,7 +46,15 @@ SECTION_LABELS = {
     logic.BUCKET_TODAY: "To pack & ship",
     logic.BUCKET_PICKUP: "Waiting for pickup",
     logic.BUCKET_LATER: "Later",
+    logic.BUCKET_PENDING: "Pending payment",
 }
+
+#: Every section must be labelled, or its Excel export 400s and the heading renders as a
+#: bucket key. Asserted at import rather than left to a test, because the failure is a
+#: screen the warehouse cannot use and the check costs nothing.
+assert set(SECTION_LABELS) >= set(logic.SHEET_SECTIONS), (
+    f"unlabelled sections: {set(logic.SHEET_SECTIONS) - set(SECTION_LABELS)}"
+)
 
 
 async def _sheet_and_orders(db: AsyncSession):

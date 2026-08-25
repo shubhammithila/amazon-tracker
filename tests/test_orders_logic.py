@@ -298,3 +298,102 @@ def test_an_overdue_order_is_in_todays_section_and_flagged():
     sheet = logic.picking_sheet(orders, CATALOGUE, TODAY)
     assert _totals(sheet, logic.BUCKET_TODAY)["orders"] == 1
     assert _totals(sheet, logic.BUCKET_TODAY)["overdue_orders"] == 1
+
+
+# ─── The bug that made 247 orders invisible ──────────────────────────────────
+#
+# Seller Central showed "247 Waiting for pickup" while the app's awaiting-pickup section
+# read zero. Three separate mistakes, each of which these tests now pin:
+#
+#   1. The fetch asked only for Unshipped — but a labelled order is `Shipped`.
+#   2. The bucketing keyed on LabelGenerated / ReadyForPickup, names from Amazon's DOCS.
+#      The real value on amazon.in is `PendingPickUp`.
+#   3. `bucket_for` branched on the ORDER status first, so every Shipped order — labelled
+#      or delivered a fortnight ago — landed in `done`.
+
+
+def test_a_labelled_order_awaiting_pickup_is_not_done():
+    """The 247. `Shipped` + `PendingPickUp` means the boxes are on the floor.
+
+    This is the exact shape that was invisible: Amazon marks an order `Shipped` the moment a
+    label exists, so an order-status-first rule files it as finished. What decides the bucket
+    is the EASY SHIP status.
+    """
+    order = _order(status="Shipped", easyship_status="PendingPickUp")
+    assert logic.bucket_for(order, date(2026, 8, 25)) == logic.BUCKET_PICKUP, (
+        "a labelled order waiting for the courier was treated as finished — this is the bug "
+        "that hid 247 orders from the screen whose job is to show them"
+    )
+
+
+def test_the_real_amazon_in_pickup_status_is_recognised():
+    """`PendingPickUp` — measured, not documented.
+
+    The first implementation keyed on `LabelGenerated` and `ReadyForPickup`, taken from
+    Amazon's documentation, and neither is ever sent on this marketplace. The section was
+    permanently empty and the reasoning at the time was "these statuses do not appear here"
+    — which was true of the doc names and false of the behaviour.
+
+    The doc names stay as aliases: harmless, and possibly correct on another marketplace.
+    """
+    assert "PendingPickUp" in logic.AWAITING_PICKUP_EASYSHIP, (
+        "the status amazon.in actually sends is not recognised"
+    )
+    for documented in ("LabelGenerated", "ReadyForPickup"):
+        assert documented in logic.AWAITING_PICKUP_EASYSHIP
+
+
+@pytest.mark.parametrize("easyship,expected", [
+    ("PendingSchedule", logic.BUCKET_TODAY),      # no label yet -> pick and pack
+    ("PendingPickUp", logic.BUCKET_PICKUP),       # labelled -> hand over
+    ("PickedUp", logic.BUCKET_DONE),
+    ("Delivered", logic.BUCKET_DONE),
+    ("ReturningToSeller", logic.BUCKET_DONE),     # coming back; nothing to pack
+    ("ReturnedToSeller", logic.BUCKET_DONE),
+])
+def test_every_observed_easyship_status_buckets_correctly(easyship, expected):
+    """All six values seen on this account, so an unhandled one cannot hide.
+
+    `PendingSchedule` arrives under `Unshipped`; every other value arrives under `Shipped`.
+    Parametrised over the measured set rather than the documented set — the documented set is
+    what produced the bug.
+    """
+    status = "Unshipped" if easyship == "PendingSchedule" else "Shipped"
+    order = _order(status=status, easyship_status=easyship)
+    assert logic.bucket_for(order, date(2026, 8, 25)) == expected
+
+
+def test_a_pending_payment_order_is_visible_but_not_packable():
+    """The 12 pending. Payment unconfirmed, so it cannot be packed — but it is coming.
+
+    Its own section rather than hidden or mixed into to_pack: putting it in today's total
+    would tell the warehouse to pick something it must not ship.
+    """
+    order = _order(status="Pending", easyship_status=None)
+    assert logic.bucket_for(order, date(2026, 8, 25)) == logic.BUCKET_PENDING
+
+
+def test_a_cancelled_order_is_done_whatever_its_easyship_status():
+    """Including `LabelCanceled`, which is what a cancelled labelled order becomes."""
+    for easyship in (None, "LabelCanceled"):
+        order = _order(status="Canceled", easyship_status=easyship)
+        assert logic.bucket_for(order, date(2026, 8, 25)) == logic.BUCKET_DONE
+
+
+def test_an_unrecognised_easyship_status_on_a_shipped_order_is_done_not_guessed():
+    """A new Amazon status must not be guessed into a picking section.
+
+    A wrong row on the sheet sends someone to a shelf for a parcel that has already gone.
+    Absent from the sheet is recoverable; a phantom pick is a wasted trip and a doubt about
+    every other row.
+    """
+    order = _order(status="Shipped", easyship_status="SomeNewStatusAmazonInvented")
+    assert logic.bucket_for(order, date(2026, 8, 25)) == logic.BUCKET_DONE
+
+
+def test_the_pending_section_is_rendered():
+    """It must be one of the sheet's sections, or the 12 pending orders vanish again."""
+    assert logic.BUCKET_PENDING in logic.SHEET_SECTIONS
+    assert logic.BUCKET_DONE not in logic.SHEET_SECTIONS, (
+        "finished orders must not occupy a section on a picking sheet"
+    )

@@ -31,21 +31,49 @@ SENTINEL_YEAR = 1995
 EASY_SHIP_TOKEN = "EZ"
 
 BUCKET_TODAY = "to_pack"            # unshipped, no label yet, due today or overdue
-BUCKET_PICKUP = "awaiting_pickup"   # labelled, not yet collected
+BUCKET_PICKUP = "awaiting_pickup"   # labelled, courier has not collected it
 BUCKET_LATER = "later"              # unshipped, due after today
+BUCKET_PENDING = "pending_payment"  # Amazon has not confirmed the payment yet
 BUCKET_DONE = "done"                # picked up, delivered, returned, cancelled
 
 #: `PendingSchedule` means Amazon has no label for this order yet, so the physical job is
-#: pick-pack-and-label. Measured: all 97 currently unshipped orders are PendingSchedule.
+#: pick-pack-and-label. Every `Unshipped` Easy Ship order observed carries it.
 STATUS_PENDING_SCHEDULE = "PendingSchedule"
 
-#: Easy Ship statuses that mean the order needs nothing from the warehouse today.
+#: Labelled, boxed, and waiting for Amazon Logistics to collect. **The real value on
+#: amazon.in is `PendingPickUp`.**
+#:
+#: This cost a live bug. The first version keyed on `LabelGenerated` and `ReadyForPickup` —
+#: names taken from Amazon's DOCUMENTATION — and the section was permanently empty while
+#: Seller Central showed 247 orders waiting for pickup. The doc names were never sent.
+#: The mirror of the trap already recorded for the shipment API, where a value Amazon
+#: RETURNS was not one it ACCEPTS: here, a value Amazon DOCUMENTS is not one it SENDS.
+#:
+#: The doc names are kept as aliases rather than deleted: they cost nothing, and Amazon may
+#: legitimately use them in another marketplace.
+AWAITING_PICKUP_EASYSHIP = frozenset({
+    "PendingPickUp",                        # measured on amazon.in
+    "LabelGenerated", "ReadyForPickup",      # documented; never observed here
+})
+
+#: Easy Ship statuses that mean the order needs nothing from the warehouse.
+#: `ReturningToSeller` is finished for PICKING purposes — the parcel is on its way back and
+#: nothing is packed for it — even though the order is not over commercially.
 FINISHED_EASYSHIP = frozenset({
     "PickedUp", "Delivered", "ReturnedToSeller", "ReturningToSeller", "LabelCanceled",
 })
 
-#: Order statuses that still need packing. Anything else is off the floor.
+#: Order statuses that still need packing.
 OPEN_ORDER = frozenset({"Unshipped", "PartiallyShipped"})
+
+#: Payment not yet confirmed by Amazon, so the order cannot be packed and its items are not
+#: final. Shown in its own section rather than hidden: it is what is coming next.
+PENDING_ORDER = frozenset({"Pending"})
+
+#: `Shipped` covers BOTH "labelled and awaiting pickup" AND "long since delivered", which is
+#: why the Easy Ship status decides the bucket rather than the order status. Getting this
+#: backwards is what made the 247 waiting-for-pickup orders invisible.
+SHIPPED_ORDER = frozenset({"Shipped"})
 
 
 def _field(row, name, default=None):
@@ -108,26 +136,37 @@ def bucket_for(order, today: date) -> str:
     * ``to_pack`` — pick it, pack it, generate the label in Seller Central.
     * ``awaiting_pickup`` — already boxed and labelled; hand it to the courier.
 
-    **`awaiting_pickup` is defined by exclusion, deliberately.** Across 90 days this
-    account only ever showed `PendingSchedule`, `PickedUp`, `Delivered`,
-    `ReturnedToSeller` and `LabelCanceled` — never `LabelGenerated` or `ReadyForPickup`,
-    presumably because labels are generated and collected the same day. Hardcoding those
-    two strings would produce a permanently empty section, so anything open that is NOT
-    pending counts as labelled, and the raw status is rendered on the row so an
-    unexpected value is visible rather than silently mis-filed.
+    * ``pending_payment`` — Amazon has not confirmed payment; nothing can be packed yet.
 
-    An order with no deadline is `later`, never `to_pack`: it is real work but not
-    today's, and putting it in today's total would inflate the number the warehouse
-    plans against.
+    **The EASY SHIP status decides the bucket, not the order status.** `Shipped` covers both
+    "labelled and sitting on the floor waiting for the courier" (`PendingPickUp`) and "was
+    delivered a fortnight ago" (`Delivered`). Branching on the order status put all of them
+    in `done`, which is how 247 orders waiting for pickup became invisible to a screen whose
+    job is to show exactly that.
+
+    An order with no deadline is `later`, never `to_pack`: it is real work but not today's,
+    and putting it in today's total would inflate the number the warehouse plans against.
     """
     easyship = (_field(order, "easyship_status") or "").strip()
     status = (_field(order, "status") or "").strip()
 
-    if easyship in FINISHED_EASYSHIP or status not in OPEN_ORDER:
+    # Checked FIRST, because these are the boxes physically standing in the warehouse
+    # waiting to be handed over — and they arrive with status `Shipped`, which any
+    # order-status-first test would file as finished.
+    if easyship in AWAITING_PICKUP_EASYSHIP:
+        return BUCKET_PICKUP
+
+    if easyship in FINISHED_EASYSHIP:
         return BUCKET_DONE
 
-    if easyship and easyship != STATUS_PENDING_SCHEDULE:
-        return BUCKET_PICKUP
+    if status in PENDING_ORDER:
+        return BUCKET_PENDING
+
+    if status not in OPEN_ORDER:
+        # `Shipped` with an Easy Ship status we do not recognise, or `Canceled`. Treated as
+        # finished rather than guessed into a picking section: a wrong row on the sheet
+        # sends someone to a shelf for a parcel that has already gone.
+        return BUCKET_DONE
 
     due = ship_by_date(order)
     if due is not None and due <= today:
@@ -138,7 +177,7 @@ def bucket_for(order, today: date) -> str:
 #: The sections a picking sheet renders, in the order the warehouse works them. `done` is
 #: absent on purpose: a finished order needs nothing, and a section for it is a section
 #: the packer scrolls past every morning.
-SHEET_SECTIONS = (BUCKET_TODAY, BUCKET_PICKUP, BUCKET_LATER)
+SHEET_SECTIONS = (BUCKET_TODAY, BUCKET_PICKUP, BUCKET_LATER, BUCKET_PENDING)
 
 
 def _catalogue_entry(catalogue, asin: str) -> dict | None:
