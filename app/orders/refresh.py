@@ -54,9 +54,24 @@ reset_state()
 
 
 def status() -> dict:
-    """A copy of the current progress, safe for the caller to serialise."""
+    """A copy of the current progress, JSON-safe.
+
+    **The timestamps are converted to ISO strings HERE, not by each caller.** `JSONResponse`
+    cannot serialise a `datetime`, so returning the raw dict raised
+    `TypeError: Object of type datetime is not JSON serializable` — and it did so on the
+    409 "already running" path, which is the one path that fires exactly when the owner is
+    trying to find out what is happening. Every route that returns this dict inherits the
+    conversion rather than remembering it.
+
+    Found in a browser on production. The test that covered the 409 set `running` by hand
+    while `started_at` was still None, so the offending value was never present.
+    """
     snapshot = dict(STATE)
     snapshot["warnings"] = list(STATE.get("warnings") or [])
+    for field in ("started_at", "finished_at"):
+        value = snapshot.get(field)
+        if isinstance(value, datetime):
+            snapshot[field] = value.isoformat()
     return snapshot
 
 

@@ -263,3 +263,61 @@ def test_date_ist_does_not_construct_a_date_object():
         "dateIST constructs a Date, which reintroduces the UTC-midnight shift"
     )
     assert ".split(" in body, "dateIST should split the ISO date rather than parse it"
+
+
+async def test_the_refresh_status_is_json_serialisable_with_real_timestamps(
+    auth_client, db
+):
+    """The production 500: `TypeError: Object of type datetime is not JSON serializable`.
+
+    `STATE` holds real `datetime` objects while a refresh runs, and `JSONResponse` cannot
+    serialise one. Every route that returns the status was affected, but it surfaced on the
+    409 "already running" path — the one request the owner makes precisely when he wants to
+    know what is happening.
+
+    The earlier 409 test set `running` by hand while `started_at` was still None, so the
+    offending value was never present. This one sets a REAL timestamp, which is what
+    production had.
+    """
+    import json
+
+    refresh.reset_state()
+    refresh.STATE.update({
+        "running": True,
+        "started_at": datetime.utcnow(),
+        "finished_at": datetime.utcnow(),
+        "phase": "orders",
+        "orders_seen": 113,
+    })
+    try:
+        # The status endpoint itself.
+        r = await auth_client.get("/orders/refresh-status")
+        assert r.status_code == 200, r.text
+        assert isinstance(r.json()["started_at"], str), "started_at is not a string"
+
+        # And the 409 path, which is where it actually broke.
+        conflict = await auth_client.post("/orders/refresh")
+        assert conflict.status_code == 409, conflict.text
+        json.dumps(conflict.json())          # would raise if a datetime leaked through
+        assert isinstance(conflict.json()["refresh"]["started_at"], str)
+    finally:
+        refresh.reset_state()
+
+
+async def test_the_orders_payload_survives_a_running_refresh(auth_client, db):
+    """GET /orders embeds the refresh status, so it shared the same defect.
+
+    The screen calls this on load; a 500 here is the "Could not reach the server" banner
+    the owner actually saw, with the picking sheet never rendering at all.
+    """
+    import json
+
+    await _seed(db)
+    refresh.reset_state()
+    refresh.STATE.update({"running": True, "started_at": datetime.utcnow()})
+    try:
+        r = await auth_client.get("/orders")
+        assert r.status_code == 200, r.text
+        json.dumps(r.json())
+    finally:
+        refresh.reset_state()
