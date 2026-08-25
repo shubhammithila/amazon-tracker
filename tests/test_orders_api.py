@@ -214,3 +214,52 @@ def test_the_orders_area_is_grantable_and_denied_by_default():
     # Deny by default: an empty grant must not include it.
     assert not permissions.has("", permissions.ORDERS)
     assert permissions.has(permissions.ORDERS, permissions.ORDERS)
+
+
+# ─── The screen ──────────────────────────────────────────────────────────────
+
+def _orders_source() -> str:
+    from pathlib import Path
+
+    return (
+        Path(__file__).resolve().parent.parent / "templates" / "orders.html"
+    ).read_text(encoding="utf-8")
+
+
+def test_the_ship_by_date_is_not_rendered_through_a_time_formatter():
+    """A date put through a time formatter lands on the WRONG DAY.
+
+    `ship_by_ist` is a calendar date ("2026-08-25") because a ship-by deadline is a day.
+    The template first rendered it with `timeIST()`, whose `new Date("2026-08-25")` is
+    parsed as UTC midnight — printing "26 Aug, 05:30", five and a half hours into the
+    following day, in the column the warehouse plans against.
+
+    Found in a browser, not by a test: the server was correct and the formatter was
+    correct, and only their combination was wrong. So this asserts the pairing.
+    """
+    source = _orders_source()
+    assert "esc(dateIST(o.ship_by_ist))" in source, (
+        "the ship-by date is not rendered with dateIST"
+    )
+    assert "timeIST(o.ship_by_ist)" not in source, (
+        "the ship-by DATE is being formatted as a time, which shifts it into the next day"
+    )
+    # The other direction: a real instant must keep the time formatter.
+    assert "timeIST(o.purchase_date_ist)" in source, (
+        "the purchase timestamp lost its time formatting"
+    )
+
+
+def test_date_ist_does_not_construct_a_date_object():
+    """Splitting the string is the fix; parsing it is the bug.
+
+    `new Date("2026-08-25")` is UTC midnight by specification, so ANY timezone conversion
+    applied afterwards moves the day. dateIST must therefore not build a Date at all.
+    """
+    source = _orders_source()
+    start = source.index("function dateIST(")
+    body = source[start:source.index("\n}", start)]
+    assert "new Date(" not in body, (
+        "dateIST constructs a Date, which reintroduces the UTC-midnight shift"
+    )
+    assert ".split(" in body, "dateIST should split the ISO date rather than parse it"

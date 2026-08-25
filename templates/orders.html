@@ -168,13 +168,30 @@ function ago(iso){
 
 function timeIST(iso){
   if(!iso) return "";
-  // The server already converted to IST and sent an offset-bearing string. Formatting
-  // with an explicit timeZone keeps it IST even on a laptop set to another zone —
-  // a warehouse deadline must not shift because someone is travelling.
+  // An offset-bearing instant, formatted with an explicit timeZone so it stays IST even
+  // on a laptop set elsewhere — a warehouse deadline must not shift because someone is
+  // travelling.
   return new Date(iso).toLocaleString("en-IN", {
     day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
     hour12: false, timeZone: "Asia/Kolkata",
   });
+}
+
+/* A DATE, rendered as a date. NEVER passed through timeIST().
+
+   `ship_by_ist` is a calendar date ("2026-08-25"), because a ship-by deadline is a DAY —
+   Amazon's 18:29Z is simply "end of that day in India". Running it through the time
+   formatter read it as UTC midnight and printed "26 Aug, 05:30": five and a half hours
+   into the WRONG DAY, on the column the warehouse plans against. Found in a browser, not
+   by a test, because both sides were individually correct.
+
+   Split rather than parsed, so no timezone is applied to a value that carries none. */
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function dateIST(isoDate){
+  if(!isoDate) return "";
+  const [y, m, d] = String(isoDate).split("-").map(Number);
+  if(!y || !m || !d) return "";
+  return `${String(d).padStart(2, "0")} ${MONTHS[m - 1]}`;
 }
 
 async function load(){
@@ -308,7 +325,7 @@ function renderList(){
       <td class="o-id">${esc(o.amazon_order_id)}
         ${o.is_cod ? '<span class="tag cod">COD</span>' : ""}</td>
       <td>${esc(timeIST(o.purchase_date_ist))}</td>
-      <td>${o.ship_by_ist ? esc(timeIST(o.ship_by_ist)) : "—"}
+      <td>${o.ship_by_ist ? esc(dateIST(o.ship_by_ist)) : "—"}
         ${o.overdue ? '<span class="tag overdue">overdue</span>' : ""}</td>
       <td>${esc(o.status)}</td>
       <td>${esc(o.easyship_status || "—")}</td>
