@@ -28,10 +28,26 @@ logger = logging.getLogger(__name__)
 #: rounded UP to 22.5 because undershooting earns a 429 that costs the whole page.
 ORDERS_MIN_INTERVAL = 22.5
 
-#: getOrderItems is documented at ~0.5 req/sec and measured far cheaper than getOrders,
-#: but a burst of 100 would still trip it. 2s is comfortable for the 3-4 new orders a day
-#: this account actually sees.
-ITEMS_MIN_INTERVAL = 2.0
+#: Seconds between getOrderItems calls. Amazon returns `x-amzn-RateLimit-Limit: 0.5` —
+#: measured on the live account — which is one call every 2.0 seconds exactly.
+#:
+#: **2.2, not 2.0, and the margin is the whole point.** This was 2.0, sitting precisely ON
+#: the limit with nothing spare, under a comment guessing that "3-4 new orders a day" made
+#: the interval academic. The real backlog is 235 orders needing items, and a 200-call run at
+#: dead-on 2.0s earned `You exceeded your quota for the requested resource` on 54 of them:
+#: any jitter or retry makes the effective rate faster than the bucket refills. Same
+#: undershoot mistake `ORDERS_MIN_INTERVAL` already documents — 22.2 measured, 22.5 used.
+#:
+#: A dropped item call is not cosmetic: the order still appears in its section while
+#: contributing no units, so the sheet silently understates what has to be picked.
+ITEMS_MIN_INTERVAL = 2.2
+
+#: Consecutive quota errors before the item phase gives up for this run. Once the bucket is
+#: empty every further call fails identically, so continuing spends requests against an
+#: account Amazon is already throttling. 5 distinguishes "the bucket is empty" from one
+#: cancelled order returning 404. The skipped orders keep `items_fetched_at` NULL and are
+#: retried next run.
+ITEMS_THROTTLE_GIVE_UP = 5
 
 #: Every status the Orders tab needs, and `Shipped` is the one that matters most.
 #:
@@ -388,8 +404,19 @@ async def fetch_items(
     waste minutes of rate-limited work. The failure is logged and that order is simply
     absent from the result, so the caller leaves its `items_fetched_at` NULL and retries
     next time.
+
+    **A run of quota errors STOPS the phase instead of grinding through it.** Measured: once
+    the bucket is empty every remaining call fails the same way, and a 200-order batch spent
+    54 consecutive failures learning nothing — two minutes of wall clock and 54 requests
+    against an account Amazon is already throttling. Those orders keep `items_fetched_at`
+    NULL, so the next run picks them up; giving up early is what makes the next run possible
+    sooner.
+
+    A one-off failure is different and does NOT stop anything: an order can be cancelled
+    between the list call and this one, and a single 404 must not cost the batch.
     """
     out: dict[str, list[dict]] = {}
+    consecutive_throttles = 0
     for index, order_id in enumerate(order_ids):
         if index:
             await sleep(ITEMS_MIN_INTERVAL)
@@ -397,6 +424,16 @@ async def fetch_items(
             payload = await spapi._get(f"/orders/v0/orders/{order_id}/orderItems")
         except SpApiError as exc:            # noqa: BLE001 - logged, and retried next run
             logger.warning("orders: items for %s failed (%s)", order_id, exc)
+            if getattr(exc, "status", None) == 429 or "quota" in str(exc).lower():
+                consecutive_throttles += 1
+                if consecutive_throttles >= ITEMS_THROTTLE_GIVE_UP:
+                    logger.warning(
+                        "orders: giving up on items after %d consecutive quota errors; "
+                        "%d order(s) keep items_fetched_at NULL and retry next run",
+                        consecutive_throttles, len(order_ids) - index - 1,
+                    )
+                    break
             continue
+        consecutive_throttles = 0
         out[order_id] = parse_items(payload)
     return out

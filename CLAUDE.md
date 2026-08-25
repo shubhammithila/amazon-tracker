@@ -808,6 +808,15 @@ orders* — fewer units than orders. `ids_missing_items(priority_statuses=…)` 
 ordering; a separate test asserts `refresh.run` actually **passes** it, because the first
 version implemented the ordering and never used it.
 
+**`getOrderItems` is one call every 2.0 seconds** — `x-amzn-RateLimit-Limit: 0.5`, measured.
+`ITEMS_MIN_INTERVAL` was set to exactly 2.0 under a comment guessing the interval was academic
+because the account sees "3-4 new orders a day"; the real backlog is 235 orders needing items,
+and a 200-call run at dead-on 2.0s took `You exceeded your quota` on 54 of them. Now 2.2, the
+same undershoot margin `ORDERS_MIN_INTERVAL` already documents. A run of 5 consecutive quota
+errors abandons the item phase: once the bucket is empty every further call fails identically,
+those orders keep `items_fetched_at` NULL, and stopping is what lets the next run succeed
+sooner. A single 404 does not trigger it — that is one cancelled order, not an empty bucket.
+
 ### Four facts measured against the live account, each of which the obvious code gets wrong
 - **Easy Ship is `ShipServiceLevel` containing `EZ`, not `FulfillmentChannel == "MFN"`.**
   Both Easy Ship and plain self-ship report MFN. Three real `S02-…` orders are MFN

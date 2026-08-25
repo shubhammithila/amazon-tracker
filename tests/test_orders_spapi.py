@@ -343,6 +343,80 @@ async def test_fetch_items_asks_only_for_the_ids_it_is_given(monkeypatch):
     assert all("/orderItems" in path for path in asked)
 
 
+def test_the_item_interval_leaves_margin_below_the_measured_limit():
+    """Amazon returns `x-amzn-RateLimit-Limit: 0.5` for getOrderItems — one per 2.0s exactly.
+
+    This was 2.0, sitting ON the limit with nothing spare, under a comment guessing that
+    "3-4 new orders a day" made it academic. The real backlog is 235 orders needing items,
+    and a 200-call run at dead-on 2.0s earned "You exceeded your quota" on 54 of them.
+
+    A dropped item call is not cosmetic: the order still appears in its section while
+    contributing no units, so the sheet understates what has to be picked.
+    """
+    assert spapi_orders.ITEMS_MIN_INTERVAL > 2.0, (
+        "pacing exactly at Amazon's measured limit leaves no room for jitter, and the "
+        "symptom is a picking sheet that silently undercounts units"
+    )
+
+
+async def test_a_run_of_quota_errors_gives_up_instead_of_grinding(monkeypatch):
+    """Once the bucket is empty every further call fails identically.
+
+    Measured: 54 consecutive failures in one batch — two minutes of wall clock and 54
+    requests against an account Amazon is already throttling. The skipped orders keep
+    `items_fetched_at` NULL, so stopping early is what lets the next run succeed sooner.
+    """
+    from app.shipment.spapi import SpApiError
+
+    calls = []
+
+    async def fake_get(path, params=None, client=None):
+        calls.append(path)
+        raise SpApiError("Amazon said: You exceeded your quota for the requested resource.",
+                         status=429)
+
+    async def fake_sleep(seconds):
+        return None
+
+    monkeypatch.setattr(spapi_orders.spapi, "_get", fake_get)
+    result = await spapi_orders.fetch_items(
+        [f"403-{n}" for n in range(200)], sleep=fake_sleep
+    )
+
+    assert result == {}
+    assert len(calls) == spapi_orders.ITEMS_THROTTLE_GIVE_UP, (
+        f"kept calling a throttled endpoint {len(calls)} times"
+    )
+
+
+async def test_a_single_404_does_not_stop_the_batch(monkeypatch):
+    """The give-up rule must not fire on one cancelled order.
+
+    An order can be cancelled between the list call and this one. That is a 404, not an empty
+    bucket, and abandoning the batch for it would waste minutes of rate-limited work.
+    """
+    from app.shipment.spapi import SpApiError
+
+    payload = _fixture("orders_items.json")
+    seen = []
+
+    async def fake_get(path, params=None, client=None):
+        seen.append(path)
+        if "403-BAD" in path:
+            raise SpApiError("order not found", status=404)
+        return payload
+
+    async def fake_sleep(seconds):
+        return None
+
+    monkeypatch.setattr(spapi_orders.spapi, "_get", fake_get)
+    ids = ["403-BAD"] * 8 + ["403-OK"]
+    result = await spapi_orders.fetch_items(ids, sleep=fake_sleep)
+
+    assert "403-OK" in result, "a run of 404s stopped the batch as though it were throttling"
+    assert len(seen) == len(ids)
+
+
 async def test_one_failing_order_does_not_lose_the_others(monkeypatch):
     """A 404 on one order must not abandon the batch.
 
