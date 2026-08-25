@@ -33,6 +33,12 @@ logger = logging.getLogger(__name__)
 #: the app rather than introducing a second retention concept.
 WINDOW_DAYS = 90
 
+#: Pages the MANUAL refresh will walk. Higher than the half-hourly job's cap because this
+#: is the deep backfill — 90 days at 100 orders a page. Each page costs 22.5 seconds, so 12
+#: pages is about four and a half minutes, which is why the banner reports progress and the
+#: button disables itself rather than the request being awaited.
+BACKFILL_PAGES = 12
+
 #: The section headings the warehouse reads, and the order they are worked in. Defined here
 #: rather than in the template so the Excel export and the screen cannot disagree.
 SECTION_LABELS = {
@@ -134,7 +140,11 @@ async def start_refresh(
 
     # Fire and forget. The task holds its own session: the request's session closes when
     # this handler returns, so using it would fail once the response was sent.
-    asyncio.create_task(refresh.run(days=WINDOW_DAYS))
+    #
+    # The FULL window and a generous page cap, unlike the half-hourly job, which looks back
+    # two weeks over a few pages. This is the deep backfill: someone pressed the button
+    # because they want everything, and they are watching the progress banner while it runs.
+    asyncio.create_task(refresh.run(days=WINDOW_DAYS, max_pages=BACKFILL_PAGES))
     return JSONResponse({"started": True, "refresh": refresh.status()})
 
 

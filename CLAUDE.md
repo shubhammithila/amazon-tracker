@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (1087 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (1205 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -30,7 +30,7 @@ explicit role/username, never escalated, because forging either needs the signin
 
 ### Permissions are per AREA, not per role
 `app/permissions.py` owns one list: Dashboard · Invoice · Portfolio · Projections ·
-Shipment · Daily packing. A "role" is only a preset that fills that set in
+Shipment · Daily packing · Orders. A "role" is only a preset that fills that set in
 (Owner / Packer / Accounts), and nothing stores which preset was used — a user who
 was a Packer and then gained Invoice is not a Packer, and a stored label would drift
 from the truth.
@@ -84,7 +84,7 @@ app/
 ├── config.py            # Settings (pydantic-settings, .env)
 ├── database.py          # Async SQLAlchemy engine
 ├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry)
-├── scheduler.py         # APScheduler (daily scrape at 06:00, keywords at 07:30)
+├── scheduler.py         # APScheduler (scrape 06:00, keywords 07:30, orders every 30m)
 ├── utils.py             # Date parsing helpers
 ├── routers/
 │   ├── auth.py          # Login/logout, get_current_role, require_admin / require_ops_or_admin
@@ -117,8 +117,9 @@ app/
 ```
 
 ### Tabs
-Dashboard, Invoice, Portfolio, Projections, Shipment — and `/ops-page` for the
-warehouse, which is not in the nav because every link in it is admin-only.
+Dashboard, Invoice, Portfolio, Projections, Shipment, Products, Orders, Users — and
+`/ops-page` for the warehouse, which is not in the nav because every link in it is
+admin-only.
 
 Colour lives in **`static/theme.css`** and nowhere else — one shared light theme
 for all seven pages. `tests/test_theme.py` fails on any template that re-declares
@@ -747,6 +748,72 @@ fastapi, uvicorn[standard], sqlalchemy[asyncio], aiosqlite, alembic,
 pydantic-settings, httpx, lxml, pandas, openpyxl, apscheduler,
 python-multipart, itsdangerous, jinja2, aiofiles, reportlab
 ```
+
+## Orders tab — the daily picking sheet
+
+`/orders-page`. Amazon Easy Ship orders, aggregated into what the warehouse actually picks
+against: **item + pack size + brand, with units, order counts and a net kilogram total**,
+split into three sections. Asked for as *"the orders which have to be shipped today, item
+wise weight wise qty totalled"*.
+
+### It is a cache, refreshed in the background — never fetched on request
+`getOrders` is rate-limited to **0.045 req/sec — one call every 22.5 seconds**, measured
+(`x-amzn-RateLimit-Limit: 0.04512`). A page that called Amazon would hang, and two people
+opening the tab would 429. So `app/orders/` stores orders locally and every route reads
+rows. A scheduled job refreshes every **30 minutes** (14 days, 4 pages ≈ 3.8% of the daily
+budget); the *Refresh now* button does the deep 90-day backfill and the screen polls
+progress.
+
+**The routine refresh MUST page.** Amazon caps a page at 100 orders and 97 are currently
+open with `NextToken` set, so a one-page refresh would silently stop seeing new orders the
+moment the backlog passed 100 — the sheet would just quietly go stale.
+
+### Four facts measured against the live account, each of which the obvious code gets wrong
+- **Easy Ship is `ShipServiceLevel` containing `EZ`, not `FulfillmentChannel == "MFN"`.**
+  Both Easy Ship and plain self-ship report MFN. Three real `S02-…` orders are MFN
+  `"Standard"` and carry a ship-by of **1995-01-01** — a sentinel that, rendered as a date,
+  sits at the top of every morning's sheet as 31 years overdue. It is treated as "no
+  deadline".
+- **Every `LatestShipDate` is `18:29Z` = `23:59 IST`.** Amazon means end of day in India.
+  Timestamps are stored UTC in `*_utc` columns and converted once, on the server. The
+  suffix is half the guard.
+- **`ship_by_ist` is a DATE and must never go through a time formatter.** It did:
+  `new Date("2026-08-25")` is UTC midnight by spec, so IST rendered it as **05:30 the next
+  morning** — five and a half hours into the wrong day, in the column the warehouse plans
+  against. Found in a browser; both halves were individually correct. `dateIST()` splits
+  the string and a test asserts it contains no `new Date(`.
+- **The catalogue join is by ASIN, never `SellerSKU`.** An order carries
+  `SellerSKU: "0.5kg cs 1"`, absent from `pricing_data.json`, while its ASIN is in the
+  catalogue. Names and weights come from the **live MRP sheet** (271 ASINs), not
+  `product_families.json` (205, and it calls Chana Sattu just "sattu").
+
+### The two actionable sections are two different physical jobs
+`EasyShipShipmentStatus` distinguishes them: `PendingSchedule` means no label yet, so the
+job is pick-pack-label; anything else still open means labelled and awaiting the courier.
+**The pickup bucket is defined by exclusion**, because 90 days of this account never showed
+`LabelGenerated` or `ReadyForPickup` — hardcoding those strings would produce a permanently
+empty section. All three sections render even when empty: one that vanished would read as a
+bug rather than an empty queue.
+
+### Read-only, and deliberately so
+No ship button, no label download. **Every Easy Ship endpoint returns 403** — the app lacks
+`Direct to Consumer Shipping (Restricted)`, and an RDT scoped to Easy Ship is refused with
+*"Application do not have access to some or all requested resource"*. `GET_EASYSHIP_DOCUMENTS`,
+`/mfn/v0` and `/shipping/v2` are all 403 too. The role is being applied for; a control that
+always errors would read as a broken app.
+
+There is also no local "packed" tick: Amazon's status is the single source of truth, and a
+second one is the class of bug the shipment feature's write separation exists to avoid.
+
+> **Real-time is possible but needs AWS.** `ORDER_CHANGE` notifications are reachable —
+> `GET /notifications/v1/subscriptions/ORDER_CHANGE` returns 404 ("no subscription"), not
+> 403, and `/notifications/v1/destinations` returns 200 with a **grantless**
+> (`client_credentials`) token rather than the seller's refresh token. But Amazon delivers
+> only to SQS or EventBridge, so it needs a queue plus a consumer process. Deferred: 30
+> minutes was judged enough.
+
+`orders` is a per-area permission, so the warehouse can be granted the sheet without the
+rest of the app.
 
 ## Known gaps (deliberate, not oversights)
 

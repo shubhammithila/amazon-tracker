@@ -230,3 +230,41 @@ async def test_warnings_from_paging_reach_the_status(db_schema, monkeypatch):
 
     result = await refresh.run(days=90)
     assert any("more pages" in w for w in result["warnings"])
+
+
+# ─── Retention ───────────────────────────────────────────────────────────────
+
+async def test_the_scheduled_sweep_purges_old_orders(db, db_schema, monkeypatch):
+    """Orders are purged by the same job that already prunes price_history.
+
+    They need their own call rather than joining that loop: the sweep filters on
+    `scraped_at`, and an order has no such column — its age is the PURCHASE date. Wiring it
+    into the loop would have raised on the missing attribute, or worse, matched nothing and
+    let the table grow without bound the way price_history once did.
+    """
+    from app.scheduler import scheduled_purge_old_history
+
+    old = datetime.utcnow() - timedelta(days=200)
+    await repository.upsert_orders(db, [
+        _row("403-ancient", purchase_date_utc=old),
+        _row("403-recent"),
+    ])
+    await repository.replace_items(db, "403-ancient", [
+        {"asin": "B0CHANA500", "quantity_ordered": 1}
+    ])
+
+    await scheduled_purge_old_history()
+
+    remaining = [o["amazon_order_id"] for o in await repository.load_orders(db)]
+    assert remaining == ["403-recent"], f"retention left {remaining}"
+
+    # The items went with it, by cascade — an orphaned item row would keep counting toward
+    # a picking sheet for an order that no longer exists.
+    from sqlalchemy import func, select
+
+    from app.models import AmazonOrderItem
+
+    orphans = (
+        await db.execute(select(func.count()).select_from(AmazonOrderItem))
+    ).scalar()
+    assert orphans == 0, f"{orphans} item row(s) survived their order"

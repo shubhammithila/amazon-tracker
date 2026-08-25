@@ -1,6 +1,7 @@
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select, delete
 
 from app.config import get_settings
@@ -17,6 +18,21 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 scheduler = AsyncIOScheduler()
+
+#: How often to pull Amazon orders. Asked for: "every 30 mins is fine + manual refresh
+#: button". At 3 pages a run that is 3.8% of the getOrders rate budget, leaving ample room
+#: for the manual button and for the 90-day backfill.
+ORDER_REFRESH_MINUTES = 30
+
+#: Days back a ROUTINE refresh looks. Short on purpose: anything still open was placed
+#: recently, and re-paging 90 days every half hour would spend minutes re-learning shipped
+#: orders that cannot change. The manual button does the deep backfill.
+ORDER_REFRESH_DAYS = 14
+
+#: Pages per routine run. Amazon caps a page at 100 orders and 97 are currently open with
+#: NextToken set, so ONE page would silently miss orders the moment the backlog passed 100.
+#: This must stay comfortably above the largest plausible open-order count.
+ORDER_REFRESH_PAGES = 4
 
 
 async def scheduled_product_scrape():
@@ -130,9 +146,70 @@ async def scheduled_purge_old_history():
                 logger.info(f"Retention: deleted {count} rows from {model.__tablename__}")
         await db.commit()
 
+    # Amazon orders are purged separately, because they have no `scraped_at` — the age of
+    # an order is its PURCHASE date. Routed through the repository rather than a DELETE
+    # here, so the cascade to amazon_order_items goes through the ORM and this file does
+    # not become a second place that knows how order rows are shaped.
+    from app.orders import repository as orders_repo
+
+    async with async_session() as db:
+        orders_gone = await orders_repo.purge_older_than(db, days)
+    if orders_gone:
+        deleted_total += orders_gone
+        logger.info(f"Retention: deleted {orders_gone} rows from amazon_orders")
+
     logger.info(
         f"Retention sweep complete: {deleted_total} rows older than {days} days removed"
     )
+
+
+async def scheduled_order_refresh():
+    """Pull Amazon Easy Ship orders into the local tables, every 30 minutes.
+
+    **30 minutes is the interval the owner asked for, and it costs almost nothing.**
+    `getOrders` allows one call every 22.5 seconds — 3,840 a day — and this uses about
+    3.8% of that: 48 runs of up to 3 pages. The manual Refresh button on the Orders tab
+    spends one more call when someone wants it sooner.
+
+    **It pages, and that is not optional.** Amazon caps a page at 100 orders and there are
+    currently 97 open ones, with `NextToken` set — so a single-page refresh would silently
+    miss orders as soon as the backlog crossed 100. `ORDER_REFRESH_PAGES` must stay
+    comfortably above the number of orders that can be open at once.
+
+    **A short window on the routine run.** Routine refreshes look back
+    `ORDER_REFRESH_DAYS`, which is enough to catch anything still open; the 90-day
+    backfill is what the manual button does. Paging 90 days every half hour would spend
+    minutes to re-learn months of shipped orders that cannot change.
+
+    Skipped silently when a refresh is already running — `refresh.run` refuses and returns
+    rather than raising, so an overlap with a long manual backfill is a no-op instead of an
+    error in the log every half hour.
+    """
+    from app.orders import refresh
+
+    # Read the settings FRESH rather than using this module's import-time `settings`.
+    # That snapshot is bound once when the module loads, so a credential added to .env
+    # after start — or cleared, as a test does — would never be seen. A job that runs
+    # every 30 minutes for the life of the process should not be deciding on a value
+    # captured at boot.
+    if not get_settings().spapi_configured:
+        # Not an error: the app is expected to work without Amazon credentials, and the
+        # Orders tab says so on screen rather than the log filling with failures every
+        # half hour on every fresh install.
+        logger.debug("Order refresh skipped: SP-API is not configured")
+        return
+
+    result = await refresh.run(days=ORDER_REFRESH_DAYS, max_pages=ORDER_REFRESH_PAGES)
+    if result.get("refused"):
+        logger.info("Order refresh skipped: one is already running")
+    elif result.get("error"):
+        logger.warning("Order refresh failed: %s", result["error"])
+    else:
+        logger.info(
+            "Order refresh: %d seen, %d new, %d updated, %d itemised",
+            result["orders_seen"], result["created"], result["updated"],
+            result["items_fetched"],
+        )
 
 
 def setup_scheduler():
@@ -165,9 +242,24 @@ def setup_scheduler():
         replace_existing=True,
     )
 
+    # Every 30 minutes, and jittered by starting 4 minutes in rather than on the hour, so
+    # an order refresh never begins in the same second as the 06:00 product scrape on a
+    # 951 MB box.
+    scheduler.add_job(
+        scheduled_order_refresh,
+        IntervalTrigger(minutes=ORDER_REFRESH_MINUTES, start_date=None),
+        id="order_refresh",
+        replace_existing=True,
+        # A slow run must not stack up behind itself. refresh.run refuses a concurrent
+        # start anyway, but coalescing keeps APScheduler from queueing missed runs.
+        max_instances=1,
+        coalesce=True,
+    )
+
     scheduler.start()
     logger.info(
         f"Scheduler started: products at {settings.daily_scrape_hour:02d}:{settings.daily_scrape_minute:02d}, "
         f"keywords at {keyword_hour:02d}:30, "
-        f"history purge at {purge_hour:02d}:15 (retention {settings.data_retention_days}d)"
+        f"history purge at {purge_hour:02d}:15 (retention {settings.data_retention_days}d), "
+        f"orders every {ORDER_REFRESH_MINUTES}m"
     )

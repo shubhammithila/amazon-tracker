@@ -60,11 +60,22 @@ def status() -> dict:
     return snapshot
 
 
-async def run(db_factory=async_session, *, days: int = 90, sleep=asyncio.sleep) -> dict:
+async def run(
+    db_factory=async_session,
+    *,
+    days: int = 90,
+    max_pages: int = 10,
+    sleep=asyncio.sleep,
+) -> dict:
     """Fetch orders and their missing items into the local tables.
 
     Returns a status snapshot. `refused: True` means a refresh was already running and this
     call did nothing — which is not an error, it is the guard working.
+
+    `days` and `max_pages` differ by caller, deliberately. The half-hourly job looks back a
+    couple of weeks over a few pages, because anything still open was placed recently and
+    re-paging 90 days every 30 minutes would spend minutes re-learning shipped orders that
+    cannot change. The manual button does the deep backfill.
 
     **The orders commit happens before the item phase**, so a failure fetching items leaves
     every order already stored and merely un-itemised. At 22 seconds a page, re-paging after
@@ -84,7 +95,9 @@ async def run(db_factory=async_session, *, days: int = 90, sleep=asyncio.sleep) 
     STATE.update({"running": True, "started_at": datetime.utcnow(), "phase": "orders"})
 
     try:
-        orders, warnings = await spapi_orders.fetch_easy_ship_orders(days=days, sleep=sleep)
+        orders, warnings = await spapi_orders.fetch_easy_ship_orders(
+            days=days, max_pages=max_pages, sleep=sleep
+        )
         STATE["orders_seen"] = len(orders)
         STATE["warnings"] = list(warnings)
 

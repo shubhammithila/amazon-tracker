@@ -196,9 +196,75 @@ def test_purge_job_is_registered(monkeypatch):
     )
 
 
-def test_all_three_daily_jobs_are_registered(monkeypatch):
+def test_all_scheduled_jobs_are_registered(monkeypatch):
+    """An exact set, so a job added without a test is caught here.
+
+    Named as a set rather than an "in" check because a job that silently stops being
+    registered never runs in production and nothing complains — the failure the purge job
+    already had once.
+    """
     jobs = _registered_jobs(monkeypatch, hour=6)
-    assert set(jobs) == {"daily_product_scrape", "daily_keyword_track", "daily_history_purge"}
+    assert set(jobs) == {
+        "daily_product_scrape", "daily_keyword_track", "daily_history_purge",
+        "order_refresh",
+    }
+
+
+def test_the_order_refresh_runs_every_thirty_minutes(monkeypatch):
+    """Asked for: "every 30 mins is fine + manual refresh button".
+
+    An interval rather than a cron, because "since the last run" is what matters for a
+    poll, not a wall-clock time. Asserted on the emitted trigger so a changed constant
+    fails here rather than only in production.
+    """
+    from app import scheduler as sched
+
+    jobs = _registered_jobs(monkeypatch, hour=6)
+    assert "order_refresh" in jobs, (
+        "the order refresh is never scheduled, so the Orders tab would only ever update "
+        "when someone pressed the button"
+    )
+    assert sched.ORDER_REFRESH_MINUTES == 30
+    assert "0:30:00" in jobs["order_refresh"], jobs["order_refresh"]
+
+
+def test_the_routine_order_refresh_pages_more_than_one_page():
+    """One page is 100 orders, and there are already 97 open.
+
+    Amazon caps a page at 100 and returns NextToken when more exists, so a single-page
+    routine refresh would silently stop seeing new orders the moment the open backlog
+    passed 100 — the packer's sheet would just quietly go stale.
+    """
+    from app import scheduler as sched
+
+    assert sched.ORDER_REFRESH_PAGES >= 2, (
+        "a one-page routine refresh misses orders once the backlog exceeds 100"
+    )
+    # And the routine window stays short: re-paging 90 days every 30 minutes would spend
+    # minutes re-learning shipped orders that cannot change.
+    assert sched.ORDER_REFRESH_DAYS <= 30
+
+
+async def test_the_order_refresh_skips_when_spapi_is_not_configured(
+    monkeypatch, no_spapi_credentials
+):
+    """The app must work without Amazon credentials.
+
+    Without this guard the log fills with an auth failure every 30 minutes on any
+    deployment that has no SP-API keys — which is every fresh install.
+    """
+    from app import scheduler as sched
+    from app.orders import refresh
+
+    called = []
+
+    async def should_not_run(*a, **k):
+        called.append(True)
+        return {}
+
+    monkeypatch.setattr(refresh, "run", should_not_run)
+    await sched.scheduled_order_refresh()
+    assert not called, "the refresh ran with no credentials configured"
 
 
 @pytest.mark.parametrize(
