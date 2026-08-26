@@ -83,7 +83,7 @@ app/
 ├── main.py              # FastAPI app entry point
 ├── config.py            # Settings (pydantic-settings, .env)
 ├── database.py          # Async SQLAlchemy engine
-├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry, AmazonOrder/AmazonOrderItem/OrderPackedEntry)
+├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry, AmazonOrder/AmazonOrderItem/OrderPackedEntry/ProductRawStock)
 ├── scheduler.py         # APScheduler (scrape 06:00, keywords 07:30, orders every 30m)
 ├── utils.py             # Date parsing helpers
 ├── routers/
@@ -735,6 +735,19 @@ no console, so they are the only way back in if the `users` table is damaged by 
 They just have to be set deliberately. For day-to-day access prefer a named Packer account
 from `/users-page`, which can be revoked per person.
 
+**`SCHEDULER_ENABLED=false` on production, and `ORDER_REFRESH_ENABLED=true`.** The master flag
+stays off to keep the 06:00 product scrape (10 async workers), the 07:30 keyword track and the
+09:15 purge asleep on a 951 MB box with no swap. The orders refresh has its own flag so it can
+run alone — see "The orders refresh has its own flag" under the Orders tab. Enable it AFTER
+deploying the code, so the first scheduled run finds the new tables:
+
+```bash
+echo 'ORDER_REFRESH_ENABLED=true' >> /opt/amazon-tracker/.env && sudo systemctl restart tracker
+```
+
+`journalctl -u tracker | grep Scheduler` should then read `Scheduler started: orders every 30m`
+with no mention of products.
+
 **SP-API credentials ARE set** (`SP_API_CLIENT_ID`, `SP_API_CLIENT_SECRET`,
 `SP_API_REFRESH_TOKEN`, `SP_API_MARKETPLACE_ID`), and the `.env` is `chmod 600`. The
 refresh token is the most valuable secret on the box — worth more than the app
@@ -749,17 +762,35 @@ pydantic-settings, httpx, lxml, pandas, openpyxl, apscheduler,
 python-multipart, itsdangerous, jinja2, aiofiles, reportlab
 ```
 
-## Orders tab — today's dispatch
+## Orders tab — today's dispatch, in three tabs
 
-`/orders-page`. **The default and, for the warehouse, the only view is today's dispatch**:
-parent product → pack size, sorted by kilograms, with a units-packed box per SKU and a
-printable PDF. Asked for as *"show them only the data which is waiting for pickup — rest of
-the orders are the responsibility of the ecom team to ship on portal"* and *"Each parent item
-total weight orders … uske niche 500g, 1kg - kitne kitne units. sort it total weight wise"*.
+`/orders-page`. Three tabs over the same day, split by the question being asked:
+
+| Tab | Rows | Editable | Answers |
+|---|---|---|---|
+| Weight & purchase | one per parent product | raw stock (kg) | how much goes out, and what must I buy |
+| By SKU | one per pack size, flat | packed today | what has been boxed against each SKU |
+| Orders | one per order line | nothing | which orders exactly, and where |
+
+Asked for as *"show them only the data which is waiting for pickup — rest of the orders are the
+responsibility of the ecom team to ship on portal"*, *"Each parent item total weight orders …
+uske niche 500g, 1kg - kitne kitne units. sort it total weight wise"*, and *"they should be able
+to put how many units has he packed against each sku"*.
+
+**It was ONE table and it read as haphazard.** Measured before redesigning rather than guessed:
+101 rows and 7 columns, where UNITS and ORDERS were identical on **57 of 68** size rows, **7 of
+33** products had a parent row that was an identical twin of its only size row, and **41 of 68**
+rows held three units or fewer. The longest product name is 29 characters, so column width was
+never the constraint — the screen was answering three different questions at once.
+
+Every tab has its own search box, and the KPI strip stays visible across all three so switching
+tabs never loses the day's totals.
 
 The owner's four-section picking sheet (to pack · awaiting pickup · later · pending payment)
 still exists behind an **admin-only** toggle, because those three other groups are the ecom
-team's queue and showing them to the floor is what this redesign removed.
+team's queue and showing them to the floor is what this redesign removed. `awaiting_pickup` is
+absent from that panel: it IS today's dispatch above, and showing the same parcels twice under
+two different rules is how two numbers for one thing start to disagree.
 
 ### "Today's dispatch" is NOT "awaiting pickup", and that distinction is measured
 The rule is **ship-by == today AND Amazon has a label** (`logic.is_todays_dispatch`,
@@ -807,6 +838,82 @@ not, and unused columns invite a future reader to wire them up.
 Over-packing **warns and never blocks**, the same rule as `logic.over_packed`: the boxes
 physically exist, and refusing the entry would leave real stock unrecorded. `remaining` clamps
 at 0 because it reaches a printed sheet; the excess is reported separately as `over_packed`.
+
+### Raw stock is STANDING; packed counts are per-day
+`product_raw_stock` is UNIQUE on `(product)` with **no `pack_date`**, and the asymmetry with
+`order_packed_entries` is the point. A packed count belongs to a day. Raw material on a shelf
+does not vanish at midnight, so a dated row would be blank every morning and the purchasing tab
+would read "buy everything" at 9am daily until every number was retyped.
+
+Keyed on the parent product NAME rather than an ASIN: raw material is bulk, and there is no such
+thing as 500 g-flavoured raw sattu. Kilograms, because that is how it is bought. It is **raw**
+rather than finished stock because Easy Ship orders are packed the same day — nothing is packed
+in advance, so what sits on the shelf is material, not product.
+
+`raw_kg` is `Numeric`, so SQLAlchemy hands back **`Decimal`, which `JSONResponse` cannot
+serialise** — `load_raw_stock` converts to `float` so every route inherits the fix. That exact
+defect already shipped once with datetimes and was found in a browser on production.
+
+**A zero is STORED here, not deleted** — the opposite of `save_packed`. There, 0 packed and "not
+counted" are the same thing on a worksheet. Here "we have none" is the fact that makes `to_buy`
+the full ordered weight, and deleting the row would leave it looking untouched.
+
+**`to_buy` clamps at 0, and the TOTAL sums the clamped rows.** Never `total_ordered − total_raw`:
+those differ the moment any product is in surplus, and the subtraction lets a surplus of ABC
+Sattu cancel a shortfall of Usna Chawal — you cannot make rice out of sattu. Caught reviewing the
+design rather than the code, because the wrong version looks entirely plausible in a totals row;
+now pinned by a test built with one product in surplus and two short, since with everything short
+both formulas agree and the test would prove nothing.
+
+Built to be replaced: when an inventory tab exists it writes this table instead of a person.
+
+### Five downloads, one aggregation
+`?tab=all|weight|sku|orders` on both `dispatch.pdf` and `dispatch.xlsx`, plus `tab=tobuy` which
+is **Excel-only** — it is pasted into a supplier email rather than read at a bench, so asking for
+it as a PDF is refused rather than silently served as the combined document. An unknown tab 400s.
+
+The to-buy list is **filtered, not sorted**: a covered product is absent rather than shown with a
+zero, because a row reading "ABC Sattu … 0" invites ordering zero of it. With nothing short it
+says so in words; an empty grid reads as a failed download.
+
+A single-tab workbook is the combined builder with the other worksheets removed, so there is one
+code path rather than two that could disagree about a quantity — the same reasoning behind the
+shipment feature funnelling five downloads through `_document_rows`.
+
+### Tracking ID is not obtainable, and this was measured
+There is no tracking column because Amazon does not give us one. Four routes probed on the live
+account: `getOrders` (32 fields, none), `getOrderItems` (none),
+`/easyShip/2022-03-23/package` (**403**), and `GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL`,
+which returned 1,283 rows that were **every one `AFN`** — 0 of our 100 Easy Ship ids. The Reports
+API itself works (a 3,042-row orders report generated fine), so this is Amazon withholding the
+field behind the restricted role, not a permissions accident. A column that can never populate
+reads as broken data, so it is omitted rather than shipped empty.
+
+### The orders refresh has its own flag
+`ORDER_REFRESH_ENABLED` runs the half-hourly refresh **without** the 06:00 product scrape, the
+07:30 keyword track or the 09:15 purge. Production keeps `SCHEDULER_ENABLED=false` precisely to
+keep those asleep on a 951 MB box with no swap that has already OOM-killed a `pip install`.
+
+The two flags are OR'd, so an installation that enables everything keeps its refresh —
+`scheduler_enabled` defaults to `True`, so this flag is only load-bearing where that was
+explicitly turned off, which is exactly production. `setup_scheduler`'s opening
+`if not settings.scheduler_enabled: return` **moved down** to the three jobs it guards; restoring
+it to the top reads as tidy and silently stops the orders refresh, which is why a test asserts
+the registered job **ids** rather than the flag.
+
+> The startup log line is built from a list rather than one f-string. `keyword_hour` and
+> `purge_hour` only exist when the master flag is on, so interpolating them unconditionally
+> raised `NameError` at startup on exactly the configuration production uses.
+
+Tab 3 also re-reads LOCAL rows every 60 seconds, so an open page shows a status change without a
+reload. It re-renders tab 3 **only**: redrawing a tab with number boxes would discard whatever
+the packer was typing, and a test greps `pollOrders` for calls to the other renderers.
+
+> **The undo button did not appear while typing**, found in a browser and not by any test.
+> Typing deliberately avoids a re-render to protect the caret, so a row rendered clean carried no
+> undo until the packer navigated away and back — the control missing at exactly the moment a
+> mistype needs it. `ensureUndo` injects it on first edit, with an event listener rather than an
+> inline `onclick`, because the key is a product name from an uploaded sheet.
 
 ### The refresh reports a real percentage
 `refresh.PHASE_BOUNDS` splits the bar 0–50 paging, 50–60 reconcile, 60–100 items. The
