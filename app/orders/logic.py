@@ -543,3 +543,72 @@ def _size_sort_key(size: dict) -> tuple:
     the lightest under `-kg` and put the one row nobody can weigh at the top of the sheet.
     """
     return (-(size["kg"] or 0), -(float(size["weight"] or 0)), size["weight_label"])
+
+
+# ─── Purchasing: today's ordered weight against raw material on hand ─────────
+
+
+def to_buy_kg(ordered_kg, raw_kg) -> float:
+    """The shortfall for one product, in kilograms. Never negative.
+
+    Clamped at 0 for the same reason `remaining_for` clamps: this number reaches a purchasing
+    list, and "-7 kg" is not a quantity anyone can order. A surplus is simply nothing to buy.
+    """
+    shortfall = float(ordered_kg or 0) - float(raw_kg or 0)
+    return round(shortfall, 2) if shortfall > 0 else 0.0
+
+
+def raw_stock_summary(sheet: Mapping, raw_stock: Mapping) -> dict:
+    """Today's ordered weight per parent against raw stock on hand, and what to buy.
+
+    Takes the sheet `dispatch_sheet` already produced rather than re-reading orders, so the
+    purchasing tab cannot disagree with the SKU tab about how much of a product is due. Row
+    order is inherited untouched — parents are already heaviest first, and re-sorting here would
+    make the two tabs lead with different products.
+
+    Returns::
+
+        {"rows": [{"product", "brand", "ordered_kg", "raw_kg", "to_buy_kg", "covered"}],
+         "totals": {"ordered_kg", "raw_kg", "to_buy_kg", "short_products"}}
+
+    **The to-buy TOTAL sums the clamped rows; it is NOT `total_ordered - total_raw`.** Those two
+    differ the moment any product is in surplus, and the subtraction is wrong because it lets a
+    surplus of ABC Sattu cancel a shortfall of Usna Chawal — you cannot make rice out of sattu.
+    On real numbers the difference was 43.00 kg against 33.50 kg, and only the first is a
+    purchasing quantity. Caught reviewing the design rather than the code: the wrong version
+    looks entirely plausible in a totals row.
+
+    A product with no entry in `raw_stock` counts as 0 on hand, not "unknown". Absent has to
+    mean "buy all of it", because skipping it would drop the product off the purchasing list and
+    a stockout is what costs the Buy Box.
+    """
+    lookup = {
+        str(product or "").strip(): float(value or 0)
+        for product, value in (raw_stock or {}).items()
+    }
+
+    rows = []
+    for parent in sheet.get("parents") or []:
+        product = parent["product"]
+        ordered = round(float(parent.get("kg") or 0), 2)
+        raw = round(lookup.get(product, 0.0), 2)
+        shortfall = to_buy_kg(ordered, raw)
+        rows.append({
+            "product": product,
+            "brand": parent.get("brand") or "",
+            "ordered_kg": ordered,
+            "raw_kg": raw,
+            "to_buy_kg": shortfall,
+            "covered": shortfall == 0.0,
+        })
+
+    return {
+        "rows": rows,
+        "totals": {
+            "ordered_kg": round(sum(row["ordered_kg"] for row in rows), 2),
+            "raw_kg": round(sum(row["raw_kg"] for row in rows), 2),
+            # Sum of the CLAMPED rows. See the docstring.
+            "to_buy_kg": round(sum(row["to_buy_kg"] for row in rows), 2),
+            "short_products": sum(1 for row in rows if not row["covered"]),
+        },
+    }

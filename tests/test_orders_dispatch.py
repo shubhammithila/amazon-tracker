@@ -420,3 +420,103 @@ async def test_raw_stock_and_packed_counts_cannot_clobber_each_other(db, db_sche
 
     assert await repository.load_raw_stock(db) == {"ABC Sattu": 12.0}
     assert await repository.load_packed(db, "2026-08-26") == {"B0ABC500": 7}
+
+
+# ─── Purchasing: ordered weight against raw stock on hand ────────────────────
+
+
+def test_to_buy_is_the_shortfall_and_never_negative():
+    """Surplus raw stock is not negative purchasing.
+
+    Clamped because this number reaches a purchasing list, where "-7 kg" is not a quantity to
+    buy. The same reason `remaining_for` clamps for the packer's sheet.
+    """
+    assert logic.to_buy_kg(35.0, 10.0) == pytest.approx(25.0)
+    assert logic.to_buy_kg(22.5, 32.0) == 0.0, "a surplus produced a negative order"
+    assert logic.to_buy_kg(18.0, 0.0) == pytest.approx(18.0)
+
+
+def test_the_to_buy_total_sums_the_rows_and_does_not_subtract_the_totals():
+    """**A surplus of one product must never offset a shortfall of another.**
+
+    You cannot make rice out of sattu. Summing the clamped rows gives 43.00; subtracting the
+    totals (75.50 - 42.00) gives 33.50, which is not a quantity anyone can buy.
+
+    Deliberately built with one product in SURPLUS and two short, because with everything short
+    the two formulas agree and the test would prove nothing. This error was caught reviewing the
+    design, not the code — it looks entirely plausible in a totals row.
+    """
+    sheet = {"parents": [
+        {"product": "Usna Chawal", "brand": "MF", "kg": 35.0,
+         "units": 7, "orders": 7, "packed": 0, "sizes": []},
+        {"product": "ABC Sattu", "brand": "MF", "kg": 22.5,
+         "units": 37, "orders": 37, "packed": 0, "sizes": []},
+        {"product": "Bengali Gobindobhog Rice", "brand": "HF", "kg": 18.0,
+         "units": 17, "orders": 17, "packed": 0, "sizes": []},
+    ]}
+    summary = logic.raw_stock_summary(
+        sheet, {"Usna Chawal": 10.0, "ABC Sattu": 32.0, "Bengali Gobindobhog Rice": 0.0}
+    )
+
+    assert summary["totals"]["to_buy_kg"] == pytest.approx(43.0), (
+        "the to-buy total must sum the clamped rows; subtracting the totals lets a surplus "
+        "of one product cancel a shortfall of another"
+    )
+    assert summary["totals"]["ordered_kg"] == pytest.approx(75.5)
+    assert summary["totals"]["raw_kg"] == pytest.approx(42.0)
+    assert summary["totals"]["short_products"] == 2
+
+
+def test_a_covered_product_is_flagged_covered_and_reports_zero_to_buy():
+    """The screen prints an em dash for these, so it needs the flag rather than guessing."""
+    sheet = {"parents": [{"product": "ABC Sattu", "brand": "MF", "kg": 22.5,
+                          "units": 37, "orders": 37, "packed": 0, "sizes": []}]}
+    row = logic.raw_stock_summary(sheet, {"ABC Sattu": 32.0})["rows"][0]
+    assert row["covered"] is True
+    assert row["to_buy_kg"] == 0.0
+
+
+def test_a_product_with_no_raw_stock_entry_needs_all_of_it():
+    """Absent is 0, not unknown.
+
+    A product nobody has typed a stock figure for must appear on the purchasing list at its full
+    ordered weight — treating it as "unknown, skip" would silently drop it from the buy list,
+    which is how a stockout reaches a Buy Box.
+    """
+    sheet = {"parents": [{"product": "Katarni Chuda", "brand": "MF", "kg": 13.0,
+                          "units": 11, "orders": 8, "packed": 0, "sizes": []}]}
+    row = logic.raw_stock_summary(sheet, {})["rows"][0]
+    assert row["raw_kg"] == 0.0
+    assert row["to_buy_kg"] == pytest.approx(13.0)
+    assert row["covered"] is False
+
+
+def test_purchasing_rows_stay_in_the_sheets_heaviest_first_order():
+    """Tabs 1, 2 and 3 must read together, so none of them re-sorts.
+
+    `dispatch_sheet` already ordered parents heaviest first; re-sorting here would make the
+    purchasing tab disagree with the SKU tab about which product leads.
+    """
+    sheet = {"parents": [
+        {"product": "Heavy", "brand": "MF", "kg": 35.0,
+         "units": 7, "orders": 7, "packed": 0, "sizes": []},
+        {"product": "Light", "brand": "MF", "kg": 2.0,
+         "units": 4, "orders": 4, "packed": 0, "sizes": []},
+    ]}
+    rows = logic.raw_stock_summary(sheet, {})["rows"]
+    assert [row["product"] for row in rows] == ["Heavy", "Light"]
+
+
+def test_a_product_with_no_pack_size_contributes_no_kilograms_to_purchasing():
+    """An unweighed line must not become 0 kg of demand.
+
+    `dispatch_sheet` already excludes it from `kg`; this asserts the purchasing view inherits
+    that rather than inventing a number. Treating unknown as 0 makes a 47 kg sheet report 40,
+    and that figure reaches a courier — and here, a supplier.
+    """
+    orders = [_order("403-1", [_item("B0NOWEIGHT", 5)])]
+    sheet = logic.dispatch_sheet(orders, CATALOGUE, TODAY)
+    summary = logic.raw_stock_summary(sheet, {})
+    row = next(r for r in summary["rows"] if r["product"] == "Mystery Mix")
+    assert row["ordered_kg"] == 0.0
+    assert row["to_buy_kg"] == 0.0, "an unweighable product produced a purchase quantity"
