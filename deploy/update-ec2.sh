@@ -305,8 +305,10 @@ def cols(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "product_raw_stock" in tables:
+    print("e5a1b83c26df")                           # head: raw stock for purchasing
 elif "order_packed_entries" in tables:
-    print("d4f9a2c68b31")                           # head: warehouse packed counts
+    print("d4f9a2c68b31")                           # warehouse packed counts
 elif "amazon_orders" in tables:
     print("c3d8e5f21a47")                           # amazon order cache
 elif "shipment_packing_days" in tables and "carried_from_plan_id" in cols("shipment_packing_days"):
@@ -364,7 +366,7 @@ con = sqlite3.connect("tracker.db")
 have = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
 need = {"shipment_plans", "shipment_plan_items", "shipment_packing_days",
         "shipment_packing_entries", "product_categories", "users",
-        "amazon_orders", "order_packed_entries"}
+        "amazon_orders", "order_packed_entries", "product_raw_stock"}
 missing = sorted(need - have)
 if missing:
     print("    missing tables:", missing)

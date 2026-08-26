@@ -648,3 +648,39 @@ class OrderPackedEntry(Base):
     asin = Column(String(10), nullable=False)
     units = Column(Integer, default=0)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ProductRawStock(Base):
+    """Raw material on hand for one parent product, in kilograms. **Standing, not per-day.**
+
+    Feeds the Orders tab's purchasing view: `to_buy = max(0, ordered_kg - raw_kg)`.
+
+    **No `pack_date`, unlike `OrderPackedEntry`, and the asymmetry is the point.** A packed
+    count belongs to a day — it answers "what did we box on the 25th". Raw material on a shelf
+    does not vanish at midnight, so a dated row would be blank every morning and the purchasing
+    tab would demand 33 numbers be retyped before it meant anything.
+
+    **Keyed on the parent product NAME, not an ASIN.** Raw material is bulk: there is no such
+    thing as 500 g-flavoured raw sattu. The name is the catalogue's own `name`, which is the
+    key `orders.logic.dispatch_sheet` already groups parents by.
+
+    `Numeric(10, 2)` because this is a weight someone types, and 0.1 kg matters when the total
+    reaches a courier. **Callers must convert to `float` before returning it in JSON** —
+    SQLAlchemy hands back `Decimal`, which `JSONResponse` cannot serialise, and this app already
+    shipped that exact defect once with datetimes.
+
+    Written by hand today. Built to be REPLACED: when the inventory tab exists it writes this
+    table instead of a person, and nothing downstream changes.
+    """
+    __tablename__ = "product_raw_stock"
+    __table_args__ = (
+        Index("idx_product_raw_stock_product", "product", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    #: Parent product name as the MRP catalogue spells it, e.g. "ABC Sattu".
+    product = Column(String(120), nullable=False)
+    raw_kg = Column(Numeric(10, 2), default=0)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    #: Who typed it, so a surprising number can be asked about.
+    updated_by = Column(String(50))

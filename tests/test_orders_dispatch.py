@@ -321,3 +321,32 @@ async def test_a_packed_count_survives_the_order_being_collected(db, db_schema):
     assert sheet["parents"][0]["sizes"][0]["packed"] == 6, (
         "the packed count was lost when the courier collected the order"
     )
+
+
+# ─── Raw stock: standing, per parent product ─────────────────────────────────
+
+
+def test_the_raw_stock_table_is_keyed_on_the_product_and_has_no_date():
+    """Raw material on a shelf does not vanish at midnight.
+
+    `order_packed_entries` is keyed on (pack_date, asin) because a packed count belongs to a
+    day. Raw stock is the opposite: it is a standing quantity, and a `pack_date` would make it
+    blank every morning — so tab 1 would read "buy everything" at 9am daily until 33 numbers
+    were retyped.
+
+    Keyed on the parent product NAME, not an ASIN, because raw material is bulk: there is no
+    such thing as 500 g-flavoured raw sattu.
+    """
+    from app.models import ProductRawStock
+
+    columns = ProductRawStock.__table__.c
+    assert "product" in columns
+    assert "raw_kg" in columns
+    assert "pack_date" not in columns, (
+        "raw stock must NOT be per-day; a dated field is blank every morning and the "
+        "purchasing tab would demand re-entry before it meant anything"
+    )
+    # The unique index is the real guarantee that a repeated save updates one row.
+    indexes = {index.name: index for index in ProductRawStock.__table__.indexes}
+    assert "idx_product_raw_stock_product" in indexes
+    assert indexes["idx_product_raw_stock_product"].unique is True
