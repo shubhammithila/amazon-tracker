@@ -350,3 +350,73 @@ def test_the_raw_stock_table_is_keyed_on_the_product_and_has_no_date():
     indexes = {index.name: index for index in ProductRawStock.__table__.indexes}
     assert "idx_product_raw_stock_product" in indexes
     assert indexes["idx_product_raw_stock_product"].unique is True
+
+
+async def test_raw_stock_round_trips_as_a_float_not_a_decimal(db, db_schema):
+    """`Numeric` hands back `Decimal`, which `JSONResponse` cannot serialise.
+
+    This app already shipped that bug once with datetimes — "Object of type datetime is not
+    JSON serializable", found in a browser on production, on the one path the owner hits when
+    he is trying to find out what is happening. Converting at the repository boundary means
+    every route inherits the fix rather than remembering it.
+    """
+    import json
+
+    saved = await repository.save_raw_stock(db, [{"product": "ABC Sattu", "raw_kg": 32.5}])
+    assert saved == {"ABC Sattu": 32.5}
+    assert isinstance(saved["ABC Sattu"], float), (
+        f"got {type(saved['ABC Sattu']).__name__}; a Decimal reaching JSONResponse is a 500"
+    )
+    json.dumps(saved)          # would raise on a Decimal
+
+
+async def test_a_repeated_raw_stock_save_updates_one_row(db, db_schema):
+    """The UNIQUE index makes it possible; the upsert makes it happen.
+
+    Two standing quantities for one product is a contradiction, not a history.
+    """
+    await repository.save_raw_stock(db, [{"product": "ABC Sattu", "raw_kg": 10}])
+    after = await repository.save_raw_stock(db, [{"product": "ABC Sattu", "raw_kg": 25}])
+    assert after == {"ABC Sattu": 25.0}, "a repeated save did not update in place"
+
+
+async def test_raw_stock_survives_a_change_of_day(db, db_schema):
+    """The whole reason the table has no `pack_date`.
+
+    Nothing here passes a date at all, so this test is really asserting the SHAPE: there is no
+    per-day key to fall out of. A dated implementation would make the number unreachable
+    tomorrow, and tab 1 would read "buy everything" every morning.
+    """
+    await repository.save_raw_stock(db, [{"product": "Usna Chawal", "raw_kg": 40}])
+    assert await repository.load_raw_stock(db) == {"Usna Chawal": 40.0}
+
+
+async def test_zero_raw_stock_is_stored_not_deleted(db, db_schema):
+    """0 kg is a MEASUREMENT here, unlike a packed count of 0.
+
+    `save_packed` deletes a zeroed row, because "0 packed" and "not counted" are the same thing
+    on a worksheet. Raw stock is the opposite: "we have none" is exactly the fact that makes
+    `to_buy` the full ordered weight, and deleting it would make the row look untouched.
+    """
+    await repository.save_raw_stock(db, [{"product": "Ragi Atta", "raw_kg": 5}])
+    after = await repository.save_raw_stock(db, [{"product": "Ragi Atta", "raw_kg": 0}])
+    assert after == {"Ragi Atta": 0.0}, "a deliberate zero was discarded"
+
+
+async def test_a_negative_raw_stock_is_clamped(db, db_schema):
+    """A minus sign in a weight box is a typo, not negative stock on a shelf."""
+    after = await repository.save_raw_stock(db, [{"product": "Jau Atta", "raw_kg": -5}])
+    assert after == {"Jau Atta": 0.0}
+
+
+async def test_raw_stock_and_packed_counts_cannot_clobber_each_other(db, db_schema):
+    """Two tables, two facts, entered by different people at different moments.
+
+    A shared row would mean the owner's stock entry and the packer's count race, which is the
+    failure the shipment feature's write separation exists to prevent.
+    """
+    await repository.save_raw_stock(db, [{"product": "ABC Sattu", "raw_kg": 12}])
+    await repository.save_packed(db, "2026-08-26", [{"asin": "B0ABC500", "units": 7}])
+
+    assert await repository.load_raw_stock(db) == {"ABC Sattu": 12.0}
+    assert await repository.load_packed(db, "2026-08-26") == {"B0ABC500": 7}

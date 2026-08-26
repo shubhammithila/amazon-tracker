@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import case, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AmazonOrder, AmazonOrderItem, OrderPackedEntry
+from app.models import AmazonOrder, AmazonOrderItem, OrderPackedEntry, ProductRawStock
 
 logger = logging.getLogger(__name__)
 
@@ -361,3 +361,90 @@ async def save_packed(
 
     await db.commit()
     return await load_packed(db, pack_date)
+
+
+# ─── Raw stock: standing, per parent product, typed by the owner ──────────────
+#
+# Sits beside the packed counts above and shares their boundary note — these are OUR rows,
+# not Amazon's cache. Two separate tables rather than one, because stock and packed are
+# different facts entered at different moments by different people, and a shared row means
+# one save can clobber the other.
+
+
+async def load_raw_stock(db: AsyncSession) -> dict[str, float]:
+    """`{product_name: raw_kg}` for every product with a standing quantity.
+
+    **Floats, not `Decimal`.** `Numeric` hands back `Decimal` and `JSONResponse` cannot
+    serialise it — the same defect this feature already shipped once with datetimes, found in
+    a browser on production. Converting here means every route inherits the fix.
+    """
+    rows = await db.execute(select(ProductRawStock.product, ProductRawStock.raw_kg))
+    return {product: float(raw_kg or 0) for product, raw_kg in rows.all()}
+
+
+async def save_raw_stock(
+    db: AsyncSession, entries: list[dict], updated_by: str = ""
+) -> dict[str, float]:
+    """Upsert standing raw stock. Returns the full `{product: raw_kg}` afterwards.
+
+    SELECT-then-UPDATE-or-INSERT, the same dialect-neutral idiom as `save_packed` and
+    ``shipment.repository.save_packing_entries``. The UNIQUE index on `product` is the real
+    guarantee that a repeated save updates one row rather than storing a second standing
+    quantity for the same product.
+
+    **A zero is STORED, not deleted** — the opposite of `save_packed`, deliberately. There, 0
+    packed and "not counted" are the same thing on a worksheet, so the row goes. Here "we have
+    none" is exactly the fact that makes `to_buy` the full ordered weight, and deleting it
+    would leave the row looking untouched.
+
+    Negatives clamp to 0: a minus sign in a weight box is a typo, not stock owed.
+
+    The full map is returned so the screen re-renders from the committed truth rather than from
+    what it believes it sent.
+    """
+    by_product: dict[str, float] = {}
+    for raw in entries or []:
+        if not isinstance(raw, dict):
+            continue
+        product = str(raw.get("product") or "").strip()
+        if not product:
+            continue
+        try:
+            value = float(raw.get("raw_kg") or 0)
+        except (TypeError, ValueError):
+            # A non-numeric weight is dropped rather than stored as 0: 0 is a measurement
+            # here, and inventing one from a typo would understate what must be bought.
+            logger.warning("orders: ignored non-numeric raw stock for %r", product)
+            continue
+        # A repeated product in one payload: last wins, as on the packing screen.
+        by_product[product] = max(0.0, round(value, 2))
+
+    if not by_product:
+        return await load_raw_stock(db)
+
+    existing = {
+        row.product: row
+        for row in (
+            await db.execute(
+                select(ProductRawStock).where(
+                    ProductRawStock.product.in_(sorted(by_product))
+                )
+            )
+        ).scalars()
+    }
+
+    now = datetime.utcnow()
+    for product, raw_kg in by_product.items():
+        row = existing.get(product)
+        if row is None:
+            db.add(ProductRawStock(
+                product=product, raw_kg=raw_kg, updated_at=now,
+                updated_by=updated_by or None,
+            ))
+        else:
+            row.raw_kg = raw_kg
+            row.updated_at = now
+            row.updated_by = updated_by or None
+
+    await db.commit()
+    return await load_raw_stock(db)
