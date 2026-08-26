@@ -813,3 +813,132 @@ def test_weight_label_is_blank_rather_than_wrong(value):
     """A missing weight prints nothing. '0kg' on a warehouse sheet reads as a real
     fact about the product and would send someone looking for the 0kg bag."""
     assert documents._weight_label(value) == ""
+
+
+# ─── The dispatch workbook and the to-buy list ───────────────────────────────
+
+
+def _dispatch_fixture():
+    """A dispatch sheet plus its purchasing view, with one product in SURPLUS.
+
+    The surplus is what distinguishes a correct to-buy total from one that subtracts the
+    totals, and it is what must be ABSENT from the to-buy list. Built by hand rather than from
+    a live sheet so the expected numbers are visible in the test.
+    """
+    from app.orders import logic
+
+    sheet = {
+        "parents": [
+            {"product": "Usna Chawal", "brand": "MF", "kg": 35.0, "units": 7,
+             "orders": 7, "packed": 0, "remaining": 7,
+             "sizes": [{"asin": "B0RICE5KG", "weight": 5.0, "weight_label": "5 kg",
+                        "seller_sku": "5kg uc", "units": 7, "orders": 7, "kg": 35.0,
+                        "packed": 0, "remaining": 7, "over_packed": 0, "known": True}]},
+            {"product": "ABC Sattu", "brand": "MF", "kg": 22.5, "units": 37,
+             "orders": 37, "packed": 29, "remaining": 8,
+             "sizes": [{"asin": "B0ABC500", "weight": 0.5, "weight_label": "500g",
+                        "seller_sku": "abc500", "units": 29, "orders": 29, "kg": 14.5,
+                        "packed": 29, "remaining": 0, "over_packed": 0, "known": True},
+                       {"asin": "B0ABC1KG", "weight": 1.0, "weight_label": "1 kg",
+                        "seller_sku": "abc1kg", "units": 8, "orders": 8, "kg": 8.0,
+                        "packed": 0, "remaining": 8, "over_packed": 0, "known": True}]},
+        ],
+        "orders": [
+            {"amazon_order_id": "403-1", "parent": "Usna Chawal", "weight": 5.0,
+             "weight_label": "5 kg", "seller_sku": "5kg uc", "asin": "B0RICE5KG",
+             "quantity": 1, "known": True, "city": "PUNE", "state": "MAHARASHTRA",
+             "easyship_status": "PickedUp"},
+        ],
+        "totals": {"orders": 8, "units": 44, "kg": 57.5, "packed": 29, "remaining": 15,
+                   "over_packed": 0, "sizes_without_weight": 0, "parents": 2},
+        "unknown_asins": [],
+    }
+    purchasing = logic.raw_stock_summary(sheet, {"Usna Chawal": 10.0, "ABC Sattu": 32.0})
+    return sheet, purchasing
+
+
+def test_the_dispatch_workbook_has_one_worksheet_per_tab():
+    """Three tabs on screen, three worksheets in the file, named the same.
+
+    One file rather than three downloads: they are read together, and three files get separated
+    on a bench — the same reason the PDF footer prints "page 1 of 3".
+    """
+    from openpyxl import load_workbook
+
+    from app.shipment import documents
+
+    sheet, purchasing = _dispatch_fixture()
+    book = load_workbook(documents.build_dispatch_xlsx(sheet, purchasing, "26 Aug (IST)"))
+    assert book.sheetnames == ["Weight & purchase", "By SKU", "Orders"]
+
+
+def test_the_workbooks_purchasing_total_sums_the_clamped_rows():
+    """25.00 + 0, not 57.50 - 42.00 = 15.50.
+
+    A supplier reads this file, and a surplus of sattu cannot cover a shortfall of rice.
+    """
+    from openpyxl import load_workbook
+
+    from app.shipment import documents
+
+    sheet, purchasing = _dispatch_fixture()
+    book = load_workbook(documents.build_dispatch_xlsx(sheet, purchasing, "26 Aug (IST)"))
+    values = [[cell.value for cell in row] for row in book["Weight & purchase"].iter_rows()]
+    total_row = next(row for row in values if row and row[0] == "TOTAL")
+    assert total_row[-1] == pytest.approx(25.0), (
+        f"to-buy total is {total_row[-1]}; it must sum the clamped rows"
+    )
+
+
+def test_a_single_tab_workbook_holds_only_that_worksheet():
+    """The per-tab download is the combined one with the others removed.
+
+    One builder rather than two that could disagree about a quantity.
+    """
+    from openpyxl import load_workbook
+
+    from app.shipment import documents
+
+    sheet, purchasing = _dispatch_fixture()
+    book = load_workbook(
+        documents.build_dispatch_xlsx(sheet, purchasing, "26 Aug (IST)", tab="sku")
+    )
+    assert book.sheetnames == ["By SKU"]
+
+
+def test_the_to_buy_list_omits_covered_products():
+    """A purchasing list is a list of things to BUY.
+
+    ABC Sattu has 32 kg against 22.5 kg ordered, so it must not appear — a zero row invites
+    someone to order zero of it.
+    """
+    from openpyxl import load_workbook
+
+    from app.shipment import documents
+
+    _sheet, purchasing = _dispatch_fixture()
+    book = load_workbook(documents.build_tobuy_xlsx(purchasing, "26 Aug (IST)"))
+    text = "\n".join(
+        " ".join(str(cell.value) for cell in row if cell.value is not None)
+        for row in book.active.iter_rows()
+    )
+    assert "Usna Chawal" in text, "a short product is missing from the to-buy list"
+    assert "ABC Sattu" not in text, "a covered product appeared on the purchasing list"
+
+
+def test_an_empty_to_buy_list_says_so_rather_than_printing_an_empty_table():
+    """Nothing to buy is good news, not a broken download."""
+    from openpyxl import load_workbook
+
+    from app.orders import logic
+    from app.shipment import documents
+
+    sheet = {"parents": [{"product": "ABC Sattu", "brand": "MF", "kg": 10.0, "units": 20,
+                          "orders": 20, "packed": 0, "sizes": []}]}
+    purchasing = logic.raw_stock_summary(sheet, {"ABC Sattu": 50.0})
+    book = load_workbook(documents.build_tobuy_xlsx(purchasing, "26 Aug (IST)"))
+    text = "\n".join(
+        " ".join(str(cell.value) for cell in row if cell.value is not None)
+        for row in book.active.iter_rows()
+    )
+    assert "Nothing to buy" in text

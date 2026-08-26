@@ -867,3 +867,181 @@ def _dispatch_table_style(
              colors.Color(0.93, 0.94, 0.96)),
         ]
     return TableStyle(commands)
+
+
+# ─── The dispatch workbook: one worksheet per screen tab ──────────────────────
+
+#: Column widths for the three dispatch worksheets, in Excel character units.
+_XLSX_PURCHASE_WIDTHS = [34, 8, 14, 14, 14]
+_XLSX_SKU_WIDTHS = [30, 10, 22, 12, 14, 10]
+_XLSX_ORDER_WIDTHS = [24, 22, 8, 30, 12, 28, 16]
+
+#: Which worksheet each `tab=` value keeps. `all` keeps every one.
+_XLSX_TAB_SHEETS = {
+    "weight": "Weight & purchase",
+    "sku": "By SKU",
+    "orders": "Orders",
+}
+
+#: The purchasing table's headers, shared by the workbook and the to-buy list.
+_PURCHASE_HEADERS = ["Product", "Brand", "Ordered kg", "Raw stock kg", "To buy kg"]
+
+
+def _purchase_rows(purchasing: dict) -> list[list]:
+    """The purchasing rows, shared by the workbook and the to-buy list.
+
+    One function so the two files cannot disagree about a weight — the same reason all five
+    downloads come from one aggregation.
+    """
+    return [
+        [
+            row["product"],
+            row["brand"],
+            float(row["ordered_kg"]),
+            float(row["raw_kg"]),
+            # A covered product shows blank rather than 0.00: a zero reads as a measurement,
+            # and this column is a purchasing instruction.
+            "" if row["covered"] else float(row["to_buy_kg"]),
+        ]
+        for row in purchasing.get("rows") or []
+    ]
+
+
+def build_dispatch_xlsx(
+    sheet: dict, purchasing: dict, subtitle: str, tab: str = "all"
+) -> io.BytesIO:
+    """Today's dispatch as one workbook with a worksheet per screen tab.
+
+    **One file, not three.** The tabs are read together — purchasing says what to bring to the
+    bench, the SKU sheet is what gets counted, the order sheet is what gets checked off. Three
+    separate files get separated on a warehouse bench, the same reason `_page_footer` prints
+    "page 1 of 3".
+
+    `tab` drops the worksheets that were not asked for, so a single-tab download is this same
+    builder rather than a second code path that could disagree about a quantity.
+
+    Worksheet names match the tab labels exactly, so nobody has to work out which is which.
+    """
+    from openpyxl import Workbook
+
+    book = Workbook()
+
+    # ── Sheet 1: weight and purchasing ──
+    purchase = book.active
+    purchase.title = "Weight & purchase"
+    ptotals = purchasing.get("totals") or {}
+    purchase_rows = _purchase_rows(purchasing) + [[
+        "TOTAL", "",
+        float(ptotals.get("ordered_kg") or 0),
+        float(ptotals.get("raw_kg") or 0),
+        # Sum of the CLAMPED rows, never total_ordered - total_raw: a surplus of one product
+        # cannot cover a shortfall of another.
+        float(ptotals.get("to_buy_kg") or 0),
+    ]]
+    _write_sheet(purchase, _PURCHASE_HEADERS, purchase_rows, _XLSX_PURCHASE_WIDTHS)
+
+    # ── Sheet 2: per SKU, flat, in the sheet's existing order ──
+    by_sku = book.create_sheet("By SKU")
+    sku_rows = [
+        [
+            parent["product"],
+            size.get("weight_label") or "",
+            size.get("seller_sku") or size.get("asin") or "",
+            int(size["units"]),
+            int(size.get("packed") or 0),
+            int(size.get("remaining") or 0),
+        ]
+        for parent in sheet.get("parents") or []
+        for size in parent.get("sizes") or []
+    ]
+    stotals = sheet.get("totals") or {}
+    sku_rows.append([
+        "TOTAL", "", "",
+        int(stotals.get("units") or 0),
+        int(stotals.get("packed") or 0),
+        int(stotals.get("remaining") or 0),
+    ])
+    _write_sheet(
+        by_sku, ["Product", "Size", "SKU", "Ordered", "Packed today", "Left"],
+        sku_rows, _XLSX_SKU_WIDTHS,
+    )
+
+    # ── Sheet 3: every order line ──
+    orders_sheet = book.create_sheet("Orders")
+    order_rows = [
+        [
+            row["amazon_order_id"],
+            row.get("seller_sku") or row.get("asin") or "",
+            int(row["quantity"]),
+            row["parent"],
+            row.get("weight_label") or "",
+            ", ".join(part for part in (row.get("city"), row.get("state")) if part),
+            row.get("easyship_status") or "",
+        ]
+        for row in sheet.get("orders") or []
+    ]
+    _write_sheet(
+        orders_sheet,
+        ["Order", "SKU", "Qty", "Item", "Weight", "Destination", "Amazon status"],
+        order_rows or [["No orders", "", 0, "", "", "", ""]],
+        _XLSX_ORDER_WIDTHS,
+    )
+
+    wanted = _XLSX_TAB_SHEETS.get(tab)
+    if wanted is not None:
+        for name in list(book.sheetnames):
+            if name != wanted:
+                del book[name]
+
+    # Provenance goes in the workbook's metadata rather than a spare row, so it cannot be
+    # sorted away from the data it describes.
+    book.properties.title = "Dispatch sheet"
+    book.properties.description = subtitle
+
+    buffer = io.BytesIO()
+    book.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+
+def build_tobuy_xlsx(purchasing: dict, subtitle: str) -> io.BytesIO:
+    """The purchasing shortfall only — the products where `to_buy > 0`.
+
+    **Filtered, not sorted.** A covered product is ABSENT rather than shown with a zero: this
+    file gets pasted into a supplier email, and a row reading "ABC Sattu … 0" invites someone to
+    order zero of it.
+
+    With nothing short it says so in words rather than rendering an empty table, because an
+    empty grid reads as a failed download on the one day the news is good.
+    """
+    from openpyxl import Workbook
+
+    short = [row for row in (purchasing.get("rows") or []) if not row["covered"]]
+
+    book = Workbook()
+    worksheet = book.active
+    worksheet.title = "To buy"
+
+    if not short:
+        rows = [["Nothing to buy — every product is covered by raw stock.", "", "", "", ""]]
+    else:
+        rows = [
+            [row["product"], row["brand"], float(row["ordered_kg"]),
+             float(row["raw_kg"]), float(row["to_buy_kg"])]
+            for row in short
+        ]
+        rows.append([
+            "TOTAL", "",
+            round(sum(row["ordered_kg"] for row in short), 2),
+            round(sum(row["raw_kg"] for row in short), 2),
+            round(sum(row["to_buy_kg"] for row in short), 2),
+        ])
+
+    _write_sheet(worksheet, _PURCHASE_HEADERS, rows, _XLSX_PURCHASE_WIDTHS)
+    book.properties.title = "To buy"
+    book.properties.description = subtitle
+
+    buffer = io.BytesIO()
+    book.save(buffer)
+    buffer.seek(0)
+    return buffer
