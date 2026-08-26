@@ -608,3 +608,72 @@ async def test_the_downloads_agree_with_the_screen_about_the_totals(auth_client,
     assert total_row[3] == expected_units, (
         f"the workbook says {total_row[3]} units, the screen says {expected_units}"
     )
+
+
+# ─── The three-tab template ──────────────────────────────────────────────────
+
+
+def test_the_template_has_three_tabs_each_with_its_own_search():
+    """Three tabs, three search boxes. Asserted on the markup because the ids are contracts.
+
+    `tests/test_template_render_targets.py` already fails any getElementById that is written to
+    without a matching element — this asserts the other direction, that the tabs the design calls
+    for actually exist.
+    """
+    source = _orders_source()
+    for tab in ("tab-weight", "tab-sku", "tab-orders"):
+        assert f'id="{tab}"' in source, f"{tab} panel is missing"
+    for box in ("search-weight", "search-sku", "search-orders"):
+        assert f'id="{box}"' in source, f"{box} is missing, so that tab cannot be filtered"
+
+
+def test_the_poll_never_re_renders_a_tab_with_inputs():
+    """A 60-second poll that redrew the SKU tab would eat the packer's keystrokes mid-number.
+
+    The poll exists so tab 3's Amazon statuses update themselves. Tabs 1 and 2 hold number
+    boxes, so the poll must touch neither — asserted on the source because the failure is
+    invisible until someone is typing.
+    """
+    source = _orders_source()
+    assert "function pollOrders(" in source, "the orders poll is missing"
+    start = source.index("function pollOrders(")
+    body = source[start:start + 1200]
+    for forbidden in ("renderWeight(", "renderSku("):
+        assert forbidden not in body, (
+            f"pollOrders calls {forbidden} — it would redraw a tab containing inputs and "
+            "discard whatever the packer was typing"
+        )
+
+
+def test_the_packed_and_raw_stock_saves_post_to_their_own_routes():
+    """Two facts, two routes, and only one of them carries a date."""
+    source = _orders_source()
+    assert "/orders/packed/${" in source, "the packed save does not send a date"
+    assert '"/orders/raw-stock"' in source, "the raw stock save is missing"
+    assert "/orders/raw-stock/${" not in source, (
+        "the raw stock route must not take a date: raw stock is standing, and a date would "
+        "make the number unreachable tomorrow"
+    )
+
+
+def test_a_covered_product_renders_a_dash_not_a_zero():
+    """A zero in a purchasing column reads as a measurement, not as "nothing to do".
+
+    Asserted on the template because it is a rendering decision: the number is already 0.0 in
+    the payload, and printing it literally is what makes the tab ambiguous.
+
+    The condition is the LIVE shortfall rather than the server's `covered` flag, deliberately:
+    the dash has to appear the moment enough raw stock is typed, before anything is saved. A
+    flag-driven version would keep showing a number until the page reloaded.
+    """
+    source = _orders_source()
+    dash_rule = "buy <= 0 ? '<span class=\"tag ok\">—</span>'"
+    assert dash_rule in source, (
+        "a covered product must render an em dash from the live shortfall; 0.00 reads as a "
+        "weight someone measured"
+    )
+    # Both the initial render and the as-you-type update must apply it, or the dash appears on
+    # load and turns back into a number the moment the box is touched.
+    assert source.count(dash_rule) == 2, (
+        "the dash rule is not applied in both the table render and the live update"
+    )
