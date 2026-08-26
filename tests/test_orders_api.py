@@ -542,3 +542,69 @@ async def test_the_raw_stock_route_takes_no_date(auth_client, db):
     # 4 x 0.5 kg ordered against 8 kg on hand, so nothing to buy.
     assert row["to_buy_kg"] == 0.0
     assert row["covered"] is True
+
+
+async def test_every_download_variant_returns_a_file(auth_client, db):
+    """Five files, two formats, one aggregation behind all of them."""
+    await repository.upsert_orders(db, [_dispatched("403-1")])
+    await repository.replace_items(db, "403-1", [
+        {"asin": KNOWN_ASIN, "seller_sku": "cs-500", "quantity_ordered": 4}
+    ])
+
+    for tab in ("all", "weight", "sku", "orders"):
+        r = await auth_client.get(f"/orders/download/dispatch.pdf?tab={tab}")
+        assert r.status_code == 200, f"pdf tab={tab}: {r.text[:200]}"
+        assert r.content.startswith(b"%PDF-"), f"pdf tab={tab} is not a PDF"
+
+    for tab in ("all", "weight", "sku", "orders", "tobuy"):
+        r = await auth_client.get(f"/orders/download/dispatch.xlsx?tab={tab}")
+        assert r.status_code == 200, f"xlsx tab={tab}: {r.text[:200]}"
+        # Every .xlsx is a zip archive, so it starts with PK.
+        assert r.content[:2] == b"PK", f"xlsx tab={tab} is not a workbook"
+
+
+async def test_an_unknown_download_tab_is_refused(auth_client, db):
+    """A typo must not silently export the wrong section."""
+    await _seed(db)
+    r = await auth_client.get("/orders/download/dispatch.xlsx?tab=nonsense")
+    assert r.status_code == 400, r.text
+    assert "nonsense" in r.json()["error"]
+
+
+async def test_tobuy_is_excel_only(auth_client, db):
+    """It is pasted into a supplier email, not read at a bench.
+
+    Refused rather than silently served as the combined PDF, which is not what a caller asking
+    for `tab=tobuy` would expect to receive.
+    """
+    await _seed(db)
+    r = await auth_client.get("/orders/download/dispatch.pdf?tab=tobuy")
+    assert r.status_code == 400, r.text
+
+
+async def test_the_downloads_agree_with_the_screen_about_the_totals(auth_client, db):
+    """The property the single aggregation exists to guarantee.
+
+    A download that aggregated separately is how a printed sheet and a monitor start disagreeing
+    about a quantity — the failure `_document_rows` prevents on the shipment side.
+    """
+    import io as _io
+
+    from openpyxl import load_workbook
+
+    await repository.upsert_orders(db, [_dispatched("403-1"), _dispatched("403-2")])
+    for order_id in ("403-1", "403-2"):
+        await repository.replace_items(db, order_id, [
+            {"asin": KNOWN_ASIN, "seller_sku": "cs-500", "quantity_ordered": 3}
+        ])
+
+    screen = (await auth_client.get("/orders/dispatch")).json()
+    expected_units = screen["sheet"]["totals"]["units"]
+
+    r = await auth_client.get("/orders/download/dispatch.xlsx?tab=sku")
+    book = load_workbook(_io.BytesIO(r.content))
+    values = [[cell.value for cell in row] for row in book.active.iter_rows()]
+    total_row = next(row for row in values if row and row[0] == "TOTAL")
+    assert total_row[3] == expected_units, (
+        f"the workbook says {total_row[3]} units, the screen says {expected_units}"
+    )

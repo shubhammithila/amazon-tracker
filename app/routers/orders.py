@@ -58,6 +58,15 @@ assert set(SECTION_LABELS) >= set(logic.SHEET_SECTIONS), (
     f"unlabelled sections: {set(logic.SHEET_SECTIONS) - set(SECTION_LABELS)}"
 )
 
+#: Download variants both formats offer: the combined file, or one screen tab. Validated
+#: against this set so a typo cannot silently export the wrong section — the same guard
+#: `download_picking_sheet` applies to its bucket.
+DOWNLOAD_TABS = ("all", "weight", "sku", "orders")
+
+#: `tobuy` is Excel-only: it is pasted into a supplier email rather than read at a bench, and
+#: it holds only the products that are short.
+XLSX_ONLY_TABS = ("tobuy",)
+
 
 async def _sheet_and_orders(db: AsyncSession):
     """The picking sheet, the order rows behind it, and where the catalogue came from.
@@ -255,6 +264,27 @@ async def _dispatch(db: AsyncSession):
     }
 
 
+def _dispatch_subtitle(sheet: dict, meta: dict) -> str:
+    """The provenance line every dispatch document carries.
+
+    Stated on every file rather than left to whoever prints it: a sheet with no date gets worked
+    from tomorrow, and these numbers change every few minutes as counts are entered.
+    """
+    totals = sheet["totals"]
+    parts = [
+        f"{meta['today']} (IST)",
+        f"{totals['orders']} orders",
+        f"{totals['units']} units",
+        f"{totals['kg']} kg net",
+        f"{totals['parents']} product(s)",
+    ]
+    if totals["packed"]:
+        parts.append(f"{totals['packed']} packed")
+    if totals["sizes_without_weight"]:
+        parts.append(f"{totals['sizes_without_weight']} line(s) with no pack size")
+    return " · ".join(parts)
+
+
 @router.get("/dispatch")
 async def dispatch(
     request: Request,
@@ -368,28 +398,57 @@ async def save_raw_stock(
 @router.get("/download/dispatch.pdf")
 async def download_dispatch(
     request: Request,
+    tab: str = "all",
     db: AsyncSession = Depends(get_db),
     grant=Depends(require_area(permissions.ORDERS)),
 ):
-    """The dispatch sheet as a PDF: parent summary, then every order.
+    """The dispatch sheet as a PDF — all sections, or one of them.
 
     Built through the same `_dispatch` the screen uses, so the paper and the monitor cannot
-    disagree. A PDF rather than Excel because this one is read on the floor and ticked with a
-    pen — the Excel downloads exist for accounts.
+    disagree. A PDF because this one is read on the floor and ticked with a pen; the Excel
+    variants are for accounts and for suppliers.
     """
-    sheet, purchasing, meta = await _dispatch(db)
-    totals = sheet["totals"]
-    subtitle = (
-        f"{meta['today']} (IST) · {totals['orders']} orders · {totals['units']} units · "
-        f"{totals['kg']} kg net · {totals['parents']} product(s)"
-    )
-    if totals["sizes_without_weight"]:
-        subtitle += f" · {totals['sizes_without_weight']} line(s) with no pack size"
+    if tab not in DOWNLOAD_TABS:
+        return JSONResponse({"error": f"Unknown section {tab!r}."}, status_code=400)
 
-    stream = documents.build_dispatch_pdf(sheet, subtitle)
-    filename = f"dispatch-{meta['today']}.pdf"
+    sheet, purchasing, meta = await _dispatch(db)
+    stream = documents.build_dispatch_pdf(
+        sheet, _dispatch_subtitle(sheet, meta), tab=tab, purchasing=purchasing
+    )
+    filename = f"dispatch-{tab}-{meta['today']}.pdf"
     return StreamingResponse(
         stream,
         media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/download/dispatch.xlsx")
+async def download_dispatch_xlsx(
+    request: Request,
+    tab: str = "all",
+    db: AsyncSession = Depends(get_db),
+    grant=Depends(require_area(permissions.ORDERS)),
+):
+    """The dispatch sheet as Excel: the combined workbook, one tab, or the to-buy list.
+
+    `tab=tobuy` holds only the products that are short, for pasting into a supplier email.
+    """
+    if tab not in DOWNLOAD_TABS + XLSX_ONLY_TABS:
+        return JSONResponse({"error": f"Unknown section {tab!r}."}, status_code=400)
+
+    sheet, purchasing, meta = await _dispatch(db)
+    subtitle = _dispatch_subtitle(sheet, meta)
+
+    if tab == "tobuy":
+        stream = documents.build_tobuy_xlsx(purchasing, subtitle)
+        filename = f"to-buy-{meta['today']}.xlsx"
+    else:
+        stream = documents.build_dispatch_xlsx(sheet, purchasing, subtitle, tab=tab)
+        filename = f"dispatch-{tab}-{meta['today']}.xlsx"
+
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

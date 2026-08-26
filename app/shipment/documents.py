@@ -675,17 +675,68 @@ def _page_footer(canvas, doc):
 _NEST_INDENT_MM = 6
 
 
-def build_dispatch_pdf(sheet: dict, subtitle: str) -> io.BytesIO:
-    """Today's dispatch as two tables on one portrait page.
+def _purchase_table(purchasing: dict, styles: dict):
+    """The weight-and-purchase table: ordered against raw stock, and what to buy.
+
+    A separate builder because it is the only section that can appear alone (`tab=weight`) and
+    the only one whose numbers are kilograms throughout.
+    """
+    from reportlab.platypus import Paragraph, Table
+
+    rows = []
+    for row in purchasing.get("rows") or []:
+        rows.append([
+            Paragraph(_escape(row["product"]), styles["loud"]),
+            Paragraph(_escape(row["brand"]), styles["quiet"]),
+            Paragraph(f"{float(row['ordered_kg']):.2f}", styles["plain"]),
+            Paragraph(f"{float(row['raw_kg']):.2f}", styles["plain"]),
+            # An em dash, not 0.00: a zero in a purchasing column reads as a measurement
+            # rather than as "nothing to do".
+            Paragraph(
+                "—" if row["covered"] else f"{float(row['to_buy_kg']):.2f}",
+                styles["quantity"],
+            ),
+        ])
+    if not rows:
+        rows = [[Paragraph("Nothing due today.", styles["plain"])]
+                + [Paragraph("", styles["plain"])] * 4]
+
+    totals = purchasing.get("totals") or {}
+    rows.append([
+        Paragraph("TOTAL", styles["totals"]),
+        Paragraph("", styles["totals"]),
+        Paragraph(f"{float(totals.get('ordered_kg') or 0):.2f}", styles["totals_qty"]),
+        Paragraph(f"{float(totals.get('raw_kg') or 0):.2f}", styles["totals_qty"]),
+        # Sum of the CLAMPED rows, never total_ordered - total_raw.
+        Paragraph(f"{float(totals.get('to_buy_kg') or 0):.2f}", styles["totals_qty"]),
+    ])
+
+    table = Table(
+        [[_head_cell(head) for head in
+          ["Product", "Brand", "Ordered kg", "Raw kg", "To buy kg"]]] + rows,
+        colWidths=_dispatch_widths([70, 22, 30, 30, 32]),
+        repeatRows=1,
+    )
+    table.setStyle(_dispatch_table_style(totals_row=len(rows)))
+    return table
+
+
+def build_dispatch_pdf(
+    sheet: dict, subtitle: str, tab: str = "all", purchasing: dict | None = None
+) -> io.BytesIO:
+    """Today's dispatch as up to three tables on one portrait page.
 
     Asked for as *"Each parent item total weight orders … uske niche 500g, 1kg - kitne kitne
     units. sort it total weight wise"*, plus a list of *"all orders with order id, name,
     product and qty"*.
 
-    **Two sections in one document, not two downloads.** They are read together: the summary
-    says how much of each product to bring to the bench, the order list is what gets checked
-    off against the parcels. Two files get separated on a warehouse bench — the same reason
-    `_page_footer` prints "page 1 of 3".
+    **Sections in one document, not separate downloads.** They are read together: purchasing
+    says what to bring to the bench, the summary says how much of each product, the order list
+    is what gets checked off against the parcels. Separate files get separated on a warehouse
+    bench — the same reason `_page_footer` prints "page 1 of 3".
+
+    `tab` narrows the document to one section, and `purchasing` supplies the weight-and-purchase
+    table that tab 1 shows. Both are defaulted so the existing two-argument calls keep working.
 
     **A PDF has no dropdown, so nesting is indentation plus weight.** A parent row carries the
     product name and its total kilograms in bold; its pack sizes sit indented beneath in the
@@ -707,6 +758,19 @@ def build_dispatch_pdf(sheet: dict, subtitle: str) -> io.BytesIO:
     buffer = io.BytesIO()
     doc, elements = _pdf_document(buffer, "Dispatch sheet", subtitle, landscape_mode=False)
     styles = _paragraph_styles()
+
+    # ── Section 0: weight and purchasing, when asked for ──
+    if tab in ("all", "weight") and purchasing is not None:
+        elements.append(Paragraph("Weight &amp; purchase", styles["loud"]))
+        elements.append(Spacer(1, 2 * mm))
+        elements.append(_purchase_table(purchasing, styles))
+        if tab == "all":
+            elements.append(Spacer(1, 7 * mm))
+
+    if tab not in ("all", "sku", "orders", "weight"):
+        # Unreachable through the routes, which validate first — but a direct caller passing a
+        # typo would otherwise get a document with no tables, and reportlab raises on that.
+        raise ValueError(f"unknown dispatch tab {tab!r}")
 
     # ── Section 1: parent products, heaviest first, sizes nested ──
     summary_headers = ["Product", "Size", "Units", "Orders", "Net kg", "Packed"]
@@ -757,21 +821,31 @@ def build_dispatch_pdf(sheet: dict, subtitle: str) -> io.BytesIO:
         Paragraph(str(int(totals.get("packed") or 0)), styles["totals_qty"]),
     ])
 
-    summary = Table(
-        [[_head_cell(head) for head in summary_headers]] + summary_rows,
-        colWidths=_dispatch_widths([72, 24, 20, 20, 26, 22]),
-        repeatRows=1,
-    )
-    summary.setStyle(
-        _dispatch_table_style(
-            totals_row=len(summary_rows),          # header offset already counted
-            parent_rows=parent_row_indices,
+    if tab in ("all", "sku"):
+        summary = Table(
+            [[_head_cell(head) for head in summary_headers]] + summary_rows,
+            colWidths=_dispatch_widths([72, 24, 20, 20, 26, 22]),
+            repeatRows=1,
         )
-    )
-    elements.append(summary)
+        summary.setStyle(
+            _dispatch_table_style(
+                totals_row=len(summary_rows),          # header offset already counted
+                parent_rows=parent_row_indices,
+            )
+        )
+        if tab == "all":
+            elements.append(Paragraph("By product", styles["loud"]))
+            elements.append(Spacer(1, 2 * mm))
+        elements.append(summary)
+
+    if tab not in ("all", "orders"):
+        doc.build(elements, onFirstPage=_page_footer, onLaterPages=_page_footer)
+        buffer.seek(0)
+        return buffer
 
     # ── Section 2: every order, in the same parent order as the summary ──
-    elements.append(Spacer(1, 7 * mm))
+    if tab == "all":
+        elements.append(Spacer(1, 7 * mm))
     elements.append(Paragraph("Orders", styles["loud"]))
     elements.append(Spacer(1, 2 * mm))
 
