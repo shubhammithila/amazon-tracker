@@ -232,11 +232,12 @@ async def download_picking_sheet(
 
 
 async def _dispatch(db: AsyncSession):
-    """Today's dispatch sheet with the warehouse's packed counts. Returns (sheet, meta).
+    """Today's dispatch, the purchasing view, and the meta. Returns (sheet, purchasing, meta).
 
-    ONE function behind the screen and the PDF, so a printed sheet cannot disagree with the
-    monitor about a quantity — the same reasoning `_sheet_and_orders` carries, and the reason
-    the shipment feature funnels all five of its downloads through `_document_rows`.
+    ONE function behind all three tabs and all five downloads, so a printed sheet cannot
+    disagree with the monitor about a quantity — the same reasoning `_sheet_and_orders`
+    carries, and the reason the shipment feature funnels all five of its downloads through
+    `_document_rows`.
 
     Today is taken in IST at call time and never stored, so a screen left open overnight is
     correct in the morning without a refresh having run.
@@ -246,8 +247,10 @@ async def _dispatch(db: AsyncSession):
     orders = await repository.load_orders(db, days=WINDOW_DAYS)
     sheet_catalogue, warning, source = await catalogue.load_catalogue()
     packed = await repository.load_packed(db, pack_date)
+    raw_stock = await repository.load_raw_stock(db)
     sheet = logic.dispatch_sheet(orders, sheet_catalogue, today, packed=packed)
-    return sheet, {
+    purchasing = logic.raw_stock_summary(sheet, raw_stock)
+    return sheet, purchasing, {
         "source": source, "warning": warning, "today": pack_date, "pack_date": pack_date,
     }
 
@@ -258,16 +261,17 @@ async def dispatch(
     db: AsyncSession = Depends(get_db),
     grant=Depends(require_area(permissions.ORDERS)),
 ):
-    """Today's dispatch: parent products, their pack sizes, and what has been packed.
+    """Today's dispatch: parent products, pack sizes, packed counts and purchasing.
 
     Local rows only — no Amazon call. `is_admin` travels in the payload so the screen can
     decide whether to offer the owner's other sections; the guard that actually matters is
     on the routes themselves.
     """
-    sheet, meta = await _dispatch(db)
+    sheet, purchasing, meta = await _dispatch(db)
     last = await repository.last_refreshed_at(db)
     return JSONResponse({
         "sheet": sheet,
+        "purchasing": purchasing,
         "pack_date": meta["pack_date"],
         "today_ist": meta["today"],
         "catalogue_source": meta["source"],
@@ -326,6 +330,41 @@ async def save_packed(
     return JSONResponse({"status": "saved", "pack_date": pack_date, "packed": packed})
 
 
+@router.post("/raw-stock")
+async def save_raw_stock(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    grant=Depends(require_area(permissions.ORDERS)),
+):
+    """Record raw material on hand per product. `{"entries": [{"product", "raw_kg"}]}`.
+
+    **No date in the path, unlike `/packed/{pack_date}`, and that asymmetry is the design.** A
+    packed count belongs to a day; raw material on a shelf is a standing quantity, so a date
+    here would make the number unreachable tomorrow and the purchasing tab would demand
+    re-entry every morning.
+
+    Kilograms rather than units: raw material is bulk, and there is no such thing as
+    500 g-flavoured raw sattu.
+    """
+    try:
+        body = await request.json()
+    except Exception:                       # noqa: BLE001 - a malformed body is a 400
+        return JSONResponse({"error": "Expected a JSON body."}, status_code=400)
+
+    entries = (body or {}).get("entries")
+    if not isinstance(entries, list):
+        return JSONResponse(
+            {"error": "entries must be a list of {product, raw_kg} objects."},
+            status_code=400,
+        )
+
+    raw_stock = await repository.save_raw_stock(
+        db, entries, updated_by=getattr(grant, "username", "") or ""
+    )
+    logger.info("orders: raw stock saved for %d product(s)", len(raw_stock))
+    return JSONResponse({"status": "saved", "raw_stock": raw_stock})
+
+
 @router.get("/download/dispatch.pdf")
 async def download_dispatch(
     request: Request,
@@ -338,7 +377,7 @@ async def download_dispatch(
     disagree. A PDF rather than Excel because this one is read on the floor and ticked with a
     pen — the Excel downloads exist for accounts.
     """
-    sheet, meta = await _dispatch(db)
+    sheet, purchasing, meta = await _dispatch(db)
     totals = sheet["totals"]
     subtitle = (
         f"{meta['today']} (IST) · {totals['orders']} orders · {totals['units']} units · "

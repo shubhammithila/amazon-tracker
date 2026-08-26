@@ -451,3 +451,94 @@ async def test_ops_may_reach_the_dispatch_screen_but_is_not_told_it_is_admin(
     await _seed(db)
     body = (await auth_client.get("/orders/dispatch")).json()
     assert body["is_admin"] is True, "an admin session was not told so"
+
+
+# ─── Purchasing: raw stock and what to buy ───────────────────────────────────
+
+
+async def test_the_dispatch_payload_carries_the_purchasing_view(auth_client, db):
+    """Tab 1 reads the same payload as tabs 2 and 3, so nothing can disagree."""
+    await repository.upsert_orders(db, [_dispatched("403-1")])
+    await repository.replace_items(db, "403-1", [
+        {"asin": KNOWN_ASIN, "seller_sku": "cs-500", "quantity_ordered": 10}
+    ])
+
+    body = (await auth_client.get("/orders/dispatch")).json()
+
+    assert "purchasing" in body, "the purchasing view is missing from the payload"
+    row = next(row for row in body["purchasing"]["rows"]
+               if row["product"] == "Chana Sattu")
+    assert row["ordered_kg"] == pytest.approx(5.0)        # 10 x 0.5 kg
+    assert row["raw_kg"] == 0.0
+    assert row["to_buy_kg"] == pytest.approx(5.0)
+    assert row["covered"] is False
+
+
+async def test_raw_stock_saves_and_reaches_the_purchasing_view(auth_client, db):
+    """Type a stock figure, reload, and `to_buy` reflects it."""
+    await repository.upsert_orders(db, [_dispatched("403-1")])
+    await repository.replace_items(db, "403-1", [
+        {"asin": KNOWN_ASIN, "quantity_ordered": 10}
+    ])
+
+    r = await auth_client.post(
+        "/orders/raw-stock", json={"entries": [{"product": "Chana Sattu", "raw_kg": 3.5}]}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["raw_stock"]["Chana Sattu"] == pytest.approx(3.5)
+
+    body = (await auth_client.get("/orders/dispatch")).json()
+    row = next(row for row in body["purchasing"]["rows"]
+               if row["product"] == "Chana Sattu")
+    assert row["raw_kg"] == pytest.approx(3.5)
+    assert row["to_buy_kg"] == pytest.approx(1.5)         # 5.0 ordered - 3.5 on hand
+
+
+async def test_the_raw_stock_response_is_json_safe(auth_client, db):
+    """`Numeric` returns `Decimal`, which JSONResponse cannot serialise.
+
+    Asserted over HTTP rather than on the repository, because that is where the failure
+    surfaced last time: a 500 and a "Could not reach the server" banner, found in a browser.
+    """
+    import json
+
+    await _seed(db)
+    r = await auth_client.post(
+        "/orders/raw-stock", json={"entries": [{"product": "Chana Sattu", "raw_kg": 12.25}]}
+    )
+    assert r.status_code == 200, r.text
+    json.dumps(r.json())
+
+
+async def test_a_malformed_raw_stock_body_is_refused(auth_client, db):
+    """`entries` must be a list, or the save silently stores nothing."""
+    await _seed(db)
+    r = await auth_client.post("/orders/raw-stock", json={"entries": {"product": "x"}})
+    assert r.status_code == 400, r.text
+
+
+async def test_the_raw_stock_route_takes_no_date(auth_client, db):
+    """Unlike `/packed/{pack_date}`, and deliberately.
+
+    A packed count belongs to a day, so that route refuses any date but today — a laptop in
+    another timezone would otherwise file this morning's count against yesterday. Raw stock is
+    standing, so a date here would make the number unreachable tomorrow.
+    """
+    # A DISPATCHED order, not the `_seed` default: that one is Unshipped/PendingSchedule, which
+    # is correctly excluded from the dispatch sheet — so the purchasing view would hold no rows
+    # at all and this test would prove nothing about the route.
+    await repository.upsert_orders(db, [_dispatched("403-1")])
+    await repository.replace_items(db, "403-1", [
+        {"asin": KNOWN_ASIN, "quantity_ordered": 4}
+    ])
+    response = await auth_client.post(
+        "/orders/raw-stock", json={"entries": [{"product": "Chana Sattu", "raw_kg": 8}]}
+    )
+    assert response.status_code == 200, response.text
+    body = (await auth_client.get("/orders/dispatch")).json()
+    row = next(row for row in body["purchasing"]["rows"]
+               if row["product"] == "Chana Sattu")
+    assert row["raw_kg"] == pytest.approx(8.0)
+    # 4 x 0.5 kg ordered against 8 kg on hand, so nothing to buy.
+    assert row["to_buy_kg"] == 0.0
+    assert row["covered"] is True
