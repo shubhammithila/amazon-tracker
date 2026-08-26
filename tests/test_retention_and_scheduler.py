@@ -243,28 +243,56 @@ def test_the_routine_order_refresh_pages_past_the_measured_backlog():
     )
 
 
-def test_the_routine_window_is_wide_because_the_fetch_is_bounded_by_status():
-    """The constraint this test used to assert is what CAUSED the 371-order bug.
+def test_the_routine_window_asks_only_for_today():
+    """**This assertion has now been wrong in BOTH directions, which is the lesson.**
 
-    It previously required `ORDER_REFRESH_DAYS <= 30`, on the reasoning that a short window
-    kept a date-bounded fetch cheap. But `getOrders` pages OLDEST-FIRST with no sort
-    parameter, so a short window did not mean recent orders — it meant 6 pages of
-    `Delivered` while 371 orders waited unseen.
+    v1 required `<= 30` days, reasoning that a short window keeps a date-bounded fetch cheap.
+    Wrong: `getOrders` pages oldest-first, so a short window meant 6 pages of `Delivered` while
+    371 orders waited unseen.
 
-    The fetch is now bounded by `EasyShipShipmentStatuses`, so the window no longer drives
-    the cost, and a wide one is the safe choice: an order unshipped for three weeks is
-    exactly the one a narrow window would drop.
+    v2 required `>= 60` days, reasoning that `EasyShipShipmentStatuses` bounds the answer so the
+    window is free. True only while that filter was `PendingSchedule,PendingPickUp` — statuses
+    with almost no history.
+
+    v3, here: adding `PickedUp` to the filter was necessary (without it, 99 of one day's 194
+    orders were never fetched), and `PickedUp` has MONTHS of history. Measured on 2026-08-26 with
+    the 90-day window: 800 rows, 8 pages, ~3 minutes, and **0** orders due today.
+
+    The window and the filter are ONE budget, not two independent knobs. Whichever is widened,
+    the other must narrow. Asserted as "the routine window is today" rather than a day count,
+    because that is the actual requirement — the dispatch screen only shows today.
     """
     from app import scheduler as sched
     from app.orders import spapi_orders
 
-    assert sched.ORDER_REFRESH_DAYS >= 60, (
-        "a narrow routine window silently drops orders that have been open a long time — "
-        "and it buys nothing now that the status filter bounds the result"
+    assert sched.ORDER_REFRESH_DAYS == spapi_orders.TODAY_ONLY, (
+        "the routine refresh does not ask for today only; with the collected statuses in the "
+        "filter, a wider window spends its whole budget paging orders that are long gone"
     )
-    assert spapi_orders.ACTIONABLE_EASYSHIP_STATUSES, (
-        "the wide window is only affordable because the fetch filters on status; without "
-        "that filter this window would page through months of delivered orders"
+    # And the sentinel must resolve to the START of the business day in IST.
+    since = spapi_orders._since(sched.ORDER_REFRESH_DAYS)
+    assert since.endswith("18:30:00Z"), (
+        f"midnight IST is 18:30Z the previous day; got {since}"
+    )
+
+
+def test_the_manual_button_looks_further_back_than_the_routine_job():
+    """Two windows, two jobs. The button is the catch-up, so it must be wider.
+
+    Equal windows would make the button pointless; a 90-day button would make it feel broken,
+    which is what it did — three minutes to fetch nothing due today.
+    """
+    from app.routers import orders as orders_router
+    from app.orders import spapi_orders
+
+    assert orders_router.BACKFILL_DAYS >= 2, "the manual refresh is not a catch-up at all"
+    assert orders_router.BACKFILL_DAYS <= 7, (
+        "a wide manual window spends minutes paging oldest-first through collected orders; "
+        "use the one-off backfill for genuine history repair"
+    )
+    assert orders_router.BACKFILL_DAYS != spapi_orders.TODAY_ONLY, (
+        "the button asks for exactly what the half-hourly job already did, so pressing it "
+        "cannot recover a straggler"
     )
 
 

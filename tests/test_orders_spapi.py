@@ -10,6 +10,7 @@ No test here touches the network. `fetch_easy_ship_orders` takes an injectable s
 the 22-second rate limit is asserted rather than waited for.
 """
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -130,16 +131,20 @@ async def test_paging_waits_the_rate_limit_between_calls_and_filters_to_easy_shi
 # ─── The fourth cause: paging is OLDEST-FIRST ────────────────────────────────
 
 
-async def test_the_fetch_asks_amazon_for_only_the_actionable_easyship_statuses(monkeypatch):
+async def test_the_fetch_filters_on_the_easyship_status_and_the_window(monkeypatch):
     """The fix for the bug that survived the first three fixes.
 
-    `getOrders` pages oldest-first and has no sort parameter. Asking by ORDER status over a
-    date window returned 165 orders across 6 pages that were every one `Delivered`, while
-    371 orders sat waiting in Seller Central and every section of the sheet read zero.
+    `getOrders` pages oldest-first and has no sort parameter, so filtering is what makes the
+    answer reachable at all: asking by ORDER status over a date window returned 165 orders across
+    6 pages that were every one `Delivered`, while 371 sat waiting in Seller Central.
 
-    Filtering on `EasyShipShipmentStatuses` bounds the answer by RELEVANCE instead of by
-    date: measured, the same query then returns 97 `PendingSchedule` + 3 `PendingPickUp` on
-    page 1, and the complete set is 371 orders in 4 pages.
+    **This test used to assert `Delivered` was NOT requested, and that later became wrong.** The
+    reasoning then was that delivered orders are the flood — true while the window was 90 days.
+    But excluding the collected statuses hid 99 of one day's 194 orders, because Amazon collects
+    within hours and a `PickedUp` order was therefore never in the answer. What prevents the
+    flood is the narrow WINDOW (`TODAY_ONLY`), not a narrow status list; the two knobs were
+    conflated. Now asserted as "filters on both axes", so the status list can be corrected
+    without rewriting this test's premise a third time.
     """
     seen = []
 
@@ -151,23 +156,23 @@ async def test_the_fetch_asks_amazon_for_only_the_actionable_easyship_statuses(m
         return None
 
     monkeypatch.setattr(spapi_orders.spapi, "_get", fake_get)
-    await spapi_orders.fetch_easy_ship_orders(days=90, max_pages=1, sleep=fake_sleep)
+    await spapi_orders.fetch_easy_ship_orders(
+        days=spapi_orders.TODAY_ONLY, max_pages=1, sleep=fake_sleep
+    )
 
     actionable = seen[0]
     assert "EasyShipShipmentStatuses" in actionable, (
-        "the fetch does not filter on the Easy Ship status, so oldest-first paging will "
-        "fill every page with delivered orders and the picking sheet will read zero"
+        "the fetch does not filter on the Easy Ship status, so oldest-first paging will fill "
+        "every page with orders that are long gone and the sheet will read zero"
     )
     requested = set(actionable["EasyShipShipmentStatuses"].split(","))
-    assert "PendingPickUp" in requested, "the 264 orders awaiting pickup are not requested"
-    assert "PendingSchedule" in requested, "the orders still to pack are not requested"
-    # Delivered is the noise that crowded out the real orders; asking for it undoes the fix.
-    assert "Delivered" not in requested, (
-        "asking for Delivered reintroduces the oldest-first flood that hid 371 orders"
-    )
+    assert "PendingPickUp" in requested, "orders awaiting the courier are not requested"
+    assert "PendingSchedule" in requested, "the orders still to label are not requested"
     # MFN drops the FBA orders at Amazon's end. Measured: the unfiltered Pending page held
     # 100 FBA `Expedited` orders and not one Easy Ship order.
     assert actionable.get("FulfillmentChannels") == "MFN"
+    # The WINDOW is what bounds the cost — see test_today_only_resolves_to_midnight_ist.
+    assert actionable["LastUpdatedAfter"] == spapi_orders._since(spapi_orders.TODAY_ONLY)
 
 
 async def test_pending_payment_orders_get_their_own_pass(monkeypatch):
@@ -207,7 +212,7 @@ async def test_the_actionable_filter_string_and_the_reconcile_set_cannot_drift(m
     "this order changed". If the set were broader than the query, every extra status would be
     re-read on every refresh for nothing; if narrower, those rows would never be corrected.
     """
-    assert spapi_orders.ACTIONABLE_STATUS_SET == frozenset(
+    assert spapi_orders.FETCHED_STATUS_SET == frozenset(
         spapi_orders.ACTIONABLE_EASYSHIP_STATUSES.split(",")
     )
 
@@ -527,4 +532,109 @@ def test_every_fixture_order_buckets_without_error():
     assert logic.BUCKET_DONE in buckets
     assert buckets - {logic.BUCKET_DONE}, (
         "every fixture order was filed as done, which is the bug this file exists to catch"
+    )
+
+
+# ─── The 99 orders that were collected before we ever fetched them ────────────
+#
+# Seller Central showed 194 orders picked up today; the screen showed 95. Not a display bug:
+# `PendingSchedule,PendingPickUp` never returned them. Amazon collects within hours, so an order
+# labelled AND collected between two refreshes was never in the answer — and the reconcile pass
+# could not rescue it, because that only re-reads orders already held.
+
+
+def test_the_fetch_asks_for_collected_orders_too():
+    """`PickedUp` must be in the filter, or a whole day's dispatch can be invisible.
+
+    Measured on 2026-08-26: `PendingPickUp` returned **0** — every one of the day's orders had
+    already been collected — while 193 orders carried a ship-by of today. The fetch has to agree
+    with `logic.is_todays_dispatch`, which counts a collected order as still today's work,
+    because the boxes were packed on this floor this morning.
+    """
+    requested = set(spapi_orders.ACTIONABLE_EASYSHIP_STATUSES.split(","))
+    assert "PickedUp" in requested, (
+        "collected orders are not requested, so a day whose orders are all picked up shows as "
+        "empty — 95 of 194 was the measured symptom"
+    )
+    assert "PendingSchedule" in requested, "orders still to label are not requested"
+    assert "PendingPickUp" in requested, "orders awaiting the courier are not requested"
+
+
+def test_the_fetch_filter_covers_every_status_the_dispatch_rule_accepts():
+    """The wire filter and the local predicate must not disagree.
+
+    `logic.is_todays_dispatch` accepts `LABELLED_EASYSHIP`; if the fetch asks for less, the
+    predicate never sees those rows and the screen undercounts. This is the coupling that broke:
+    the predicate already accepted `PickedUp`, and the fetch did not.
+
+    The doc aliases are deliberately NOT sent to Amazon — an unrecognised status risks the whole
+    query rather than merely matching nothing — so they are excluded from the comparison.
+    """
+    from app.orders import logic
+
+    requested = {s.strip() for s in spapi_orders.ACTIONABLE_EASYSHIP_STATUSES.split(",")}
+    # Never observed on amazon.in; kept locally as harmless aliases only.
+    doc_aliases = {"LabelGenerated", "ReadyForPickup"}
+    accepted = logic.LABELLED_EASYSHIP - doc_aliases
+
+    missing = accepted - requested
+    assert not missing, (
+        f"the dispatch rule accepts {sorted(missing)} but the fetch never asks for them, so "
+        "those orders can only reach the screen by accident"
+    )
+
+
+def test_today_only_resolves_to_midnight_ist_not_midnight_utc():
+    """The business day starts at 00:00 IST, which is 18:30Z the PREVIOUS day.
+
+    Using the UTC day boundary would drop every order placed between 00:00 and 05:30 IST from
+    the routine refresh — the same 5.5-hour class of error the `*_utc` column suffix exists to
+    prevent.
+    """
+    from app.orders import logic
+
+    since = spapi_orders._since(spapi_orders.TODAY_ONLY)
+    parsed = datetime.strptime(since, "%Y-%m-%dT%H:%M:%SZ")
+    as_ist = parsed.replace(tzinfo=timezone.utc).astimezone(logic.IST)
+
+    assert (as_ist.hour, as_ist.minute) == (0, 0), (
+        f"the window starts at {as_ist:%H:%M} IST, not midnight"
+    )
+    assert as_ist.date() == datetime.now(logic.IST).date(), (
+        "the window does not start at the beginning of TODAY in IST"
+    )
+
+
+def test_a_numeric_window_is_still_a_count_of_days_back():
+    """The manual button passes 3, and that must keep meaning three days."""
+    since = spapi_orders._since(3)
+    parsed = datetime.strptime(since, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    delta = datetime.now(timezone.utc) - parsed
+    assert 2.9 < delta.total_seconds() / 86400 < 3.1, f"3 days resolved to {delta}"
+
+
+async def test_the_fetch_uses_the_window_helper_for_both_kinds_of_window(monkeypatch):
+    """`TODAY_ONLY` has to survive the trip through `fetch_easy_ship_orders`.
+
+    Asserted on the outgoing parameter rather than on the helper alone, because the bug this
+    guards is the fetch computing its own `since` and ignoring the sentinel — which is exactly
+    what it did before, with `timedelta(days=days)` and a string that would have raised.
+    """
+    seen = []
+
+    async def fake_get(path, params=None, client=None):
+        seen.append(params or {})
+        return {"payload": {"Orders": []}}
+
+    async def fake_sleep(seconds):
+        return None
+
+    monkeypatch.setattr(spapi_orders.spapi, "_get", fake_get)
+    await spapi_orders.fetch_easy_ship_orders(
+        days=spapi_orders.TODAY_ONLY, max_pages=1, sleep=fake_sleep
+    )
+
+    assert seen, "no request was made"
+    assert seen[0]["LastUpdatedAfter"] == spapi_orders._since(spapi_orders.TODAY_ONLY), (
+        "the sentinel window did not reach Amazon; the fetch is computing its own date"
     )

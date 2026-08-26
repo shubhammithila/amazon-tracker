@@ -10,6 +10,7 @@ from app.models import (
     Product, Keyword, KeywordRanking,
     PriceHistory, BSRHistory, RatingHistory, SellerOffer,
 )
+from app.orders import spapi_orders
 from app.scraper.engine import run_scrape, scrape_state, ScrapeAlreadyRunning
 from app.scraper.keyword_tracker import track_keyword_rankings
 from datetime import datetime, timedelta
@@ -24,25 +25,28 @@ scheduler = AsyncIOScheduler()
 #: for the manual button and for the 90-day backfill.
 ORDER_REFRESH_MINUTES = 30
 
-#: Days back a routine refresh looks, on LastUpdatedAfter.
+#: The routine refresh looks back to MIDNIGHT IST, not a number of days.
 #:
-#: **Wide on purpose, which is the opposite of what it used to be.** While the fetch was
-#: bounded by DATE this was 14 days to keep the cost down, and that was the bug: `getOrders`
-#: pages oldest-first, so 14 days of open orders returned page after page of `Delivered`
-#: while the orders needing work sat past the page cap. The fetch is now bounded by
-#: `EasyShipShipmentStatuses` instead, so the window no longer drives the cost — measured,
-#: the complete actionable set is 371 orders in 4 pages regardless of how far back we ask.
+#: **This has now been wrong in both directions, and the measurements are why.** It was 14 days
+#: while the fetch was bounded by order status, which buried today's work under pages of
+#: `Delivered`. It then became 90 days once `EasyShipShipmentStatuses` bounded the answer — safe
+#: at the time, because `PendingSchedule,PendingPickUp` has almost no history.
 #:
-#: A wide window is now the SAFE choice: an order that has been unshipped for three weeks is
-#: exactly the one a narrow window would silently drop.
-ORDER_REFRESH_DAYS = 90
+#: Adding `PickedUp` to that filter (without which 99 of the day's 194 orders were never
+#: fetched at all) reversed the trade-off again: `PickedUp` has MONTHS of history, and
+#: `getOrders` pages oldest-first. Measured on 2026-08-26 with the 90-day window: 800 rows
+#: across 8 pages, about three minutes, and **0** of them due today.
+#:
+#: Midnight IST puts today's orders on page 1 — 193 of them, matching Seller Central — because
+#: an order dispatched today was necessarily updated today. The deeper catch-up is the manual
+#: button's job.
+ORDER_REFRESH_DAYS = spapi_orders.TODAY_ONLY
 
-#: Pages per pass, a SAFETY CEILING rather than the usual cost. Amazon caps a page at 100
-#: orders and the measured actionable set is 371 in 4 pages, so 8 is roughly double the
-#: current backlog — the headroom matters because truncation is worst exactly when the
-#: warehouse is busiest, which is when the sheet matters most. Reaching it is reported on
-#: screen rather than silently truncating.
-ORDER_REFRESH_PAGES = 8
+#: Pages per pass, a SAFETY CEILING rather than the usual cost. A day's dispatch is ~200 orders
+#: = 2 pages; 4 is double that, so a busy day cannot be truncated. Lower than the 8 it was,
+#: because the window no longer includes months of collected orders to page through. Reaching
+#: the cap is reported on screen rather than silently truncating.
+ORDER_REFRESH_PAGES = 4
 
 
 async def scheduled_product_scrape():

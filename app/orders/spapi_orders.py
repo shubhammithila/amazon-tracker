@@ -15,10 +15,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
 from app.config import get_settings
-from app.orders.logic import is_easy_ship
+from app.orders.logic import IST, is_easy_ship
 from app.shipment import spapi
 from app.shipment.spapi import SpApiError
 
@@ -64,30 +64,61 @@ ITEMS_THROTTLE_GIVE_UP = 5
 #: transition out, and including it would spend item calls on parcels that will never exist.
 OPEN_STATUSES = "Pending,Unshipped,PartiallyShipped,Shipped"
 
-#: **The filter that makes this fetch correct rather than merely cheaper.**
+#: **Every status a dispatched order can be in, including the collected ones.**
 #:
-#: Order-status filtering alone was not enough. `getOrders` pages OLDEST-FIRST and offers no
-#: sort parameter, so a 14-day window over open statuses returned 100 orders per page of
-#: which every single one was `Delivered` — 165 orders across 6 pages, and every section of
-#: the picking sheet read zero while Seller Central showed 371 waiting. Paging far enough to
-#: reach today would have cost minutes per refresh at 22.5 seconds a page, and would have
-#: got worse with every order the business shipped.
+#: `getOrders` pages OLDEST-FIRST with no sort parameter, so the filter is what decides whether
+#: today's orders are reachable at all. Two corrections are recorded here, in order.
 #:
-#: Narrowing the WINDOW cannot fix it either: 100+ orders change status every day, mostly to
-#: `Delivered`, so any window wide enough to be safe is also wide enough to fill with noise.
+#: **First:** filtering on ORDER status alone returned 100 `Delivered` orders per page — 165
+#: across 6 pages, with every section of the sheet reading zero while Seller Central showed
+#: 371 waiting. Filtering on `EasyShipShipmentStatuses` fixed that.
 #:
-#: Measured with this filter: the same query returns 97 `PendingSchedule` + 3 `PendingPickUp`
-#: on page 1, and the complete actionable set is **371 orders in 4 pages** — bounded by the
-#: FILTER, not by the window. That is why the window can now be wide and the page cap low.
-ACTIONABLE_EASYSHIP_STATUSES = "PendingSchedule,PendingPickUp"
+#: **Second, and the reason `PickedUp` is in this list:** `PendingSchedule,PendingPickUp` was
+#: not enough either. Amazon collects within hours, so an order labelled AND collected between
+#: two refreshes was never in the answer — and the reconcile pass could not rescue it, because
+#: that only re-reads orders already held. Measured on 2026-08-26: `PendingPickUp` returned
+#: **0**, every one of the day's orders was `PickedUp`, and the screen showed 95 where Seller
+#: Central showed 194.
+#:
+#: A collected order is still today's dispatch — the boxes were packed on this floor this
+#: morning — which is exactly what `logic.is_todays_dispatch` already encodes. The fetch has to
+#: agree with the predicate, or the predicate never sees the rows.
+#:
+#: `LABELLED_EASYSHIP` in `orders.logic` is the same idea for a row we already hold; this is
+#: the wire format Amazon wants. They are deliberately separate: this one omits the
+#: never-observed doc aliases, because sending Amazon a status it does not recognise risks the
+#: whole query rather than merely matching nothing.
+#: `ReturningToSeller` / `ReturnedToSeller` are included for the same reason as `PickedUp`: the
+#: parcel went out today, so it was packed today, and the day's tally should not shrink because
+#: a customer refused it hours later. None are currently held with a recent ship-by, so this
+#: costs nothing today and closes the gap before it happens.
+ACTIONABLE_EASYSHIP_STATUSES = (
+    "PendingSchedule,PendingPickUp,PickedUp,OutForDelivery,Delivered,"
+    "ReturningToSeller,ReturnedToSeller"
+)
 
-#: The same statuses as a set, for deciding which LOCAL rows the fetch was authoritative
-#: about. Derived from the string rather than written twice: the reconcile pass treats "we
-#: hold this status but Amazon did not return it" as "this order changed", so if the two
-#: drifted apart it would either re-read orders pointlessly or leave stale rows uncorrected.
-ACTIONABLE_STATUS_SET = frozenset(
+#: The same statuses as a set: which LOCAL rows the fetch was authoritative about.
+#:
+#: Derived from the string rather than written twice, because the reconcile pass treats "we hold
+#: this status but Amazon did not return it" as "this order changed" — if the two drifted apart
+#: it would either re-read orders pointlessly or leave stale rows uncorrected.
+FETCHED_STATUS_SET = frozenset(
     part.strip() for part in ACTIONABLE_EASYSHIP_STATUSES.split(",") if part.strip()
 )
+
+#: Orders that still need something from the warehouse, and therefore deserve the item budget
+#: first.
+#:
+#: **Deliberately NARROWER than `FETCHED_STATUS_SET`, and the split is a bug fix.** One set used
+#: to serve both jobs. Adding the collected statuses to the fetch — which is what made today's
+#: 194 orders visible — silently promoted 359 `Delivered` orders to the front of the item queue,
+#: so `getOrderItems` would have spent its 200-call cap on parcels already with the customer
+#: while the orders still to pack got nothing. The sheet counts ITEMS, so those orders would
+#: have appeared with no units: the exact "168 units across 265 orders" failure that the
+#: priority ordering was added to fix in the first place.
+#:
+#: A delivered order is still FETCHED (its row must stay current) but is not PRIORITISED.
+NEEDS_WORK_STATUS_SET = frozenset({"PendingSchedule", "PendingPickUp"})
 
 #: Easy Ship and plain self-ship are both `MFN`; FBA is `AFN`. Filtering to MFN drops every
 #: FBA order at Amazon's end rather than fetching it and discarding it here.
@@ -111,6 +142,38 @@ ORDER_ID_BATCH = 50
 #: Orders re-read per refresh to resolve dropped-out rows. 4 calls at 22.5s; the remainder
 #: waits for the next run, which is correct because a stale row is wrong but not dangerous.
 RECONCILE_LIMIT = 200
+
+#: `days=TODAY_ONLY` means "since midnight IST" rather than a count of days back.
+#:
+#: **This is what makes the routine refresh both correct and fast**, and it is the opposite of
+#: the tuning that preceded it. With `PickedUp` now in the filter, a wide window is no longer
+#: free: that status has months of history, and `getOrders` pages oldest-first, so a 90-day
+#: window spent 8 pages (~3 minutes) on ancient orders and never reached today. Measured on
+#: 2026-08-26: 800 rows fetched, **0** of them due today.
+#:
+#: A window starting at midnight IST puts today's orders on page 1 — 193 of them, matching
+#: Seller Central — because an order dispatched today was necessarily updated today.
+#:
+#: A sentinel rather than a fraction of a day, because "today" is a CALENDAR question in IST
+#: and `days=0.5` would drift with the hour the job happens to run.
+TODAY_ONLY = "today"
+
+
+def _since(days) -> str:
+    """The `LastUpdatedAfter` value for a window, as Amazon's ISO-8601.
+
+    `TODAY_ONLY` resolves to midnight IST expressed in UTC — the start of the business day, not
+    of the UTC day. Those differ by 5.5 hours, and using the UTC day boundary would drop every
+    order placed between 00:00 and 05:30 IST from the routine refresh.
+    """
+    if days == TODAY_ONLY:
+        start = datetime.combine(
+            datetime.now(IST).date(), time.min, tzinfo=IST
+        )
+        return start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (
+        datetime.now(timezone.utc) - timedelta(days=float(days))
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _dt(value) -> datetime | None:
@@ -302,7 +365,7 @@ async def fetch_easy_ship_orders(
     to fix, so it must not be reintroduced by the fix.
     """
     settings = get_settings()
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    since = _since(days)
 
     # `LastUpdatedAfter`, NOT `CreatedAfter`. What this screen cares about is a change of
     # STATE, not a new order: an order placed three weeks ago that was labelled this morning

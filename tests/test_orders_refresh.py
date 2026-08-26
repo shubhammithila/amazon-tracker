@@ -262,7 +262,7 @@ async def test_actionable_orders_win_the_item_budget(db, db_schema):
     ])
 
     queued = await repository.ids_missing_items(
-        db, limit=1, priority_statuses=spapi_orders.ACTIONABLE_STATUS_SET
+        db, limit=1, priority_statuses=spapi_orders.NEEDS_WORK_STATUS_SET
     )
     assert queued == ["403-old-pickup"], (
         f"a delivered order took the item budget from one awaiting pickup: {queued}"
@@ -309,7 +309,7 @@ async def test_the_refresh_actually_asks_for_actionable_items_first(
 
     await refresh.run(days=90, sleep=_no_sleep)
 
-    assert seen.get("priority_statuses") == spapi_orders.ACTIONABLE_STATUS_SET, (
+    assert seen.get("priority_statuses") == spapi_orders.NEEDS_WORK_STATUS_SET, (
         "the refresh queues items without prioritising actionable orders, so delivered "
         f"orders can take the whole cap: got {seen.get('priority_statuses')!r}"
     )
@@ -406,20 +406,33 @@ async def test_a_fetch_that_returned_nothing_reconciles_nothing(db, db_schema, m
     assert result["reconciled"] == 0
 
 
-async def test_a_finished_order_is_not_re_read_every_refresh(db, db_schema, monkeypatch):
-    """Only rows we hold as ACTIONABLE are the fetch's business.
+async def test_reconcile_is_bounded_so_it_cannot_re_read_the_whole_history(
+    db, db_schema, monkeypatch
+):
+    """The reconcile pass must stay cheap even though the fetch now asks for delivered orders.
 
-    A `Delivered` order is absent from the actionable query by design and for ever. Treating
-    that absence as staleness would re-read the entire 90-day history on every refresh,
-    spending the whole rate budget to confirm that delivered orders are still delivered.
+    **This test used to assert that a `Delivered` order was never re-read**, on the reasoning
+    that it is absent from the actionable query for ever. That premise is now false and
+    deliberately so: excluding the collected statuses is what hid 99 of one day's 194 orders, so
+    the fetch asks for them.
+
+    What still has to hold is the COST guarantee. A row is only re-read when we hold it in a
+    status the fetch asked for AND a complete fetch did not return it — and the number re-read is
+    capped. So a delivered order that Amazon did return (the normal case now) is never re-read,
+    and a runaway pass cannot spend the whole rate budget confirming that old orders are still
+    old.
     """
     await repository.upsert_orders(db, [
         _row("403-done", status="Shipped", easyship_status="Delivered"),
         _row("403-open", status="Unshipped", easyship_status="PendingSchedule"),
     ])
 
+    # Amazon returns BOTH, which is what the widened filter buys.
     async def fake_orders(days=90, *, max_pages=10, sleep=None, on_page=None):
-        return [_row("403-open", status="Unshipped", easyship_status="PendingSchedule")], []
+        return [
+            _row("403-open", status="Unshipped", easyship_status="PendingSchedule"),
+            _row("403-done", status="Shipped", easyship_status="Delivered"),
+        ], []
 
     called = []
 
@@ -437,7 +450,13 @@ async def test_a_finished_order_is_not_re_read_every_refresh(db, db_schema, monk
 
     await refresh.run(days=90, sleep=_no_sleep)
 
-    assert called == [], f"a finished order was re-read for nothing: {called}"
+    assert called == [], (
+        f"orders the fetch already returned were re-read for nothing: {called}"
+    )
+    # And the cap exists, so even a pathological run is bounded.
+    assert refresh.spapi_orders.RECONCILE_LIMIT <= 200, (
+        "the reconcile cap is high enough to spend the rate budget on old orders"
+    )
 
 
 async def test_reconcile_prefers_the_least_recently_refreshed_rows(db, db_schema):

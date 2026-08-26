@@ -180,7 +180,9 @@ async def run(
             stale = await repository.ids_needing_reconcile(
                 db,
                 fetched_ids,
-                spapi_orders.ACTIONABLE_STATUS_SET,
+                # The statuses the fetch actually ASKED for: a row we hold in one of these,
+                # which a complete fetch did not return, has genuinely changed.
+                spapi_orders.FETCHED_STATUS_SET,
                 limit=spapi_orders.RECONCILE_LIMIT,
             )
         if stale:
@@ -194,13 +196,18 @@ async def run(
         STATE["phase"] = "items"
         _set_percent(PHASE_BOUNDS["items"][0])
 
-        # Actionable orders get the item budget first. Items are what the picking sheet
-        # counts, and an order with none is invisible on it even though its section counts
-        # the order — measured, that reported 168 units across 265 orders because delivered
-        # orders had taken the cap.
+        # Orders that still need work get the item budget first. Items are what the sheet
+        # counts, and an order with none is invisible on it even though its section counts the
+        # order — measured, that reported 168 units across 265 orders because delivered orders
+        # had taken the cap.
+        #
+        # NEEDS_WORK_STATUS_SET, not FETCHED_STATUS_SET: the fetch now asks for the collected
+        # statuses too (without which a day's 194 orders showed as 95), and using that wider set
+        # here would put 359 `Delivered` orders at the front of the queue — re-creating the very
+        # failure this ordering exists to prevent.
         async with db_factory() as db:
             pending = await repository.ids_missing_items(
-                db, priority_statuses=spapi_orders.ACTIONABLE_STATUS_SET
+                db, priority_statuses=spapi_orders.NEEDS_WORK_STATUS_SET
             )
         if pending:
             STATE["items_total"] = len(pending)

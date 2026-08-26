@@ -35,12 +35,20 @@ logger = logging.getLogger(__name__)
 #: the app rather than introducing a second retention concept.
 WINDOW_DAYS = 90
 
-#: Pages the MANUAL refresh will walk, per pass. Higher than the half-hourly job's cap
-#: because pressing the button means "get everything, I am watching" — but not dramatically
-#: higher, because the fetch is bounded by `EasyShipShipmentStatuses` rather than by date:
-#: the measured actionable set is 371 orders in 4 pages, and pages beyond the last one cost
-#: 22.5 seconds each to learn nothing. This was 20 while the fetch was date-bounded.
-BACKFILL_PAGES = 12
+#: Pages the MANUAL refresh will walk, per pass. Higher than the half-hourly job's cap because
+#: pressing the button means "get everything, I am watching", and its window is wider.
+BACKFILL_PAGES = 8
+
+#: Days the MANUAL refresh looks back. The half-hourly job asks only for today (see
+#: `scheduler.ORDER_REFRESH_DAYS`), which is what makes it fast and is enough for the dispatch
+#: screen — an order dispatched today was updated today.
+#:
+#: The button is the catch-up: three days covers a weekend of stragglers and an order whose
+#: status settled late, at a measured cost of ~7 pages (about 2.5 minutes). Deliberately NOT 90
+#: days: `PickedUp` is now in the filter and has months of history, and `getOrders` pages
+#: oldest-first, so a wide window spends its whole budget on orders that are long gone. Use the
+#: one-off backfill in CLAUDE.md if history genuinely needs repairing.
+BACKFILL_DAYS = 3
 
 #: The section headings the warehouse reads, and the order they are worked in. Defined here
 #: rather than in the template so the Excel export and the screen cannot disagree.
@@ -161,10 +169,13 @@ async def start_refresh(
     # Fire and forget. The task holds its own session: the request's session closes when
     # this handler returns, so using it would fail once the response was sent.
     #
-    # The FULL window and a generous page cap, unlike the half-hourly job, which looks back
-    # two weeks over a few pages. This is the deep backfill: someone pressed the button
-    # because they want everything, and they are watching the progress banner while it runs.
-    asyncio.create_task(refresh.run(days=WINDOW_DAYS, max_pages=BACKFILL_PAGES))
+    # A WIDER window than the half-hourly job, which asks only for today — this is the catch-up
+    # for a straggler whose status settled late.
+    #
+    # `BACKFILL_DAYS`, not `WINDOW_DAYS`: the 90-day figure is how far back the SCREEN reads
+    # LOCAL rows, and passing it here made the button spend its entire budget paging months-old
+    # orders oldest-first. Measured: 8 pages, about three minutes, and not one order due today.
+    asyncio.create_task(refresh.run(days=BACKFILL_DAYS, max_pages=BACKFILL_PAGES))
     return JSONResponse({"started": True, "refresh": refresh.status()})
 
 

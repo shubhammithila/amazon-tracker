@@ -677,3 +677,44 @@ def test_a_covered_product_renders_a_dash_not_a_zero():
     assert source.count(dash_rule) == 2, (
         "the dash rule is not applied in both the table render and the live update"
     )
+
+
+async def test_the_manual_refresh_actually_passes_the_backfill_window(auth_client, db, monkeypatch):
+    """The wiring, not just the constant.
+
+    `BACKFILL_DAYS` existing proves nothing: the route previously passed `WINDOW_DAYS` (90),
+    which is the SCREEN's local-read window, and that is what made the button spend three
+    minutes paging months-old orders oldest-first to fetch nothing due today.
+
+    A mutation swapping the argument back survived the constant-only test, exactly as the
+    item-priority wiring did earlier — so this asserts what `refresh.run` is actually called
+    with.
+    """
+    from app.routers import orders as orders_router
+
+    seen = {}
+
+    async def fake_run(db_factory=None, *, days=None, max_pages=None, sleep=None):
+        seen["days"] = days
+        seen["max_pages"] = max_pages
+        return refresh.status()
+
+    monkeypatch.setattr(orders_router.refresh, "run", fake_run)
+    refresh.reset_state()
+
+    r = await auth_client.post("/orders/refresh")
+    assert r.status_code == 200, r.text
+    # asyncio.create_task needs a tick to run the coroutine.
+    import asyncio
+
+    await asyncio.sleep(0.05)
+
+    assert seen.get("days") == orders_router.BACKFILL_DAYS, (
+        f"the button passed days={seen.get('days')!r}; it must pass BACKFILL_DAYS "
+        f"({orders_router.BACKFILL_DAYS}). WINDOW_DAYS is how far back the SCREEN reads local "
+        "rows, not how far back to ask Amazon."
+    )
+    assert seen.get("days") != orders_router.WINDOW_DAYS, (
+        "the button is asking Amazon for the screen's 90-day window again"
+    )
+    assert seen.get("max_pages") == orders_router.BACKFILL_PAGES
