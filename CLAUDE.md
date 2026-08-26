@@ -937,13 +937,13 @@ green.
 `getOrders` is rate-limited to **0.045 req/sec — one call every 22.5 seconds**, measured
 (`x-amzn-RateLimit-Limit: 0.04512`). A page that called Amazon would hang, and two people
 opening the tab would 429. So `app/orders/` stores orders locally and every route reads
-rows. A scheduled job refreshes every **30 minutes** (90 days, 8 pages); the *Refresh now*
-button pages deeper and the screen polls progress.
+rows. A scheduled job refreshes every **30 minutes** (since midnight IST, 4 pages, ~25 s); the
+*Refresh now* button looks back 3 days and the screen polls progress.
 
 **The routine refresh MUST page.** Amazon caps a page at 100 orders and the measured
 actionable backlog is 371, so a one-page refresh sees a quarter of the work.
 
-### The fetch is bounded by STATUS, not by date — and that took four attempts
+### The fetch is bounded by STATUS AND a narrow window — and that took five attempts
 Seller Central showed **247 waiting for pickup, 114 unshipped, 12 pending** while every
 section of the sheet read zero. Four independent causes, each of which hid the others:
 
@@ -959,13 +959,52 @@ section of the sheet read zero. Four independent causes, each of which hid the o
    worse with every order shipped; narrowing the window could not help either, because 100+
    orders change status daily.
 
-The fix for (4) is `EasyShipShipmentStatuses=PendingSchedule,PendingPickUp`, which bounds the
-answer by **relevance instead of date**. Measured: page 1 goes from 100 `Delivered` to 97
-`PendingSchedule` + 3 `PendingPickUp`, and the complete actionable set is **371 orders in 4
-pages** regardless of window. That inverted the tuning — `ORDER_REFRESH_DAYS` went from 14 to
-**90**, because a wide window is now free and a narrow one silently drops an order that has
-been open three weeks. `FulfillmentChannels=MFN` drops FBA at Amazon's end: the unfiltered
-`Pending` page held 100 FBA `Expedited` orders and not one Easy Ship order.
+The fix for (4) is `EasyShipShipmentStatuses`, which bounds the answer by **relevance instead
+of date**. Measured: page 1 went from 100 `Delivered` to 97 `PendingSchedule` + 3
+`PendingPickUp`. `FulfillmentChannels=MFN` drops FBA at Amazon's end: the unfiltered `Pending`
+page held 100 FBA `Expedited` orders and not one Easy Ship order.
+
+**Then a fifth cause, and it inverted the tuning twice.** With the filter set to
+`PendingSchedule,PendingPickUp` and the window at 90 days, the screen showed **95 orders while
+Seller Central showed 194 picked up today**. Amazon collects within hours, so an order labelled
+AND collected between two refreshes was never in the answer at all — and the reconcile pass
+could not rescue it, because that only re-reads orders already held. Measured on 2026-08-26:
+`PendingPickUp` returned **0**; every one of the day's orders was already `PickedUp`.
+
+So the filter now includes the collected statuses (`PickedUp`, `OutForDelivery`, `Delivered`,
+`ReturningToSeller`, `ReturnedToSeller`) — it has to agree with `logic.is_todays_dispatch`,
+which already counted a collected order as still today's work.
+
+**The window and the filter are ONE budget, not two knobs.** Widening the filter forced the
+window to narrow, because `PickedUp` has months of history while the two pending statuses have
+almost none. Measured with the old 90-day window after widening the filter: **800 rows, 8
+pages, ~3 minutes, and 0 orders due today** — the "refresh is too slow and the data is wrong"
+report in one sentence. So:
+
+| Refresh | Window | Cost | Purpose |
+|---|---|---|---|
+| Scheduled, every 30 min | since **midnight IST** (`TODAY_ONLY`) | ~2 pages, ~25 s | today's dispatch, complete |
+| Manual button | 3 days (`BACKFILL_DAYS`) | ~7 pages, ~2.5 min | catch a straggler |
+
+Midnight IST puts today's orders on page 1 — 193 of them, matching Seller Central — because an
+order dispatched today was necessarily updated today. `TODAY_ONLY` is a sentinel, not
+`days=0.5`, because "today" is a CALENDAR question in IST that must not drift with the hour the
+job happens to run; `_since()` resolves it to 18:30Z the previous day, since using the UTC day
+boundary would drop every order placed between 00:00 and 05:30 IST.
+
+> **`ACTIONABLE_STATUS_SET` had to be split when the filter widened.** One frozenset was doing
+> two unrelated jobs: "which local rows did the fetch speak for" (reconcile) and "which orders
+> deserve the item budget" (priority). Adding the collected statuses silently promoted 359
+> `Delivered` orders to the front of the item queue, which would have re-created the *168 units
+> across 265 orders* failure the priority ordering exists to prevent. Now `FETCHED_STATUS_SET`
+> and `NEEDS_WORK_STATUS_SET`, deliberately different sizes.
+
+> **Two long-standing tests had to be rewritten, and both had been RIGHT when written.** One
+> asserted `Delivered` must NOT be requested; the other that `ORDER_REFRESH_DAYS >= 60`. Each
+> was correct under the old filter and became wrong under the new one, because both encoded a
+> conclusion rather than the reason for it. Their replacements assert the requirement ("the
+> routine window is today", "the fetch filters on both axes") and record that the assertion has
+> now flipped twice.
 
 **Pending-payment orders need their own pass.** They carry no `EasyShipShipmentStatus` at
 all, so the actionable filter excludes all 6 of them by construction.
