@@ -322,3 +322,81 @@ def test_scheduler_registers_nothing_when_disabled(monkeypatch):
 
     sch.setup_scheduler()
     assert throwaway.get_jobs() == []
+
+
+# ─── The orders job has its own flag ─────────────────────────────────────────
+#
+# Production runs SCHEDULER_ENABLED=false, so nothing scheduled runs there. Turning it on to
+# get the orders refresh would also wake the 06:00 product scrape (10 async workers), the 07:30
+# keyword track and the 09:15 purge — on a 951 MB box with no swap that has already OOM-killed
+# a pip install. Waking three dormant jobs as a side effect of a UI change is not a decision
+# the Orders feature gets to make.
+
+
+def _jobs_with_flags(monkeypatch, *, scheduler_enabled: bool, order_refresh_enabled: bool):
+    """Register jobs with both flags set explicitly. Returns {job_id: trigger}.
+
+    A separate helper from `_registered_jobs`, which hardcodes `scheduler_enabled=True` and
+    therefore cannot express the case that matters here.
+    """
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+    import app.scheduler as sch
+
+    throwaway = AsyncIOScheduler()
+    monkeypatch.setattr(sch, "scheduler", throwaway)
+    monkeypatch.setattr(sch.settings, "scheduler_enabled", scheduler_enabled)
+    monkeypatch.setattr(sch.settings, "order_refresh_enabled", order_refresh_enabled)
+    monkeypatch.setattr(sch.settings, "daily_scrape_hour", 6)
+    monkeypatch.setattr(sch.settings, "daily_scrape_minute", 0)
+    monkeypatch.setattr(throwaway, "start", lambda *a, **k: None)
+
+    sch.setup_scheduler()
+    return {job.id: str(job.trigger) for job in throwaway.get_jobs()}
+
+
+def test_the_orders_job_runs_on_its_own_flag_without_waking_the_others(monkeypatch):
+    """Production's exact configuration: master off, orders on.
+
+    Asserted on the registered job ids rather than on the flag, because the bug this guards is a
+    refactor moving `if not settings.scheduler_enabled: return` back to the top of
+    setup_scheduler — which reads as tidy and silently stops the orders refresh.
+    """
+    jobs = _jobs_with_flags(monkeypatch, scheduler_enabled=False, order_refresh_enabled=True)
+    assert "order_refresh" in jobs, (
+        "the orders refresh does not run with only its own flag set, so production would have "
+        "to enable every dormant job to get it"
+    )
+    for dormant in ("daily_product_scrape", "daily_keyword_track", "daily_history_purge"):
+        assert dormant not in jobs, (
+            f"{dormant} woke up as a side effect of enabling the orders refresh"
+        )
+
+
+def test_the_master_flag_alone_still_registers_the_orders_job(monkeypatch):
+    """The flags are OR'd, so no existing installation loses its refresh.
+
+    `scheduler_enabled` defaults to True, so a fresh install must keep working without anyone
+    learning about a second flag.
+    """
+    jobs = _jobs_with_flags(monkeypatch, scheduler_enabled=True, order_refresh_enabled=False)
+    assert "order_refresh" in jobs
+    assert "daily_product_scrape" in jobs, "the master flag stopped registering its own jobs"
+
+
+def test_both_flags_off_registers_nothing(monkeypatch):
+    """A deployment that wants no background work must get none."""
+    jobs = _jobs_with_flags(monkeypatch, scheduler_enabled=False, order_refresh_enabled=False)
+    assert jobs == {}, f"jobs registered with every flag off: {sorted(jobs)}"
+
+
+def test_the_order_refresh_flag_defaults_to_off():
+    """Opt-in, so deploying this code changes no running system's behaviour by itself.
+
+    Note the deliberate asymmetry: `scheduler_enabled` defaults to True, so a fresh install
+    already gets the orders job through the OR. This flag is only load-bearing where the master
+    flag has been explicitly turned off — which is exactly production.
+    """
+    from app.config import Settings
+
+    assert Settings().order_refresh_enabled is False

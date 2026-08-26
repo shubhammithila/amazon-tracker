@@ -225,38 +225,57 @@ async def scheduled_order_refresh():
 
 
 def setup_scheduler():
-    if not settings.scheduler_enabled:
+    """Register the background jobs. Nothing runs unless a flag asks for it.
+
+    **The guard is per-job rather than at the top, and that is deliberate.** This function used
+    to return early on `not settings.scheduler_enabled`, which meant the only way to get the
+    half-hourly orders refresh was to also wake the product scrape, the keyword track and the
+    retention purge. Production runs with the master flag off precisely to keep those asleep on
+    a 951 MB box with no swap, so the orders refresh needed its own switch.
+    """
+    if not (settings.scheduler_enabled or settings.order_refresh_enabled):
         return
 
-    scheduler.add_job(
-        scheduled_product_scrape,
-        CronTrigger(hour=settings.daily_scrape_hour, minute=settings.daily_scrape_minute),
-        id="daily_product_scrape",
-        replace_existing=True,
-    )
+    parts = []
+    if settings.scheduler_enabled:
+        scheduler.add_job(
+            scheduled_product_scrape,
+            CronTrigger(hour=settings.daily_scrape_hour, minute=settings.daily_scrape_minute),
+            id="daily_product_scrape",
+            replace_existing=True,
+        )
 
-    # Wrap with % 24 — a daily_scrape_hour of 23 would otherwise build an
-    # invalid CronTrigger(hour=24) and crash scheduler setup at startup.
-    keyword_hour = (settings.daily_scrape_hour + 1) % 24
-    scheduler.add_job(
-        scheduled_keyword_track,
-        CronTrigger(hour=keyword_hour, minute=30),
-        id="daily_keyword_track",
-        replace_existing=True,
-    )
+        # Wrap with % 24 — a daily_scrape_hour of 23 would otherwise build an
+        # invalid CronTrigger(hour=24) and crash scheduler setup at startup.
+        keyword_hour = (settings.daily_scrape_hour + 1) % 24
+        scheduler.add_job(
+            scheduled_keyword_track,
+            CronTrigger(hour=keyword_hour, minute=30),
+            id="daily_keyword_track",
+            replace_existing=True,
+        )
 
-    # Purge after both scrapes so a run is never competing with deletes.
-    purge_hour = (settings.daily_scrape_hour + 3) % 24
-    scheduler.add_job(
-        scheduled_purge_old_history,
-        CronTrigger(hour=purge_hour, minute=15),
-        id="daily_history_purge",
-        replace_existing=True,
-    )
+        # Purge after both scrapes so a run is never competing with deletes.
+        purge_hour = (settings.daily_scrape_hour + 3) % 24
+        scheduler.add_job(
+            scheduled_purge_old_history,
+            CronTrigger(hour=purge_hour, minute=15),
+            id="daily_history_purge",
+            replace_existing=True,
+        )
+        parts += [
+            f"products at {settings.daily_scrape_hour:02d}:{settings.daily_scrape_minute:02d}",
+            f"keywords at {keyword_hour:02d}:30",
+            f"history purge at {purge_hour:02d}:15 (retention {settings.data_retention_days}d)",
+        ]
 
     # Every 30 minutes, and jittered by starting 4 minutes in rather than on the hour, so
     # an order refresh never begins in the same second as the 06:00 product scrape on a
     # 951 MB box.
+    #
+    # Registered on EITHER flag: `order_refresh_enabled` lets production run this alone, while
+    # `scheduler_enabled` keeps it working for any installation that never learns about the
+    # second flag.
     scheduler.add_job(
         scheduled_order_refresh,
         IntervalTrigger(minutes=ORDER_REFRESH_MINUTES, start_date=None),
@@ -267,11 +286,10 @@ def setup_scheduler():
         max_instances=1,
         coalesce=True,
     )
+    parts.append(f"orders every {ORDER_REFRESH_MINUTES}m")
 
     scheduler.start()
-    logger.info(
-        f"Scheduler started: products at {settings.daily_scrape_hour:02d}:{settings.daily_scrape_minute:02d}, "
-        f"keywords at {keyword_hour:02d}:30, "
-        f"history purge at {purge_hour:02d}:15 (retention {settings.data_retention_days}d), "
-        f"orders every {ORDER_REFRESH_MINUTES}m"
-    )
+    # Built from `parts` rather than one f-string: `keyword_hour` and `purge_hour` only exist
+    # when the master flag is on, so interpolating them unconditionally would raise NameError
+    # on the orders-only path — a crash at startup on exactly the configuration production uses.
+    logger.info("Scheduler started: %s", ", ".join(parts))

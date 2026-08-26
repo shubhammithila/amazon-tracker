@@ -50,6 +50,18 @@ class Settings(BaseSettings):
     scrape_timeout: int = 15
 
     scheduler_enabled: bool = True
+    #: Runs the half-hourly Amazon orders refresh WITHOUT the other scheduled jobs.
+    #:
+    #: Production sets `SCHEDULER_ENABLED=false`, so nothing scheduled runs there. Turning that
+    #: back on to get the orders refresh would also wake the 06:00 product scrape (10 async
+    #: workers), the 07:30 keyword track and the 09:15 purge — on a 951 MB box with no swap that
+    #: has already OOM-killed a pip install.
+    #:
+    #: OR'd with `scheduler_enabled` rather than replacing it, so an installation that already
+    #: enables everything keeps its refresh without learning a second flag. Defaults False:
+    #: `scheduler_enabled` already defaults True, so this only matters where that was
+    #: explicitly turned off — which is exactly production.
+    order_refresh_enabled: bool = False
     daily_scrape_hour: int = 6
     daily_scrape_minute: int = 0
 
