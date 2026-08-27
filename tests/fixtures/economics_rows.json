@@ -1,0 +1,1668 @@
+[
+ {
+  "startDate": "2026-07-27",
+  "endDate": "2026-08-26",
+  "parentAsin": "B0FL2CN4YB",
+  "childAsin": "B0FL2B9Y2V",
+  "msku": null,
+  "sales": {
+   "orderedProductSales": {
+    "amount": 359.05,
+    "currencyCode": "INR"
+   },
+   "netProductSales": {
+    "amount": 359.05,
+    "currencyCode": "INR"
+   },
+   "unitsOrdered": 1,
+   "unitsRefunded": 0,
+   "netUnitsSold": 1,
+   "averageSellingPrice": {
+    "amount": 359.05,
+    "currencyCode": "INR"
+   }
+  },
+  "fees": [
+   {
+    "feeTypeName": "FixedClosingFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 16.52,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "WeightBasedFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 42.48,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FbaFulfilmentFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 20.06,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   }
+  ],
+  "ads": [
+   {
+    "adTypeName": "SponsoredProductFee",
+    "charge": {
+     "totalAmount": {
+      "amount": 183.09,
+      "currencyCode": "INR"
+     }
+    }
+   }
+  ],
+  "netProceeds": {
+   "total": {
+    "amount": 96.9,
+    "currencyCode": "INR"
+   },
+   "perUnit": {
+    "amount": 96.9,
+    "currencyCode": "INR"
+   }
+  }
+ },
+ {
+  "startDate": "2026-07-27",
+  "endDate": "2026-08-26",
+  "parentAsin": "B0FNFN3HGP",
+  "childAsin": "B0FNFCJFB4",
+  "msku": null,
+  "sales": {
+   "orderedProductSales": {
+    "amount": 607.62,
+    "currencyCode": "INR"
+   },
+   "netProductSales": {
+    "amount": 607.62,
+    "currencyCode": "INR"
+   },
+   "unitsOrdered": 2,
+   "unitsRefunded": 0,
+   "netUnitsSold": 2,
+   "averageSellingPrice": {
+    "amount": 303.81,
+    "currencyCode": "INR"
+   }
+  },
+  "fees": [
+   {
+    "feeTypeName": "FixedClosingFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 33.04,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "WeightBasedFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 84.96,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FBAInventoryReimbursement",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": -2737.94,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FbaFulfilmentFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 40.12,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   }
+  ],
+  "ads": [
+   {
+    "adTypeName": "SponsoredProductFee",
+    "charge": {
+     "totalAmount": {
+      "amount": 115.43,
+      "currencyCode": "INR"
+     }
+    }
+   }
+  ],
+  "netProceeds": {
+   "total": {
+    "amount": 3072.01,
+    "currencyCode": "INR"
+   },
+   "perUnit": {
+    "amount": 1536.005,
+    "currencyCode": "INR"
+   }
+  }
+ },
+ {
+  "startDate": "2026-07-27",
+  "endDate": "2026-08-26",
+  "parentAsin": "B0DR322QYG",
+  "childAsin": "B0DYVJ8PGL",
+  "msku": null,
+  "sales": {
+   "orderedProductSales": {
+    "amount": 56440.61,
+    "currencyCode": "INR"
+   },
+   "netProductSales": {
+    "amount": 49398.83,
+    "currencyCode": "INR"
+   },
+   "unitsOrdered": 91,
+   "unitsRefunded": 13,
+   "netUnitsSold": 78,
+   "averageSellingPrice": {
+    "amount": 620.226484,
+    "currencyCode": "INR"
+   }
+  },
+  "fees": [
+   {
+    "feeTypeName": "WeightBasedFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 6481.41,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FBAInventoryReimbursement",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": -1165.52,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FbaFulfilmentFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 2421.36,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "MFNPostageFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 1019.52,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FixedClosingFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 2899.26,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "RefundCommissionFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 300.9,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   }
+  ],
+  "ads": [
+   {
+    "adTypeName": "SponsoredProductFee",
+    "charge": {
+     "totalAmount": {
+      "amount": 4175.74,
+      "currencyCode": "INR"
+     }
+    }
+   }
+  ],
+  "netProceeds": {
+   "total": {
+    "amount": 33266.16,
+    "currencyCode": "INR"
+   },
+   "perUnit": {
+    "amount": 426.489231,
+    "currencyCode": "INR"
+   }
+  }
+ },
+ {
+  "startDate": "2026-07-27",
+  "endDate": "2026-08-26",
+  "parentAsin": "B0D7Z941BD",
+  "childAsin": "B0D817HX57",
+  "msku": null,
+  "sales": {
+   "orderedProductSales": {
+    "amount": 29115.0,
+    "currencyCode": "INR"
+   },
+   "netProductSales": {
+    "amount": 28498.31,
+    "currencyCode": "INR"
+   },
+   "unitsOrdered": 167,
+   "unitsRefunded": 4,
+   "netUnitsSold": 163,
+   "averageSellingPrice": {
+    "amount": 174.341317,
+    "currencyCode": "INR"
+   }
+  },
+  "fees": [
+   {
+    "feeTypeName": "FixedClosingFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 2531.1,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "WeightBasedFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 13664.89,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FBAInventoryReimbursement",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": -76.63,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FbaFulfilmentFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 5575.5,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   }
+  ],
+  "ads": [
+   {
+    "adTypeName": "SponsoredProductFee",
+    "charge": {
+     "totalAmount": {
+      "amount": 26354.82,
+      "currencyCode": "INR"
+     }
+    }
+   }
+  ],
+  "netProceeds": {
+   "total": {
+    "amount": -19551.37,
+    "currencyCode": "INR"
+   },
+   "perUnit": {
+    "amount": -119.947055,
+    "currencyCode": "INR"
+   }
+  }
+ },
+ {
+  "startDate": "2026-07-27",
+  "endDate": "2026-08-26",
+  "parentAsin": "B0DDTWL638",
+  "childAsin": "B0DDTWVB98",
+  "msku": null,
+  "sales": {
+   "orderedProductSales": {
+    "amount": 17681.37,
+    "currencyCode": "INR"
+   },
+   "netProductSales": {
+    "amount": 16632.3,
+    "currencyCode": "INR"
+   },
+   "unitsOrdered": 35,
+   "unitsRefunded": 2,
+   "netUnitsSold": 33,
+   "averageSellingPrice": {
+    "amount": 505.182,
+    "currencyCode": "INR"
+   }
+  },
+  "fees": [
+   {
+    "feeTypeName": "MFNPostageFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 3177.74,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FixedClosingFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 1709.82,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "WeightBasedFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 131.68,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FbaFulfilmentFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 51.92,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   }
+  ],
+  "ads": [
+   {
+    "adTypeName": "SponsoredProductFee",
+    "charge": {
+     "totalAmount": {
+      "amount": 12387.23,
+      "currencyCode": "INR"
+     }
+    }
+   }
+  ],
+  "netProceeds": {
+   "total": {
+    "amount": -826.09,
+    "currencyCode": "INR"
+   },
+   "perUnit": {
+    "amount": -25.03303,
+    "currencyCode": "INR"
+   }
+  }
+ },
+ {
+  "startDate": "2026-07-27",
+  "endDate": "2026-08-26",
+  "parentAsin": "B0CY8HFJT9",
+  "childAsin": "B0CY84RYRG",
+  "msku": null,
+  "sales": {
+   "orderedProductSales": {
+    "amount": 130145.95,
+    "currencyCode": "INR"
+   },
+   "netProductSales": {
+    "amount": 122351.62,
+    "currencyCode": "INR"
+   },
+   "unitsOrdered": 427,
+   "unitsRefunded": 25,
+   "netUnitsSold": 402,
+   "averageSellingPrice": {
+    "amount": 304.791452,
+    "currencyCode": "INR"
+   }
+  },
+  "fees": [
+   {
+    "feeTypeName": "WeightBasedFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 18003.38,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FBAInventoryReimbursement",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": -790.43,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FbaFulfilmentFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 7632.24,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "MFNPostageFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 9146.8511,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FixedClosingFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 6923.06,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "RefundCommissionFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 536.9,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   }
+  ],
+  "ads": [
+   {
+    "adTypeName": "SponsoredProductFee",
+    "charge": {
+     "totalAmount": {
+      "amount": 22964.93,
+      "currencyCode": "INR"
+     }
+    }
+   }
+  ],
+  "netProceeds": {
+   "total": {
+    "amount": 57934.6889,
+    "currencyCode": "INR"
+   },
+   "perUnit": {
+    "amount": 144.116142,
+    "currencyCode": "INR"
+   }
+  }
+ },
+ {
+  "startDate": "2026-07-27",
+  "endDate": "2026-08-26",
+  "parentAsin": "B0CY8HFJT9",
+  "childAsin": "B0CY85DH38",
+  "msku": null,
+  "sales": {
+   "orderedProductSales": {
+    "amount": 82176.43,
+    "currencyCode": "INR"
+   },
+   "netProductSales": {
+    "amount": 73873.76,
+    "currencyCode": "INR"
+   },
+   "unitsOrdered": 194,
+   "unitsRefunded": 20,
+   "netUnitsSold": 174,
+   "averageSellingPrice": {
+    "amount": 423.589845,
+    "currencyCode": "INR"
+   }
+  },
+  "fees": [
+   {
+    "feeTypeName": "WeightBasedFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 12255.42,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "RemovalFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 23.6,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FbaFulfilmentFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 4683.42,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "MFNPostageFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 4783.72,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FixedClosingFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 4053.3,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "RefundCommissionFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 584.1,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   }
+  ],
+  "ads": [
+   {
+    "adTypeName": "SponsoredProductFee",
+    "charge": {
+     "totalAmount": {
+      "amount": 3161.36,
+      "currencyCode": "INR"
+     }
+    }
+   }
+  ],
+  "netProceeds": {
+   "total": {
+    "amount": 44328.84,
+    "currencyCode": "INR"
+   },
+   "perUnit": {
+    "amount": 254.763448,
+    "currencyCode": "INR"
+   }
+  }
+ },
+ {
+  "startDate": "2026-07-27",
+  "endDate": "2026-08-26",
+  "parentAsin": "B0D11WFF35",
+  "childAsin": "B0D11K2CVX",
+  "msku": null,
+  "sales": {
+   "orderedProductSales": {
+    "amount": 149535.91,
+    "currencyCode": "INR"
+   },
+   "netProductSales": {
+    "amount": 134593.08,
+    "currencyCode": "INR"
+   },
+   "unitsOrdered": 94,
+   "unitsRefunded": 10,
+   "netUnitsSold": 84,
+   "averageSellingPrice": {
+    "amount": 1590.807553,
+    "currencyCode": "INR"
+   }
+  },
+  "fees": [
+   {
+    "feeTypeName": "WeightBasedFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 6957.14,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "ReferralFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 15877.64,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "RemovalFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 11.8,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FBAInventoryReimbursement",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": -5905.39,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FbaFulfilmentFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 2008.36,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "MFNPostageFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 8429.92,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FixedClosingFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 6456.96,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "RefundedReferralFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": -1674.76,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "RefundCommissionFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 129.8,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   }
+  ],
+  "ads": [
+   {
+    "adTypeName": "SponsoredProductFee",
+    "charge": {
+     "totalAmount": {
+      "amount": 21342.24,
+      "currencyCode": "INR"
+     }
+    }
+   }
+  ],
+  "netProceeds": {
+   "total": {
+    "amount": 80959.37,
+    "currencyCode": "INR"
+   },
+   "perUnit": {
+    "amount": 963.802024,
+    "currencyCode": "INR"
+   }
+  }
+ },
+ {
+  "startDate": "2026-07-27",
+  "endDate": "2026-08-26",
+  "parentAsin": "B0DR322QYG",
+  "childAsin": "B0CWGXYLT6",
+  "msku": null,
+  "sales": {
+   "orderedProductSales": {
+    "amount": 70111.15,
+    "currencyCode": "INR"
+   },
+   "netProductSales": {
+    "amount": 67424.16,
+    "currencyCode": "INR"
+   },
+   "unitsOrdered": 403,
+   "unitsRefunded": 17,
+   "netUnitsSold": 386,
+   "averageSellingPrice": {
+    "amount": 173.973077,
+    "currencyCode": "INR"
+   }
+  },
+  "fees": [
+   {
+    "feeTypeName": "WeightBasedFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 13319.41,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FBAInventoryReimbursement",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": -489.08,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FbaFulfilmentFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 7041.06,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "MFNPostageFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 2563.3054,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FixedClosingFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 5246.28,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "RefundCommissionFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 519.2,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   }
+  ],
+  "ads": [
+   {
+    "adTypeName": "SponsoredProductFee",
+    "charge": {
+     "totalAmount": {
+      "amount": 22534.71,
+      "currencyCode": "INR"
+     }
+    }
+   }
+  ],
+  "netProceeds": {
+   "total": {
+    "amount": 16689.2746,
+    "currencyCode": "INR"
+   },
+   "perUnit": {
+    "amount": 43.236463,
+    "currencyCode": "INR"
+   }
+  }
+ },
+ {
+  "startDate": "2026-07-27",
+  "endDate": "2026-08-26",
+  "parentAsin": "B0CY8HFJT9",
+  "childAsin": "B0CY88658Y",
+  "msku": null,
+  "sales": {
+   "orderedProductSales": {
+    "amount": 148156.18,
+    "currencyCode": "INR"
+   },
+   "netProductSales": {
+    "amount": 141850.41,
+    "currencyCode": "INR"
+   },
+   "unitsOrdered": 817,
+   "unitsRefunded": 36,
+   "netUnitsSold": 781,
+   "averageSellingPrice": {
+    "amount": 181.341714,
+    "currencyCode": "INR"
+   }
+  },
+  "fees": [
+   {
+    "feeTypeName": "WeightBasedFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 24488.16,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "RemovalFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 23.6,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FBAInventoryReimbursement",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": -1034.84,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FbaFulfilmentFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 11995.88,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "MFNPostageFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 9598.4306,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FixedClosingFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 8911.36,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "RefundCommissionFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 424.8,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   }
+  ],
+  "ads": [
+   {
+    "adTypeName": "SponsoredProductFee",
+    "charge": {
+     "totalAmount": {
+      "amount": 75363.35,
+      "currencyCode": "INR"
+     }
+    }
+   }
+  ],
+  "netProceeds": {
+   "total": {
+    "amount": 12079.6694,
+    "currencyCode": "INR"
+   },
+   "perUnit": {
+    "amount": 15.466926,
+    "currencyCode": "INR"
+   }
+  }
+ },
+ {
+  "startDate": "2026-07-27",
+  "endDate": "2026-08-26",
+  "parentAsin": "B0DR322QYG",
+  "childAsin": "B0CWGY2LCP",
+  "msku": null,
+  "sales": {
+   "orderedProductSales": {
+    "amount": 0.0,
+    "currencyCode": "INR"
+   },
+   "netProductSales": {
+    "amount": 0.0,
+    "currencyCode": "INR"
+   },
+   "unitsOrdered": 0,
+   "unitsRefunded": 0,
+   "netUnitsSold": 0,
+   "averageSellingPrice": {
+    "amount": 0.0,
+    "currencyCode": "INR"
+   }
+  },
+  "fees": [],
+  "ads": [],
+  "netProceeds": {
+   "total": {
+    "amount": 0.0,
+    "currencyCode": "INR"
+   },
+   "perUnit": {
+    "amount": 0.0,
+    "currencyCode": "INR"
+   }
+  }
+ },
+ {
+  "startDate": "2026-07-27",
+  "endDate": "2026-08-26",
+  "parentAsin": "B0CY8HFJT9",
+  "childAsin": "B0CY84YB45",
+  "msku": null,
+  "sales": {
+   "orderedProductSales": {
+    "amount": 0.0,
+    "currencyCode": "INR"
+   },
+   "netProductSales": {
+    "amount": 0.0,
+    "currencyCode": "INR"
+   },
+   "unitsOrdered": 0,
+   "unitsRefunded": 0,
+   "netUnitsSold": 0,
+   "averageSellingPrice": {
+    "amount": 0.0,
+    "currencyCode": "INR"
+   }
+  },
+  "fees": [],
+  "ads": [],
+  "netProceeds": {
+   "total": {
+    "amount": 0.0,
+    "currencyCode": "INR"
+   },
+   "perUnit": {
+    "amount": 0.0,
+    "currencyCode": "INR"
+   }
+  }
+ },
+ {
+  "startDate": "2026-07-27",
+  "endDate": "2026-08-26",
+  "parentAsin": "B0D11WFF35",
+  "childAsin": "B0D11KTZ1X",
+  "msku": null,
+  "sales": {
+   "orderedProductSales": {
+    "amount": 76288.75,
+    "currencyCode": "INR"
+   },
+   "netProductSales": {
+    "amount": 73200.06,
+    "currencyCode": "INR"
+   },
+   "unitsOrdered": 231,
+   "unitsRefunded": 10,
+   "netUnitsSold": 221,
+   "averageSellingPrice": {
+    "amount": 330.254329,
+    "currencyCode": "INR"
+   }
+  },
+  "fees": [
+   {
+    "feeTypeName": "MFNPostageFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 2691.3439,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FixedClosingFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 4054.48,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "WeightBasedFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 12266.42,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FBAInventoryReimbursement",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": -740.47,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FbaFulfilmentFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 3891.64,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   }
+  ],
+  "ads": [
+   {
+    "adTypeName": "SponsoredProductFee",
+    "charge": {
+     "totalAmount": {
+      "amount": 32328.37,
+      "currencyCode": "INR"
+     }
+    }
+   }
+  ],
+  "netProceeds": {
+   "total": {
+    "amount": 18708.2761,
+    "currencyCode": "INR"
+   },
+   "perUnit": {
+    "amount": 84.652833,
+    "currencyCode": "INR"
+   }
+  }
+ },
+ {
+  "startDate": "2026-07-27",
+  "endDate": "2026-08-26",
+  "parentAsin": "B0D7Z941BD",
+  "childAsin": "B0D8157HND",
+  "msku": null,
+  "sales": {
+   "orderedProductSales": {
+    "amount": 5592.3,
+    "currencyCode": "INR"
+   },
+   "netProductSales": {
+    "amount": 5592.3,
+    "currencyCode": "INR"
+   },
+   "unitsOrdered": 48,
+   "unitsRefunded": 0,
+   "netUnitsSold": 48,
+   "averageSellingPrice": {
+    "amount": 116.50625,
+    "currencyCode": "INR"
+   }
+  },
+  "fees": [
+   {
+    "feeTypeName": "FixedClosingFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 736.32,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "WeightBasedFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 2706.74,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "RemovalFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 59.0,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FBAInventoryReimbursement",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": -2.86,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FbaFulfilmentFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 1246.08,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   }
+  ],
+  "ads": [
+   {
+    "adTypeName": "SponsoredProductFee",
+    "charge": {
+     "totalAmount": {
+      "amount": 1005.28,
+      "currencyCode": "INR"
+     }
+    }
+   }
+  ],
+  "netProceeds": {
+   "total": {
+    "amount": -158.26,
+    "currencyCode": "INR"
+   },
+   "perUnit": {
+    "amount": -3.297083,
+    "currencyCode": "INR"
+   }
+  }
+ },
+ {
+  "startDate": "2026-07-27",
+  "endDate": "2026-08-26",
+  "parentAsin": "B0DDTWL638",
+  "childAsin": "B0DDTWSHXP",
+  "msku": null,
+  "sales": {
+   "orderedProductSales": {
+    "amount": 183313.95,
+    "currencyCode": "INR"
+   },
+   "netProductSales": {
+    "amount": 173692.56,
+    "currencyCode": "INR"
+   },
+   "unitsOrdered": 218,
+   "unitsRefunded": 11,
+   "netUnitsSold": 207,
+   "averageSellingPrice": {
+    "amount": 840.889679,
+    "currencyCode": "INR"
+   }
+  },
+  "fees": [
+   {
+    "feeTypeName": "MFNPostageFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 11322.6723,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FixedClosingFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 10885.5,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "RefundCommissionFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 300.9,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   }
+  ],
+  "ads": [
+   {
+    "adTypeName": "SponsoredProductFee",
+    "charge": {
+     "totalAmount": {
+      "amount": 55473.27,
+      "currencyCode": "INR"
+     }
+    }
+   }
+  ],
+  "netProceeds": {
+   "total": {
+    "amount": 95710.2177,
+    "currencyCode": "INR"
+   },
+   "perUnit": {
+    "amount": 462.368201,
+    "currencyCode": "INR"
+   }
+  }
+ },
+ {
+  "startDate": "2026-07-27",
+  "endDate": "2026-08-26",
+  "parentAsin": "B0DDTWL638",
+  "childAsin": "B0DDTYNC85",
+  "msku": null,
+  "sales": {
+   "orderedProductSales": {
+    "amount": 6187.2,
+    "currencyCode": "INR"
+   },
+   "netProductSales": {
+    "amount": 6187.2,
+    "currencyCode": "INR"
+   },
+   "unitsOrdered": 21,
+   "unitsRefunded": 0,
+   "netUnitsSold": 21,
+   "averageSellingPrice": {
+    "amount": 294.628571,
+    "currencyCode": "INR"
+   }
+  },
+  "fees": [
+   {
+    "feeTypeName": "MFNPostageFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 752.6149,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FixedClosingFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 218.3,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "WeightBasedFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 612.4,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "feeTypeName": "FbaFulfilmentFee",
+    "charges": [
+     {
+      "aggregatedDetail": {
+       "totalAmount": {
+        "amount": 259.6,
+        "currencyCode": "INR"
+       }
+      }
+     }
+    ]
+   }
+  ],
+  "ads": [
+   {
+    "adTypeName": "SponsoredProductFee",
+    "charge": {
+     "totalAmount": {
+      "amount": 4605.46,
+      "currencyCode": "INR"
+     }
+    }
+   }
+  ],
+  "netProceeds": {
+   "total": {
+    "amount": -261.1749,
+    "currencyCode": "INR"
+   },
+   "perUnit": {
+    "amount": -12.4369,
+    "currencyCode": "INR"
+   }
+  }
+ }
+]

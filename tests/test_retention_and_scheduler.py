@@ -206,7 +206,7 @@ def test_all_scheduled_jobs_are_registered(monkeypatch):
     jobs = _registered_jobs(monkeypatch, hour=6)
     assert set(jobs) == {
         "daily_product_scrape", "daily_keyword_track", "daily_history_purge",
-        "order_refresh",
+        "order_refresh", "portfolio_refresh",
     }
 
 

@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (1347 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (1414 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -83,8 +83,8 @@ app/
 ├── main.py              # FastAPI app entry point
 ├── config.py            # Settings (pydantic-settings, .env)
 ├── database.py          # Async SQLAlchemy engine
-├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry, AmazonOrder/AmazonOrderItem/OrderPackedEntry/OrderPackedState/ProductRawStock)
-├── scheduler.py         # APScheduler (scrape 06:00, keywords 07:30, orders every 30m)
+├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry, AmazonOrder/AmazonOrderItem/OrderPackedEntry/OrderPackedState/ProductRawStock, EconomicsSnapshot/EconomicsRefresh/ProductDecision)
+├── scheduler.py         # APScheduler (scrape 06:00, keywords 07:30, orders every 30m, portfolio 03:20)
 ├── utils.py             # Date parsing helpers
 ├── routers/
 │   ├── auth.py          # Login/logout, get_current_role, require_admin / require_ops_or_admin
@@ -93,6 +93,7 @@ app/
 │   ├── keywords.py      # /keywords, /keywords/track, /keywords/{id}/rankings (no UI tab; the scheduler job still uses it)
 │   ├── ws.py            # WebSocket /ws/progress
 │   ├── shipment.py      # Plan lifecycle, daily packing, 5 downloads, invoice bridge
+│   ├── portfolio.py     # Profit per product from Amazon's Economics API; verdicts, decisions
 │   └── invoice.py       # /invoice/parse-shipment, /invoice/generate-excel, /invoice/generate-pdf, /invoice/save, /invoice/next-number
 ├── scraper/
 │   ├── engine.py        # Async scrape orchestrator (queue, semaphore, retry)
@@ -104,6 +105,11 @@ app/
 │   ├── logic.py         # ALL shipment rules: rounding, sorting, hold, carry-over, packed vs shippable
 │   ├── repository.py    # The only SELECT of plan items (one ORDER BY); write-separated upserts
 │   └── documents.py     # The four documents, each returning io.BytesIO
+├── portfolio/
+│   ├── economics.py     # The only Data Kiosk caller (analytics_economics_2024_03_15)
+│   ├── logic.py         # Verdict rules; parent rollup; TACOS and margin arithmetic
+│   ├── repository.py    # Economics snapshot cache, one-query ratings, owner decisions
+│   └── refresh.py       # The nightly + manual background job, with progress
 └── invoice/
     ├── company_data.py  # F2D Tech GSTINs, supplier info, priority FC addresses, transporters
     ├── hsn_codes.py     # HSN code master (default 1106 @ 5% for all food products)
@@ -1180,6 +1186,157 @@ class of bug the shipment feature's write separation exists to avoid.
 
 `orders` is a per-area permission, so the warehouse can be granted the sheet without the
 rest of the app.
+
+## Portfolio tab — profit per product, live from Amazon
+
+`/portfolio-page`. Which products earn their place and which to churn: sales, every Amazon fee,
+ad spend, net margin, TACOS, returns and our own star ratings, per parent product, expanding to
+pack sizes.
+
+**It replaced a CSV upload**, and that was the point. The old tab asked the owner to download a
+Business Report from Seller Central and upload it, then wrote the aggregate to
+`portfolio_report.json` at repo root — so the analysis was stale the moment it was saved, could
+not be repeated without a human, and lived outside the database like the shipment plan used to.
+`app/routers/churn.py` (403 lines) and `templates/churn.html` (456) are deleted.
+
+### The Economics API exists, and it is NOT where you would look
+`analytics_economics_2024_03_15`, a **GraphQL schema inside Data Kiosk** —
+`schemas/data-kiosk/` in `amzn/selling-partner-api-models`, not `models/` where every other API
+lives. Two research passes concluded there was no economics endpoint because they enumerated
+`models/`. Found by listing the schemas directory instead, then confirmed by running it.
+
+Measured against the live account, 27 Jul – 26 Aug:
+
+| | Live API | The XLSX analysed by hand |
+|---|---|---|
+| Ordered sales | ₹49,49,424 | ₹49,49,424 |
+| Ad spend | ₹16,35,983 | ₹16,35,983 |
+| Net proceeds | ₹14,47,945 | ₹14,72,107 |
+| TACOS | 33.1% | 33.1% |
+
+Exact to the rupee on sales and ad spend. 267 child ASINs across 90 parents, **0 unmatched**
+against the MRP sheet's 271.
+
+**Ad spend arrives in SP-API, so no Advertising API is needed.** That was the significant risk —
+a separate developer application, a separate LWA client, an approval of unknown duration — and it
+is unnecessary: Amazon reports `SponsoredProductFee` in the economics feed because it is a charge
+against the account. What is NOT there is ad-attributed sales, which is why this app reports
+**TACOS (spend ÷ total sales) and never ACOS**. The earlier hand analysis called it ACOS; that
+was wrong.
+
+`cost: PerUnitCost` in the schema returns **your COGS** if entered in Seller Central SKU Central.
+It is null on this account, which is why every margin is labelled **pre-COGS** on screen and in
+the export — Amazon's `netProceeds` is sales minus Amazon's fees minus ads, so a size showing
++8.8% may still lose money.
+
+### Three facts that decide the shape
+- **`RANGE` and `CHILD_ASIN` granularity.** `RANGE` collapses the window to one row per product,
+  which is the question asked; `DAY` would return ~8,000 rows for the same 30 days and answer
+  nothing extra. `CHILD_ASIN` is the pack size, where a kill decision is actually taken, and each
+  row carries its `parentAsin` so the parent rollup happens locally rather than in a second query
+  that could disagree.
+- **Amazon pools reviews per variation family**, so a rating cannot discriminate between sizes.
+  Roasted Chana 1 kg / 1.5 kg / 2 kg all report 4.2★ from 477 reviews. Confirmed from two
+  directions: the 261 rated ASINs carry exactly **90 distinct (rating, count) pairs** — the same
+  90 parents the economics API returns. The two sources agree on the family structure without
+  being told to. So rating sits on the parent row and the per-size verdict is economics-only.
+- **The window ends YESTERDAY.** The data set refreshes daily and an ad charge lands hours after
+  its sale, so including today would show every product at a punishing TACOS each morning that
+  settled by evening — a number that moves on its own invites a decision the data cannot support.
+
+### Verdicts are named rules, and each shows its own numbers
+`logic.verdict_for` returns `(verdict, reason)`. A 0–100 composite score would rank the portfolio
+in one column, but a ranking cannot be argued with: "score 23" gives the owner nothing to check,
+while "net −56.8%, TACOS 78%" is a claim he can verify against Seller Central and overrule.
+
+**Rule ORDER is part of the rule**, first match wins:
+
+| # | Verdict | Rule |
+|---|---|---|
+| 1 | `DEAD` | ≤2 net units — no signal |
+| 2 | `KILL` | returns ≥15% on ≥20 units — a product problem money cannot fix |
+| 3 | `KILL` | net < 0 **AND** TACOS > 50% |
+| 4 | `SURGICAL` | parent net > 0 but ≥1 size loses money |
+| 5 | `BEST BET` / `SCALE` | net ≥25% and TACOS ≤30%, split on rating ≥4.0 |
+| 6 | `MONITOR` | everything else |
+
+> **Rule 1 must stay first, and the live data proves why.** A product sold 2 units for ₹608 and
+> reported **+505.6% net** (a refund reversal landed in the window). On margin alone it is the best
+> product in the portfolio; it is noise. Move the volume check below the economics checks and the
+> dashboard recommends scaling a product that sells twice a month.
+>
+> **Rule 3 is AND, not OR.** A negative margin at low TACOS is a pricing problem worth fixing; a
+> negative margin sustained by heavy spend is a product being bought only because it is being paid
+> for. Only the second is a kill.
+>
+> **Rule 4 is why the tab expands to sizes at all.** Measured live: Cheese & Cream Roasted Chana
+> earns +27.1% overall while its 500 g packs make +48.4% at 23% TACOS and one 250 g pack burns
+> **103% TACOS for −52.7% net**. Judged at the parent alone it reads as a mediocre keeper and the
+> correct action — kill the small packs, keep the big ones — is invisible.
+
+**A parent is exactly the SUM of its sizes**, never a separate parent-level query (which Amazon
+would happily answer). The size rows sit directly beneath the parent row, so two independent
+figures would visibly not add up — the same defect class as the Orders tab reporting 86 orders
+beside 87 lines. Percentages are recomputed from the sums, never averaged: averaging a 1-unit
+size equally with a 400-unit one produces a number belonging to no product.
+
+**A dash, never a zero.** `_ratio` returns `None` with no denominator, because a product with no
+sales has no TACOS and "0%" would rank it among the most ad-efficient products in the portfolio.
+
+### Three tables, and the boundary between them is the design
+| Table | Key | Whose fact |
+|---|---|---|
+| `economics_snapshot` | `(window_start, window_end, child_asin)` | Amazon's — a cache, never edited |
+| `economics_refresh` | one row per run | ours — so the screen can say how old the figures are |
+| `product_decision` | `(parent_asin)` | the owner's judgement |
+
+`product_decision` **stores the figures at the moment of the decision**, which is the whole reason
+it exists: "I marked Moori KILL on 27 Aug at −56.8% net; what is it now?" is answerable, where the
+old `discontinued_products.json` held a bare name in a set with no date, reason or numbers.
+Clearing a decision DELETES the row, so absence is the single representation of "not decided".
+
+Fees are a **JSON map, not typed columns**: Amazon returned 8 distinct fee types here and adds
+more, so a column each would mean a migration every time Amazon invents a fee.
+
+**Nothing writes to Amazon and no verdict is auto-applied.** Turning ads off or delisting stays a
+human action in Seller Central — a dashboard that could kill a SKU on a threshold is a dashboard
+that kills a SKU on a bad data day. The save banner says so explicitly.
+
+### It is a cache with a nightly job, never fetched on request
+A Data Kiosk query is **asynchronous**: submit → poll → download JSON-lines. Measured 33 seconds
+for 267 rows, and the poll ceiling is 8 minutes. So `refresh.run` is a background task with a
+progress bar (`PHASE_BOUNDS`: submit 0–10, poll 10–80, download 80–92, store 92–100) and every
+route reads stored rows. The nightly job runs 03:20 on the **same `SCHEDULER_ENABLED` OR
+`ORDER_REFRESH_ENABLED` guard** as the orders refresh, so production gets it without waking the
+06:00 product scrape.
+
+> **`finally` on the refresh is load-bearing, and a mutation found it.** `except Exception` does
+> not catch `asyncio.CancelledError` (a `BaseException`), and this job runs as fire-and-forget —
+> exactly the thing cancelled at shutdown. Without `finally` the `running` flag stays True for the
+> life of the process and every later refresh, including the nightly one, is silently refused. The
+> three exception tests all passed with `finally` deleted; only
+> `test_a_cancelled_refresh_also_clears_the_flag` catches it.
+
+### Two traps in the GraphQL query, both paid for
+- **`ads.charge` is an `AggregatedDetail` directly.** `charge { totalAmount }` is correct;
+  `charge { aggregatedDetail { totalAmount } }` — the shape `fees.charges` uses — is rejected as
+  *"The provided query is invalid"*. The consistent-looking version is the broken one.
+- **A bad field selection returns "We encountered an internal error"**, not a syntax message.
+  That reads exactly like an outage or a permissions failure and is neither. Both are pinned by
+  tests, because the query is only exercised for real when someone presses Refresh.
+
+`totalAmount` (amount − promotion + tax) is used throughout, not `amount`, which is the rate-card
+figure.
+
+### `build_portfolio_xlsx` is a sibling of `build_simple_xlsx`, not a parameter on it
+`_totals_row` sums every trailing column with `int(row[column] or 0)` — correct for the picking
+documents, and a `ValueError` here, where trailing columns hold "+43.6%", an em dash, a star
+rating and a prose reason. Widening it would silently change four working documents.
+
+> **And `_write_sheet` never wrote the subtitle**, so `build_simple_xlsx` accepts one and discards
+> it. Found by a test asserting the pre-COGS caveat was in the file: without it a workbook showing
+> "+8.8% net" leaves the app with no caveat attached and gets read as profit. The portfolio builder
+> writes it into row 1.
 
 ## Known gaps (deliberate, not oversights)
 

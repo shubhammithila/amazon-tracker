@@ -12,7 +12,7 @@ from app.config import get_settings
 from app.database import engine, Base
 from app import permissions
 from app.routers import (
-    admin_users, auth, churn, invoice, keywords, orders, product_prices, products,
+    admin_users, auth, invoice, keywords, orders, portfolio, product_prices, products,
     projections, scrape, shipment, ws,
 )
 from app.routers.auth import (
@@ -111,7 +111,7 @@ app.include_router(products.router)
 app.include_router(keywords.router)
 app.include_router(ws.router)
 app.include_router(invoice.router)
-app.include_router(churn.router)
+app.include_router(portfolio.router)
 app.include_router(projections.router)
 app.include_router(shipment.router)
 app.include_router(admin_users.router)
@@ -172,10 +172,10 @@ async def invoice_page(request: Request, grant=Depends(require_area(permissions.
     )
 
 
-@app.get("/churn-page", response_class=HTMLResponse)
-async def churn_page(request: Request, grant=Depends(require_area(permissions.PORTFOLIO))):
+@app.get("/portfolio-page", response_class=HTMLResponse)
+async def portfolio_page(request: Request, grant=Depends(require_area(permissions.PORTFOLIO))):
     return templates.TemplateResponse(
-        request, "churn.html", {"active": "churn", "grant": grant}
+        request, "portfolio.html", {"active": "portfolio", "grant": grant}
     )
 
 

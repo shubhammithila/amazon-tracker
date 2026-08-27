@@ -44,7 +44,7 @@ ORDERS = "orders"
 AREAS: list[tuple[str, str, str]] = [
     (DASHBOARD, "Dashboard", "Scraped prices, BSR, ratings and the product table."),
     (INVOICE, "Invoice", "Generate and save GST invoices. Sees purchase rates."),
-    (PORTFOLIO, "Portfolio", "Churn analysis — which products are losing ground."),
+    (PORTFOLIO, "Portfolio", "Profit per product: margin, ad spend, and what to churn."),
     (PROJECTIONS, "Projections", "Sales forecasts and reorder alerts."),
     (SHIPMENT, "Shipment", "Plan what ships: quantities, verification, Amazon upload."),
     (PACKING, "Daily packing", "Record units and cartons packed. The warehouse screen."),

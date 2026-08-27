@@ -24,7 +24,7 @@ from app.routers.auth import SESSION_COOKIE, serializer
 
 pytestmark = pytest.mark.regression
 
-ADMIN_PAGES = ["/", "/invoice-page", "/churn-page", "/projections-page", "/shipment-page"]
+ADMIN_PAGES = ["/", "/invoice-page", "/portfolio-page", "/projections-page", "/shipment-page"]
 
 # `ops_cookie` and `ops_client` live in tests/conftest.py — the shipment DB and
 # invoice-bridge tests need them too, and two definitions could drift apart.
@@ -194,7 +194,7 @@ async def test_signed_out_user_is_redirected_from_the_ops_page(client):
 async def test_ops_page_shows_no_admin_nav_links(ops_client):
     """The ops screen must not advertise pages its user cannot open."""
     r = await ops_client.get("/ops-page")
-    for admin_href in ("/invoice-page", "/churn-page", "/projections-page", "/shipment-page"):
+    for admin_href in ("/invoice-page", "/portfolio-page", "/projections-page", "/shipment-page"):
         assert f'href="{admin_href}"' not in r.text, (
             f"ops page links to admin page {admin_href}"
         )

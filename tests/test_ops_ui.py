@@ -535,7 +535,7 @@ def test_the_ops_page_offers_no_admin_action(source, path):
 
 
 @pytest.mark.parametrize(
-    "href", ["/invoice-page", "/churn-page", "/projections-page", "/shipment-page", "/"]
+    "href", ["/invoice-page", "/portfolio-page", "/projections-page", "/shipment-page", "/"]
 )
 def test_the_ops_page_links_to_no_admin_page(source, href):
     """Also asserted over HTTP in test_shipment_auth_roles.py; pinned here too

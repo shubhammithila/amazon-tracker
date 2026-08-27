@@ -317,7 +317,7 @@ async def test_a_packer_cannot_open_the_owners_pages(auth_client, client, db_sch
         data={"username": created["user"]["username"], "password": created["password"]},
     )
 
-    for page in ("/", "/invoice-page", "/churn-page", "/projections-page", "/shipment-page"):
+    for page in ("/", "/invoice-page", "/portfolio-page", "/projections-page", "/shipment-page"):
         r = await client.get(page)
         assert r.status_code == 403, f"a packer opened {page} ({r.status_code})"
 
@@ -384,7 +384,7 @@ async def test_the_nav_hides_tabs_the_user_cannot_open(auth_client, client, db_s
     page = await client.get("/invoice-page")
     assert page.status_code == 200
     assert 'href="/invoice-page"' in page.text, "their own tab is missing"
-    for hidden in ('href="/projections-page"', 'href="/churn-page"', 'href="/shipment-page"'):
+    for hidden in ('href="/projections-page"', 'href="/portfolio-page"', 'href="/shipment-page"'):
         assert hidden not in page.text, f"the nav offers {hidden} to a user who gets 403"
 
 
@@ -697,7 +697,7 @@ async def test_the_shared_ops_password_still_signs_in(client, db_schema):
 
 
 async def test_the_shared_owner_password_still_reaches_every_area(auth_client, db_schema):
-    for page in ("/", "/invoice-page", "/churn-page", "/projections-page",
+    for page in ("/", "/invoice-page", "/portfolio-page", "/projections-page",
                  "/shipment-page", "/ops-page", "/users-page"):
         assert (await auth_client.get(page)).status_code == 200, page
 

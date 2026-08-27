@@ -736,3 +736,118 @@ class ProductRawStock(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     #: Who typed it, so a surprising number can be asked about.
     updated_by = Column(String(50))
+
+
+class EconomicsSnapshot(Base):
+    """One product's economics for one window, as Amazon reported them. **A cache.**
+
+    Exists so the Portfolio tab renders instantly. A Data Kiosk query takes one to two minutes
+    (measured), so a page that fetched on request would hang and two people opening the tab
+    would queue behind each other. The background refresh writes these rows; every route reads
+    them — the same boundary `amazon_orders` keeps.
+
+    **Nothing here is edited by hand.** A wrong value is fixed by refreshing, not by typing,
+    because a local edit would make this a second source of truth about money Amazon has
+    already accounted for. The owner's own judgement lives in `ProductDecision` instead.
+
+    UNIQUE on (window_start, window_end, child_asin): a refresh re-run for the same window
+    must UPDATE its rows rather than double the portfolio.
+
+    **Fees are a JSON map, not typed columns.** Amazon returned 8 distinct fee types on this
+    account (`FbaFulfilmentFee`, `WeightBasedFee`, `FixedClosingFee`, `ReferralFee`,
+    `RemovalFee`, `FBAInventoryReimbursement`, `RefundCommissionFee`, `MFNPostageFee`) and adds
+    more over time. A column each would mean a migration every time Amazon invents a fee, and
+    the dashboard only ever needs the total plus a breakdown on expand.
+
+    Money is `Numeric(12, 2)`, so **callers must convert to `float` before returning it in
+    JSON** — SQLAlchemy hands back `Decimal`, which `JSONResponse` cannot serialise. This app
+    has already shipped that defect twice (datetimes on the orders payload, then `raw_kg`), so
+    `repository.load_snapshot` does the conversion once for every route.
+    """
+    __tablename__ = "economics_snapshot"
+    __table_args__ = (
+        Index(
+            "idx_economics_snapshot_window_asin",
+            "window_start", "window_end", "child_asin",
+            unique=True,
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    #: Window the figures cover, "YYYY-MM-DD". Text for the same reason `pack_date` is:
+    #: these are calendar dates from Amazon, not instants, and must not drift with a timezone.
+    window_start = Column(String(10), nullable=False)
+    window_end = Column(String(10), nullable=False)
+    #: The pack size — the level at which a kill decision is taken.
+    child_asin = Column(String(10), nullable=False)
+    #: The variation family. Not a foreign key: it is Amazon's non-buyable grouping id and
+    #: appears in no other table.
+    parent_asin = Column(String(10))
+    ordered_sales = Column(Numeric(12, 2), default=0)
+    refunded_sales = Column(Numeric(12, 2), default=0)
+    ad_spend = Column(Numeric(12, 2), default=0)
+    net_proceeds = Column(Numeric(12, 2), default=0)
+    units_ordered = Column(Integer, default=0)
+    units_refunded = Column(Integer, default=0)
+    net_units = Column(Integer, default=0)
+    #: {feeTypeName: amount} as JSON text. See the class docstring for why it is not columns.
+    fees_json = Column(Text)
+    #: {adTypeName: amount} as JSON text. One type today (SponsoredProductFee); Sponsored
+    #: Brands or Display would appear here without a migration.
+    ads_json = Column(Text)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EconomicsRefresh(Base):
+    """When the economics were last pulled, and what they covered. One row per run.
+
+    Kept as history rather than a single overwritten row so "the numbers stopped updating three
+    days ago" is answerable. The screen reads the newest row to say how old the figures are —
+    the one thing the CSV upload it replaced could never tell anyone.
+    """
+    __tablename__ = "economics_refresh"
+
+    id = Column(Integer, primary_key=True)
+    window_start = Column(String(10))
+    window_end = Column(String(10))
+    rows_stored = Column(Integer, default=0)
+    #: Amazon's own message when a run failed, so a stale dashboard can say why.
+    error = Column(Text)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    finished_at = Column(DateTime)
+
+
+class ProductDecision(Base):
+    """The owner's decision about one parent product: kill, keep or watch. **Ours, not Amazon's.**
+
+    The counterpart to `EconomicsSnapshot`: that table is what Amazon says, this is what the
+    owner concluded. Keeping them apart is what makes next month's question answerable — "I
+    marked Moori KILL on 27 Aug at -56.8% net; what is it now?" — which the old
+    `discontinued_products.json` could not answer, because it stored a name in a set with no
+    date, no reason and no numbers.
+
+    **Keyed on the PARENT asin**, because that is the level a decision is taken at: you stop
+    selling a product, or you stop selling one of its sizes. `SURGICAL` is recorded here as the
+    parent's verdict and the note names the sizes.
+
+    A decision is never applied automatically. Nothing in this app turns ads off or delists a
+    product; the tick records a judgement so it can be revisited, and Seller Central remains
+    the only place the action happens.
+    """
+    __tablename__ = "product_decision"
+    __table_args__ = (
+        Index("idx_product_decision_parent", "parent_asin", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    parent_asin = Column(String(10), nullable=False)
+    #: "kill" | "keep" | "watch". Free text rather than an enum so a new category needs no
+    #: migration; the route validates against a tuple.
+    decision = Column(String(10), nullable=False)
+    #: Why, in the owner's words. The most valuable column here in three months' time.
+    note = Column(Text)
+    #: The figures at the moment of the decision, so a later review can compare against them
+    #: rather than trusting memory. JSON for the same reason `fees_json` is.
+    snapshot_json = Column(Text)
+    decided_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    decided_by = Column(String(50))

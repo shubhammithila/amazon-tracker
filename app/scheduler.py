@@ -193,6 +193,49 @@ async def scheduled_purge_old_history():
     )
 
 
+#: When the nightly economics pull runs. 03:20 IST-ish (the box is UTC, so this is wall-clock
+#: server time like every other job here): after midnight so Amazon's daily data set has
+#: settled, and well clear of the 06:00 product scrape on a 951 MB box with no swap.
+#:
+#: Minute 20 rather than 0 for the same reason the orders job starts 4 minutes in: nothing else
+#: should begin in the same second.
+PORTFOLIO_REFRESH_HOUR = 3
+PORTFOLIO_REFRESH_MINUTE = 20
+
+
+async def scheduled_portfolio_refresh():
+    """Pull the Seller Central Economics figures once a night.
+
+    **Once, not hourly, because the data only changes once.** Amazon refreshes the economics data
+    set daily, so a second run the same day would spend one to two minutes to store identical
+    numbers. The manual Refresh button covers "I want it now".
+
+    Skipped silently when SP-API is not configured — the app is expected to work without Amazon
+    credentials, and the screen says so rather than the log filling with auth failures on every
+    fresh install.
+
+    Read the settings FRESH rather than using this module's import-time `settings`: that snapshot
+    is bound once when the module loads, so a credential added to .env after start would never be
+    seen.
+    """
+    if not get_settings().spapi_configured:
+        logger.debug("Portfolio refresh skipped: SP-API is not configured")
+        return
+
+    from app.portfolio import refresh as portfolio_refresh
+
+    result = await portfolio_refresh.run()
+    if result.get("refused"):
+        logger.info("Portfolio refresh skipped: one is already running")
+    elif result.get("error"):
+        logger.warning("Portfolio refresh failed: %s", result["error"])
+    else:
+        logger.info(
+            "Portfolio refresh: %d row(s) for %s..%s",
+            result.get("rows", 0), result.get("window_start"), result.get("window_end"),
+        )
+
+
 async def scheduled_order_refresh():
     """Pull Amazon Easy Ship orders into the local tables, every 30 minutes.
 
@@ -307,6 +350,25 @@ def setup_scheduler():
         coalesce=True,
     )
     parts.append(f"orders every {ORDER_REFRESH_MINUTES}m")
+
+    # Registered on the SAME pair of flags as the orders refresh, and for the same reason:
+    # production runs `SCHEDULER_ENABLED=false` to keep the 06:00 product scrape, the 07:30
+    # keyword track and the 09:15 purge asleep on a 951 MB box. The Portfolio tab needs its
+    # nightly pull without waking any of those, and one Data Kiosk query a night is a rounding
+    # error against the rate budget.
+    scheduler.add_job(
+        scheduled_portfolio_refresh,
+        CronTrigger(hour=PORTFOLIO_REFRESH_HOUR, minute=PORTFOLIO_REFRESH_MINUTE),
+        id="portfolio_refresh",
+        replace_existing=True,
+        # A slow run must not stack up behind itself. `refresh.run` refuses a concurrent start
+        # anyway, but coalescing keeps APScheduler from queueing missed runs after a restart.
+        max_instances=1,
+        coalesce=True,
+    )
+    parts.append(
+        f"portfolio at {PORTFOLIO_REFRESH_HOUR:02d}:{PORTFOLIO_REFRESH_MINUTE:02d}"
+    )
 
     scheduler.start()
     # Built from `parts` rather than one f-string: `keyword_hour` and `purge_hour` only exist

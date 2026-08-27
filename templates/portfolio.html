@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Portfolio — Amazon Tracker</title>
+{#
+  Portfolio Review: which products earn their place, and which to churn.
+
+  **This replaced a CSV upload.** The previous tab asked the owner to download a Business Report
+  from Seller Central and upload it, then wrote the aggregate to a JSON file at repo root. So the
+  analysis was stale the moment it was saved and could not be repeated without a human. Every
+  figure here comes from Amazon's own Economics data through Data Kiosk instead, joined to our
+  review scraper.
+
+  Six things are deliberate:
+
+  1. **Parent rows expand to pack sizes.** Amazon pools reviews across a variation family —
+     measured, Roasted Chana 1 kg / 1.5 kg / 2 kg all report 4.2 stars from 477 reviews — so a
+     rating cannot discriminate between sizes and sits on the parent only. Economics genuinely
+     does differ per size, and that is where a kill decision is taken.
+
+  2. **A verdict always shows its reason.** "KILL — net -56.8% with 79% TACOS" can be checked
+     against Seller Central and argued with; a score of 23 cannot.
+
+  3. **Every margin is PRE-COGS**, and the banner says so. Amazon's netProceeds excludes what it
+     costs to MAKE the product, so a size at +8.8% may still lose money.
+
+  4. **Nothing here writes to Amazon.** The decision control records the owner's own judgement;
+     turning ads off stays a human action in Seller Central.
+
+  5. **Decisions save on the spot**, like the Orders tab's packed tick: a select and a note have
+     no half-typed state worth protecting, and a forgotten Save would lose the reasoning.
+
+  6. **A dash, never a zero.** A product with no sales has no TACOS, and "0%" would rank it among
+     the most ad-efficient products in the portfolio.
+#}
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px}
+header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
+header h1{font-size:16px;font-weight:600}
+.nav-links{display:flex;gap:16px;margin-left:32px}
+.nav-links a{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
+.nav-links a:hover,.nav-links a.active{color:var(--text);border-color:var(--accent)}
+.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:13px;text-decoration:none}
+main{max-width:1280px;margin:0 auto;padding:16px 20px 80px}
+h2{font-size:19px;font-weight:600;margin-bottom:2px}
+.subtitle{color:var(--text-muted);font-size:12.5px;margin-bottom:12px;line-height:1.5}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;box-shadow:var(--shadow)}
+
+.banner{border-radius:8px;padding:10px 13px;font-size:12.5px;margin-bottom:10px;line-height:1.55}
+.banner.warn{background:var(--yellow-soft);border:1px solid var(--yellow);color:var(--yellow)}
+.banner.good{background:var(--green-soft);border:1px solid var(--green);color:var(--green)}
+.banner.error{background:var(--red-soft);border:1px solid var(--red);color:var(--red)}
+.banner.info{background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue)}
+
+.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+.btn:disabled{opacity:.55;cursor:not-allowed}
+.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border-strong);border-radius:8px;padding:7px 13px;font-size:12.5px;cursor:pointer;text-decoration:none;display:inline-block}
+.search-input{flex:1 1 240px;min-width:180px;background:var(--bg);border:1px solid var(--border-strong);
+  border-radius:8px;color:var(--text);padding:8px 12px;font-size:13.5px}
+.search-input:focus{outline:none;border-color:var(--accent)}
+
+/* Reuses index.html's bar classes rather than inventing a third bar style. */
+#progress-wrap{display:none;margin-top:10px}
+.progress-bar-bg{height:6px;background:var(--bg);border-radius:99px;overflow:hidden;margin-bottom:6px}
+.progress-bar-fill{height:100%;background:var(--accent);border-radius:99px;width:0%;transition:width .4s}
+#progress-label{font-size:12px;color:var(--text-muted)}
+
+.kpis{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.kpi{flex:1 1 130px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+.kpi .v{font-size:21px;font-weight:700;line-height:1.15}
+.kpi .k{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+.kpi.good .v{color:var(--green)}
+.kpi.bad .v{color:var(--red)}
+.kpi.warn .v{color:var(--yellow)}
+
+/* The verdict strip IS the worklist, so it doubles as a filter. */
+.verdicts{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.vchip{border:1px solid var(--border-strong);background:var(--surface);border-radius:20px;
+  padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer;color:var(--text-muted)}
+.vchip:hover{border-color:var(--accent)}
+.vchip.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.vchip .n{font-weight:800;margin-right:4px}
+
+table{width:100%;border-collapse:separate;border-spacing:0}
+thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;font-size:10.5px;
+  font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:left;white-space:nowrap;
+  border-bottom:2px solid var(--border-strong)}
+tbody td{padding:7px 10px;font-size:13px;border-bottom:1px solid var(--border);white-space:nowrap}
+th.num,td.num{text-align:right}
+tbody tr.parent{cursor:pointer}
+tbody tr.parent:hover td{background:var(--accent-soft)}
+.p-name{font-weight:700;font-size:13.5px}
+.brand{font-size:10.5px;color:var(--text-muted);font-weight:600}
+/* Size rows recede: they are detail under a heading, not peers of it. */
+tr.size td{background:var(--surface2);font-size:12.5px;color:var(--text-muted)}
+tr.size td:first-child{padding-left:30px}
+.asin{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--text-dim)}
+.neg{color:var(--red);font-weight:700}
+.pos{color:var(--green);font-weight:700}
+.dim{color:var(--text-dim)}
+
+.tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;background:var(--surface2);color:var(--text-muted);white-space:nowrap}
+.v-KILL{background:var(--red-soft);color:var(--red)}
+.v-SURGICAL{background:var(--orange-soft);color:var(--orange)}
+.v-DEAD{background:var(--surface2);color:var(--text-dim)}
+.v-MONITOR{background:var(--yellow-soft);color:var(--yellow)}
+.v-SCALE{background:var(--blue-soft);color:var(--blue)}
+.v-BEST{background:var(--green-soft);color:var(--green)}
+
+.reason{font-size:12px;color:var(--text-muted);line-height:1.5;white-space:normal}
+.caret{display:inline-block;width:12px;color:var(--text-dim);font-size:10px}
+
+.decide{display:flex;gap:6px;align-items:center;flex-wrap:wrap;white-space:normal}
+.decide select,.decide input{background:var(--bg);border:1px solid var(--border-strong);
+  border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px}
+.decide input{flex:1 1 190px;min-width:120px}
+.decide select:focus,.decide input:focus{outline:none;border-color:var(--accent)}
+.d-kill{border-color:var(--red)!important;color:var(--red)!important;font-weight:700}
+.d-keep{border-color:var(--green)!important;color:var(--green)!important;font-weight:700}
+.d-watch{border-color:var(--yellow)!important;color:var(--yellow)!important;font-weight:700}
+.decided{font-size:11px;color:var(--text-muted)}
+.empty-note{font-size:12.5px;color:var(--text-muted);padding:8px 0}
+.section-title{font-size:14px;font-weight:700;margin-bottom:2px}
+.section-sub{font-size:12.5px;color:var(--text-muted);margin-bottom:8px;line-height:1.5}
+</style>
+<link rel="stylesheet" href="/static/theme.css"/>
+</head>
+<body>
+<header>
+<span>📊</span><h1>Amazon Tracker v2</h1>
+{% include "nav.html" %}
+<div class="header-right"><a href="/logout">Logout</a></div>
+</header>
+<main>
+
+<h2>Portfolio review</h2>
+<div class="subtitle" id="subtitle">Loading…</div>
+
+<div id="messages"></div>
+
+<div class="card">
+  <div class="controls" style="margin-bottom:0">
+    <button class="btn" id="refresh-btn" onclick="startRefresh()">↻ Refresh from Amazon</button>
+    <a class="btn-outline" href="/portfolio/download.xlsx">⬇ Excel</a>
+    <span id="refresh-note" class="dim" style="font-size:12px">—</span>
+  </div>
+  <div id="progress-wrap">
+    <div class="progress-bar-bg"><div class="progress-bar-fill" id="progress-fill"></div></div>
+    <div id="progress-label">Starting…</div>
+  </div>
+</div>
+
+<div class="kpis" id="kpis"></div>
+<div class="verdicts" id="verdicts"></div>
+
+<div class="card">
+  <input class="search-input" id="search" type="search"
+         placeholder="Search product, brand, ASIN or verdict…"/>
+</div>
+
+<div id="table-area"></div>
+
+<script>
+let data = null;
+let filter = "";                 // the active verdict chip, "" = all
+let poll = null;
+const open = new Set();          // expanded parents, kept across re-renders
+const saving = new Set();        // decisions in flight, to stop a double-save
+
+const $ = id => document.getElementById(id);
+const n = v => Number(v || 0);
+
+function esc(s){
+  return String(s == null ? "" : s)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+}
+
+/* **Escapes its own input, always.** Callers pass a mix of our own strings and text that came
+   from Amazon (`body.error` carries Amazon's verbatim message, which is the most useful thing in
+   this integration and also the least trusted). An earlier version escaped at one call site and
+   not the others, which is exactly how the one that matters gets missed. */
+function message(text, cls){
+  const box = $("messages");
+  if(!text){ box.innerHTML = ""; return; }
+  box.innerHTML = `<div class="banner ${cls === "good" || cls === "warn" || cls === "error"
+    ? cls : "info"}"></div>`;
+  // textContent, not innerHTML: nothing in a message is ever meant to be markup.
+  box.firstChild.textContent = text;
+}
+
+/* Money in the Indian convention the rest of the app uses: 1,20,035 not 120,035. */
+function money(v){
+  return "₹" + Math.round(n(v)).toLocaleString("en-IN");
+}
+
+/* **A dash, never a zero.** A product with no sales has no TACOS, and rendering that as 0%
+   would place it among the most ad-efficient products in the portfolio. */
+function pct(v, opts){
+  if(v === null || v === undefined) return '<span class="dim">—</span>';
+  const s = (v * 100).toFixed(1) + "%";
+  if(!opts || !opts.sign) return s;
+  return `<span class="${v < 0 ? "neg" : "pos"}">${v > 0 ? "+" : ""}${s}</span>`;
+}
+
+function stars(rating, count){
+  if(rating === null || rating === undefined) return '<span class="dim">—</span>';
+  const cls = rating < 4 ? "neg" : "pos";
+  return `<span class="${cls}">${rating.toFixed(1)}★</span>
+          <span class="dim" style="font-size:11px">(${n(count)})</span>`;
+}
+
+function verdictClass(v){
+  return "v-" + (v === "BEST BET" ? "BEST" : v.replace(/\s+/g, ""));
+}
+
+async function load(){
+  try{
+    const r = await fetch("/portfolio");
+    if(!r.ok){ message("Could not load the portfolio.", "error"); return; }
+    data = await r.json();
+    render();
+    renderRefresh(data.refresh);
+  }catch(err){
+    message("Could not reach the server.", "error");
+  }
+}
+
+function render(){
+  if(!data) return;
+  renderSubtitle();
+  renderBanners();
+  renderKpis();
+  renderVerdicts();
+  renderTable();
+}
+
+function renderSubtitle(){
+  const w = data.window;
+  const parts = [];
+  // Set via textContent below, so these dates need no escaping — but they ARE stored values,
+  // so the assignment target matters and must stay textContent.
+  if(w) parts.push(`${w[0]} to ${w[1]}`);
+  parts.push(`${n(data.totals.parents)} products`);
+  parts.push("Amazon's own economics — sales, fees and ad spend per product");
+  $("subtitle").textContent = parts.join(" · ");
+}
+
+function renderBanners(){
+  const out = [];
+
+  if(!data.parents.length){
+    out.push(`<div class="banner info">Nothing fetched yet. Press
+      <strong>Refresh from Amazon</strong> — it takes a minute or two, and the numbers are then
+      cached so this page always loads instantly.</div>`);
+  }
+
+  /* Stated on screen rather than left implicit: netProceeds is Amazon's figure and excludes
+     manufacturing cost, so a size at +8.8% may still lose money. The fix is data entry in
+     Seller Central, which is where Amazon reads it from — so this app does not offer a second
+     cost field that could disagree with it. */
+  if(data.pre_cogs){
+    out.push(`<div class="banner warn"><strong>Every margin here is pre-COGS.</strong>
+      It is Amazon's net proceeds — sales minus Amazon's fees minus ads — and does
+      <strong>not</strong> include what it costs to make the product. A size showing a small
+      profit may still lose money. Enter your cost per unit in Seller Central
+      (SKU Central / Revenue Calculator) and Amazon returns it here, making these true margins.
+      </div>`);
+  }
+
+  if(data.ratings_stale){
+    const when = data.ratings_as_of ? String(data.ratings_as_of).slice(0, 10) : "never";
+    out.push(`<div class="banner warn"><strong>Ratings are from ${esc(when)}.</strong>
+      Star ratings come from our own scraper, not this API, so a stale figure would quietly
+      shape a verdict. Run a product scrape from the Dashboard to refresh them.</div>`);
+  }
+
+  if(data.catalogue_warning){
+    out.push(`<div class="banner warn">${esc(data.catalogue_warning)}</div>`);
+  }
+  if((data.unmatched_asins || []).length){
+    out.push(`<div class="banner warn">${n(data.unmatched_asins.length)} ASIN(s) sold but are
+      not in the product sheet, so they have no name or pack size here:
+      ${esc(data.unmatched_asins.join(", "))}. Add them to the MRP sheet.</div>`);
+  }
+  const lr = data.last_refresh;
+  if(lr && lr.error){
+    out.push(`<div class="banner error">The last refresh failed: ${esc(lr.error)}</div>`);
+  }
+  $("messages").innerHTML = out.join("");
+}
+
+function renderKpis(){
+  const t = data.totals;
+  const netCls = (t.net_pct !== null && t.net_pct < 0) ? "bad" : "good";
+  $("kpis").innerHTML = `
+    <div class="kpi"><div class="v">${money(t.sales)}</div><div class="k">Sales</div></div>
+    <div class="kpi warn"><div class="v">${money(t.ad_spend)}</div><div class="k">Ad spend</div></div>
+    <div class="kpi warn"><div class="v">${t.tacos === null ? "—" : (t.tacos*100).toFixed(1)+"%"}</div><div class="k">TACOS</div></div>
+    <div class="kpi ${netCls}"><div class="v">${money(t.net)}</div><div class="k">Net (pre-COGS)</div></div>
+    <div class="kpi ${netCls}"><div class="v">${t.net_pct === null ? "—" : (t.net_pct*100).toFixed(1)+"%"}</div><div class="k">Net margin</div></div>
+    <div class="kpi"><div class="v">${n(t.units).toLocaleString("en-IN")}</div><div class="k">Units</div></div>`;
+}
+
+function renderVerdicts(){
+  const counts = data.totals.verdicts || {};
+  const order = ["KILL", "SURGICAL", "DEAD", "MONITOR", "SCALE", "BEST BET"];
+  const chips = [`<button class="vchip ${filter === "" ? "on" : ""}" data-v="">
+      <span class="n">${n(data.totals.parents)}</span>All</button>`];
+  order.forEach(v => {
+    if(!counts[v]) return;
+    chips.push(`<button class="vchip ${filter === v ? "on" : ""}" data-v="${esc(v)}">
+      <span class="n">${n(counts[v])}</span>${esc(v)}</button>`);
+  });
+  $("verdicts").innerHTML = chips.join("");
+}
+
+function visible(){
+  const q = $("search").value.trim().toLowerCase();
+  return (data.parents || []).filter(p => {
+    if(filter && p.verdict !== filter) return false;
+    if(!q) return true;
+    // Built for matching only and never inserted into the DOM, so it needs no escaping.
+    const hay = [p.product, p.brand, p.parent_asin, p.verdict, p.decision,
+                 ...p.sizes.map(s => s.asin)].join(" ").toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+function sizeName(s){
+  if(s.weight) return (s.weight >= 1 ? s.weight + " kg" : (s.weight * 1000) + " g");
+  return s.asin;
+}
+
+function renderTable(){
+  const rows = visible();
+  if(!rows.length){
+    $("table-area").innerHTML = `<div class="card"><div class="empty-note">
+      ${(data.parents || []).length ? "Nothing matches that filter." : "No products yet."}
+    </div></div>`;
+    return;
+  }
+
+  let html = "";
+  rows.forEach(p => {
+    const isOpen = open.has(p.parent_asin);
+    html += `<tr class="parent" data-parent="${esc(p.parent_asin)}">
+      <td class="p-name"><span class="caret">${isOpen ? "▾" : "▸"}</span> ${esc(p.product)}
+        ${p.brand ? `<span class="brand">${esc(p.brand)}</span>` : ""}</td>
+      <td><span class="tag ${verdictClass(p.verdict)}">${esc(p.verdict)}</span></td>
+      <td class="num">${money(p.sales)}</td>
+      <td class="num">${money(p.ad_spend)}</td>
+      <td class="num">${pct(p.tacos)}</td>
+      <td class="num">${pct(p.net_pct, {sign: true})}</td>
+      <td class="num">${n(p.units).toLocaleString("en-IN")}</td>
+      <td class="num">${p.returns_pct ? pct(p.returns_pct) : '<span class="dim">—</span>'}</td>
+      <td>${stars(p.rating, p.rating_count)}</td>
+      <td>${p.decision
+            ? `<span class="tag d-${esc(p.decision)}">${esc(p.decision.toUpperCase())}</span>`
+            : '<span class="dim">—</span>'}</td>
+    </tr>`;
+
+    if(!isOpen) return;
+
+    /* The reason row: the verdict's own numbers, so the owner can check it rather than take
+       it on trust. Spans the table because it is prose, not a column. */
+    html += `<tr class="size"><td colspan="10">
+      <div class="reason"><strong>Why ${esc(p.verdict)}:</strong> ${esc(p.verdict_reason)}</div>
+      <div class="decide" style="margin-top:8px">
+        <select data-decide="${esc(p.parent_asin)}">
+          <option value=""${!p.decision ? " selected" : ""}>— no decision —</option>
+          <option value="kill"${p.decision === "kill" ? " selected" : ""}>Kill it</option>
+          <option value="keep"${p.decision === "keep" ? " selected" : ""}>Keep it</option>
+          <option value="watch"${p.decision === "watch" ? " selected" : ""}>Watch it</option>
+        </select>
+        <input type="text" placeholder="Why? (optional, but the most useful thing in 3 months)"
+               data-note="${esc(p.parent_asin)}" value="${esc(p.decision_note)}"/>
+        <button class="btn-outline" data-save="${esc(p.parent_asin)}">Save</button>
+        ${p.decision_at
+          ? `<span class="decided">decided ${esc(String(p.decision_at).slice(0,10))}</span>`
+          : ""}
+      </div>
+    </td></tr>`;
+
+    p.sizes.forEach(s => {
+      html += `<tr class="size">
+        <td>${esc(sizeName(s))} <span class="asin">${esc(s.asin)}</span></td>
+        <td></td>
+        <td class="num">${money(s.sales)}</td>
+        <td class="num">${money(s.ad_spend)}</td>
+        <td class="num">${pct(s.tacos)}</td>
+        <td class="num">${pct(s.net_pct, {sign: true})}</td>
+        <td class="num">${n(s.units)}</td>
+        <td class="num">${s.returns_pct ? pct(s.returns_pct) : '<span class="dim">—</span>'}</td>
+        <td colspan="2" class="dim" style="font-size:11px">
+          ${/* Ratings are pooled per family by Amazon, so a per-size star rating would be the
+               parent's number repeated — implying a precision the review data does not have. */ ""}
+          rating is per product, not per size</td>
+      </tr>`;
+    });
+  });
+
+  $("table-area").innerHTML = `<div class="card">
+    <div class="section-title">${rows.length} product(s), heaviest revenue first</div>
+    <div class="section-sub">Click a product to see its pack sizes, the reason for its verdict,
+      and to record a decision. <strong>A product can be worth keeping while one of its sizes is
+      not</strong> — that is what SURGICAL means, and why the sizes are here.</div>
+    <table>
+      <thead><tr>
+        <th>Product</th><th>Verdict</th><th class="num">Sales</th><th class="num">Ad spend</th>
+        <th class="num">TACOS</th><th class="num">Net %</th><th class="num">Units</th>
+        <th class="num">Returns</th><th>Rating</th><th>Decision</th>
+      </tr></thead>
+      <tbody>${html}</tbody>
+    </table>
+  </div>`;
+}
+
+/* ── Events ───────────────────────────────────────────────────────────────────
+   Delegated listeners rather than inline handlers, because product names and ASINs come from
+   an uploaded sheet and Amazon — building an onclick out of those strings is an injection
+   waiting to happen. Same rule the Orders tab follows. */
+$("verdicts").addEventListener("click", e => {
+  const chip = e.target.closest(".vchip");
+  if(!chip) return;
+  filter = chip.dataset.v || "";
+  render();
+});
+
+$("table-area").addEventListener("click", e => {
+  const save = e.target.closest("[data-save]");
+  if(save){ saveDecision(save.dataset.save); return; }
+  const row = e.target.closest("tr.parent");
+  if(!row) return;
+  const key = row.dataset.parent;
+  if(open.has(key)) open.delete(key); else open.add(key);
+  renderTable();
+});
+
+$("search").addEventListener("input", renderTable);
+
+async function saveDecision(parentAsin){
+  if(saving.has(parentAsin)) return;
+  const select = document.querySelector(`[data-decide="${CSS.escape(parentAsin)}"]`);
+  const note = document.querySelector(`[data-note="${CSS.escape(parentAsin)}"]`);
+  if(!select) return;
+  saving.add(parentAsin);
+  try{
+    const r = await fetch("/portfolio/decision", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        parent_asin: parentAsin,
+        decision: select.value,
+        note: note ? note.value : "",
+      }),
+    });
+    const body = await r.json();
+    if(!r.ok){ message(body.error || "Could not save that decision.", "error"); return; }
+    // Re-seat from committed truth rather than from what was sent.
+    (data.parents || []).forEach(p => {
+      const d = (body.decisions || {})[p.parent_asin] || {};
+      p.decision = d.decision || "";
+      p.decision_note = d.note || "";
+      p.decision_at = d.decided_at || "";
+    });
+    renderTable();
+    renderVerdicts();
+    message("Decision saved. Nothing was changed at Amazon — do that in Seller Central.", "good");
+  }catch(err){
+    message("Could not reach the server — that decision was not saved.", "error");
+  }finally{
+    saving.delete(parentAsin);
+  }
+}
+
+/* ── Refresh ──────────────────────────────────────────────────────────────── */
+async function startRefresh(){
+  $("refresh-btn").disabled = true;
+  try{
+    const r = await fetch("/portfolio/refresh", {method: "POST"});
+    const body = await r.json();
+    if(!r.ok){
+      message(body.error || "Could not start the refresh.", "error");
+      $("refresh-btn").disabled = false;
+      return;
+    }
+    renderRefresh(body.refresh);
+    startPoll();
+  }catch(err){
+    message("Could not reach the server.", "error");
+    $("refresh-btn").disabled = false;
+  }
+}
+
+function startPoll(){
+  if(poll) clearInterval(poll);
+  poll = setInterval(async () => {
+    try{
+      const r = await fetch("/portfolio/refresh-status");
+      if(!r.ok) return;
+      const st = await r.json();
+      renderRefresh(st);
+      if(!st.running){
+        clearInterval(poll); poll = null;
+        if(st.error) message("Refresh failed: " + st.error, "error");
+        // Reload so the new rows render. Only on completion, so a poll never redraws the
+        // table under someone typing a note.
+        await load();
+      }
+    }catch(err){ /* a failed poll is not worth a banner; the next one will do */ }
+  }, 4000);
+}
+
+function renderRefresh(st){
+  st = st || {};
+  const running = !!st.running;
+  $("refresh-btn").disabled = running;
+  $("progress-wrap").style.display = running ? "" : "none";
+  if(running){
+    $("progress-fill").style.width = n(st.percent) + "%";
+    const phase = {
+      submit: "Asking Amazon for the figures…",
+      poll: "Amazon is preparing the data — this takes a minute or two…",
+      download: "Downloading…",
+      store: "Storing…",
+    }[st.phase] || "Working…";
+    $("progress-label").textContent = `${phase} ${n(st.percent)}%`;
+  }
+  const lr = data && data.last_refresh;
+  $("refresh-note").textContent = lr && lr.finished_at
+    ? `last refreshed ${String(lr.finished_at).slice(0,16).replace("T"," ")} · ${n(lr.rows_stored)} rows`
+    : "never refreshed";
+}
+
+load();
+</script>
+</main>
+</body>
+</html>

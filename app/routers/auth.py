@@ -333,7 +333,7 @@ def _landing(grant: str | None, is_admin: bool) -> str:
     for area, path in (
         (permissions.SHIPMENT, "/shipment-page"),
         (permissions.INVOICE, "/invoice-page"),
-        (permissions.PORTFOLIO, "/churn-page"),
+        (permissions.PORTFOLIO, "/portfolio-page"),
         (permissions.PROJECTIONS, "/projections-page"),
         (permissions.PACKING, "/ops-page"),
     ):

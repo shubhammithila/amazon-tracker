@@ -312,6 +312,65 @@ def build_simple_xlsx(
     return buffer
 
 
+def build_portfolio_xlsx(
+    title: str, subtitle: str, headers: list[str], rows: list[list], widths: list[int]
+) -> io.BytesIO:
+    """The portfolio review as a workbook: parents with their sizes indented beneath.
+
+    **A sibling of ``build_simple_xlsx`` rather than a parameter on it, and the reason is
+    ``_totals_row``.** That helper sums every column past the identity ones with
+    ``int(row[column] or 0)``, which is correct for the picking documents it was written for —
+    every trailing column there is a quantity. This sheet's trailing columns include percentages
+    rendered as text ("+43.6%"), an em dash where there is no denominator, a star rating and a
+    prose reason, so that sum raises ``ValueError: invalid literal for int()``. Caught by a test
+    rather than in production, but only because the export had one.
+
+    Widening ``_totals_row`` to skip non-numeric cells would silently change the four documents
+    that depend on its current behaviour, so this builds its own sheet instead. No totals row at
+    all: a "TOTAL" line under a mixture of parent rows and size rows would double-count, because
+    each parent already contains its sizes. The KPI figures live in the subtitle.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = title[:31]  # Excel's limit; a longer name makes the file invalid.
+
+    _write_sheet(sheet, headers, list(rows), widths)
+
+    # **The subtitle is written into the sheet, unlike `build_simple_xlsx` where it is accepted
+    # and silently discarded.** It carries the date window and the PRE-COGS caveat, and a
+    # workbook leaves the app to be read without the screen's banner beside it — so a file
+    # showing "+8.8% net" with no caveat gets forwarded to someone who reads it as profit.
+    # Inserted above the header row so it is the first thing read.
+    sheet.insert_rows(1)
+    sheet["A1"] = subtitle
+    sheet["A1"].font = Font(size=9, italic=True, color="FF6B7280")
+    sheet["A1"].alignment = Alignment(vertical="center")
+
+    quiet = Font(size=9, color="FF6B7280")
+    for index, heading in enumerate(headers, start=1):
+        for row in sheet.iter_rows(min_row=2, min_col=index, max_col=index):
+            cell = row[0]
+            if heading in ("ASIN", "Why"):
+                cell.font = quiet
+            elif heading in ("Sales", "Ad spend", "Net", "Units", "Net %", "TACOS"):
+                cell.alignment = Alignment(horizontal="right")
+    # The reason column is prose and needs to wrap rather than run under its neighbours.
+    if "Why" in headers:
+        column = headers.index("Why") + 1
+        for row in sheet.iter_rows(min_row=2, min_col=column, max_col=column):
+            row[0].alignment = Alignment(vertical="top", wrap_text=True)
+
+    sheet.row_dimensions[1].height = 22
+    sheet.freeze_panes = "A3"       # subtitle + headers stay visible while scrolling 90 products
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+
 def build_simple_pdf(
     title: str, subtitle: str, headers: list[str], rows: list[list]
 ) -> io.BytesIO:
