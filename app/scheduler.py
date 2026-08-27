@@ -42,11 +42,27 @@ ORDER_REFRESH_MINUTES = 30
 #: button's job.
 ORDER_REFRESH_DAYS = spapi_orders.TODAY_ONLY
 
-#: Pages per pass, a SAFETY CEILING rather than the usual cost. A day's dispatch is ~200 orders
-#: = 2 pages; 4 is double that, so a busy day cannot be truncated. Lower than the 8 it was,
-#: because the window no longer includes months of collected orders to page through. Reaching
-#: the cap is reported on screen rather than silently truncating.
-ORDER_REFRESH_PAGES = 4
+#: Pages per pass. **The old value of 4 was derived from the wrong quantity and truncated every
+#: run**, which put a warning on the dispatch screen saying orders were missing from today's
+#: sheet.
+#:
+#: The reasoning it replaced was "a day's dispatch is ~200 orders = 2 pages, so 4 is double".
+#: That measures the wrong set. `LastUpdatedAfter=midnight IST` does not mean "orders FOR today";
+#: it means every order Amazon TOUCHED today — and Amazon touches an order on every status
+#: move, so yesterday's 188 and Sunday's 264 are all in the answer as they walk
+#: `PendingPickUp → PickedUp → OutForDelivery → Delivered`. Measured on 2026-08-27: 1,790 rows
+#: match the status filter and ~600 are updated on a busy day.
+#:
+#: 12 pages = 1,200 orders, so the pass reaches its natural end and the warning stops firing.
+#: The cost is affordable because it is a CEILING, not the usual spend: a typical run stops at
+#: ~6 pages (~2.2 min) when Amazon returns no NextToken. Worst case is 12 × 22.5s = 4.5 minutes,
+#: comfortably inside the 30-minute interval, and 48 runs × 12 pages is 576 of the 3,840 daily
+#: getOrders calls — 15% of the budget.
+#:
+#: Reaching the cap is still reported rather than silently truncating; see
+#: `spapi_orders.fetch_easy_ship_orders` for why that message must not claim today's sheet is
+#: incomplete.
+ORDER_REFRESH_PAGES = 12
 
 
 async def scheduled_product_scrape():

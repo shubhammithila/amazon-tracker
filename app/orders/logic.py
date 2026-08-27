@@ -509,13 +509,49 @@ def dispatch_sheet(
     # renders of the same data agree.
     parent_rows.sort(key=lambda row: (-row["kg"], row["product"].casefold()))
 
+    # ── Mark the lines that share an order ──
+    #
+    # An order holding two products rendered as two unconnected rows with the same id, and
+    # nothing on either row said a second item existed — so the parcel could be packed, ticked
+    # and handed over half full. Measured on 2026-08-27: 85 orders, 86 lines, so exactly one
+    # parcel that day had this shape. Rare is not harmless: it is precisely the order that ships
+    # short, and the one nobody is looking for.
+    #
+    # Computed HERE rather than in the template because the PDF and the Excel need the same
+    # fact, and three renderers deriving it separately is how they start to disagree.
+    lines_per_order: dict[str, int] = {}
+    for row in order_rows:
+        oid = row["amazon_order_id"]
+        lines_per_order[oid] = lines_per_order.get(oid, 0) + 1
+    for row in order_rows:
+        row["order_lines"] = lines_per_order.get(row["amazon_order_id"], 1)
+        row["multi_item"] = row["order_lines"] > 1
+
     # The order list follows the SAME parent order as the summary, so the two halves of the
     # printed sheet read together instead of being two independent sorts.
     parent_order = {row["product"]: index for index, row in enumerate(parent_rows)}
+
+    def line_rank(row: dict) -> tuple:
+        return (parent_order.get(row["parent"], len(parent_order)), -float(row["weight"] or 0))
+
+    # **An order's lines must stay ADJACENT, or grouping them on screen is impossible.** Sorting
+    # by parent alone scatters them: a two-product order has two different parents, so its lines
+    # land wherever each product sorts — 40 rows apart in the measured case. Each order is
+    # therefore ANCHORED at its best-ranking line and its lines travel together.
+    #
+    # Anchoring on the heaviest line rather than the lightest keeps the heaviest-first reading
+    # order the rest of the sheet uses, so a multi-item order does not sink below single-item
+    # ones it outweighs.
+    anchor: dict[str, tuple] = {}
+    for row in order_rows:
+        oid = row["amazon_order_id"]
+        rank = line_rank(row)
+        if oid not in anchor or rank < anchor[oid]:
+            anchor[oid] = rank
     order_rows.sort(key=lambda row: (
-        parent_order.get(row["parent"], len(parent_order)),
-        -float(row["weight"] or 0),
-        row["amazon_order_id"],
+        anchor[row["amazon_order_id"]],
+        row["amazon_order_id"],   # ties broken stably, so two renders agree
+        line_rank(row),           # within one order: heaviest item first
     ))
 
     all_sizes = [size for row in parent_rows for size in row["sizes"]]
@@ -524,6 +560,11 @@ def dispatch_sheet(
         "orders": order_rows,
         "totals": {
             "orders": len(order_ids),
+            # The row count, stated separately, because it is NOT the order count and the two
+            # were silently disagreeing on screen: "Orders today 86" beside a tab reading
+            # "Orders (87)". Both were right; neither was labelled.
+            "order_lines": len(order_rows),
+            "multi_item_orders": sum(1 for count in lines_per_order.values() if count > 1),
             "units": sum(size["units"] for size in all_sizes),
             "kg": round(sum(size["kg"] or 0 for size in all_sizes), 3),
             "packed": sum(size["packed"] for size in all_sizes),

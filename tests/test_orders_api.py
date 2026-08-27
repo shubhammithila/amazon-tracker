@@ -413,6 +413,128 @@ async def test_a_malformed_packed_body_is_refused(auth_client, db):
     assert r.status_code == 400, r.text
 
 
+# ─── The per-order packed tick ───────────────────────────────────────────────
+
+
+async def test_an_order_tick_round_trips_through_the_route(auth_client, db):
+    """Tick an order, then read it back off /dispatch.
+
+    Two different questions live side by side here: `/packed/{date}` counts UNITS per ASIN,
+    this counts whole ORDERS. Both must survive on the same payload, because the screen renders
+    them in one table.
+    """
+    await repository.upsert_orders(db, [_dispatched("403-1")])
+    await repository.replace_items(db, "403-1", [
+        {"asin": KNOWN_ASIN, "seller_sku": "cs-500", "quantity_ordered": 2}
+    ])
+    today = datetime.now(logic.IST).date().isoformat()
+
+    r = await auth_client.post(
+        f"/orders/order-packed/{today}",
+        json={"entries": [{"amazon_order_id": "403-1"}]},
+    )
+    assert r.status_code == 200, r.text
+    assert "403-1" in r.json()["order_packed"]
+
+    body = (await auth_client.get("/orders/dispatch")).json()
+    assert "403-1" in body["order_packed"], (
+        "the tick did not reach /dispatch, so the screen would render it unticked on reload"
+    )
+
+
+async def test_an_order_tick_can_be_removed(auth_client, db):
+    """Un-ticking must clear it — a mis-tick on the floor is corrected by clicking again."""
+    await _seed(db)
+    today = datetime.now(logic.IST).date().isoformat()
+    await auth_client.post(
+        f"/orders/order-packed/{today}", json={"entries": [{"amazon_order_id": "403-1"}]}
+    )
+    r = await auth_client.post(
+        f"/orders/order-packed/{today}",
+        json={"entries": [{"amazon_order_id": "403-1", "packed": False}]},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["order_packed"] == {}
+
+
+async def test_ticking_an_order_against_another_day_is_refused(auth_client, db):
+    """The SERVER decides what today is, exactly as `/packed/{pack_date}` does.
+
+    A tablet in another timezone, or a page open past midnight IST, would otherwise credit this
+    morning's parcels to yesterday. The real date comes back so the screen can say "reload"
+    rather than silently refiling the work.
+    """
+    await _seed(db)
+    r = await auth_client.post(
+        "/orders/order-packed/2026-01-01",
+        json={"entries": [{"amazon_order_id": "403-1"}]},
+    )
+    assert r.status_code == 409, r.text
+    assert r.json()["pack_date"] == datetime.now(logic.IST).date().isoformat()
+
+
+async def test_a_malformed_order_tick_body_is_refused(auth_client, db):
+    """`entries` must be a list, matching the packed route rather than inventing a shape."""
+    await _seed(db)
+    today = datetime.now(logic.IST).date().isoformat()
+    r = await auth_client.post(
+        f"/orders/order-packed/{today}", json={"entries": {"amazon_order_id": "x"}}
+    )
+    assert r.status_code == 400, r.text
+
+
+async def test_a_bare_order_id_means_packed_so_a_scanner_needs_no_flag(auth_client, db):
+    """**The property that makes this scanner-ready.**
+
+    A barcode reader posts an id and nothing else. If `packed` were required, the scan would
+    either fail or — worse, if it defaulted false — silently UN-tick the order it just read.
+    """
+    await _seed(db)
+    today = datetime.now(logic.IST).date().isoformat()
+    r = await auth_client.post(
+        f"/orders/order-packed/{today}",
+        json={"entries": [{"amazon_order_id": "403-1", "source": "scan"}]},
+    )
+    assert r.status_code == 200, r.text
+    state = r.json()["order_packed"]["403-1"]
+    assert state["source"] == "scan"
+
+
+async def test_the_dispatch_payload_states_orders_and_lines_separately(auth_client, db):
+    """The 86-vs-87 report: an order with two products is one order and two rows.
+
+    Both numbers must be on the payload. The screen used to show the order count in the KPI and
+    the ROW count in the tab badge, which read as a contradiction.
+    """
+    await repository.upsert_orders(db, [_dispatched("403-1")])
+    await repository.replace_items(db, "403-1", [
+        {"asin": KNOWN_ASIN, "seller_sku": "cs-500", "quantity_ordered": 1},
+        {"asin": "B0CY88658Y", "seller_sku": "cs-1kg", "quantity_ordered": 1},
+    ])
+
+    totals = (await auth_client.get("/orders/dispatch")).json()["sheet"]["totals"]
+    assert totals["orders"] == 1, "one parcel"
+    assert totals["order_lines"] == 2, "two item lines"
+    assert totals["multi_item_orders"] == 1
+
+
+async def test_the_tick_is_json_serialisable_on_the_route(auth_client, db):
+    """A datetime reaching JSONResponse is a 500 and a blank screen.
+
+    This app already shipped that defect once with order timestamps, which is why the
+    conversion lives in the repository and is asserted at the HTTP boundary too.
+    """
+    import json
+
+    await _seed(db)
+    today = datetime.now(logic.IST).date().isoformat()
+    r = await auth_client.post(
+        f"/orders/order-packed/{today}", json={"entries": [{"amazon_order_id": "403-1"}]}
+    )
+    assert r.status_code == 200, r.text
+    json.dumps(r.json())
+
+
 async def test_the_dispatch_sheet_downloads_as_a_pdf(auth_client, db):
     """The floor's copy. A PDF because it is read at a bench and ticked with a pen."""
     await repository.upsert_orders(db, [_dispatched("403-1")])
@@ -653,6 +775,61 @@ def test_the_packed_and_raw_stock_saves_post_to_their_own_routes():
     assert "/orders/raw-stock/${" not in source, (
         "the raw stock route must not take a date: raw stock is standing, and a date would "
         "make the number unreachable tomorrow"
+    )
+
+
+def test_the_poll_refreshes_the_order_ticks():
+    """Two tablets pack from the same list, so one must see the other's ticks.
+
+    Without this the poll re-renders tab 3 every 60 seconds from a STALE tick map — so a second
+    device's work stays invisible until a reload, and worse, the poll actively redraws the old
+    state over it. Found by reading the poll while adding the feature, not by using it.
+    """
+    source = _orders_source()
+    start = source.index("function pollOrders(")
+    body = source[start:start + 1400]
+    assert "order_packed" in body, (
+        "pollOrders does not refresh the tick map, so a tick made on another device would be "
+        "invisible and the poll would keep re-rendering the stale value"
+    )
+
+
+def test_the_order_tick_uses_a_delegated_listener_not_an_inline_handler():
+    """The order id is Amazon's data, so it must never be interpolated into an onclick.
+
+    Same rule the two number tabs already follow, and the same reason: a value from outside the
+    app built into an attribute string is an injection waiting to happen. The undo button was
+    fixed for exactly this once already.
+    """
+    source = _orders_source()
+    assert '$("tab-orders").addEventListener' in source, (
+        "the tick has no delegated listener"
+    )
+    for bad in ('onclick="tickOrder', "onchange=\"tickOrder", 'onclick="tick('):
+        assert bad not in source, f"inline handler {bad} builds a handler from an order id"
+
+
+def test_the_tick_posts_to_its_own_dated_route():
+    """A tick is per-order and per-day, so it carries the date like the packed count does."""
+    source = _orders_source()
+    assert "/orders/order-packed/${" in source, (
+        "the tick save does not send a date, so a page open past midnight IST would file this "
+        "morning's parcels against yesterday"
+    )
+
+
+def test_the_orders_tab_badge_counts_orders_not_rows():
+    """The 86-vs-87 report, asserted on the template.
+
+    The badge read `data.sheet.orders.length` — the ROW count — beside a KPI reading the ORDER
+    count, so an order holding two products made the two disagree on screen. Both are still
+    shown; the row count now sits in the table heading where "line(s)" gives it a meaning.
+    """
+    source = _orders_source()
+    start = source.index('$("count-orders")')
+    line = source[start:start + 160]
+    assert "totals.orders" in line, (
+        f"the Orders badge does not count orders: {line.splitlines()[0]!r}"
     )
 
 

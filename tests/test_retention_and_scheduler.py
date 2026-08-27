@@ -229,17 +229,55 @@ def test_the_order_refresh_runs_every_thirty_minutes(monkeypatch):
 
 
 def test_the_routine_order_refresh_pages_past_the_measured_backlog():
-    """One page is 100 orders and the measured actionable backlog is 371.
+    """**The cap must clear the UPDATED set, not the DISPATCHED set — and that is why 4 failed.**
 
-    Amazon caps a page at 100 and returns NextToken when more exists, so too low a cap makes
-    the packer's sheet quietly incomplete — and it does so worst when the warehouse is
-    busiest, which is when the sheet matters most.
+    This asserted `>= 4` on the reasoning that a day's dispatch is ~200 orders = 2 pages. The
+    premise was measuring the wrong quantity. `LastUpdatedAfter=midnight IST` does not ask for
+    orders due today; it asks for every order Amazon TOUCHED today, and Amazon touches an order
+    on every status move — so yesterday's 188 and Sunday's 264 are all in the answer as they walk
+    `PendingPickUp -> PickedUp -> OutForDelivery -> Delivered`.
+
+    Measured on 2026-08-27: 1,790 rows match the status filter and ~600 are updated on a busy
+    day. At 4 pages the pass truncated on EVERY run and put a warning on the dispatch screen
+    claiming orders were missing from today's sheet.
+
+    12 pages = 1,200 orders. Asserted as a floor because the exact number is a judgement about
+    cost, but anything below ~8 re-creates the permanent-warning state.
     """
     from app import scheduler as sched
 
-    assert sched.ORDER_REFRESH_PAGES >= 4, (
-        "the measured actionable set is 371 orders in 4 pages, so a lower cap truncates "
-        "today's picking sheet"
+    assert sched.ORDER_REFRESH_PAGES >= 8, (
+        "measured 2026-08-27: ~600 orders are updated on a busy day, because the window asks "
+        "for everything Amazon touched today, not just today's dispatch. A cap below 8 "
+        "truncates every single run and warns the warehouse for no reason"
+    )
+
+
+def test_the_truncation_warning_does_not_claim_todays_sheet_is_incomplete():
+    """**The message was FALSE, and it sent the floor looking for parcels that were on screen.**
+
+    It read "Some orders are missing from today's sheet — run the refresh again to continue",
+    every half hour, while today's dispatch was in fact complete.
+
+    Why it cannot be missing: `getOrders` pages OLDEST-FIRST, and the window asks for everything
+    UPDATED today. So the rows lost to the cap are the OLDEST ones, while today's orders — the
+    most recently updated by definition — are on the pages that WERE fetched.
+
+    Asserted on the string because this is a message a human acts on, and the wrong version is
+    indistinguishable from the right one to every other test in the suite.
+    """
+    import inspect
+
+    from app.orders import spapi_orders
+
+    source = inspect.getsource(spapi_orders.fetch_easy_ship_orders)
+    assert "missing from today" not in source, (
+        "the truncation warning still tells the warehouse today's sheet is incomplete; "
+        "oldest-first paging means today's orders are the ones that DID arrive"
+    )
+    assert "oldest" in source.lower(), (
+        "the warning should say WHICH orders were dropped (the oldest), since that is the only "
+        "honest claim available"
     )
 
 

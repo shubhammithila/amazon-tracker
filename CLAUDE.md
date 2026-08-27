@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (1205 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (1347 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -83,7 +83,7 @@ app/
 ├── main.py              # FastAPI app entry point
 ├── config.py            # Settings (pydantic-settings, .env)
 ├── database.py          # Async SQLAlchemy engine
-├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry, AmazonOrder/AmazonOrderItem/OrderPackedEntry/ProductRawStock)
+├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry, AmazonOrder/AmazonOrderItem/OrderPackedEntry/OrderPackedState/ProductRawStock)
 ├── scheduler.py         # APScheduler (scrape 06:00, keywords 07:30, orders every 30m)
 ├── utils.py             # Date parsing helpers
 ├── routers/
@@ -769,8 +769,8 @@ python-multipart, itsdangerous, jinja2, aiofiles, reportlab
 | Tab | Rows | Editable | Answers |
 |---|---|---|---|
 | Weight & purchase | one per parent product | raw stock (kg) | how much goes out, and what must I buy |
-| By SKU | one per pack size, flat | packed today | what has been boxed against each SKU |
-| Orders | one per order line | nothing | which orders exactly, and where |
+| By SKU | one per pack size, flat | packed today (units) | what has been boxed against each SKU |
+| Orders | one per order line, grouped per order | packed tick (per order) | which orders exactly, where, and which are finished |
 
 Asked for as *"show them only the data which is waiting for pickup — rest of the orders are the
 responsibility of the ecom team to ship on portal"*, *"Each parent item total weight orders …
@@ -838,6 +838,66 @@ not, and unused columns invite a future reader to wire them up.
 Over-packing **warns and never blocks**, the same rule as `logic.over_packed`: the boxes
 physically exist, and refusing the entry would leave real stock unrecorded. `remaining` clamps
 at 0 because it reaches a printed sheet; the excess is reported separately as `over_packed`.
+
+The **Units ordered** column carries only units. It used to render `3 / 2 ord` wherever units and
+orders differed, to avoid a column of duplicate numbers — wrong tab for that idea: the cell sits
+beside the box where the packer types units packed, so a second number reads as a target and
+invites packing 2 of the 3 ordered. The orders count stays on tab 1, where nothing is editable.
+
+### A packed TICK is per order; a packed COUNT is per SKU
+`order_packed_state`, UNIQUE on **(pack_date, amazon_order_id)** — a second table rather than a
+column, because it answers a question `order_packed_entries` structurally cannot. That one counts
+units per ASIN ("how many 500 g pouches are boxed"); this one answers "is order
+407-2831377-6251535 finished". **An order holding two products contributes to two ASIN rows and
+neither knows the parcel is incomplete**, so units alone can never say whether a parcel may go.
+The order is the thing that ships.
+
+A **boolean tick, not a status lifecycle.** "Handed to the courier" is already Amazon's
+`easyship_status` (`PickedUp`), and duplicating it locally would be the second source of truth the
+rest of this feature avoids. What Amazon has no opinion about is whether the box is finished on
+this floor.
+
+- **Un-ticking DELETES the row.** Absence is the single representation of "not packed", so no
+  stale timestamp can sit behind a false flag. The opposite of `save_raw_stock`, where a stored 0
+  is the fact that makes `to_buy` the full weight.
+- **`packed` defaults to TRUE when absent**, which is what makes this scanner-ready: a barcode
+  reader posts `{"amazon_order_id": "…"}` alone and means "done". Defaulting false would make a
+  scan silently UN-tick the order it just read. `source` (`manual` / `scan`) is recorded from the
+  start so the two can be told apart with no later migration — a scan is evidence the box was in
+  someone's hand, a tick is a person's assertion.
+- **The id is TEXT, not an FK to `amazon_orders.id`.** It is what a barcode carries, and
+  `amazon_orders` is a cache `purge_older_than` deletes from — an FK would either block the purge
+  or cascade the warehouse's own record away with it.
+- **Ticks save on the spot**, outside the dirty/Save machinery the two number tabs use. A checkbox
+  has no half-typed value and no caret to protect, the floor must not lose a morning to a
+  forgotten Save, and a scanner has nothing to press.
+
+> **The 60-second poll had to learn about ticks too.** It re-reads local rows and re-renders tab
+> 3, so without pulling `order_packed` it would render a STALE map over a tick made on a second
+> tablet — two people pack from this list, which is why it is a shared screen and not a printed
+> sheet. Skipped while a request is in flight, or overwriting mid-save reads as the tick having
+> failed. Caught by reading the poll while adding the feature, not by using it.
+
+### A multi-product order is ONE parcel, and its lines must stay together
+Measured on 2026-08-27: **85 orders produced 86 item lines**, so one parcel held two products.
+Rare is not harmless — it is precisely the order that ships short, because its second line reads
+as somebody else's row.
+
+`dispatch_sheet` flags every line (`multi_item`, `order_lines`) and **anchors each order at its
+heaviest line so its lines sort adjacently**. Sorting by parent alone scatters them: two products
+sort to two different places, 40 rows apart on the real sheet, and the renderer decides "does this
+row start a group" by comparing with the previous row — so non-adjacent lines make grouping
+impossible. Anchoring on the heaviest line rather than the lightest keeps the heaviest-first
+reading order, so a 5 kg parcel does not sink below a 0.5 kg one.
+
+The group is shown three ways at once — tinted band, left rule, and an `N items` badge — because a
+single cue is easy to miss on a long sheet, and one tick covers the whole parcel.
+
+### "86 orders" and "87 lines" were both right, and that was the bug
+`ORDERS TODAY` read 86 while the Orders tab badge read 87: one counted orders, the other counted
+table rows, and nothing said they were different questions. `totals` now carries **`orders`,
+`order_lines` and `multi_item_orders`** separately; the badge counts orders (matching the KPI) and
+the row count appears in the table heading, where the word "line(s)" gives it meaning.
 
 ### Raw stock is STANDING; packed counts are per-day
 `product_raw_stock` is UNIQUE on `(product)` with **no `pack_date`**, and the asymmetry with
@@ -981,16 +1041,34 @@ almost none. Measured with the old 90-day window after widening the filter: **80
 pages, ~3 minutes, and 0 orders due today** — the "refresh is too slow and the data is wrong"
 report in one sentence. So:
 
-| Refresh | Window | Cost | Purpose |
+| Refresh | Window | Pages | Purpose |
 |---|---|---|---|
-| Scheduled, every 30 min | since **midnight IST** (`TODAY_ONLY`) | ~2 pages, ~25 s | today's dispatch, complete |
-| Manual button | 3 days (`BACKFILL_DAYS`) | ~7 pages, ~2.5 min | catch a straggler |
+| Scheduled, every 30 min | since **midnight IST** (`TODAY_ONLY`) | 12 (~6 typical, ~2.2 min) | today's dispatch, complete |
+| Manual button | 3 days (`BACKFILL_DAYS`) | 8 (~2.5 min) | catch a straggler |
 
 Midnight IST puts today's orders on page 1 — 193 of them, matching Seller Central — because an
 order dispatched today was necessarily updated today. `TODAY_ONLY` is a sentinel, not
 `days=0.5`, because "today" is a CALENDAR question in IST that must not drift with the hour the
 job happens to run; `_since()` resolves it to 18:30Z the previous day, since using the UTC day
 boundary would drop every order placed between 00:00 and 05:30 IST.
+
+> **`ORDER_REFRESH_PAGES` was 4, and it truncated on EVERY run** — putting a permanent warning on
+> the dispatch screen. The reasoning behind 4 ("a day's dispatch is ~200 orders = 2 pages, so 4 is
+> double") measured the wrong set: `LastUpdatedAfter=midnight IST` does not ask for orders *for*
+> today, it asks for every order Amazon **touched** today, and Amazon touches an order on every
+> status move. So yesterday's 188 and Sunday's 264 are all in the answer as they walk
+> `PendingPickUp → PickedUp → OutForDelivery → Delivered`. Measured 2026-08-27: 1,790 rows match
+> the status filter, ~600 updated on a busy day. Now 12 pages — a CEILING, not the usual spend,
+> since a typical run stops early when Amazon returns no `NextToken`.
+>
+> **And the warning itself was FALSE.** It read *"Some orders are missing from today's sheet"*,
+> every half hour, while today's dispatch was complete — because `getOrders` pages **oldest-first**,
+> so the rows lost to a cap are the OLDEST, and today's orders (the most recently updated by
+> definition) are on the pages that did arrive. It sent the warehouse hunting for parcels that were
+> on screen all along. It now says which orders were skipped and that today is complete. Two
+> long-standing tests asserted the false phrase verbatim and had to be rewritten to assert the
+> requirement — "truncation is reported, and names its cause" — rather than the sentence. **That is
+> the third time in this feature a test has pinned a conclusion instead of a reason.**
 
 > **`ACTIONABLE_STATUS_SET` had to be split when the filter widened.** One frozenset was doing
 > two unrelated jobs: "which local rows did the fetch speak for" (reconcile) and "which orders
@@ -1086,6 +1164,12 @@ class of bug the shipment feature's write separation exists to avoid.
 > units are physically boxed on this floor right now. It writes no order row, no status and no
 > invoice. An earlier note here said "no local packed tick" flatly; that was right when the
 > screen only mirrored Amazon and became wrong when the warehouse needed its own worksheet.
+>
+> The **per-order packed tick** (`order_packed_state`) is the same argument one level up, and it
+> is deliberately NOT a shipping status. "Is this box finished on our floor" is ours; "has the
+> courier taken it" is Amazon's `PickedUp`, and the tick never writes it. That is exactly why the
+> tick is a boolean and not a lifecycle — a `handed_over` state here would be a local copy of a
+> field Amazon already owns.
 
 > **Real-time is possible but needs AWS.** `ORDER_CHANGE` notifications are reachable —
 > `GET /notifications/v1/subscriptions/ORDER_CHANGE` returns 404 ("no subscription"), not

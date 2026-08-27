@@ -138,8 +138,40 @@ tr.over td{background:var(--red-soft)}
 .tag.over{background:var(--red-soft);color:var(--red)}
 .tag.ok{background:var(--green-soft);color:var(--green)}
 .tag.short{background:var(--yellow-soft);color:var(--yellow)}
+.tag.multi{background:var(--orange-soft);color:var(--orange)}
 .o-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
 .sku{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:var(--text-muted)}
+
+/* ── Order grouping and the packed tick (tab 3) ───────────────────────────────
+   A multi-product order is ONE parcel and has to read as one block, or its second line looks
+   like somebody else's order and the box goes out short. The group is shown three ways at once —
+   a tinted band, a left rule, and an "N items" badge — because a single cue is easy to miss on a
+   long sheet, and this is the row where missing it costs a reshipment. */
+tr.multi td{background:var(--orange-soft)}
+tr.multi.grp-first td{border-top:2px solid var(--orange)}
+tr.multi.grp-last td{border-bottom:2px solid var(--orange)}
+tr.multi td:first-child{border-left:3px solid var(--orange)}
+/* A packed order recedes: the eye should land on what is still to do. Green stays on the tick
+   itself so the row does not shout. */
+tr.packed-row td{background:var(--green-soft);color:var(--text-muted)}
+tr.multi.packed-row td{background:var(--green-soft)}
+
+.pack-cell{white-space:nowrap}
+.tick{display:inline-flex;align-items:center;justify-content:center;cursor:pointer;
+  width:30px;height:30px;border:1.5px solid var(--border-strong);border-radius:6px;
+  background:var(--surface);position:relative}
+.tick:hover{border-color:var(--accent)}
+/* The native box is kept in the DOM and merely hidden: it stays keyboard-reachable and
+   screen-reader-labelled, which a div-with-a-click-handler would not be. A warehouse tablet is
+   often driven with a stylus or an external keypad. */
+.tick input{position:absolute;inset:0;opacity:0;cursor:pointer;margin:0}
+.tick-mark{font-size:16px;font-weight:800;color:var(--green);line-height:1}
+.tick:has(input:checked){border-color:var(--green);background:var(--green-soft)}
+.tick:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
+
+.pack-progress{font-size:13px;color:var(--text-muted);margin:0 0 8px;padding:6px 10px;
+  background:var(--surface2);border-radius:6px}
+.pack-progress strong{font-size:15px;color:var(--text)}
 .empty-note{font-size:12.5px;color:var(--text-muted);padding:8px 0}
 .section-title{font-size:14px;font-weight:700;margin-bottom:2px}
 .section-sub{font-size:12.5px;color:var(--text-muted);margin-bottom:8px;line-height:1.5}
@@ -274,6 +306,14 @@ const savedPacked = {};      // asin -> last COMMITTED units, for undo
 const savedRaw = {};         // product -> last COMMITTED kg, for undo
 const dirtyPacked = new Set();
 const dirtyRaw = new Set();
+/* order id -> {packed_at, packed_by, source}. Absence means NOT packed — one representation of
+   that state, matching the table, where un-ticking deletes the row.
+
+   Deliberately NOT part of the dirty/Save machinery the two number tabs use. A checkbox has no
+   caret to protect and no partially-typed value, so it saves the instant it is clicked: the floor
+   should never lose a morning's ticks to a forgotten Save, and a scanner has nothing to press. */
+let orderPacked = {};
+const tickInFlight = new Set();
 
 const $ = id => document.getElementById(id);
 const n = v => Number(v || 0);
@@ -334,6 +374,10 @@ async function load(){
       savedRaw[row.product] = n(row.raw_kg);
       if(!dirtyRaw.has(row.product)) rawStock[row.product] = n(row.raw_kg);
     });
+    // Server truth replaces the local map wholesale. Safe because a tick is committed before it
+    // is ever shown as ticked, so there is no unsaved state here to lose — unlike the number
+    // tabs, whose dirty sets are deliberately preserved across a reload.
+    orderPacked = data.order_packed || {};
     $("admin-area").style.display = data.is_admin ? "" : "none";
     render();
     renderRefresh(data.refresh, data.last_refreshed_at);
@@ -363,9 +407,14 @@ function renderKpis(){
     <div class="kpi done"><div class="v" id="kpi-packed">${totalPacked()}</div><div class="k">Packed</div></div>
     <div class="kpi left"><div class="v" id="kpi-left">${totalLeft()}</div><div class="k">Still to pack</div></div>
     <div class="kpi buy"><div class="v" id="kpi-buy">${n(p.to_buy_kg).toFixed(1)}</div><div class="k">To buy (kg)</div></div>`;
+  /* The Orders badge counts ORDERS, matching the KPI above it. It used to count table ROWS,
+     which read as a contradiction — "Orders today 86" beside a tab labelled "Orders (87)" —
+     because an order holding two products occupies two rows. Neither number was wrong; nothing
+     said they answered different questions. The row count still appears, in the table heading,
+     where the word "line(s)" gives it a meaning. */
   $("count-weight").textContent = `(${(data.purchasing.rows || []).length})`;
   $("count-sku").textContent = `(${skuRows().length})`;
-  $("count-orders").textContent = `(${(data.sheet.orders || []).length})`;
+  $("count-orders").textContent = `(${n(data.sheet.totals.orders)})`;
 }
 
 /* ── Tab 1: weight and purchasing ───────────────────────────────────────── */
@@ -468,24 +517,24 @@ function renderSku(){
     <table>
       <thead><tr>
         <th>Product</th><th>Size</th><th>SKU</th>
-        <th class="num">Ordered</th><th class="num">Packed today</th><th class="num">Left</th>
+        <th class="num">Units ordered</th><th class="num">Packed today</th><th class="num">Left</th>
       </tr></thead>
       <tbody>${rows.map(r => {
         const done = n(packed[r.asin]);
         const over = Math.max(0, done - n(r.units));
         const left = Math.max(0, n(r.units) - done);
         const dirty = dirtyPacked.has(r.asin);
-        /* UNITS and ORDERS are identical on 57 of 68 rows, so the orders count is shown
-           INLINE only where they differ — a whole column of duplicates was the noise. */
-        const ordered = n(r.units) === n(r.orders)
-          ? `${n(r.units)}`
-          : `${n(r.units)} <span class="muted">/ ${n(r.orders)} ord</span>`;
+        /* ONLY UNITS HERE. This used to render "3 / 2 ord" wherever units and orders differed,
+           on the theory that a whole column of identical numbers was noise. Wrong tab for it:
+           this column sits directly beside the box where the packer types units packed, so a
+           second number next to it reads as a target and invites packing 2 of the 3 ordered.
+           The orders count is still on the Weight & purchase tab, where nothing is editable. */
         return `<tr class="${over ? "over" : ""}">
           <td class="p-name">${esc(r.parent)}${
             r.known ? "" : ' <span class="tag unknown">not in catalogue</span>'}</td>
           <td class="p-size">${esc(r.weight_label || "—")}</td>
           <td class="sku">${esc(r.seller_sku || r.asin)}</td>
-          <td class="num">${ordered}</td>
+          <td class="num">${n(r.units)}</td>
           <td class="num"><input class="qty${over ? " over" : ""}${dirty ? " dirty" : ""}"
               type="number" min="0" inputmode="numeric" value="${done || ""}" placeholder="0"
               aria-label="Units packed for ${esc(r.seller_sku || r.asin)}"
@@ -536,6 +585,18 @@ function visibleOrders(){
                            o.easyship_status].join(" ").toLowerCase().includes(q));
 }
 
+/* How many DISTINCT orders are in a set of line rows. The tab badge and this heading both count
+   orders, never rows: "86 orders" beside a table of 87 lines read as a contradiction, when in
+   fact one order simply held two products. */
+function distinctOrders(rows){
+  return new Set(rows.map(o => o.amazon_order_id)).size;
+}
+
+function orderPackedCount(){
+  const ids = new Set((data.sheet.orders || []).map(o => o.amazon_order_id));
+  return [...ids].filter(id => orderPacked[id]).length;
+}
+
 function renderOrders(){
   const rows = visibleOrders();
   if(!rows.length){
@@ -544,24 +605,69 @@ function renderOrders(){
     </div></div>`;
     return;
   }
+  const orderCount = distinctOrders(rows);
+  const lineCount = rows.length;
+  const multi = n(data.sheet.totals.multi_item_orders);
+  const donePacked = orderPackedCount();
+  const totalOrders = n(data.sheet.totals.orders);
+
+  /* Lines of one order arrive ADJACENT from the server (`dispatch_sheet` anchors each order at
+     its heaviest line), so a single pass can decide which row starts a group. Doing it here
+     rather than re-sorting in the browser keeps the screen, the PDF and the Excel in one order —
+     the same reason the shipment feature has exactly one ORDER BY. */
+  let html = "";
+  rows.forEach((o, i) => {
+    const id = o.amazon_order_id;
+    const first = i === 0 || rows[i - 1].amazon_order_id !== id;
+    const last = i === rows.length - 1 || rows[i + 1].amazon_order_id !== id;
+    const state = orderPacked[id];
+    const isPacked = !!state;
+    const cls = [
+      first ? "grp-first" : "", last ? "grp-last" : "",
+      o.multi_item ? "multi" : "", isPacked ? "packed-row" : "",
+    ].filter(Boolean).join(" ");
+
+    html += `<tr class="${cls}" data-order-row="${esc(id)}">
+      <td class="o-id">${first ? `${esc(id)}${
+          o.multi_item ? ` <span class="tag multi">${n(o.order_lines)} items</span>` : ""
+        }` : ""}</td>
+      <td class="sku">${esc(o.seller_sku || o.asin)}</td>
+      <td class="num">${n(o.quantity)}</td>
+      <td>${esc(o.parent)}</td>
+      <td class="num">${o.weight ? (n(o.weight) * n(o.quantity)).toFixed(2) + " kg" : ""}</td>
+      <td>${first ? esc([o.city, o.state].filter(Boolean).join(", ")) : ""}</td>
+      <td>${first ? `<span class="tag">${esc(o.easyship_status || "—")}</span>` : ""}</td>
+      <td class="num pack-cell">${first ? `
+        <label class="tick" title="${isPacked
+            ? `Packed ${esc((state.packed_at || "").slice(11, 16))}${
+                state.packed_by ? " by " + esc(state.packed_by) : ""}${
+                state.source === "scan" ? " (scanned)" : ""}`
+            : "Mark this order packed and ready to hand over"}">
+          <input type="checkbox" data-order="${esc(id)}"${isPacked ? " checked" : ""}
+                 aria-label="Order ${esc(id)} packed"/>
+          <span class="tick-mark">${isPacked ? "✓" : ""}</span>
+        </label>` : ""}</td>
+    </tr>`;
+  });
+
   $("orders-area").innerHTML = `<div class="card">
-    <div class="section-title">Orders — ${rows.length} line(s)</div>
-    <div class="section-sub">Grouped in the same order as the other tabs, so all three read
-      together. The Amazon status updates itself every minute.</div>
+    <div class="section-title">Orders — ${orderCount} order(s), ${lineCount} line(s)</div>
+    <div class="section-sub">Tick an order when its box is finished. ${
+      multi ? `<strong>${multi} order(s) hold more than one product</strong> — their lines are
+        grouped and shaded, and every line must be in the box before it is ticked. ` : ""
+      }Ticks save on the spot, so a lost connection cannot cost the day's work. The Amazon
+      status refreshes itself every minute.</div>
+    <div class="pack-progress">
+      <strong id="order-packed-count">${donePacked}</strong> of ${totalOrders} orders packed
+      <span class="muted" id="order-packed-left">· ${Math.max(0, totalOrders - donePacked)} to go</span>
+    </div>
     <table>
       <thead><tr>
         <th>Order</th><th>SKU</th><th class="num">Qty</th><th>Item</th>
         <th class="num">Weight</th><th>Destination</th><th>Amazon status</th>
+        <th class="num">Packed</th>
       </tr></thead>
-      <tbody>${rows.map(o => `<tr>
-        <td class="o-id">${esc(o.amazon_order_id)}</td>
-        <td class="sku">${esc(o.seller_sku || o.asin)}</td>
-        <td class="num">${n(o.quantity)}</td>
-        <td>${esc(o.parent)}</td>
-        <td class="num">${o.weight ? (n(o.weight) * n(o.quantity)).toFixed(2) + " kg" : ""}</td>
-        <td>${esc([o.city, o.state].filter(Boolean).join(", "))}</td>
-        <td><span class="tag">${esc(o.easyship_status || "—")}</span></td>
-      </tr>`).join("")}</tbody>
+      <tbody>${html}</tbody>
     </table>
   </div>`;
 }
@@ -597,7 +703,14 @@ function pollOrders(){
       if(!r.ok) return;
       const fresh = await r.json();
       data.sheet.orders = fresh.sheet.orders;
+      data.sheet.totals = fresh.sheet.totals;
       data.last_refreshed_at = fresh.last_refreshed_at;
+      /* The ticks must come along, or a second device's work stays invisible until a reload —
+         and this poll would keep RE-RENDERING the stale map over it. Two people pack from two
+         tablets, which is the whole reason this is a shared list and not a printed sheet.
+         Skipped while a tick is in flight: overwriting the map mid-request would show the old
+         value for up to a minute and read as the tick having failed. */
+      if(!tickInFlight.size) orderPacked = fresh.order_packed || {};
       if(tab === "orders") renderOrders();
       renderOrdersUpdated();
     }catch(err){ /* a failed poll is not worth a banner; the next one will do */ }
@@ -639,6 +752,54 @@ $("tab-weight").addEventListener("input", e => {
   refreshWeightDerived(product);
   renderSaveBar();
 });
+
+/* The per-order packed tick. A `change` listener, not `input`, because a checkbox settles once.
+   Delegated for the same reason as the two above: the order id is Amazon's data, and building an
+   inline onclick out of foreign strings is an injection waiting to happen.
+
+   **Saves immediately, and the checkbox is the pending state.** No dirty set and no Save button:
+   the two number tabs need those because a half-typed quantity must not be committed, but a tick
+   is complete the moment it happens. The floor should not be able to lose a morning of ticks by
+   forgetting to press Save, and a barcode scanner has nothing to press. */
+$("tab-orders").addEventListener("change", e => {
+  const box = e.target;
+  const id = box.dataset && box.dataset.order;
+  if(!id) return;
+  tickOrder(id, box.checked, "manual", box);
+});
+
+async function tickOrder(id, wanted, source, box){
+  /* Guard against a double-fire on one order — a fast double-click, or a scan repeated while the
+     first request is still open. Without it the second response can arrive first and leave the
+     screen showing the opposite of what was stored. */
+  if(tickInFlight.has(id)) return;
+  tickInFlight.add(id);
+  try{
+    const r = await fetch(`/orders/order-packed/${data.pack_date}`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({entries: [{amazon_order_id: id, packed: wanted, source}]}),
+    });
+    const body = await r.json();
+    if(!r.ok){
+      /* 409 means the IST day rolled over with this page open. Say so and put the box back:
+         silently refiling the tick onto a new date would credit this morning to yesterday. */
+      if(box) box.checked = !wanted;
+      message(body.error || "Could not save that tick.", "error");
+      return;
+    }
+    // Re-seat from the COMMITTED map, never from `wanted`: the screen must show what the
+    // database holds, because a warehouse phone can lose a response and a stale tick is what
+    // gets acted on.
+    orderPacked = body.order_packed || {};
+    renderOrders();
+    message("", "info");
+  }catch(err){
+    if(box) box.checked = !wanted;
+    message("Could not reach the server — that tick was not saved. Try again.", "error");
+  }finally{
+    tickInFlight.delete(id);
+  }
+}
 
 /* Put the undo button beside a box the moment it is first edited.
 

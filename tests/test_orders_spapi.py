@@ -218,10 +218,19 @@ async def test_the_actionable_filter_string_and_the_reconcile_set_cannot_drift(m
 
 
 async def test_a_truncated_actionable_pass_says_so(monkeypatch):
-    """Truncation is REPORTED, and the wording has to be about today's work.
+    """Truncation is REPORTED — never silent.
 
-    This is the exact failure the whole rewrite exists to fix, so a silent truncation must
-    not be reintroduced by the fix itself.
+    **This used to demand the phrase "missing from today's sheet", and that phrase was FALSE.**
+    The requirement was right — a silent truncation is the failure the rewrite exists to fix —
+    but it was pinned to one sentence, and the sentence misdescribed what truncation costs.
+
+    `getOrders` pages OLDEST-FIRST while the window asks for everything UPDATED today, so the
+    rows lost to the cap are the OLDEST. Today's dispatch, being the most recently updated by
+    definition, is on the pages that DID arrive. The old message therefore sent the warehouse
+    hunting every half hour for parcels that were on screen all along.
+
+    So this asserts the REQUIREMENT (something is reported, and it names the cause) rather than
+    the conclusion — the third time this file has had to learn that distinction.
     """
     page = _fixture("orders_unshipped.json")["payload"]["Orders"]
 
@@ -235,7 +244,17 @@ async def test_a_truncated_actionable_pass_says_so(monkeypatch):
     _orders, warnings = await spapi_orders.fetch_easy_ship_orders(
         days=90, max_pages=2, sleep=fake_sleep
     )
-    assert any("missing from today's sheet" in w for w in warnings), warnings
+    assert warnings, "the pass truncated and said nothing"
+    joined = " ".join(warnings)
+    assert "2 pages" in joined, f"the warning does not say how far the pass got: {warnings}"
+    assert "oldest" in joined.lower(), (
+        f"the warning does not say WHICH orders were dropped: {warnings}"
+    )
+    assert "missing from today" not in joined, (
+        "the warning claims today's sheet is incomplete. Oldest-first paging means today's "
+        "orders are precisely the ones that WERE fetched, so this is a false alarm the "
+        "warehouse acts on every half hour"
+    )
 
 
 async def test_orders_are_re_read_by_id_in_batches_without_a_date_filter(monkeypatch):
@@ -317,11 +336,19 @@ async def test_paging_stops_at_max_pages_and_says_so(monkeypatch):
     orders, warnings = await spapi_orders.fetch_easy_ship_orders(
         days=90, max_pages=3, sleep=fake_sleep
     )
-    # Worded in terms of the CONSEQUENCE ("orders are missing from today's sheet") rather
-    # than the mechanism ("more pages"), because the person reading it is a warehouse
-    # manager deciding whether to trust the sheet in his hand.
-    assert any("Amazon reports more" in w for w in warnings), warnings
-    assert any("missing from today's sheet" in w for w in warnings), warnings
+    # The cap must be OBSERVED and REPORTED. Both halves matter: a cap that is not enforced is
+    # an hours-long request against a 22.5-second rate limit, and one that is not reported is a
+    # sheet the owner trusts more than he should.
+    #
+    # Asserted via the reported page count rather than by multiplying the fixture size, because
+    # two other behaviours also shape `orders` here and made the obvious arithmetic wrong: the
+    # 6-order fixture holds only 4 Easy Ship orders (`is_easy_ship` drops the rest), and
+    # `seen_ids` de-duplicates the same page handed back three times. Counting orders would
+    # therefore assert those two mechanisms rather than the cap.
+    assert any("3 pages" in w for w in warnings), warnings
+    # NOT "missing from today's sheet" — see test_a_truncated_actionable_pass_says_so for why
+    # that wording was false. Oldest-first paging drops the OLDEST orders, not today's.
+    assert "missing from today" not in " ".join(warnings), warnings
 
 
 async def test_fetch_items_asks_only_for_the_ids_it_is_given(monkeypatch):

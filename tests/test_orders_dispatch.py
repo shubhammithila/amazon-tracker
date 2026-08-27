@@ -520,3 +520,204 @@ def test_a_product_with_no_pack_size_contributes_no_kilograms_to_purchasing():
     row = next(r for r in summary["rows"] if r["product"] == "Mystery Mix")
     assert row["ordered_kg"] == 0.0
     assert row["to_buy_kg"] == 0.0, "an unweighable product produced a purchase quantity"
+
+
+# ─── Multi-product orders: one parcel, several lines ─────────────────────────
+#
+# Measured on production 2026-08-27: 85 orders produced 86 item lines, so exactly one order
+# that day held two different products. Rare is not harmless — it is the order that ships
+# short, because its second line reads as somebody else's row.
+
+
+def test_an_order_holding_two_products_is_counted_once_but_listed_twice():
+    """The 86-vs-87 report, as an assertion.
+
+    ORDERS TODAY read 86 while the Orders tab badge read 87, and both were right: one counts
+    orders, the other counts rows. The totals must state BOTH, so a renderer never has to pick
+    one and silently contradict the other.
+    """
+    orders = [
+        _order("111-SINGLE", [_item("B0RICE5KG", 1)]),
+        _order("222-MULTI", [_item("B0ABC500", 1), _item("B0ABC1KG", 1)]),
+    ]
+    sheet = logic.dispatch_sheet(orders, CATALOGUE, TODAY)
+
+    assert sheet["totals"]["orders"] == 2, "two parcels, so two orders"
+    assert sheet["totals"]["order_lines"] == 3, (
+        "three item lines across the two orders — the number the table renders, which used to "
+        "be reported as though it were the order count"
+    )
+    assert sheet["totals"]["multi_item_orders"] == 1
+
+
+def test_every_line_of_a_multi_product_order_is_flagged():
+    """Both lines carry the flag, not only the first.
+
+    The template decides grouping per row, so a flag on just the first line would leave the
+    second rendering as an unrelated order — the exact failure being fixed.
+    """
+    orders = [_order("222-MULTI", [_item("B0ABC500", 1), _item("B0RICE5KG", 2)])]
+    sheet = logic.dispatch_sheet(orders, CATALOGUE, TODAY)
+
+    assert len(sheet["orders"]) == 2
+    for row in sheet["orders"]:
+        assert row["multi_item"] is True, f"{row['seller_sku']} was not flagged"
+        assert row["order_lines"] == 2
+
+
+def test_a_single_product_order_is_not_flagged_as_multi():
+    """The flag has to mean something, so the common case must not carry it.
+
+    84 of 85 orders are single-line; flagging all of them would tint the whole table and the
+    cue would stop being a cue.
+    """
+    sheet = logic.dispatch_sheet(
+        [_order("111-SINGLE", [_item("B0RICE5KG", 3)])], CATALOGUE, TODAY
+    )
+    row = sheet["orders"][0]
+    assert row["multi_item"] is False
+    assert row["order_lines"] == 1
+    assert sheet["totals"]["multi_item_orders"] == 0
+
+
+def test_the_lines_of_one_order_are_adjacent_in_the_list():
+    """**The property the screen's grouping depends on.**
+
+    Sorting by parent alone scatters an order's lines: its two products sort to two different
+    places, which on the real sheet put them 40 rows apart. The renderer decides "does this row
+    start a group" by comparing with the previous row, so non-adjacent lines make grouping
+    impossible and each line renders as a separate parcel.
+
+    Built with the multi-item order's products at opposite ends of the weight sort (0.5 kg and
+    5 kg) and single-item orders in between, so a naive sort MUST separate them.
+    """
+    orders = [
+        _order("111-A", [_item("B0ABC1KG", 1)]),
+        _order("222-MULTI", [_item("B0ABC500", 1), _item("B0RICE5KG", 1)]),
+        _order("333-C", [_item("B0ABC1KG", 1)]),
+        _order("444-D", [_item("B0RICE5KG", 1)]),
+    ]
+    sheet = logic.dispatch_sheet(orders, CATALOGUE, TODAY)
+
+    ids = [row["amazon_order_id"] for row in sheet["orders"]]
+    positions = [i for i, oid in enumerate(ids) if oid == "222-MULTI"]
+    assert len(positions) == 2, f"expected two lines for the multi-item order, got {ids}"
+    assert positions[1] - positions[0] == 1, (
+        f"the two lines of one order are {positions[1] - positions[0]} rows apart: {ids}. "
+        "The screen groups by comparing neighbouring rows, so they must be adjacent."
+    )
+
+
+def test_a_multi_item_order_still_sorts_by_its_heaviest_line():
+    """Anchoring must not sink a heavy parcel below lighter ones.
+
+    The sheet reads heaviest-first because weight is what fills the vehicle. An order anchored
+    at its LIGHTEST line would drop below single-item orders it outweighs — a quieter
+    regression than scattering, and still wrong.
+    """
+    orders = [
+        _order("111-LIGHT", [_item("B0ABC500", 1)]),                          # 0.5 kg
+        _order("222-MULTI", [_item("B0RICE5KG", 1), _item("B0ABC500", 1)]),   # 5 kg + 0.5 kg
+    ]
+    sheet = logic.dispatch_sheet(orders, CATALOGUE, TODAY)
+
+    assert sheet["orders"][0]["amazon_order_id"] == "222-MULTI", (
+        "the 5 kg order sorted below a 0.5 kg one — anchored on its lightest line"
+    )
+    assert sheet["orders"][0]["weight"] == 5.0, "within the order, the heavy item must lead"
+
+
+# ─── The per-order packed tick ───────────────────────────────────────────────
+
+
+async def test_ticking_an_order_stores_it_and_unticking_deletes_it(db):
+    """Absence is the only representation of "not packed".
+
+    A stored `packed=False` row would be a second way to say the same thing, and two
+    representations of one state is how a stale timestamp ends up behind a false flag.
+    """
+    await repository.save_order_packed(
+        db, "2026-08-25", [{"amazon_order_id": "111-A"}], packed_by="ravi"
+    )
+    stored = await repository.load_order_packed(db, "2026-08-25")
+    assert "111-A" in stored
+    assert stored["111-A"]["packed_by"] == "ravi"
+    assert stored["111-A"]["source"] == "manual"
+
+    await repository.save_order_packed(
+        db, "2026-08-25", [{"amazon_order_id": "111-A", "packed": False}]
+    )
+    assert await repository.load_order_packed(db, "2026-08-25") == {}
+
+
+async def test_a_repeated_tick_updates_one_row_rather_than_duplicating(db):
+    """A warehouse phone that loses a response re-sends it.
+
+    UNIQUE (pack_date, amazon_order_id) is the real guarantee; this proves the write path
+    honours it rather than raising or inserting a second row.
+    """
+    from sqlalchemy import func, select
+
+    from app.models import OrderPackedState
+
+    for _ in range(3):
+        await repository.save_order_packed(db, "2026-08-25", [{"amazon_order_id": "111-A"}])
+
+    stored = await repository.load_order_packed(db, "2026-08-25")
+    assert list(stored) == ["111-A"]
+
+    count = (await db.execute(select(func.count()).select_from(OrderPackedState))).scalar()
+    assert count == 1, f"{count} rows stored for one order — the upsert is inserting"
+
+
+async def test_a_tick_is_scoped_to_its_day(db):
+    """Yesterday's ticks must not appear on today's sheet.
+
+    Without the date in the key every order ever packed would read as packed this morning, and
+    the floor would hand over nothing.
+    """
+    await repository.save_order_packed(db, "2026-08-24", [{"amazon_order_id": "111-A"}])
+    await repository.save_order_packed(db, "2026-08-25", [{"amazon_order_id": "222-B"}])
+
+    assert list(await repository.load_order_packed(db, "2026-08-24")) == ["111-A"]
+    assert list(await repository.load_order_packed(db, "2026-08-25")) == ["222-B"]
+
+
+async def test_a_scanned_tick_records_that_it_was_scanned(db):
+    """`source` is stored from the start so a scan and a typed tick can be told apart.
+
+    A scanned tick is evidence the box was physically in someone's hand; a typed one is a
+    person's assertion. Recording it now means the barcode work needs no migration.
+    """
+    await repository.save_order_packed(
+        db, "2026-08-25", [{"amazon_order_id": "111-A", "source": "scan"}]
+    )
+    stored = await repository.load_order_packed(db, "2026-08-25")
+    assert stored["111-A"]["source"] == "scan"
+
+
+async def test_an_unknown_source_falls_back_to_manual(db):
+    """Anything unrecognised is recorded as manual rather than stored verbatim.
+
+    This field is written from a request body, so it must not become a free-text column a
+    later reader has to guess at.
+    """
+    await repository.save_order_packed(
+        db, "2026-08-25", [{"amazon_order_id": "111-A", "source": "<script>"}]
+    )
+    stored = await repository.load_order_packed(db, "2026-08-25")
+    assert stored["111-A"]["source"] == "manual"
+
+
+async def test_the_tick_map_is_json_serialisable(db):
+    """`JSONResponse` cannot serialise a datetime, and this app shipped that defect once.
+
+    Converted in the repository so every route inherits the fix rather than each remembering
+    it — the same reason `load_raw_stock` casts Decimal to float.
+    """
+    import json
+
+    await repository.save_order_packed(db, "2026-08-25", [{"amazon_order_id": "111-A"}])
+    stored = await repository.load_order_packed(db, "2026-08-25")
+    json.dumps(stored)          # must not raise
+    assert isinstance(stored["111-A"]["packed_at"], str)

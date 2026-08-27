@@ -390,10 +390,20 @@ async def fetch_easy_ship_orders(
     )
     orders.extend(actionable)
     if truncated:
+        # **This message must not claim today's sheet is incomplete — it said so, and it was
+        # false.** `getOrders` pages OLDEST-FIRST, and the window asks for everything Amazon
+        # UPDATED today, which includes last week's orders as they walk to `Delivered`. So the
+        # rows lost to the cap are the OLDEST ones, while today's dispatch — necessarily the
+        # most recently updated — is on the pages that were fetched.
+        #
+        # The old wording sent the warehouse looking for missing parcels that were on the
+        # screen all along, every half hour. What truncation actually costs is the reconcile
+        # signal for older orders: a status change on a parcel from last week may be a refresh
+        # late. That is worth stating, and it is not the same claim.
         warnings.append(
-            f"Stopped after {max_pages} pages of orders still to pack or hand over, and "
-            "Amazon reports more. Some orders are missing from today's sheet — run the "
-            "refresh again to continue."
+            f"Amazon had more than {max_pages} pages of updated orders, so the oldest ones "
+            "were not re-read this time. Today's dispatch is complete — Amazon returns the "
+            "oldest first, so only older orders' statuses may lag by a refresh."
         )
 
     # The pending pass. Separate because a payment-unconfirmed order has no Easy Ship status

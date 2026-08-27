@@ -650,6 +650,58 @@ class OrderPackedEntry(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class OrderPackedState(Base):
+    """One tick: this ORDER is packed and ready to hand over. **Ours, not Amazon's.**
+
+    Answers a question `OrderPackedEntry` cannot. That table counts units per ASIN per day —
+    "how many 500 g pouches are boxed" — which is what the purchasing and SKU views need. It
+    cannot answer "is order 407-2831377-6251535 finished", because an order holding two
+    different products contributes to two separate ASIN rows and neither one knows the parcel is
+    incomplete. Measured on 2026-08-27: 85 orders produced 86 item lines, so one order that day
+    needed both its lines packed before it could ship. **The order is the unit that ships**, so
+    completeness has to be recorded against the order id.
+
+    Deliberately a BOOLEAN tick, not a status lifecycle. "packed" and "handed to the courier"
+    would be two states, and the second is already Amazon's: `easyship_status` moves to
+    `PickedUp` when the courier collects, so duplicating it locally would create exactly the
+    second source of truth the rest of this feature avoids. What Amazon has no opinion about is
+    whether the box is finished on this floor — that, and only that, is stored here.
+
+    **Keyed on (pack_date, amazon_order_id).** `pack_date` for the same reason
+    `OrderPackedEntry` carries it: an IST calendar date decided by the SERVER and stored as
+    text, because `datetime.utcnow` is 5.5 hours behind and a date derived from a timestamp
+    lands on the wrong day every night between 18:30 and 24:00 UTC. UNIQUE on the pair makes a
+    repeated tick from a warehouse phone an UPDATE rather than a duplicate row.
+
+    The order id is stored as TEXT, not a foreign key to `amazon_orders.id`. Two reasons, the
+    second load-bearing: an Amazon order id is what a barcode carries and what a scanner will
+    send, so text is the natural key for that lookup; and `amazon_orders` is a CACHE that
+    `purge_older_than` deletes from, so a real FK would either block the purge or cascade the
+    warehouse's own record away with it.
+
+    `unpacked_at` is deliberately absent. Un-ticking DELETES the row, so absence means "not
+    packed" — one representation of that state rather than two, and no way for a stale timestamp
+    to contradict a false flag.
+    """
+    __tablename__ = "order_packed_state"
+    __table_args__ = (
+        Index("idx_order_packed_state_date_order", "pack_date", "amazon_order_id", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    #: IST calendar date, "YYYY-MM-DD". See the class docstring for why it is text.
+    pack_date = Column(String(10), nullable=False)
+    #: Amazon's own order id, e.g. "407-2831377-6251535" — what a barcode will carry.
+    amazon_order_id = Column(String(20), nullable=False)
+    packed_at = Column(DateTime, default=datetime.utcnow)
+    #: Who ticked it, so a disputed parcel can be asked about. Blank for a shared login.
+    packed_by = Column(String(50))
+    #: How the tick arrived: "manual" today, "scan" when the scanner lands. Recorded from the
+    #: start so the two can be told apart without a migration later — a scanned tick is evidence
+    #: the box was in someone's hand, a typed one is a person's assertion.
+    source = Column(String(10), default="manual")
+
+
 class ProductRawStock(Base):
     """Raw material on hand for one parent product, in kilograms. **Standing, not per-day.**
 

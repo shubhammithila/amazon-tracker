@@ -268,10 +268,12 @@ async def _dispatch(db: AsyncSession):
     sheet_catalogue, warning, source = await catalogue.load_catalogue()
     packed = await repository.load_packed(db, pack_date)
     raw_stock = await repository.load_raw_stock(db)
+    order_packed = await repository.load_order_packed(db, pack_date)
     sheet = logic.dispatch_sheet(orders, sheet_catalogue, today, packed=packed)
     purchasing = logic.raw_stock_summary(sheet, raw_stock)
     return sheet, purchasing, {
         "source": source, "warning": warning, "today": pack_date, "pack_date": pack_date,
+        "order_packed": order_packed,
     }
 
 
@@ -317,6 +319,10 @@ async def dispatch(
         "today_ist": meta["today"],
         "catalogue_source": meta["source"],
         "catalogue_warning": meta["warning"],
+        # Which ORDERS are ticked as fully packed, keyed on Amazon's order id. Distinct from the
+        # per-ASIN unit counts inside `sheet`: an order with two products contributes to two
+        # ASIN rows and neither knows the parcel is incomplete.
+        "order_packed": meta["order_packed"],
         "last_refreshed_at": last.isoformat() if last else None,
         "refresh": refresh.status(),
         "is_admin": bool(getattr(grant, "is_admin", False)),
@@ -369,6 +375,71 @@ async def save_packed(
     # can lose a response and a stale total is what gets acted on.
     logger.info("orders: packed counts saved for %s (%d SKU(s))", pack_date, len(packed))
     return JSONResponse({"status": "saved", "pack_date": pack_date, "packed": packed})
+
+
+@router.post("/order-packed/{pack_date}")
+async def save_order_packed(
+    pack_date: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    grant=Depends(require_area(permissions.ORDERS)),
+):
+    """Tick orders as fully packed. `{"entries": [{"amazon_order_id", "packed", "source"}]}`.
+
+    A different question from `POST /packed/{pack_date}`, which counts UNITS per ASIN. This
+    records that one ORDER is finished — the unit that actually ships. An order holding two
+    products contributes to two ASIN rows and neither one knows the parcel is incomplete, so
+    without this a two-item order can be packed, looked complete and go out short.
+
+    **The date must be TODAY in IST and the server decides what today is**, identically to
+    `save_packed` and for the same reason: a laptop in another timezone, or a page left open past
+    midnight, would otherwise file this morning's work against yesterday. Refused rather than
+    silently redirected — "reload" is the honest answer, not "I moved your ticks".
+
+    `packed` defaults to TRUE when absent, which is what makes this scanner-ready: a barcode
+    reader can post `{"amazon_order_id": "..."}` alone and mean "this box is done". `source`
+    records how the tick arrived ("manual" or "scan") so the two can be told apart later.
+
+    Writes no order status and reaches no invoice. Amazon has no opinion about whether a box is
+    finished on this floor, so this is not a second source of truth — the same boundary every
+    other write in this feature respects.
+    """
+    today = datetime.now(logic.IST).date().isoformat()
+    if pack_date != today:
+        return JSONResponse(
+            {
+                "error": f"That page is for {pack_date}, but today is {today} (IST). "
+                         "Reload the page before ticking more orders.",
+                "pack_date": today,
+            },
+            status_code=409,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:                       # noqa: BLE001 - a malformed body is a 400
+        return JSONResponse({"error": "Expected a JSON body."}, status_code=400)
+
+    entries = (body or {}).get("entries")
+    if not isinstance(entries, list):
+        return JSONResponse(
+            {"error": "entries must be a list of {amazon_order_id, packed} objects."},
+            status_code=400,
+        )
+
+    order_packed = await repository.save_order_packed(
+        db, pack_date, entries, packed_by=getattr(grant, "username", "") or ""
+    )
+    # The whole map goes back, not just what was sent: the screen re-renders from committed
+    # truth rather than from what it believes it saved, because a warehouse phone can lose a
+    # response and a stale tick is what gets acted on.
+    logger.info(
+        "orders: %d order tick(s) saved for %s (%d packed)",
+        len(entries), pack_date, len(order_packed),
+    )
+    return JSONResponse(
+        {"status": "saved", "pack_date": pack_date, "order_packed": order_packed}
+    )
 
 
 @router.post("/raw-stock")

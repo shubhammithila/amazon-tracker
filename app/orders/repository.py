@@ -17,7 +17,13 @@ from datetime import datetime, timedelta
 from sqlalchemy import case, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AmazonOrder, AmazonOrderItem, OrderPackedEntry, ProductRawStock
+from app.models import (
+    AmazonOrder,
+    AmazonOrderItem,
+    OrderPackedEntry,
+    OrderPackedState,
+    ProductRawStock,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -361,6 +367,128 @@ async def save_packed(
 
     await db.commit()
     return await load_packed(db, pack_date)
+
+
+# ─── Per-ORDER packed ticks ───────────────────────────────────────────────────
+#
+# A different question from the units above, and it needs a different key. `load_packed`
+# answers "how many 500 g pouches are boxed" (per ASIN); these answer "is order
+# 407-2831377-6251535 finished" (per order id). An order holding two products contributes to
+# two ASIN rows and neither one knows the parcel is incomplete — measured on 2026-08-27, 85
+# orders produced 86 item lines, so one parcel that day needed both lines packed before it
+# could go.
+
+
+async def load_order_packed(db: AsyncSession, pack_date: str) -> dict[str, dict]:
+    """`{order_id: {"packed_at", "packed_by", "source"}}` for one IST day.
+
+    A dict keyed on the order id because both callers look up one order while rendering a row,
+    and because a barcode scan arrives as an order id and needs an O(1) answer.
+
+    The VALUE is a dict rather than a bare `True`. Absence already carries "not packed", so a
+    boolean would waste the row; who ticked it and when is what makes a disputed parcel
+    answerable, and `source` is what will distinguish a scan from a typed tick.
+    """
+    rows = await db.execute(
+        select(
+            OrderPackedState.amazon_order_id,
+            OrderPackedState.packed_at,
+            OrderPackedState.packed_by,
+            OrderPackedState.source,
+        ).where(OrderPackedState.pack_date == pack_date)
+    )
+    return {
+        order_id: {
+            # isoformat, not the datetime: `JSONResponse` cannot serialise a datetime, and this
+            # app already shipped that exact defect once. Converted HERE so every route
+            # inherits the fix rather than each remembering it.
+            "packed_at": packed_at.isoformat() if packed_at else None,
+            "packed_by": packed_by or "",
+            "source": source or "manual",
+        }
+        for order_id, packed_at, packed_by, source in rows.all()
+    }
+
+
+async def save_order_packed(
+    db: AsyncSession,
+    pack_date: str,
+    entries: list[dict],
+    *,
+    packed_by: str = "",
+) -> dict[str, dict]:
+    """Tick or un-tick orders for one day. Returns the day's full map afterwards.
+
+    `entries` is `[{"amazon_order_id", "packed", "source"}]`. `packed` false DELETES the row —
+    absence is the single representation of "not packed", so there is no way for a stale
+    timestamp to sit behind a false flag and contradict it.
+
+    SELECT-then-UPDATE-or-INSERT rather than an `ON CONFLICT` upsert, matching every other
+    write in this app: it is dialect-neutral for the deferred Postgres move, and the UNIQUE
+    index on (pack_date, amazon_order_id) is the real guarantee that a phone re-sending a lost
+    request updates one row instead of duplicating it.
+
+    **A re-tick REFRESHES `packed_at`, and that is deliberate.** Ticking an order that is
+    already ticked is not a no-op worth optimising away: it means someone re-checked the box,
+    and the later time is the more useful fact. It also keeps a scan idempotent without
+    special-casing it.
+
+    The full map is returned, not just what was sent, so the screen re-renders from committed
+    truth instead of from what it believes it saved — a warehouse phone can lose a response and
+    a stale tick is what gets acted on.
+    """
+    wanted: dict[str, dict] = {}
+    for raw in entries or []:
+        if not isinstance(raw, dict):
+            continue
+        order_id = str(raw.get("amazon_order_id") or "").strip()
+        if not order_id:
+            continue
+        source = str(raw.get("source") or "manual").strip().lower()
+        # A repeated order id in one payload: last wins, as on the packing screen.
+        wanted[order_id] = {
+            # Absent `packed` means "tick it": a scanner posts an id and nothing else.
+            "packed": bool(raw.get("packed", True)),
+            "source": source if source in ("manual", "scan") else "manual",
+        }
+
+    if not wanted:
+        return await load_order_packed(db, pack_date)
+
+    existing = {
+        row.amazon_order_id: row
+        for row in (
+            await db.execute(
+                select(OrderPackedState).where(
+                    OrderPackedState.pack_date == pack_date,
+                    OrderPackedState.amazon_order_id.in_(sorted(wanted)),
+                )
+            )
+        ).scalars()
+    }
+
+    now = datetime.utcnow()
+    for order_id, want in wanted.items():
+        row = existing.get(order_id)
+        if not want["packed"]:
+            if row is not None:
+                await db.delete(row)
+            continue
+        if row is None:
+            db.add(OrderPackedState(
+                pack_date=pack_date,
+                amazon_order_id=order_id,
+                packed_at=now,
+                packed_by=packed_by or "",
+                source=want["source"],
+            ))
+        else:
+            row.packed_at = now
+            row.packed_by = packed_by or ""
+            row.source = want["source"]
+
+    await db.commit()
+    return await load_order_packed(db, pack_date)
 
 
 # ─── Raw stock: standing, per parent product, typed by the owner ──────────────
