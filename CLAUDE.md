@@ -667,12 +667,46 @@ wait on Google and fail when Google is unreachable.
 - `Start Amazon Tracker.bat` on desktop
 
 ### Production — **http://13.233.144.148** (live)
-- EC2 t2.micro (951 MB, no swap), Ubuntu, **Python 3.14**, SQLite on disk
+- EC2 t2.micro (951 MB RAM + **2 GB swap**), Ubuntu, **Python 3.14**, SQLite on disk
 - Caddy in front of uvicorn on `127.0.0.1:8000`; `systemd` unit `tracker`
 - `/opt/amazon-tracker` is a **git checkout** on branch `claude/stoic-allen-bb3a55`
 - Key: `C:\Users\LENOVO\Desktop\old downloads\amazon-tracker-key.pem`
 - Deploy: `ssh ubuntu@13.233.144.148`, then
   `cd /opt/amazon-tracker && ./deploy/update-ec2.sh`
+  (the script is mode 644, so run it as `bash deploy/update-ec2.sh`; it prompts once
+  about stashing `hsn_master.json` — answer `y`, which stashes rather than discards)
+
+### The box has 2 GB of swap now, and the scrape is why
+**A manual product scrape WEDGED the app**, and the failure mode is worth knowing because it
+looks nothing like a crash. On 2026-08-27 a 271-ASIN scrape was started from the Dashboard;
+uvicorn reached 419 MB RSS on a box with 951 MB and **no swap**, and then stopped accepting
+connections. Measured at the time: process state `D` (uninterruptible sleep), **34 connections
+queued on port 8000**, load average 1.23 while CPU sat at 0.6% — pure I/O wait from memory
+thrashing. `systemctl is-active` said `active`, Caddy was fine, and every browser request simply
+hung until it timed out. Nothing was in the logs after the moment it stalled.
+
+A `swapfile` at `/swapfile` (mode 600, in `/etc/fstab`, `vm.swappiness=10`) fixes it, and the
+fix was verified by re-running the same 262-ASIN scrape under a 15-second monitor:
+
+| | Before swap (wedged) | After swap (53 samples) |
+|---|---|---|
+| Peak uvicorn RSS | 419 MB | **263 MB** |
+| Lowest available RAM | ~73 MB | **391 MB** |
+| Accept queue on :8000 | **34** | **0** |
+| Process state | **`D`** (blocked) | `Ssl` throughout |
+| App during the scrape | timed out | **HTTP 200 in 0.1 s** |
+| Swap actually used | — | **0 MB** |
+
+**The swap was never touched, and that is the point.** It is headroom, not storage: with a
+reserve available the kernel stops thrashing and reclaims normally, so RSS now oscillates
+179→263 MB and falls back between batches instead of climbing. `swappiness=10` rather than the
+default 60 keeps it a safety net — at 60 the kernel pages out idle app memory even when RAM is
+free, which costs latency on a t2.micro's limited disk IO.
+
+> **`mount -a` does NOT enable swap** — only `swapon -a` reads the swap lines in `/etc/fstab`.
+> Testing the fstab entry with `mount -a` silently left swap off, which the verification caught.
+> `systemctl list-units --type=swap` showing `swapfile.swap` as loaded/active is the real proof
+> it survives a reboot.
 
 `deploy/update-ec2.sh` backs up and integrity-checks the DB first, installs only
 missing packages, migrates, restarts, verifies over HTTP, and rolls the code back on
@@ -743,7 +777,8 @@ from `/users-page`, which can be revoked per person.
 
 **`SCHEDULER_ENABLED=false` on production, and `ORDER_REFRESH_ENABLED=true`.** The master flag
 stays off to keep the 06:00 product scrape (10 async workers), the 07:30 keyword track and the
-09:15 purge asleep on a 951 MB box with no swap. The orders refresh has its own flag so it can
+09:15 purge asleep on a 951 MB box (2 GB swap now, but a scrape still costs real memory). The
+orders refresh has its own flag so it can
 run alone — see "The orders refresh has its own flag" under the Orders tab. Enable it AFTER
 deploying the code, so the first scheduled run finds the new tables:
 
@@ -958,7 +993,8 @@ reads as broken data, so it is omitted rather than shipped empty.
 ### The orders refresh has its own flag
 `ORDER_REFRESH_ENABLED` runs the half-hourly refresh **without** the 06:00 product scrape, the
 07:30 keyword track or the 09:15 purge. Production keeps `SCHEDULER_ENABLED=false` precisely to
-keep those asleep on a 951 MB box with no swap that has already OOM-killed a `pip install`.
+keep those asleep on a 951 MB box that has already OOM-killed a `pip install` (2 GB swap was
+added on 2026-08-27, which stops a scrape wedging the app but does not make the box roomy).
 
 The two flags are OR'd, so an installation that enables everything keeps its refresh —
 `scheduler_enabled` defaults to `True`, so this flag is only load-bearing where that was
