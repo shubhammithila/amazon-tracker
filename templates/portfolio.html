@@ -187,7 +187,7 @@ th.sorted{color:var(--accent)}
 
 <div class="card">
   <!-- The window bar. A cached range renders instantly; an uncached one has to be fetched,
-       and the button says so because the ad report takes about twelve minutes. -->
+       and the button says so because the ad report takes 15-25 minutes. -->
   <div class="controls" id="window-bar" style="margin-bottom:8px"></div>
   <div class="controls" style="margin-bottom:0">
     <button class="btn" id="refresh-btn">↻ Refresh from Amazon</button>
@@ -371,7 +371,7 @@ function renderSubtitle(){
 /* ── The window bar ─────────────────────────────────────────────────────────────
    Presets plus a custom range. A window already fetched is marked with a dot and loads
    instantly; anything else has to be fetched, and the button says how long that takes because
-   the ad report is a twelve-minute wait rather than a spinner. */
+   the ad report is a 15-to-25-minute wait rather than a spinner. */
 function renderWindowBar(){
   const have = new Set((data.windows_available || []).map(w => w.start + ".." + w.end));
   const current = data.window ? data.window[0] + ".." + data.window[1] : "";
@@ -401,7 +401,7 @@ function renderWindowBar(){
     <input class="win-date" type="date" id="win-from" value="${esc(w[0])}" max="${esc(maxDate())}"/>
     <input class="win-date" type="date" id="win-to" value="${esc(w[1])}" max="${esc(maxDate())}"/>
     <button class="btn-outline" id="win-apply">Show</button>
-    ${uncached ? `<button class="btn" id="win-fetch">Fetch this window (~12 min)</button>` : ""}
+    ${uncached ? `<button class="btn" id="win-fetch">Fetch this window (~20 min)</button>` : ""}
     <span class="dim" style="font-size:11.5px">a dot means already fetched — instant</span>`;
 }
 
@@ -1004,10 +1004,10 @@ async function startRefresh(win){
     }
     renderRefresh(body.refresh);
     startPoll();
-    // Said plainly up front: the ad report is a twelve-minute wait, and a silent bar for that
+    // Said plainly up front: the ad report is a 15-to-25-minute wait, and a silent bar for that
     // long reads as a hang. The page can be left — the job runs server-side.
     message("Fetching. The margins land in about a minute; the advertising figures take about "
-            + "twelve minutes. You can leave this page — it keeps running.", "info");
+            + "15-25 minutes. You can leave this page — it keeps running.", "info");
   }catch(err){
     message("Could not reach the server.", "error");
     $("refresh-btn").disabled = false;

@@ -76,13 +76,23 @@ REPORT_COLUMNS = (
 #: Content type for creating a v3 report. Plain application/json is rejected.
 CREATE_CONTENT_TYPE = "application/vnd.createasyncreportrequest.v3+json"
 
-#: Seconds between polls. Measured: a 30-day report took ~12 MINUTES to generate, so polling
-#: faster only wastes calls. Deliberately slower than the economics poller for that reason.
+#: Seconds between polls. Amazon's report generation is measured in MINUTES, so polling faster
+#: only wastes calls. Deliberately far slower than the economics poller for that reason.
 POLL_INTERVAL = 20.0
 
-#: Polls before giving up: 60 x 20s = 20 minutes. A ceiling, not an expectation. Giving up raises
-#: rather than returning nothing, because "we could not ask" must never render as "no ad spend".
-POLL_MAX = 60
+#: Polls before giving up: 135 x 20s = **45 minutes**.
+#:
+#: **This was 60 (20 minutes) and it timed out on production.** Measured from Amazon's own
+#: timestamps on a completed report: `createdAt 09:55:46Z` to `updatedAt 10:14:15Z` — **18.5
+#: minutes** for a SIX-day window. The 20-minute ceiling therefore had about 90 seconds of margin
+#: on the smallest report this app asks for, and the 30-day window it actually requests is larger
+#: still: the first production run hit the cap at 100% with the margins stored and ACOS missing.
+#:
+#: 45 minutes is a CEILING, not an expectation, and the cost of being generous is nothing: this
+#: runs as a background task, the bar keeps moving, and the margins are already committed before
+#: this phase starts. The cost of being tight is a refresh that reports failure on a report Amazon
+#: would have delivered.
+POLL_MAX = 135
 
 #: Amazon's access tokens last 3600s; refreshed a minute early so a request that is about to be
 #: made cannot be the one that discovers the expiry. Same margin as `shipment.spapi`.

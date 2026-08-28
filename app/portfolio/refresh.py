@@ -55,9 +55,9 @@ reset_state()
 
 #: How the bar is divided across TWO APIs. **Uneven because the phases are, by an order of
 #: magnitude.** Measured: the economics query reaches DONE in ~30 seconds, while the advertising
-#: report takes ~12 MINUTES to generate. So the ad report owns more than half the bar — it is
-#: where the owner is actually waiting, and a bar that sat at 40% for twelve minutes would read
-#: as hung.
+#: report takes **15-25 MINUTES** to generate (measured from Amazon's own timestamps: 18.5
+#: minutes for a six-day window). So the ad report owns more than half the bar — it is where the
+#: owner is actually waiting, and a bar sitting at 40% for twenty minutes would read as hung.
 #:
 #: The honest part: **no phase here has a true denominator.** Neither API publishes progress for
 #: a running query, so each poll phase is `attempt / POLL_MAX` — a fraction of a CEILING usually
@@ -79,7 +79,7 @@ PHASE_LABELS = {
     "econ_poll": "Amazon is preparing the economics — about a minute…",
     "econ_download": "Downloading the economics…",
     "econ_store": "Storing the margins…",
-    "ads_report": "Amazon is generating the advertising report — this takes about 12 minutes…",
+    "ads_report": "Amazon is generating the advertising report — usually 15-25 minutes…",
     "ads_store": "Storing the ad figures…",
 }
 
@@ -136,12 +136,12 @@ async def run(
 
     Two APIs, in this order and for this reason: **the economics are stored BEFORE the ad report
     is even requested.** The margins are the load-bearing half of this dashboard and take 30
-    seconds; the ad report takes twelve minutes and can fail on its own. Storing first means an
+    seconds; the ad report takes 15-25 minutes and can fail on its own. Storing first means an
     ads failure leaves a fully useful tab with stale ACOS, rather than costing the margins too.
 
     ``start``/``end`` request an explicit window (the date picker); ``days`` requests the last N
     days ending yesterday. ``sleep`` is injectable so a test drives the whole sequence without
-    spending twelve minutes.
+    spending twenty minutes.
     """
     if STATE.get("running"):
         logger.info("portfolio refresh: already running, refused")

@@ -315,7 +315,7 @@ async def windows_available(db: AsyncSession, limit: int = 12) -> list[dict]:
 
     The date picker uses this to say whether a range loads instantly or needs a fetch — the cost
     of a click should be visible before clicking, since an uncached range means waiting on a
-    twelve-minute ad report.
+    15-to-25-minute ad report.
     """
     rows = await db.execute(
         select(
@@ -516,7 +516,7 @@ async def save_decision(
 # ─── Advertising: cost against ATTRIBUTED sales ───────────────────────────────
 #
 # A separate table from the economics because it comes from a separate API with its own failure
-# mode: the ad report takes ~12 minutes to generate against the economics query's 30 seconds, so
+# mode: the ad report takes 15-25 minutes to generate against the economics query's 30 seconds, so
 # the two are fetched in separate phases and an ads failure must not be able to cost the margins.
 
 
