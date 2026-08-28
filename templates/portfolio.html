@@ -567,7 +567,14 @@ function renderFilters(){
    0.5. Converting here rather than at comparison time keeps the stored filter readable. */
 function filterThreshold(f){
   const kind = (FIELDS[f.field] || {}).kind;
-  const raw = Number(f.value);
+  /* **An EMPTY box means "no filter yet", not "greater than zero".**
+     `Number("")` is 0, not NaN, so a blank input used to pass the isFinite check and become a
+     live `> 0` comparison — which silently hid the 45 products that have no TACOS at all. Adding
+     a filter row therefore made half the portfolio vanish before anything had been typed, with
+     nothing on screen to explain it. Found by /qa. */
+  const text = String(f.value == null ? "" : f.value).trim();
+  if(text === "") return null;
+  const raw = Number(text);
   if(!isFinite(raw)) return null;
   return kind === "pct" ? raw / 100 : raw;
 }

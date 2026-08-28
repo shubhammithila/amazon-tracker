@@ -870,3 +870,32 @@ def test_the_view_and_sort_survive_a_reload():
     assert "localStorage" not in source, (
         "localStorage would carry a filter across sessions, so the tab would open filtered"
     )
+
+
+# ─── Regression: ISSUE-001 — an empty filter box hid 45 of 90 products ────────
+#
+# Found by /qa on 2026-08-28.
+# Report: .gstack/qa-reports/qa-report-portfolio-2026-08-28.md
+
+
+def test_an_empty_filter_value_is_not_treated_as_a_zero_threshold():
+    """**`Number("")` is 0, not NaN — which made a blank filter box a live `> 0` comparison.**
+
+    Adding a filter row starts it at "TACOS is more than [ ]" with the value empty. The old
+    `filterThreshold` ran `Number("")` → 0, passed `isFinite`, and returned 0 — so the filter
+    immediately excluded every product whose TACOS is null. Measured on real data: 45 of 90
+    products vanished the instant the row was added, with nothing on screen to explain it.
+
+    Asserted on the template because the guard is one line of JavaScript and the symptom is
+    invisible from Python: the payload was correct, the rendering was correct, and the filter
+    was quietly doing exactly what it was told.
+    """
+    source = _template()
+    start = source.index("function filterThreshold(")
+    body = source[start:start + 700]
+    assert 'if(text === "") return null;' in body, (
+        "filterThreshold does not short-circuit on an empty value, so a blank filter box "
+        "becomes a `> 0` comparison and silently hides every row with no value for that field"
+    )
+    # The trim matters too: a box containing only spaces is just as empty.
+    assert ".trim()" in body, "an all-whitespace filter value would still coerce to 0"
