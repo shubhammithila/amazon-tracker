@@ -206,8 +206,29 @@ def test_all_scheduled_jobs_are_registered(monkeypatch):
     jobs = _registered_jobs(monkeypatch, hour=6)
     assert set(jobs) == {
         "daily_product_scrape", "daily_keyword_track", "daily_history_purge",
-        "order_refresh", "portfolio_refresh",
+        "order_refresh", "portfolio_refresh", "ads_refresh",
     }
+
+
+def test_the_nightly_ads_refresh_only_reads_and_never_edits_a_bid(monkeypatch):
+    """**The scheduled job refreshes DATA. It must never apply a rule.**
+
+    A job that could move bids would move 299 of them on a bad data day, unattended and at 3am —
+    which is the same reason the Portfolio tab never auto-applies a verdict. Asserted on the source
+    because the distinction is a design promise, not a value: `ads_refresh` may call the refresh, and
+    must not reach `apply_bids`, `plan_run` or the router's apply path.
+    """
+    import inspect
+
+    from app import scheduler as sched
+
+    source = inspect.getsource(sched.scheduled_ads_refresh)
+    for forbidden in ("apply_bids", "plan_run", "open_run", "/apply"):
+        assert forbidden not in source, (
+            f"the nightly ads job references {forbidden!r} — a scheduled bid change is exactly "
+            f"what this feature refuses to do"
+        )
+    assert "refresh.run" in source or "ads_refresh.run" in source
 
 
 def test_the_order_refresh_runs_every_thirty_minutes(monkeypatch):

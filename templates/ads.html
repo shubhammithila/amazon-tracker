@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Ads — Amazon Tracker</title>
+{#
+  Amazon Ads: campaign performance, and bulk bid edits by rule.
+
+  **This is the only page in the app that changes something at Amazon.** Every other tab reads
+  Amazon and writes our own records. A rule here can move several hundred live bids in one click —
+  the owner's real rule matched 299 targets carrying Rs 102,945 of weekly spend — so the UI is built
+  around making that visible rather than convenient.
+
+  Five things are deliberate:
+
+  1. **Preview and Apply are two clicks, never one.** The rule bar computes a plan and sends
+     nothing; the preview table shows every `old -> new` with a tick per row; Apply sends only what
+     is still ticked. Merging them would mean the first click both computed and applied.
+
+  2. **The selected count is always on screen.** "Select all campaigns" at this scale means
+     thousands of rows, so a number next to the button is what turns it from an act of faith into a
+     decision.
+
+  3. **kw / auto / product is a COLUMN, not decoration.** It is the Amazon endpoint the row will be
+     written to. Keywords and targeting clauses are different APIs and the report labels both ids
+     `keywordId`, so showing the split is how a routing bug becomes visible rather than silent.
+
+  4. **Every skipped row is named with its reason.** A row missing from a 299-row run is otherwise
+     indistinguishable from a bug.
+
+  5. **Delegated listeners, no inline handlers.** Keyword text comes from Amazon and campaign names
+     from the owner; building an onclick out of either is an injection waiting to happen. Same rule
+     the Orders and Portfolio tabs follow.
+#}
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px}
+header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
+header h1{font-size:16px;font-weight:600}
+.nav-links{display:flex;gap:16px;margin-left:32px}
+.nav-links a{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
+.nav-links a:hover,.nav-links a.active{color:var(--text);border-color:var(--accent)}
+.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:13px;text-decoration:none}
+main{max-width:1280px;margin:0 auto;padding:16px 20px 80px}
+h2{font-size:19px;font-weight:600;margin-bottom:2px}
+.subtitle{color:var(--text-muted);font-size:12.5px;margin-bottom:12px;line-height:1.5}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;box-shadow:var(--shadow)}
+.section-title{font-size:13px;font-weight:700;margin-bottom:2px}
+.section-sub{font-size:12px;color:var(--text-muted);margin-bottom:8px;line-height:1.5}
+
+.banner{border-radius:8px;padding:10px 13px;font-size:12.5px;margin-bottom:10px;line-height:1.55}
+.banner.warn{background:var(--yellow-soft);border:1px solid var(--yellow);color:var(--yellow)}
+.banner.good{background:var(--green-soft);border:1px solid var(--green);color:var(--green)}
+.banner.error{background:var(--red-soft);border:1px solid var(--red);color:var(--red)}
+.banner.info{background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue)}
+
+.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+.btn:disabled{opacity:.55;cursor:not-allowed}
+.btn-danger{background:var(--red);color:var(--on-accent);border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer}
+.btn-danger:disabled{opacity:.5;cursor:not-allowed}
+.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border-strong);border-radius:8px;padding:7px 13px;font-size:12.5px;cursor:pointer;text-decoration:none;display:inline-block}
+.search-input{flex:1 1 220px;min-width:170px;background:var(--bg);border:1px solid var(--border-strong);
+  border-radius:8px;color:var(--text);padding:8px 12px;font-size:13.5px}
+.search-input:focus{outline:none;border-color:var(--accent)}
+
+#progress-wrap{display:none;margin-top:10px}
+.progress-bar-bg{height:6px;background:var(--bg);border-radius:99px;overflow:hidden;margin-bottom:6px}
+.progress-bar-fill{height:100%;background:var(--accent);border-radius:99px;width:0%;transition:width .4s}
+#progress-label{font-size:12px;color:var(--text-muted)}
+
+.kpis{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.kpi{flex:1 1 130px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+.kpi .v{font-size:21px;font-weight:700;line-height:1.15}
+.kpi .k{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+.kpi.good .v{color:var(--green)}
+.kpi.bad .v{color:var(--red)}
+.kpi.warn .v{color:var(--yellow)}
+
+.win-btn{border:1px solid var(--border-strong);background:var(--surface);border-radius:8px;
+  padding:6px 12px;font-size:12.5px;font-weight:600;cursor:pointer;color:var(--text-muted)}
+.win-btn:hover{border-color:var(--accent)}
+.win-btn.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.win-btn .dot{display:inline-block;width:5px;height:5px;border-radius:50%;
+  background:var(--green);margin-left:5px;vertical-align:middle}
+.win-btn.on .dot{background:var(--on-accent)}
+.win-date{background:var(--bg);border:1px solid var(--border-strong);border-radius:8px;
+  color:var(--text);padding:6px 8px;font-size:12.5px}
+.win-label{font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase;
+  letter-spacing:.04em;margin-right:2px}
+
+.frow{display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap}
+.frow select,.frow input{background:var(--bg);border:1px solid var(--border-strong);
+  border-radius:6px;color:var(--text);padding:6px 9px;font-size:12.5px}
+.frow input{width:110px}
+.fdrop{background:transparent;border:none;color:var(--red);cursor:pointer;font-size:15px;
+  padding:0 6px;line-height:1}
+.rule-then{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:8px;
+  padding-top:8px;border-top:1px solid var(--border)}
+
+/* The table scrolls INSIDE this box rather than dragging the page sideways — the defect /qa
+   found on the Portfolio tab (744px of document scroll at a 350px viewport). `min-width` on the
+   table is the half that is easy to omit: without it the table obeys `width:100%`, squeezes to
+   the container, and the nowrap cells overflow their own gridlines instead. */
+.table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border);
+  -webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:separate;border-spacing:0;min-width:860px}
+thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;font-size:10.5px;
+  font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:left;white-space:nowrap;
+  border-bottom:2px solid var(--border-strong)}
+tbody td{padding:7px 10px;font-size:13px;border-bottom:1px solid var(--border);white-space:nowrap}
+th.num,td.num{text-align:right}
+tbody tr.parent{cursor:pointer}
+tbody tr.parent:hover td{background:var(--accent-soft)}
+tr.child td{background:var(--surface2);font-size:12.5px;color:var(--text-muted)}
+tr.child td:first-child{padding-left:30px}
+.p-name{font-weight:700;font-size:13.5px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--text-dim)}
+.neg{color:var(--red);font-weight:700}
+.pos{color:var(--green);font-weight:700}
+.dim{color:var(--text-dim)}
+.tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;background:var(--surface2);color:var(--text-muted);white-space:nowrap}
+.tag.kw{background:var(--blue-soft);color:var(--blue)}
+.tag.auto{background:var(--yellow-soft);color:var(--yellow)}
+.tag.product{background:var(--green-soft);color:var(--green)}
+.tag.paused{background:var(--surface2);color:var(--text-dim)}
+.bid-old{color:var(--text-dim);text-decoration:line-through;font-size:12px}
+.bid-new{font-weight:800}
+.empty-note{padding:18px;text-align:center;color:var(--text-muted);font-size:13px;line-height:1.6}
+.count-chip{font-size:12.5px;font-weight:700;padding:4px 10px;border-radius:20px;
+  background:var(--accent-soft);color:var(--accent)}
+.gr-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
+.gr{border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+.gr h4{font-size:12.5px;margin-bottom:4px}
+.gr p{font-size:11.5px;color:var(--text-muted);line-height:1.5}
+.gr input{width:90px;background:var(--bg);border:1px solid var(--border-strong);
+  border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px;text-align:right;margin-top:6px}
+</style>
+<link rel="stylesheet" href="/static/theme.css"/>
+</head>
+<body>
+<header>
+<span>📣</span><h1>Amazon Tracker v2</h1>
+{% include "nav.html" %}
+<div class="header-right"><a href="/logout">Logout</a></div>
+</header>
+<main>
+
+<h2>Ads</h2>
+<div class="subtitle" id="subtitle">Loading…</div>
+
+<div id="messages"></div>
+
+<div class="card">
+  <div class="controls" id="window-bar" style="margin-bottom:8px"></div>
+  <div class="controls" style="margin-bottom:0">
+    <button class="btn" id="refresh-btn">↻ Refresh from Amazon</button>
+    <button class="btn-outline" id="guardrails-btn">⚙ Limits</button>
+    <button class="btn-outline" id="history-btn">🕘 Run history</button>
+    <span id="refresh-note" class="dim" style="font-size:12px">—</span>
+  </div>
+  <div id="progress-wrap">
+    <div class="progress-bar-bg"><div class="progress-bar-fill" id="progress-fill"></div></div>
+    <div id="progress-label">…</div>
+  </div>
+</div>
+
+<div class="kpis" id="kpis"></div>
+
+<div class="card" id="guardrails-panel" style="display:none"></div>
+<div class="card" id="history-panel" style="display:none"></div>
+
+<!-- The rule bar. Conditions are ANDed, exactly like the Portfolio tab's filter builder, so the
+     owner meets one vocabulary across both screens. -->
+<div class="card">
+  <div class="section-title">Bid rule</div>
+  <div class="section-sub">Conditions are combined with AND. Preview shows every change before
+    anything is sent to Amazon — <strong>nothing is applied until you press Apply</strong>.</div>
+  <div id="conditions"></div>
+  <div class="controls" style="margin-bottom:0">
+    <button class="btn-outline" id="add-condition">+ condition</button>
+    <span class="dim" style="font-size:12px" id="scope-note"></span>
+  </div>
+  <div class="rule-then">
+    <span class="win-label">Then</span>
+    <select id="action">
+      <option value="decrease_pct">decrease bid by</option>
+      <option value="increase_pct">increase bid by</option>
+      <option value="decrease_abs">decrease bid by (₹)</option>
+      <option value="increase_abs">increase bid by (₹)</option>
+      <option value="set">set bid to (₹)</option>
+    </select>
+    <input type="number" id="amount" value="10" step="0.5" style="width:90px"/>
+    <span class="dim" id="amount-unit">%</span>
+    <button class="btn" id="preview-btn">Preview changes</button>
+  </div>
+</div>
+
+<div id="preview-area"></div>
+
+<div class="card">
+  <div class="controls">
+    <input class="search-input" id="search" placeholder="Search campaigns…"/>
+    <span class="count-chip" id="selection-count">nothing selected</span>
+    <button class="btn-outline" id="select-all">Select all</button>
+    <button class="btn-outline" id="select-none">Clear</button>
+  </div>
+  <div id="table-area"></div>
+</div>
+
+<script>
+/* ── State ─────────────────────────────────────────────────────────────────── */
+const $ = id => document.getElementById(id);
+let data = {campaigns: [], totals: {}, window: ["", ""], guardrails: {}, runs: []};
+let conditions = remembered("conditions", [{field: "spend", op: "gt", value: 100}]);
+let selected = new Set();          // campaign ids
+let openCampaigns = new Set();
+let adGroupCache = {};             // campaign_id -> [ad groups]
+let selectedAdGroups = new Set();  // ad group ids, when drilling into one campaign
+let plan = null;                   // the previewed plan; null until Preview runs
+let approved = new Set();          // entity ids still ticked in the preview
+let polling = null;
+
+function remembered(key, fallback){
+  try {
+    const raw = sessionStorage.getItem("ads." + key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch(e){ return fallback; }
+}
+function remember(key, value){
+  try { sessionStorage.setItem("ads." + key, JSON.stringify(value)); } catch(e){}
+}
+
+/* **Every string that reaches innerHTML goes through this.** Not a formality: keyword text and
+   target expressions come from Amazon, campaign and ad group names are typed by the owner in Seller
+   Central, and Amazon's error messages are echoed verbatim onto the screen. Any of those three could
+   contain a `<`.
+
+   The rule this file follows, so a reviewer can check it mechanically: inside a template literal
+   that becomes innerHTML, a `${...}` may only be
+     (a) wrapped in esc(), money(), ratio(), roas() or n() — all of which return safe output,
+     (b) a number or a comparison of numbers,
+     (c) one of OUR OWN literal strings chosen by a ternary.
+   `tests/test_ads_api.py::test_the_template_escapes_every_server_string` enforces (a) for the
+   fields that carry Amazon or owner text. */
+const esc = s => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+const n = v => (v == null || isNaN(v)) ? 0 : v;
+const money = v => "₹" + Math.round(n(v)).toLocaleString("en-IN");
+
+/* A dash, never a zero — a campaign with no spend has no ROAS, and 0 would sort it beside the
+   genuinely terrible ones. Same rule as the Portfolio tab's `_ratio`. */
+function ratio(v, digits){
+  if(v === null || v === undefined) return '<span class="dim">—</span>';
+  return (digits === 0 ? Math.round(v * 100) : (v * 100).toFixed(1)) + "%";
+}
+function roas(v){
+  if(v === null || v === undefined) return '<span class="dim">—</span>';
+  const cls = v < 1 ? "neg" : (v >= 3 ? "pos" : "");
+  return `<span class="${cls}">${v.toFixed(2)}x</span>`;
+}
+
+/* ── Load ──────────────────────────────────────────────────────────────────── */
+async function load(){
+  const w = remembered("window", null);
+  const query = w ? `?start=${encodeURIComponent(w[0])}&end=${encodeURIComponent(w[1])}` : "?days=7";
+  const response = await fetch("/ads" + query);
+  const body = await response.json();
+  if(!response.ok){
+    $("messages").innerHTML = `<div class="banner error">${esc(body.error || "Could not load.")}</div>`;
+    return;
+  }
+  data = body;
+  remember("window", data.window);
+  render();
+  if((data.refresh || {}).running) startPolling();
+}
+
+function render(){
+  renderBanners();
+  renderWindow();
+  renderKpis();
+  renderConditions();
+  renderTable();
+  renderSelection();
+  renderRefreshNote();
+}
+
+function renderBanners(){
+  const out = [];
+  if(!data.configured){
+    out.push(`<div class="banner error"><strong>Advertising credentials are not configured.</strong>
+      This tab needs its own Amazon Advertising application — separate from the SP-API one — so
+      there is nothing to show until those keys are in the environment.</div>`);
+  } else if(!data.cached){
+    out.push(`<div class="banner info">Nothing fetched for
+      <strong>${esc(data.window[0])} → ${esc(data.window[1])}</strong> yet. Press
+      <strong>Refresh from Amazon</strong> — Amazon takes about 6 minutes per 31 days to build the
+      report, and the figures are then cached so this page loads instantly.</div>`);
+  }
+  /* Stated on screen, not just in the code: this is the one tab that writes to Amazon. */
+  out.push(`<div class="banner warn"><strong>This tab changes live bids.</strong>
+    A rule is previewed first and nothing is sent until you press Apply. Every run is recorded with
+    the previous bid, so it can be undone in one click. Bids only — pausing keywords or campaigns
+    stays a manual job in Seller Central.</div>`);
+  const r = data.refresh || {};
+  if(r.error){
+    out.push(`<div class="banner error">The last refresh failed: ${esc(r.error)}</div>`);
+  }
+  $("messages").innerHTML = out.join("");
+}
+
+function renderWindow(){
+  const have = new Set((data.windows_available || []).map(w => w[0] + ".." + w[1]));
+  const current = data.window ? data.window[0] + ".." + data.window[1] : "";
+  const today = new Date();
+
+  function presetRange(days){
+    const end = new Date(today); end.setDate(end.getDate() - 1);
+    const start = new Date(end); start.setDate(start.getDate() - (days - 1));
+    const iso = d => d.toISOString().slice(0, 10);
+    return {start: iso(start), end: iso(end)};
+  }
+
+  const buttons = (data.preset_days || [7, 14, 30]).map(days => {
+    const r = presetRange(days);
+    const key = r.start + ".." + r.end;
+    const cached = have.has(key);
+    /* The dot means "cached, instant" versus "a ~6-minute report per 31 days". Not decoration, so
+       it goes into the accessible name in words and is aria-hidden as a glyph. */
+    return `<button class="win-btn ${key === current ? "on" : ""}"
+      data-start="${r.start}" data-end="${r.end}" aria-pressed="${key === current}"
+      aria-label="Last ${days} days, ${r.start} to ${r.end}${cached
+        ? " — already fetched, loads instantly" : " — not fetched yet"}"
+      title="${r.start} to ${r.end}">${days}d${
+      cached ? '<span class="dot" aria-hidden="true"></span>' : ""}</button>`;
+  }).join("");
+
+  const w = data.window || ["", ""];
+  $("window-bar").innerHTML = `
+    <span class="win-label">Window</span>
+    ${buttons}
+    <span class="dim" style="font-size:12px">|</span>
+    <input class="win-date" type="date" id="win-from" value="${esc(w[0])}" max="${esc(maxDate())}"
+      aria-label="Window start date"/>
+    <input class="win-date" type="date" id="win-to" value="${esc(w[1])}" max="${esc(maxDate())}"
+      aria-label="Window end date, no later than yesterday"/>
+    <button class="btn-outline" id="win-apply">Show</button>
+    <span class="dim" style="font-size:11.5px">7/14/30 are single reports and exact.
+      Over 31 days is summed from several, so ROAS reads slightly low.</span>`;
+}
+
+/* Yesterday, never today: a click costs immediately while its attributed sale can land hours
+   later, so a window including today shows a punishing ROAS every morning that recovers by
+   evening — and a bid rule acting on that would cut bids on a measurement artefact. */
+function maxDate(){
+  const d = new Date(); d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function renderKpis(){
+  const t = data.totals || {};
+  const roasCls = (t.roas !== null && t.roas !== undefined && t.roas < 1) ? "bad" : "good";
+  $("kpis").innerHTML = `
+    <div class="kpi"><div class="v">${money(t.spend)}</div><div class="k">Ad spend</div></div>
+    <div class="kpi"><div class="v">${money(t.sales)}</div><div class="k">Ad sales</div></div>
+    <div class="kpi ${roasCls}"><div class="v">${
+      t.roas == null ? "—" : t.roas.toFixed(2) + "x"}</div><div class="k">ROAS</div></div>
+    <div class="kpi warn"><div class="v">${
+      t.acos == null ? "—" : (t.acos * 100).toFixed(0) + "%"}</div><div class="k">ACOS</div></div>
+    <div class="kpi"><div class="v">${n(t.campaigns)}</div><div class="k">Campaigns</div></div>`;
+}
+
+/* ── Conditions ────────────────────────────────────────────────────────────── */
+function renderConditions(){
+  const fields = data.fields || {};
+  const operators = data.operators || {};
+  $("conditions").innerHTML = conditions.map((c, index) => `
+    <div class="frow" data-index="${index}">
+      <span class="win-label">${index ? "and" : "When"}</span>
+      <select data-part="field">${Object.entries(fields).map(([key, meta]) =>
+        `<option value="${esc(key)}"${key === c.field ? " selected" : ""}>${esc(meta.label)}</option>`
+      ).join("")}</select>
+      <select data-part="op">${Object.entries(operators).map(([key, label]) =>
+        `<option value="${esc(key)}"${key === c.op ? " selected" : ""}>${esc(label)}</option>`
+      ).join("")}</select>
+      <input type="number" step="any" data-part="value" value="${esc(c.value)}"/>
+      <span class="dim" style="font-size:11.5px">${esc(unitFor(c.field))}</span>
+      <button class="fdrop" data-drop="${index}" title="remove">×</button>
+    </div>`).join("");
+}
+
+function unitFor(field){
+  const kind = ((data.fields || {})[field] || {}).kind;
+  if(kind === "money") return "₹";
+  if(kind === "pct") return "%";
+  return "";
+}
+
+/* ── The campaign table ────────────────────────────────────────────────────── */
+function renderTable(){
+  const query = ($("search").value || "").trim().toLowerCase();
+  const list = (data.campaigns || []).filter(c =>
+    !query || (c.name || "").toLowerCase().includes(query));
+
+  if(!list.length){
+    $("table-area").innerHTML = `<div class="empty-note">${
+      (data.campaigns || []).length
+        ? `No campaigns match &ldquo;${esc(query)}&rdquo;.`
+        : "No campaigns cached yet. Press Refresh from Amazon."
+    }</div>`;
+    return;
+  }
+
+  let html = "";
+  list.forEach(c => {
+    const isOpen = openCampaigns.has(c.campaign_id);
+    const ticked = selected.has(c.campaign_id);
+    html += `<tr class="parent" data-campaign="${esc(c.campaign_id)}">
+      <td><input type="checkbox" data-tick="${esc(c.campaign_id)}"${ticked ? " checked" : ""}
+            aria-label="Select ${esc(c.name)}"/></td>
+      <td><span class="p-name">${isOpen ? "▾" : "▸"} ${esc(c.name)}</span>
+        ${c.state !== "ENABLED" ? `<span class="tag paused">${esc(c.state)}</span>` : ""}</td>
+      <td class="num">${money(c.spend)}</td>
+      <td class="num">${money(c.sales)}</td>
+      <td class="num">${roas(c.roas)}</td>
+      <td class="num">${ratio(c.acos, 0)}</td>
+      <td class="num">${n(c.clicks).toLocaleString("en-IN")}</td>
+      <td class="num">${n(c.orders)}</td>
+      <td class="num">${n(c.targets)}</td>
+      <td class="num">${c.daily_budget == null ? '<span class="dim">—</span>' : money(c.daily_budget)}</td>
+    </tr>`;
+
+    if(isOpen){
+      const groups = adGroupCache[c.campaign_id];
+      if(!groups){
+        html += `<tr class="child"><td></td><td colspan="9" class="dim">Loading ad groups…</td></tr>`;
+      } else if(!groups.length){
+        html += `<tr class="child"><td></td><td colspan="9" class="dim">No ad groups cached for this campaign.</td></tr>`;
+      } else {
+        groups.forEach(g => {
+          const gTicked = selectedAdGroups.has(g.ad_group_id);
+          html += `<tr class="child">
+            <td><input type="checkbox" data-gtick="${esc(g.ad_group_id)}"${gTicked ? " checked" : ""}
+                  aria-label="Select ad group ${esc(g.name)}"/></td>
+            <td colspan="7">${esc(g.name)}
+              ${g.state !== "ENABLED" ? `<span class="tag paused">${esc(g.state)}</span>` : ""}
+              <span class="mono">${esc(g.ad_group_id)}</span></td>
+            <td colspan="2" class="num dim">default bid ${
+              g.default_bid == null ? "—" : money(g.default_bid)}</td>
+          </tr>`;
+        });
+      }
+    }
+  });
+
+  $("table-area").innerHTML = `<div class="table-wrap"><table>
+    <thead><tr>
+      <th scope="col"></th><th scope="col">Campaign</th>
+      <th scope="col" class="num">Spend</th><th scope="col" class="num">Sales</th>
+      <th scope="col" class="num">ROAS</th><th scope="col" class="num">ACOS</th>
+      <th scope="col" class="num">Clicks</th><th scope="col" class="num">Orders</th>
+      <th scope="col" class="num">Targets</th><th scope="col" class="num">Budget</th>
+    </tr></thead>
+    <tbody>${html}</tbody>
+  </table></div>`;
+}
+
+/* **The selected count is always visible.** "Select all" here can mean thousands of rows, and a
+   number is what turns that from an act of faith into a decision. */
+function renderSelection(){
+  const chip = $("selection-count");
+  const campaigns = selected.size;
+  const groups = selectedAdGroups.size;
+  if(!campaigns && !groups){
+    chip.textContent = "nothing selected — the rule will read every campaign";
+    $("scope-note").textContent = "";
+    return;
+  }
+  const bits = [];
+  if(campaigns) bits.push(`${campaigns} campaign${campaigns === 1 ? "" : "s"}`);
+  if(groups) bits.push(`${groups} ad group${groups === 1 ? "" : "s"}`);
+  chip.textContent = bits.join(" + ") + " selected";
+  const spend = (data.campaigns || [])
+    .filter(c => selected.has(c.campaign_id))
+    .reduce((total, c) => total + n(c.spend), 0);
+  $("scope-note").textContent = spend
+    ? `scoped to ${money(spend)} of spend in this window`
+    : "";
+}
+
+function renderRefreshNote(){
+  const r = data.refresh || {};
+  const bits = [];
+  if(data.window) bits.push(`${data.window[0]} → ${data.window[1]}`);
+  bits.push(data.cached ? `${n((data.totals || {}).targets)} target rows cached` : "not fetched");
+  if(r.finished_at) bits.push(`refreshed ${String(r.finished_at).slice(0, 16).replace("T", " ")}`);
+  $("refresh-note").textContent = bits.join(" · ");
+  $("subtitle").innerHTML = `Campaign performance and bulk bid edits, straight from the Amazon
+    Advertising API. ${n((data.totals || {}).campaigns)} campaigns in
+    <strong>${esc((data.window || [])[0] || "")} → ${esc((data.window || [])[1] || "")}</strong>.`;
+}
+
+/* ── Preview ───────────────────────────────────────────────────────────────── */
+async function runPreview(){
+  const button = $("preview-btn");
+  button.disabled = true;
+  button.textContent = "Checking…";
+  try {
+    const response = await fetch("/ads/preview", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        start: data.window[0], end: data.window[1],
+        conditions: conditions,
+        action: $("action").value,
+        amount: Number($("amount").value),
+        campaign_ids: [...selected],
+        ad_group_ids: [...selectedAdGroups],
+      }),
+    });
+    const body = await response.json();
+    if(!response.ok){
+      $("preview-area").innerHTML = `<div class="card"><div class="banner error">${
+        esc(body.error || "Could not build the preview.")}</div></div>`;
+      return;
+    }
+    plan = body;
+    approved = new Set((body.changes || []).map(c => c.entity_id));
+    renderPreview();
+  } finally {
+    button.disabled = false;
+    button.textContent = "Preview changes";
+  }
+}
+
+function renderPreview(){
+  if(!plan){ $("preview-area").innerHTML = ""; return; }
+
+  if(plan.blocked){
+    /* A BLOCKED run means the rule itself is refused — distinct from individual skipped rows, and
+       shown as a refusal rather than a table the owner might approve. */
+    $("preview-area").innerHTML = `<div class="card">
+      <div class="banner error"><strong>This rule was not allowed.</strong><br/>${esc(plan.blocked)}</div>
+    </div>`;
+    return;
+  }
+
+  const changes = plan.changes || [];
+  const totals = plan.totals || {};
+  if(!changes.length){
+    $("preview-area").innerHTML = `<div class="card">
+      <div class="section-title">${esc(plan.rule || "")}</div>
+      <div class="empty-note">Nothing matches this rule in
+        ${esc((plan.window || [])[0])} → ${esc((plan.window || [])[1])}.
+        ${(plan.skipped || []).length
+          ? `${plan.skipped.length} row(s) matched but cannot be changed — see below.` : ""}
+      </div>
+      ${skippedHtml()}
+    </div>`;
+    return;
+  }
+
+  const rows = changes.map(c => {
+    const ticked = approved.has(c.entity_id);
+    return `<tr>
+      <td><input type="checkbox" data-ptick="${esc(c.entity_id)}"${ticked ? " checked" : ""}
+            aria-label="Apply to ${esc(c.text)}"/></td>
+      <td>${esc(c.text)}<br/><span class="mono">${esc(c.campaign_name || c.campaign_id)}</span></td>
+      <td>${writerTag(c)}</td>
+      <td class="num">${money(c.spend)}</td>
+      <td class="num">${roas(c.roas)}</td>
+      <td class="num">${ratio(c.acos, 0)}</td>
+      <td class="num"><span class="bid-old">₹${c.old_bid.toFixed(2)}</span>
+        → <span class="bid-new">₹${c.new_bid.toFixed(2)}</span></td>
+    </tr>`;
+  }).join("");
+
+  $("preview-area").innerHTML = `<div class="card">
+    <div class="section-title">${esc(plan.rule || "")}</div>
+    <div class="section-sub">
+      <strong>${totals.changing} bid(s) would change</strong> —
+      ${totals.keywords} keyword(s) and ${totals.targets} target(s), carrying
+      ${money(totals.spend)} of spend in this window.
+      Amazon writes these through two different endpoints, which is what the kw/auto/product column
+      shows. <strong>Nothing has been sent yet.</strong>
+    </div>
+    ${skippedHtml()}
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th scope="col"></th><th scope="col">Keyword / target</th><th scope="col">Type</th>
+        <th scope="col" class="num">Spend</th><th scope="col" class="num">ROAS</th>
+        <th scope="col" class="num">ACOS</th><th scope="col" class="num">Bid</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <div class="controls" style="margin-top:10px;margin-bottom:0">
+      <button class="btn-danger" id="apply-btn">Apply <span id="apply-count">${approved.size}</span> change(s) to Amazon</button>
+      <button class="btn-outline" id="cancel-preview">Cancel</button>
+      <span class="dim" style="font-size:12px">Recorded with the previous bid, so it can be undone.</span>
+    </div>
+  </div>`;
+}
+
+/* The endpoint the row will be written to. A COLUMN rather than a detail: keywords and targeting
+   clauses are different Amazon APIs and the report labels both ids `keywordId`, so showing the
+   split is how a routing bug becomes visible instead of silent. */
+function writerTag(row){
+  if(row.writer === "keyword") return '<span class="tag kw">keyword</span>';
+  if(row.match_type === "TARGETING_EXPRESSION_PREDEFINED") return '<span class="tag auto">auto</span>';
+  return '<span class="tag product">product</span>';
+}
+
+/* Every skipped row is NAMED with its reason. A row missing from a 299-row run is otherwise
+   indistinguishable from a bug. */
+function skippedHtml(){
+  const skipped = (plan && plan.skipped) || [];
+  if(!skipped.length) return "";
+  const byReason = {};
+  skipped.forEach(s => { (byReason[s.reason] = byReason[s.reason] || []).push(s); });
+  const lines = Object.entries(byReason).map(([reason, rows]) =>
+    `<li><strong>${rows.length}</strong> — ${esc(reason)}
+      <span class="dim">(${rows.slice(0, 3).map(r => esc(r.text)).join(", ")}${
+        rows.length > 3 ? "…" : ""})</span></li>`).join("");
+  return `<div class="banner warn"><strong>${skipped.length} matching row(s) will not be
+    changed:</strong><ul style="margin:6px 0 0 18px">${lines}</ul></div>`;
+}
+
+async function applyPlan(){
+  const changes = (plan.changes || []).filter(c => approved.has(c.entity_id));
+  if(!changes.length) return;
+
+  const button = $("apply-btn");
+  button.disabled = true;
+  button.textContent = "Sending to Amazon…";
+
+  const response = await fetch("/ads/apply", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({changes: changes, rule: plan.rule}),
+  });
+  const body = await response.json();
+
+  if(!response.ok){
+    $("preview-area").innerHTML = `<div class="card"><div class="banner error">${
+      esc(body.error || "The apply failed.")}</div></div>`;
+    return;
+  }
+
+  const moved = body.moved || [];
+  const parts = [`<strong>${body.applied} bid(s) changed.</strong>`];
+  if(body.failed) parts.push(`${body.failed} refused by Amazon.`);
+  if(body.pending) parts.push(`${body.pending} with no answer from Amazon — check the run history.`);
+  if(moved.length){
+    parts.push(`${moved.length} skipped because the bid had already changed at Amazon since this
+      window was fetched.`);
+  }
+
+  const cls = body.failed || body.pending ? "warn" : "good";
+  $("preview-area").innerHTML = `<div class="card">
+    <div class="banner ${cls}">${parts.join(" ")}</div>
+    ${body.failed ? failedHtml(body.results || []) : ""}
+    <div class="controls" style="margin-bottom:0">
+      ${body.run_id
+        ? `<button class="btn-outline" data-undo="${esc(body.run_id)}">↩ Undo this run</button>`
+        : ""}
+      <button class="btn-outline" id="cancel-preview">Close</button>
+    </div>
+  </div>`;
+  plan = null;
+  load();
+}
+
+function failedHtml(results){
+  const failed = results.filter(r => !r.ok);
+  if(!failed.length) return "";
+  return `<div class="section-sub">Amazon's own reasons:<ul style="margin:6px 0 0 18px">${
+    failed.slice(0, 12).map(r =>
+      `<li><span class="mono">${esc(r.entity_id)}</span> — ${esc(r.error)}</li>`).join("")
+  }</ul></div>`;
+}
+
+async function undoRun(runId){
+  const response = await fetch(`/ads/undo/${encodeURIComponent(runId)}`, {method: "POST"});
+  const body = await response.json();
+  const cls = response.ok ? "good" : "error";
+  const message = response.ok
+    ? `<strong>${body.applied} bid(s) restored.</strong>${
+        body.failed ? ` ${body.failed} could not be restored.` : ""}`
+    : esc(body.error || "The undo failed.");
+  $("preview-area").innerHTML = `<div class="card"><div class="banner ${cls}">${message}</div></div>`;
+  load();
+}
+
+/* ── Guardrails ────────────────────────────────────────────────────────────── */
+async function renderGuardrails(){
+  const response = await fetch("/ads/guardrails");
+  const body = await response.json();
+  const g = body.guardrails || {};
+  const help = body.help || {};
+  const label = {max_bid: "Bid ceiling (₹)", min_bid: "Bid floor (₹)",
+                 max_change_pct: "Max change per run (%)", max_rows: "Max rows per run"};
+  $("guardrails-panel").innerHTML = `
+    <div class="section-title">Limits</div>
+    <div class="section-sub">These exist because Amazon barely enforces any: a ₹1,000 bid was
+      accepted in testing on an account whose median bid is ₹6.39.</div>
+    <div class="gr-grid">${Object.keys(label).map(key => `
+      <div class="gr"><h4>${esc(label[key])}</h4>
+        <p>${esc(help[key] || "")}</p>
+        <input type="number" step="any" data-gr="${esc(key)}" value="${esc(g[key])}"/>
+      </div>`).join("")}</div>
+    <div class="controls" style="margin-top:10px;margin-bottom:0">
+      <button class="btn" id="save-guardrails">Save limits</button>
+      <button class="btn-outline" id="reset-guardrails">Reset to defaults</button>
+      <span class="dim" id="gr-note" style="font-size:12px"></span>
+    </div>`;
+}
+
+async function renderHistory(){
+  const response = await fetch("/ads/runs?limit=15");
+  const body = await response.json();
+  const runs = body.runs || [];
+  $("history-panel").innerHTML = `
+    <div class="section-title">Run history</div>
+    <div class="section-sub">Every bid change is recorded with the value it had before, which is
+      what makes an undo possible.</div>
+    ${runs.length ? `<div class="table-wrap"><table>
+      <thead><tr>
+        <th scope="col">When</th><th scope="col">Rule</th>
+        <th scope="col" class="num">Rows</th><th scope="col" class="num">Applied</th>
+        <th scope="col" class="num">Failed</th><th scope="col"></th>
+      </tr></thead>
+      <tbody>${runs.map(r => `<tr>
+        <td>${esc(String(r.at).slice(0, 16).replace("T", " "))}</td>
+        <td>${esc(r.rule)}${r.reverts_run_id ? ' <span class="tag">undo</span>' : ""}</td>
+        <td class="num">${n(r.rows)}</td>
+        <td class="num pos">${n(r.applied)}</td>
+        <td class="num ${r.failed ? "neg" : "dim"}">${n(r.failed)}</td>
+        <td>${r.undoable && !r.reverts_run_id
+          ? `<button class="btn-outline" data-undo="${esc(r.run_id)}">↩ Undo</button>` : ""}</td>
+      </tr>`).join("")}</tbody></table></div>`
+      : `<div class="empty-note">No bid changes have been made yet.</div>`}`;
+}
+
+/* ── Refresh ───────────────────────────────────────────────────────────────── */
+async function startRefresh(){
+  const response = await fetch("/ads/refresh", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({start: data.window[0], end: data.window[1]}),
+  });
+  const body = await response.json();
+  if(!response.ok){
+    $("messages").innerHTML = `<div class="banner warn">${esc(body.error || "Could not start.")}</div>`;
+    return;
+  }
+  startPolling();
+}
+
+function startPolling(){
+  if(polling) return;
+  $("progress-wrap").style.display = "";
+  polling = setInterval(async () => {
+    const status = await (await fetch("/ads/refresh-status")).json();
+    $("progress-fill").style.width = (status.percent || 0) + "%";
+    $("progress-label").textContent =
+      `${status.percent || 0}% — ${status.phase_label || status.phase || ""}`;
+    if(!status.running){
+      clearInterval(polling); polling = null;
+      $("progress-wrap").style.display = "none";
+      load();
+    }
+  }, 3000);
+}
+
+/* ── Events ────────────────────────────────────────────────────────────────────
+   Delegated listeners rather than inline handlers: keyword text comes from Amazon and campaign
+   names from the owner, and building an onclick out of either is an injection waiting to happen.
+   Same rule the Orders and Portfolio tabs follow. */
+$("table-area").addEventListener("change", async e => {
+  const tick = e.target.closest("[data-tick]");
+  if(tick){
+    const id = tick.dataset.tick;
+    if(tick.checked) selected.add(id); else selected.delete(id);
+    renderSelection();
+    return;
+  }
+  const gtick = e.target.closest("[data-gtick]");
+  if(gtick){
+    const id = gtick.dataset.gtick;
+    if(gtick.checked) selectedAdGroups.add(id); else selectedAdGroups.delete(id);
+    renderSelection();
+  }
+});
+
+$("table-area").addEventListener("click", async e => {
+  if(e.target.closest("input")) return;   // a tick is handled by `change`
+  const row = e.target.closest("tr.parent");
+  if(!row) return;
+  const id = row.dataset.campaign;
+  if(openCampaigns.has(id)){
+    openCampaigns.delete(id);
+  } else {
+    openCampaigns.add(id);
+    if(!adGroupCache[id]){
+      renderTable();   // show "Loading ad groups…" immediately
+      const body = await (await fetch(`/ads/ad-groups?campaign_id=${encodeURIComponent(id)}`)).json();
+      adGroupCache[id] = body.ad_groups || [];
+    }
+  }
+  renderTable();
+});
+
+$("conditions").addEventListener("change", e => {
+  const row = e.target.closest("[data-index]");
+  const part = e.target.closest("[data-part]");
+  if(!row || !part) return;
+  const index = Number(row.dataset.index);
+  conditions[index][part.dataset.part] = part.dataset.part === "value"
+    ? part.value : part.value;
+  remember("conditions", conditions);
+  if(part.dataset.part === "field") renderConditions();
+});
+
+$("conditions").addEventListener("click", e => {
+  const drop = e.target.closest("[data-drop]");
+  if(!drop) return;
+  conditions.splice(Number(drop.dataset.drop), 1);
+  remember("conditions", conditions);
+  renderConditions();
+});
+
+$("add-condition").addEventListener("click", () => {
+  conditions.push({field: "roas", op: "lt", value: 2});
+  remember("conditions", conditions);
+  renderConditions();
+});
+
+$("action").addEventListener("change", () => {
+  const value = $("action").value;
+  $("amount-unit").textContent = value.endsWith("_pct") ? "%" : "₹";
+});
+
+$("preview-btn").addEventListener("click", runPreview);
+
+$("preview-area").addEventListener("change", e => {
+  const tick = e.target.closest("[data-ptick]");
+  if(!tick) return;
+  const id = tick.dataset.ptick;
+  if(tick.checked) approved.add(id); else approved.delete(id);
+  const count = $("apply-count");
+  if(count) count.textContent = approved.size;
+  const button = $("apply-btn");
+  if(button) button.disabled = approved.size === 0;
+});
+
+$("preview-area").addEventListener("click", e => {
+  if(e.target.closest("#apply-btn")){ applyPlan(); return; }
+  if(e.target.closest("#cancel-preview")){
+    plan = null; $("preview-area").innerHTML = ""; return;
+  }
+  const undo = e.target.closest("[data-undo]");
+  if(undo) undoRun(undo.dataset.undo);
+});
+
+$("history-panel").addEventListener("click", e => {
+  const undo = e.target.closest("[data-undo]");
+  if(undo) undoRun(undo.dataset.undo);
+});
+
+$("guardrails-panel").addEventListener("click", async e => {
+  if(e.target.closest("#save-guardrails")){
+    const values = {};
+    document.querySelectorAll("[data-gr]").forEach(input => {
+      values[input.dataset.gr] = Number(input.value);
+    });
+    const response = await fetch("/ads/guardrails", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({guardrails: values}),
+    });
+    const body = await response.json();
+    $("gr-note").textContent = response.ok ? "Saved." : (body.error || "Could not save.");
+    if(response.ok) load();
+    return;
+  }
+  if(e.target.closest("#reset-guardrails")){
+    await fetch("/ads/guardrails", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({reset: true}),
+    });
+    renderGuardrails();
+    load();
+  }
+});
+
+$("window-bar").addEventListener("click", async e => {
+  const preset = e.target.closest("[data-start]");
+  if(preset){
+    remember("window", [preset.dataset.start, preset.dataset.end]);
+    await load();
+    return;
+  }
+  if(e.target.closest("#win-apply")){
+    const from = $("win-from").value, to = $("win-to").value;
+    if(!from || !to) return;
+    remember("window", [from, to]);
+    load();
+  }
+});
+
+$("refresh-btn").addEventListener("click", startRefresh);
+$("search").addEventListener("input", renderTable);
+
+$("select-all").addEventListener("click", () => {
+  (data.campaigns || []).forEach(c => selected.add(c.campaign_id));
+  renderTable(); renderSelection();
+});
+$("select-none").addEventListener("click", () => {
+  selected.clear(); selectedAdGroups.clear();
+  renderTable(); renderSelection();
+});
+
+$("guardrails-btn").addEventListener("click", () => {
+  const panel = $("guardrails-panel");
+  const showing = panel.style.display !== "none";
+  panel.style.display = showing ? "none" : "";
+  if(!showing) renderGuardrails();
+});
+
+$("history-btn").addEventListener("click", () => {
+  const panel = $("history-panel");
+  const showing = panel.style.display !== "none";
+  panel.style.display = showing ? "none" : "";
+  if(!showing) renderHistory();
+});
+
+load();
+</script>
+</main>
+</body>
+</html>

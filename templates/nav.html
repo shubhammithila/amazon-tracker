@@ -41,6 +41,9 @@
   {% if can is none or 'portfolio' in can %}
   <a href="/portfolio-page" class="{{ 'active' if active == 'portfolio' else '' }}">Portfolio</a>
   {% endif %}
+  {% if can is none or 'ads' in can %}
+  <a href="/ads-page" class="{{ 'active' if active == 'ads' else '' }}">Ads</a>
+  {% endif %}
   {% if can is none or 'projections' in can %}
   <a href="/projections-page" class="{{ 'active' if active == 'projections' else '' }}">Projections</a>
   {% endif %}

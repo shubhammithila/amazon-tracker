@@ -22,13 +22,14 @@ CANONICAL_NAV = {
     "dashboard": "/",
     "invoice": "/invoice-page",
     "portfolio": "/portfolio-page",
+    "ads": "/ads-page",
     "projections": "/projections-page",
     "shipment": "/shipment-page",
     "orders": "/orders-page",
 }
 
-ADMIN_PAGES = ["/", "/invoice-page", "/portfolio-page", "/projections-page", "/shipment-page",
-               "/orders-page", "/pricing-page"]
+ADMIN_PAGES = ["/", "/invoice-page", "/portfolio-page", "/ads-page", "/projections-page",
+               "/shipment-page", "/orders-page", "/pricing-page"]
 
 # Removed on request ("its of no use").
 REMOVED_PAGES = ["/history-page", "/keywords-page"]

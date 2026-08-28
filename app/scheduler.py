@@ -236,6 +236,46 @@ async def scheduled_portfolio_refresh():
         )
 
 
+#: The ads refresh runs after the portfolio one rather than beside it. Both hit Amazon's reporting
+#: API and both are minutes long; overlapping them on a 951 MB box would double the peak for no
+#: benefit, and neither is urgent at 3am.
+ADS_REFRESH_HOUR = 3
+ADS_REFRESH_MINUTE = 50
+
+
+async def scheduled_ads_refresh():
+    """Pull campaign, ad group and per-target performance once a night.
+
+    **The 7-day window**, because that is what a bid decision is taken on and it is a SINGLE report:
+    attribution-exact and ~6 minutes, against three chained reports for 60 days.
+
+    **This job never edits a bid.** It refreshes the figures a rule is evaluated against; applying a
+    rule stays a human pressing Preview and then Apply. A scheduled job that could move 299 live
+    bids is one that moves them on a bad data day — the same reason the Portfolio tab never
+    auto-applies a verdict.
+
+    Reads the settings FRESH rather than the import-time snapshot, so credentials added to .env
+    after start are seen.
+    """
+    if not get_settings().ads_configured:
+        logger.debug("Ads refresh skipped: advertising is not configured")
+        return
+
+    from app.ads import refresh as ads_refresh
+
+    result = await ads_refresh.run(days=7)
+    if result.get("refused"):
+        logger.info("Ads refresh skipped: one is already running")
+    elif result.get("error"):
+        logger.warning("Ads refresh failed: %s", result["error"])
+    else:
+        logger.info(
+            "Ads refresh: %d campaign(s), %d performance row(s) for %s..%s",
+            result.get("campaigns", 0), result.get("rows", 0),
+            result.get("window_start"), result.get("window_end"),
+        )
+
+
 async def scheduled_order_refresh():
     """Pull Amazon Easy Ship orders into the local tables, every 30 minutes.
 
@@ -369,6 +409,18 @@ def setup_scheduler():
     parts.append(
         f"portfolio at {PORTFOLIO_REFRESH_HOUR:02d}:{PORTFOLIO_REFRESH_MINUTE:02d}"
     )
+
+    # Same flag pair again. The Ads tab needs current figures for its rules; it refreshes DATA
+    # only and never edits a bid, so running it unattended is as safe as the portfolio pull.
+    scheduler.add_job(
+        scheduled_ads_refresh,
+        CronTrigger(hour=ADS_REFRESH_HOUR, minute=ADS_REFRESH_MINUTE),
+        id="ads_refresh",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    parts.append(f"ads at {ADS_REFRESH_HOUR:02d}:{ADS_REFRESH_MINUTE:02d}")
 
     scheduler.start()
     # Built from `parts` rather than one f-string: `keyword_hour` and `purge_hour` only exist

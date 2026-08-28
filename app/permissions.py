@@ -38,6 +38,14 @@ PACKING = "packing"
 #: order totals and destination cities, but no buyer names or street addresses: Amazon
 #: withholds those without the PII role and this feature does not ask for them.
 ORDERS = "orders"
+#: Amazon Advertising: campaign performance and **bulk bid edits**.
+#:
+#: **The only area that can change anything AT Amazon.** Every other area reads Amazon and
+#: writes our own records; this one sends bids, and one rule can move several hundred in a
+#: click — the owner's real rule matched 299 targets carrying Rs 102,945 of weekly spend. So
+#: it is deliberately absent from every preset except Owner: it has to be granted knowingly,
+#: per person, rather than arriving with a job title.
+ADS = "ads"
 
 #: Display order is deliberate: it matches the nav, so the tick list on the Users
 #: screen reads down in the same order as the tabs it controls.
@@ -45,6 +53,7 @@ AREAS: list[tuple[str, str, str]] = [
     (DASHBOARD, "Dashboard", "Scraped prices, BSR, ratings and the product table."),
     (INVOICE, "Invoice", "Generate and save GST invoices. Sees purchase rates."),
     (PORTFOLIO, "Portfolio", "Profit per product: margin, ad spend, and what to churn."),
+    (ADS, "Ads", "Campaign performance and BULK BID EDITS — changes live bids at Amazon."),
     (PROJECTIONS, "Projections", "Sales forecasts and reorder alerts."),
     (SHIPMENT, "Shipment", "Plan what ships: quantities, verification, Amazon upload."),
     (PACKING, "Daily packing", "Record units and cartons packed. The warehouse screen."),
