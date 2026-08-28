@@ -1641,14 +1641,72 @@ not a trust boundary, and a guard that only runs after an unrelated check is not
 5. split by writer
 6. record each row's own outcome
 
-### Windows: 7/14/30 are exact, 60 is the ceiling
+### Windows: 7/14/30 are exact, 60 is the ceiling, and TODAY is allowed
 Amazon caps one report at 31 days (`ads.MAX_REPORT_DAYS`), so `reports.py` reuses
 `portfolio.ads.split_window` rather than reimplementing it. **7/14/30 are single reports and
 attribution-exact**; above 31 days the sum is slightly conservative for attributed sales, and the
-screen says so. 60 days is the cap because that is the owner's stated horizon for optimisation
-data. **The window ends yesterday**, for the same reason the Portfolio tab's does: a click costs
-immediately while its attributed sale can land hours later, so a rule reading today would cut bids
-on a measurement artefact.
+screen says so. 60 days is the cap because that is the owner's stated horizon.
+
+**Today IS selectable, and that assertion flipped.** The tab originally capped the picker at
+yesterday, on the Portfolio tab's reasoning that unsettled figures invite a bad decision. Measured
+against the live API: **a report ending today returns HTTP 200 with real spend**, and the owner
+needs near-real-time. So the cap is today and the *screen* carries the caveat — a window ending
+today is labelled "live, but attributed sales land hours after the click, so ROAS reads low until
+tomorrow". Refusing to show today's spend is the wrong trade for a dashboard whose purpose is
+watching spend. Tomorrow is still refused: that is a mistake, not a caveat.
+
+Presets still end **yesterday** (`settledDate()`), so a routine 7d view is attribution-complete.
+
+> **`toISOString()` shifted every date a day early for 5½ hours out of 24.** `maxDate()` and
+> `presetRange()` built a local date then formatted it as UTC — so at 00:39 IST on 29 Aug (19:09 UTC
+> on the 28th) the picker offered **27 Aug** as its maximum. It only misbehaved between midnight and
+> 05:30 IST, which is exactly when nobody is looking. `localDate()` builds the string from
+> `getFullYear/getMonth/getDate`, and a test asserts the whole `<script>` contains no `toISOString`.
+> Same defect class CLAUDE.md already records for the Orders tab, where `new Date("2026-08-25")`
+> rendered as 05:30 the following morning.
+
+> **Clicking anywhere in a date box opens the calendar.** A native `<input type="date">` only opens
+> its picker from the small icon at the right edge; clicking the middle focuses a text field, which
+> reads as nothing happening. `showPicker()` is called on the box, wrapped in try/catch because
+> Firefox and older Safari do not implement it.
+
+### Any sub-range is instant, because the rows are stored per DAY
+Asked as *"once we have the last 30 day data, why cant I select the last 20 days and get results
+instantly?"* — and the answer was that `ads_performance` is keyed per WINDOW, so a range nobody
+fetched had no row to read.
+
+`ads_performance_daily` holds one row per entity **per day**, so any range inside the coverage is a
+`GROUP BY` rather than another ~6-minute report. Measured on the live account:
+
+| | |
+|---|---|
+| DAILY report, 7 days | **43,579 rows** (SUMMARY: 12,205) |
+| stored in | **103 seconds** end to end |
+| a 3-day slice from the middle | **327 ms**, 9,704 rows |
+| one day | **135 ms** |
+| derived total vs Amazon's own window figures | **₹323,722.38 both — 0.000% difference** |
+
+**The daily table is the ONE place in this app that does not use the house upsert.** Measured:
+SELECT-then-UPDATE-or-INSERT runs at 498 rows/sec (6.5 minutes for 30 days) while
+delete-then-bulk-insert runs at **30,921 rows/sec (6 seconds)**. 62× is not a micro-optimisation,
+and nothing is lost by replacing rather than merging — a day's rows are wholly superseded by a
+refetch of that day, so there is no earlier value to preserve. Scoped **per day**, so refreshing a
+7-day window cannot disturb the other 23 days.
+
+- **Every day in a range is checked before summing** (`daily_range_complete`), not just the
+  endpoints. A missing Tuesday would make the total quietly short, and an understated spend is what
+  a bid rule would then act on — so a partial range counts as absent and asks for a refresh.
+- **The bid is the LATEST day's, never a sum.** A bid is a rate; 10 + 11 + 12 is not "the bid over
+  three days".
+- **`derived` is reported separately from `cached`**, because "fetched as this window" and "summed
+  from daily rows" are different claims. The screen says which, and names the coverage before you
+  click rather than after.
+- **Retention is 30 days, purged nightly, and the bound is DISK rather than preference.** Production
+  sits at **91% full with 670 MB free** and `update-ec2.sh` copies the whole database before every
+  deploy, so an unbounded daily table would break both SQLite writes and the deploy itself. 30 days
+  is also the longest range Amazon answers in one report.
+- `load_ad_groups` falls back to the daily rows too — without it, expanding a campaign on a derived
+  window would show every ad group at zero beneath a campaign row showing real spend.
 
 ### Nothing runs a rule automatically
 The nightly job (03:50) refreshes **data only**, and a test asserts it cannot reach `apply_bids`,

@@ -19,6 +19,20 @@ def _template() -> str:
     return (Path(__file__).parent.parent / "templates" / "ads.html").read_text(encoding="utf-8")
 
 
+def _code_only(source: str) -> str:
+    """Strip JS comments, so an assertion tests the CODE rather than the prose explaining it.
+
+    Needed because the comments in this template deliberately name the things they forbid —
+    "never use toISOString", "renderConditions() rebuilds every row" — so a naive substring check
+    matches the warning and reports the opposite of the truth. Both `/* ... */` and `//`.
+    """
+    import re
+    without_blocks = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+    return "\n".join(
+        line for line in without_blocks.splitlines() if not line.strip().startswith("//")
+    )
+
+
 async def _seed(db, rows=None):
     """One window of performance data, so preview has something to read."""
     rows = rows or [
@@ -117,14 +131,29 @@ async def test_a_window_over_sixty_days_is_refused(auth_client, db):
     assert "60" in response.json()["error"]
 
 
-async def test_a_window_including_today_is_refused(auth_client, db):
-    """Today's figures are still settling: a click costs immediately while its attributed sale can
-    land hours later, so a rule reading today would cut bids on a measurement artefact."""
-    from datetime import date
+async def test_today_is_allowed_but_the_future_is_not(auth_client, db):
+    """**This assertion FLIPPED, and the reason is worth recording.**
+
+    It previously demanded that a window including today be REFUSED, because today's ROAS reads low —
+    a click costs immediately while its attributed sale arrives hours later. That was a defensible
+    default and it was wrong for this owner, who asked for near-real-time figures and cannot get them
+    from a tab capped at yesterday.
+
+    **Amazon answers for today**: verified against the live API, a report ending today returns
+    HTTP 200 with real spend. So the cap moved to today and the SCREEN carries the caveat instead —
+    refusing to show today's spend is the wrong trade for a dashboard whose purpose is watching spend.
+
+    Tomorrow is still refused, because that is not a caveat, it is a mistake.
+    """
+    from datetime import date, timedelta
     today = date.today().isoformat()
-    response = await auth_client.get(f"/ads?start=2026-08-01&end={today}")
-    assert response.status_code == 400
-    assert "today" in response.json()["error"].lower()
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+
+    assert (await auth_client.get(f"/ads?start=2026-08-01&end={today}")).status_code == 200
+
+    future = await auth_client.get(f"/ads?start=2026-08-01&end={tomorrow}")
+    assert future.status_code == 400
+    assert "future" in future.json()["error"].lower()
 
 
 async def test_a_reversed_window_is_refused(auth_client, db):
@@ -359,6 +388,184 @@ async def test_no_decimal_or_datetime_reaches_json(auth_client, db):
         json.dumps(response.json())
 
 
+# ─── Per-day rows: any sub-range without a refetch ───────────────────────────
+
+
+def _daily_rows(days, entity="111", spend=100.0, sales=250.0):
+    """Report-shaped DAILY rows: the same entity on several days."""
+    return [
+        {"keywordId": entity, "matchType": "PHRASE", "keyword": "makhana",
+         "cost": spend, "sales7d": sales, "keywordBid": 10.0 + index, "clicks": 5,
+         "impressions": 100, "purchases7d": 1, "campaignId": "c1", "adGroupId": "g1",
+         "date": day}
+        for index, day in enumerate(days)
+    ]
+
+
+async def test_a_sub_range_is_summed_from_daily_rows_with_no_amazon_call(db):
+    """**The answer to "I have 30 days — why must I refetch to see 20 of them?"**
+
+    `ads_performance` is per WINDOW, so a range nobody fetched has no row. The daily rows are
+    summable, so any range inside the coverage is a GROUP BY rather than another ~6-minute report.
+    """
+    days = ["2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04", "2026-08-05"]
+    await repository.save_daily(db, _daily_rows(days, spend=100.0, sales=250.0))
+
+    # Three of the five days: 300 spend, 750 sales.
+    rows = await repository.sum_daily(db, "2026-08-02", "2026-08-04")
+    assert len(rows) == 1
+    assert rows[0]["spend"] == pytest.approx(300.0)
+    assert rows[0]["sales"] == pytest.approx(750.0)
+    assert rows[0]["clicks"] == 15
+    assert rows[0]["roas"] == pytest.approx(2.5)
+
+    # All five: 500 / 1250.
+    everything = await repository.sum_daily(db, "2026-08-01", "2026-08-05")
+    assert everything[0]["spend"] == pytest.approx(500.0)
+
+
+async def test_a_summed_range_takes_the_latest_bid_not_the_sum_of_bids(db):
+    """Adding bids across days would produce a number that means nothing.
+
+    The bid is a rate, not a quantity: 10 + 11 + 12 is not "the bid over three days".
+    """
+    days = ["2026-08-01", "2026-08-02", "2026-08-03"]
+    await repository.save_daily(db, _daily_rows(days))     # bids 10.0, 11.0, 12.0
+    rows = await repository.sum_daily(db, "2026-08-01", "2026-08-03")
+    assert rows[0]["bid"] == 12.0, "the bid should be the most recent day's, not a sum or an average"
+
+
+async def test_an_incomplete_range_is_refused_rather_than_summed_short(db):
+    """**A gap in the middle would make the total quietly understate spend.**
+
+    And an understated spend is what a bid rule would then act on — so a partial range counts as
+    absent and the owner is told to refresh, rather than being shown a plausible wrong number.
+    """
+    await repository.save_daily(db, _daily_rows(["2026-08-01", "2026-08-02", "2026-08-04"]))
+
+    assert await repository.daily_range_complete(db, "2026-08-01", "2026-08-02") is True
+    # 08-03 is missing from the middle.
+    assert await repository.daily_range_complete(db, "2026-08-01", "2026-08-04") is False
+    # And beyond the coverage entirely.
+    assert await repository.daily_range_complete(db, "2026-07-25", "2026-08-01") is False
+
+
+async def test_refetching_one_day_does_not_disturb_the_others(db):
+    """Delete-then-insert is scoped per DAY, so a 7-day refresh cannot wipe the other 23."""
+    await repository.save_daily(db, _daily_rows(["2026-08-01", "2026-08-02"], spend=100.0))
+    # Refetch only 08-02, with a corrected figure.
+    await repository.save_daily(db, _daily_rows(["2026-08-02"], spend=999.0))
+
+    held = await repository.daily_days_held(db)
+    assert held == {"2026-08-01", "2026-08-02"}, "refetching one day removed another"
+    rows = await repository.sum_daily(db, "2026-08-01", "2026-08-02")
+    assert rows[0]["spend"] == pytest.approx(1099.0), "the refetched day did not replace cleanly"
+
+
+async def test_daily_rows_replace_rather_than_double_on_a_repeat_save(db):
+    """The same day stored twice must not count twice — a repeated refresh is normal."""
+    rows = _daily_rows(["2026-08-01"], spend=100.0)
+    await repository.save_daily(db, rows)
+    await repository.save_daily(db, rows)
+    summed = await repository.sum_daily(db, "2026-08-01", "2026-08-01")
+    assert summed[0]["spend"] == pytest.approx(100.0), "a repeated save doubled the spend"
+
+
+async def test_a_daily_row_with_no_date_is_skipped_rather_than_guessed(db):
+    """Filing it under a default day would put one day's spend into another."""
+    rows = _daily_rows(["2026-08-01"])
+    rows.append({**rows[0], "keywordId": "999", "date": None})
+    stored = await repository.save_daily(db, rows)
+    assert stored == 1
+    assert "999" not in [r["entity_id"] for r in
+                         await repository.sum_daily(db, "2026-08-01", "2026-08-01")]
+
+
+async def test_old_daily_rows_are_purged_to_keep_the_disk_bounded(db):
+    """**Not optional housekeeping.** Production is at 91% disk and every deploy copies the whole
+    database, so an unbounded daily table would break both SQLite writes and the deploy."""
+    from datetime import date, timedelta
+    today = date(2026, 8, 29)
+    recent = (today - timedelta(days=3)).isoformat()
+    ancient = (today - timedelta(days=60)).isoformat()
+    await repository.save_daily(db, _daily_rows([recent, ancient]))
+
+    removed = await repository.purge_daily(db, keep_days=30, today=today)
+    assert removed == 1
+    held = await repository.daily_days_held(db)
+    assert recent in held and ancient not in held
+
+
+async def test_the_dashboard_derives_a_sub_range_and_says_that_it_did(auth_client, db):
+    """The route path, end to end: no exact window stored, but the daily rows cover it.
+
+    `derived` is reported separately from `cached` because "fetched as this window" and "summed from
+    daily rows" are different claims, and the screen should be able to say which.
+    """
+    days = ["2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04"]
+    await repository.save_daily(db, _daily_rows(days, spend=100.0, sales=250.0))
+    await repository.save_entities(db, [
+        {"entity_type": "campaign", "entity_id": "c1", "campaign_id": "c1",
+         "name": "MF_SP_keywords", "state": "ENABLED"},
+    ])
+
+    body = (await auth_client.get("/ads?start=2026-08-02&end=2026-08-03")).json()
+    assert body["cached"] is True, "a range inside the daily rows should not read as uncached"
+    assert body["derived"] is True, "the screen cannot tell this was summed rather than fetched"
+    assert body["daily_coverage"] == ["2026-08-01", "2026-08-04"]
+
+    campaign = next(c for c in body["campaigns"] if c["campaign_id"] == "c1")
+    assert campaign["spend"] == pytest.approx(200.0), "two days at 100 each"
+
+
+async def test_a_rule_previews_against_a_derived_range(auth_client, db):
+    """A rule must work on any range the tab will show, not only on fetched windows — otherwise
+    picking 20 days out of 30 shows figures no rule can act on."""
+    days = [f"2026-08-{d:02d}" for d in range(1, 8)]
+    await repository.save_daily(db, _daily_rows(days, spend=500.0, sales=1000.0))
+
+    response = await auth_client.post("/ads/preview", json={
+        "start": "2026-08-02", "end": "2026-08-05",
+        "conditions": [{"field": "spend", "op": "gt", "value": 100}],
+        "action": "decrease_pct", "amount": 10,
+    })
+    body = response.json()
+    assert response.status_code == 200, body
+    assert body["totals"]["changing"] == 1
+    # 4 days x 500 spend, and the bid is the latest day's (10.0 + index 4 = 14.0) -> -10% = 12.6
+    assert body["changes"][0]["spend"] == pytest.approx(2000.0)
+    assert body["changes"][0]["new_bid"] == pytest.approx(12.6)
+
+
+def test_the_daily_report_asks_for_the_date_column_and_summary_does_not():
+    """**Amazon's own asymmetry, and getting it wrong fails the whole request.**
+
+    `date` is ILLEGAL under `timeUnit: SUMMARY` — it rejects the report — and required under DAILY to
+    be of any use. One flag, two column lists.
+    """
+    from app.ads import reports
+
+    summary = reports.build_report_request("2026-08-01", "2026-08-07")
+    assert summary["configuration"]["timeUnit"] == "SUMMARY"
+    assert "date" not in summary["configuration"]["columns"]
+
+    daily = reports.build_report_request("2026-08-01", "2026-08-07", daily=True)
+    assert daily["configuration"]["timeUnit"] == "DAILY"
+    assert "date" in daily["configuration"]["columns"]
+
+
+def test_daily_rows_are_not_collapsed_by_aggregate():
+    """`aggregate` keys on entity id alone, so running it over daily rows would silently discard 29
+    days out of 30. The daily path must bypass it."""
+    from app.ads import reports
+
+    source = (Path(__file__).parent.parent / "app" / "ads" / "reports.py").read_text(
+        encoding="utf-8")
+    assert "raw if daily else aggregate(raw)" in source, (
+        "daily rows are passed through aggregate(), which would collapse them to one row per entity"
+    )
+
+
 # ─── The template ────────────────────────────────────────────────────────────
 
 
@@ -450,10 +657,90 @@ def test_the_template_says_on_screen_that_this_tab_changes_live_bids():
     assert "changes live bids" in source.lower()
 
 
-def test_the_window_picker_cannot_offer_today():
+def test_no_date_in_the_picker_goes_through_toisostring():
+    """**A real bug: at 00:39 IST the picker offered the 27th when the 28th was available.**
+
+    `toISOString()` converts to UTC first. IST is UTC+5:30, so between midnight and 05:30 the UTC
+    date is still yesterday — and "local yesterday, then formatted as UTC" came out a further day
+    early. It only misbehaved in those five and a half hours, which is exactly when nobody is
+    watching.
+
+    Same defect class CLAUDE.md records for the Orders tab, where `new Date("2026-08-25")` rendered
+    as 05:30 the following morning. The rule is: build a bare date from local parts, never round-trip
+    it through UTC.
+    """
     source = _template()
-    assert "function maxDate(" in source
-    assert "getDate() - 1" in source[source.index("function maxDate("):][:300]
+    assert "function localDate(" in source, "there is no local date formatter"
+
+    # Comments NAME the banned function while explaining why it is banned, so they must be stripped
+    # before asserting — otherwise the test passes or fails on the prose rather than the code.
+    script = _code_only(source[source.index("<script>"):])
+    assert "toISOString" not in script, (
+        "a date still goes through toISOString(), which shifts it by a day for the 5.5 hours after "
+        "midnight IST"
+    )
+    body = source[source.index("function localDate("):][:500]
+    assert "getFullYear()" in body and "getMonth()" in body and "getDate()" in body
+
+
+def test_the_picker_allows_today_and_labels_it():
+    """Today is selectable because Amazon answers for it (verified: HTTP 200 for today's date).
+
+    What today is not is SETTLED, so the note beside the dates says ROAS will read low until
+    tomorrow. Hiding today entirely was the previous behaviour and it made near-real-time impossible.
+    """
+    source = _template()
+    assert "function settledDate(" in source, (
+        "there is no separate notion of the last settled day, so presets cannot end on yesterday "
+        "while the picker allows today"
+    )
+
+    # Bounded at the NEXT function, not by a character count — a fixed slice ran past maxDate into
+    # settledDate, which correctly DOES subtract a day, and reported the opposite of the truth.
+    start = source.index("function maxDate(")
+    max_body = source[start:source.index("function settledDate(", start)]
+    assert "getDate() - 1" not in max_body, "maxDate still subtracts a day, so today is unselectable"
+    assert "localDate(new Date())" in max_body, "maxDate is not simply today"
+
+    start = source.index("function settledDate(")
+    settled = source[start:start + 300]
+    assert "getDate() - 1" in settled, "settledDate must be yesterday"
+
+    note = source[source.index("function renderWindowNote("):][:1400]
+    assert "settledDate()" in note and "today" in note.lower(), (
+        "nothing warns that a window ending today reads a low ROAS"
+    )
+
+
+def test_clicking_anywhere_in_a_date_box_opens_the_calendar():
+    """A native `<input type="date">` only opens its picker from the small icon at the right edge.
+
+    Clicking the middle of the box focuses a text field instead, which looks like nothing happened.
+    `showPicker()` is the standards call; it is wrapped in try/catch because Firefox and older Safari
+    do not implement it, and there typing still works.
+    """
+    source = _template()
+    assert "showPicker()" in source, "clicking the box does not open the calendar"
+    handler = source[source.index('$("window-bar").addEventListener("click"'):][:900]
+    assert ".win-date" in handler, "the click handler does not target the date inputs"
+    assert "try {" in handler, (
+        "showPicker() is unguarded, so a browser without it would throw on every click in the box"
+    )
+
+
+def test_the_window_note_distinguishes_cached_derived_and_unfetched():
+    """Three genuinely different costs, so the screen should not call them all "cached".
+
+    Instant from an exact hit, instant because the range sits inside the daily rows, or a real
+    ~6-minute Amazon report. The owner should know which before clicking, not after.
+    """
+    source = _template()
+    assert "function insideDailyCoverage(" in source
+    assert "function exactlyCached(" in source
+    note = source[source.index("function renderWindowNote("):][:1400]
+    assert "exactlyCached(" in note and "insideDailyCoverage(" in note
+    assert "no fetch needed" in note, "a derived range is not distinguished from a fetched one"
+    assert "press Refresh" in note, "an unfetched range does not say what it will cost"
 
 
 def test_changing_a_conditions_field_does_not_rebuild_the_row_being_edited():

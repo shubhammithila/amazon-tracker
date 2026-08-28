@@ -1052,6 +1052,64 @@ class AdsPerformance(Base):
     fetched_at = Column(DateTime, default=datetime.utcnow)
 
 
+class AdsPerformanceDaily(Base):
+    """Spend and sales per entity **per DAY**. Amazon's, cached — and the reason any date range is
+    instant.
+
+    **This is what makes "I have 30 days, show me 20 of them" free.** `AdsPerformance` stores one
+    row per entity per WINDOW, so a 20-day range that nobody fetched has no row to read. Daily rows
+    are summable: any range inside what we hold is a `GROUP BY entity_id` away, with no Amazon call
+    and no ~6-minute report.
+
+    Measured before choosing this over prefetching fixed presets:
+
+        DAILY report, 7 days      45,650 rows   (SUMMARY: 12,854)
+        bulk insert throughput    30,921 rows/sec
+        30 days of daily rows     ~195,000 rows -> 6 SECONDS to store, ~56 MB
+
+    The per-row SELECT-then-UPDATE upsert used everywhere else in this app runs at 498 rows/sec and
+    would need 6.5 MINUTES for the same data. So this table is written by **delete-then-bulk-insert
+    per day**, which is the one place in the codebase that deviates from the house upsert — because
+    a day's rows are wholly replaced by a refetch, never merged, so there is nothing an upsert would
+    preserve.
+
+    **Kept to a 30-DAY rolling window, purged nightly.** Production sits at 91% disk with 670 MB
+    free, and `update-ec2.sh` copies the whole database before every deploy — so an unbounded daily
+    table would eventually fill the disk and break both SQLite writes and the deploy. 30 days is
+    also the longest range that is a single Amazon report, so it is the natural boundary.
+
+    Keyed `(day, entity_id)`: one row per entity per day, and `day` is a plain `String(10)` date in
+    the marketplace's own reporting timezone — never a `DateTime`, because a timezone conversion on
+    a bare date is how the Orders tab once rendered a date as 05:30 the following morning.
+    """
+    __tablename__ = "ads_performance_daily"
+    __table_args__ = (
+        Index("idx_ads_daily_day_entity", "day", "entity_id", unique=True),
+        # The index the sub-range sum reads: bounded by day, grouped by entity.
+        Index("idx_ads_daily_day", "day"),
+        Index("idx_ads_daily_campaign", "day", "campaign_id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    #: `YYYY-MM-DD` as Amazon reported it.
+    day = Column(String(10), nullable=False)
+    entity_id = Column(String(32), nullable=False)
+    entity_type = Column(String(12), nullable=False, default="target")
+    campaign_id = Column(String(32))
+    ad_group_id = Column(String(32))
+    text = Column(String(500))
+    match_type = Column(String(40))
+    #: The bid as reported on that DAY. A sub-range sum takes the LATEST day's bid, not a sum —
+    #: adding bids across days would produce a number that means nothing.
+    reported_bid = Column(Numeric(12, 2))
+    impressions = Column(Integer, default=0)
+    clicks = Column(Integer, default=0)
+    spend = Column(Numeric(12, 2), default=0)
+    orders = Column(Integer, default=0)
+    sales = Column(Numeric(12, 2), default=0)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
 class AdsRule(Base):
     """A saved bid rule: conditions plus an action. **The owner's, not Amazon's.**
 

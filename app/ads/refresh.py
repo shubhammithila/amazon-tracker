@@ -47,6 +47,8 @@ def reset_state() -> None:
         "campaigns": 0,
         "ad_groups": 0,
         "rows": 0,
+        "daily_rows": 0,
+        "purged": 0,
         "window_start": None,
         "window_end": None,
         "error": None,
@@ -195,21 +197,42 @@ async def run(
         def on_report_progress(done, total):
             _progress("report", done, total)
 
+        # **DAILY, not SUMMARY.** Per-day rows are what make an arbitrary sub-range instant: with
+        # them, "I have 30 days, show me 20" is a GROUP BY rather than another 6-minute report.
+        # Measured: DAILY returns 3.6x the rows (45,650 vs 12,854 for 7 days) and bulk-inserts at
+        # 30,921 rows/sec, so 30 days stores in ~6 seconds.
         rows = await reports.fetch_targeting(
-            window_start, window_end, sleep=sleep, on_progress=on_report_progress,
+            window_start, window_end, daily=True,
+            sleep=sleep, on_progress=on_report_progress,
         )
 
         # ── Store ──
-        _progress("store", 0, 1)
+        #
+        # BOTH grains, from the SAME payload, so they cannot disagree:
+        #   * the daily rows, which any sub-range is summed from
+        #   * the window-grain rows, which is what a rule preview reads for THIS window
+        _progress("store", 0, 2)
         async with db_factory() as db:
-            stored = await repository.save_performance(db, window_start, window_end, rows)
+            daily_stored = await repository.save_daily(db, rows)
+            _progress("store", 1, 2)
+            # Collapse the daily rows to the window grain locally rather than asking Amazon twice.
+            stored = await repository.save_performance(
+                db, window_start, window_end, reports.aggregate(rows)
+            )
+            # Keep the daily table bounded — production is at 91% disk and every deploy copies the
+            # whole database.
+            purged = await repository.purge_daily(db)
         STATE["rows"] = stored
-        _progress("store", 1, 1)
+        STATE["daily_rows"] = daily_stored
+        STATE["purged"] = purged
+        _progress("store", 2, 2)
 
         STATE.update({"phase": "done", "percent": 100})
         logger.info(
-            "ads refresh: %d campaign(s), %d ad group(s), %d performance row(s) for %s..%s",
-            len(campaigns), len(ad_groups), stored, window_start, window_end,
+            "ads refresh: %d campaign(s), %d ad group(s), %d window row(s), %d daily row(s) "
+            "for %s..%s (purged %d old daily row(s))",
+            len(campaigns), len(ad_groups), stored, daily_stored,
+            window_start, window_end, purged,
         )
 
     except AdsNotConfigured as exc:

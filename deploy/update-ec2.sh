@@ -305,8 +305,10 @@ def cols(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "ads_performance_daily" in tables:
+    print("d1a5c83b76e2")                           # head: per-day ads rows (instant sub-ranges)
 elif "ads_mutation" in tables:
-    print("c9f4a2e17b83")                           # head: ads tab (bid rules + ledger)
+    print("c9f4a2e17b83")                           # ads tab (bid rules + ledger)
 elif "ads_snapshot" in tables:
     print("b8e3f1a67c94")                           # portfolio ACOS + settings
 elif "economics_snapshot" in tables:
@@ -380,7 +382,8 @@ need = {"shipment_plans", "shipment_plan_items", "shipment_packing_days",
         # The Ads tab. `ads_mutation` is the one that matters most here: it is the audit trail and
         # the undo for live bid changes, so a deploy that left it missing would make the tab
         # unsafe rather than merely broken.
-        "ads_entity", "ads_performance", "ads_rule", "ads_mutation"}
+        "ads_entity", "ads_performance", "ads_rule", "ads_mutation",
+        "ads_performance_daily"}
 missing = sorted(need - have)
 if missing:
     print("    missing tables:", missing)

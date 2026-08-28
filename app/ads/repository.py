@@ -22,13 +22,20 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ads import logic
-from app.models import AdsEntity, AdsMutation, AdsPerformance, AdsRule, PortfolioSettings
+from app.models import (
+    AdsEntity,
+    AdsMutation,
+    AdsPerformance,
+    AdsPerformanceDaily,
+    AdsRule,
+    PortfolioSettings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +181,29 @@ async def load_ad_groups(
             )
             .group_by(AdsPerformance.ad_group_id)
         )).all()
+
+        # **Fall back to the per-day rows when that exact window was never fetched.** Without this,
+        # expanding a campaign on a DERIVED window would show every ad group at zero while the
+        # campaign row above it showed real spend — two numbers for one thing, which is the defect
+        # class this whole hierarchy is arranged to avoid.
+        if not grouped:
+            grouped = (await db.execute(
+                select(
+                    AdsPerformanceDaily.ad_group_id,
+                    func.count(func.distinct(AdsPerformanceDaily.entity_id)).label("targets"),
+                    func.sum(AdsPerformanceDaily.spend).label("spend"),
+                    func.sum(AdsPerformanceDaily.sales).label("sales"),
+                    func.sum(AdsPerformanceDaily.clicks).label("clicks"),
+                    func.sum(AdsPerformanceDaily.impressions).label("impressions"),
+                    func.sum(AdsPerformanceDaily.orders).label("orders"),
+                )
+                .where(
+                    AdsPerformanceDaily.day >= window[0],
+                    AdsPerformanceDaily.day <= window[1],
+                )
+                .group_by(AdsPerformanceDaily.ad_group_id)
+            )).all()
+
         for row in grouped:
             totals[str(row[0] or "")] = {
                 "targets": int(row[1] or 0),
@@ -319,6 +349,235 @@ async def load_performance(
             "cpc": (spend / r.clicks) if r.clicks else None,
         })
     return out
+
+
+# ─── Per-day rows: what makes any sub-range instant ──────────────────────────
+#
+# `AdsPerformance` is per WINDOW, so a range nobody fetched has no row to read. These rows are per
+# DAY and therefore summable: any range inside what we hold is a GROUP BY away, with no Amazon call.
+
+#: How many days of per-day rows to keep. **30, and the bound is disk rather than preference:**
+#: production sits at 91% full with 670 MB free, `update-ec2.sh` copies the whole database before
+#: every deploy, and 30 days of daily rows is ~195,000 rows / ~56 MB. It is also the longest range
+#: Amazon answers in a single report, so it is the natural boundary.
+DAILY_RETENTION_DAYS = 30
+
+
+async def save_daily(db: AsyncSession, rows: list[dict]) -> int:
+    """Store per-day report rows. **Delete-then-bulk-insert per day, not the house upsert.**
+
+    This is the one place in the codebase that deviates from SELECT-then-UPDATE-or-INSERT, and the
+    reason is measured rather than stylistic:
+
+        per-row upsert     498 rows/sec  ->  6.5 MINUTES for 30 days of data
+        bulk insert     30,921 rows/sec  ->  6 SECONDS for the same data
+
+    62x. And nothing is lost by replacing rather than merging: a day's rows are wholly superseded by
+    a refetch of that day, so there is no earlier value an upsert would preserve. Scoped per DAY so
+    refetching a 7-day window cannot disturb the other 23 days already stored.
+
+    Portable: `delete()` + `insert()` through the ORM, no dialect-specific `ON CONFLICT`, so this
+    still runs on PostgreSQL — the same constraint every other repository in this app respects.
+    """
+    if not rows:
+        return 0
+
+    mapped: list[dict] = []
+    days: set[str] = set()
+    now = datetime.utcnow()
+
+    for raw in rows:
+        m = logic.metrics_for(raw)
+        if not m["entity_id"]:
+            continue
+        day = str(raw.get("date") or "")[:10]
+        if not day:
+            # A DAILY report row without a date cannot be filed under a day, and guessing one would
+            # put another day's spend into this one. Skipped rather than defaulted.
+            continue
+        days.add(day)
+        mapped.append({
+            "day": day,
+            "entity_id": m["entity_id"],
+            "entity_type": "keyword" if m["writer"] == logic.WRITER_KEYWORD else "target",
+            "campaign_id": m["campaign_id"] or None,
+            "ad_group_id": m["ad_group_id"] or None,
+            "text": (m["text"] or "")[:500],
+            "match_type": m["match_type"],
+            "reported_bid": m["bid"],
+            "impressions": m["impressions"],
+            "clicks": m["clicks"],
+            "spend": m["spend"],
+            "orders": m["orders"],
+            "sales": m["sales"],
+            "fetched_at": now,
+        })
+
+    if not mapped:
+        return 0
+
+    # Replace exactly the days present in this payload.
+    await db.execute(
+        delete(AdsPerformanceDaily).where(AdsPerformanceDaily.day.in_(sorted(days)))
+    )
+    CHUNK = 5000
+    for start in range(0, len(mapped), CHUNK):
+        await db.execute(insert(AdsPerformanceDaily), mapped[start:start + CHUNK])
+    await db.commit()
+
+    logger.info("ads: stored %d daily row(s) across %d day(s)", len(mapped), len(days))
+    return len(mapped)
+
+
+async def daily_coverage(db: AsyncSession) -> tuple[str, str] | None:
+    """The span of per-day rows held, as `(first_day, last_day)`, or None if empty.
+
+    **Reports the SPAN, not a set of days.** A gap in the middle would make a sub-range sum silently
+    short, so `daily_range_complete` checks each requested day rather than trusting this.
+    """
+    row = (await db.execute(
+        select(func.min(AdsPerformanceDaily.day), func.max(AdsPerformanceDaily.day))
+    )).first()
+    if not row or not row[0]:
+        return None
+    return (row[0], row[1])
+
+
+async def daily_days_held(db: AsyncSession) -> set[str]:
+    """Exactly which days we hold. Used to prove a requested range is complete before summing it."""
+    rows = (await db.execute(
+        select(AdsPerformanceDaily.day).group_by(AdsPerformanceDaily.day)
+    )).all()
+    return {r[0] for r in rows}
+
+
+def expected_days(start: str, end: str) -> list[str]:
+    """Every calendar day in an inclusive range."""
+    first, last = date.fromisoformat(start), date.fromisoformat(end)
+    out, cursor = [], first
+    while cursor <= last:
+        out.append(cursor.isoformat())
+        cursor += timedelta(days=1)
+    return out
+
+
+async def daily_range_complete(db: AsyncSession, start: str, end: str) -> bool:
+    """Do we hold EVERY day in this range?
+
+    **Every day, not merely the endpoints.** A missing Tuesday would make the sum quietly understate
+    spend, and an understated spend is what a bid rule would then act on — so a partial range is
+    treated as absent and the owner is told to refresh.
+    """
+    held = await daily_days_held(db)
+    return all(day in held for day in expected_days(start, end))
+
+
+async def sum_daily(
+    db: AsyncSession,
+    start: str,
+    end: str,
+    *,
+    campaign_ids: list[str] | None = None,
+    ad_group_ids: list[str] | None = None,
+) -> list[dict]:
+    """Sum per-day rows into one row per entity for an arbitrary range. **No Amazon call.**
+
+    This is the answer to "I already have 30 days — why must I refetch to see 20 of them?". Returned
+    in the same shape `load_performance` produces, so a rule preview cannot tell the difference
+    between a fetched window and a derived one.
+
+    `reported_bid` takes the LATEST day's value rather than a sum — adding bids across days would
+    produce a number that means nothing. Done with a correlated max(day) rather than a second query
+    per entity.
+    """
+    query = (
+        select(
+            AdsPerformanceDaily.entity_id,
+            func.max(AdsPerformanceDaily.entity_type),
+            func.max(AdsPerformanceDaily.campaign_id),
+            func.max(AdsPerformanceDaily.ad_group_id),
+            func.max(AdsPerformanceDaily.text),
+            func.max(AdsPerformanceDaily.match_type),
+            func.sum(AdsPerformanceDaily.impressions),
+            func.sum(AdsPerformanceDaily.clicks),
+            func.sum(AdsPerformanceDaily.spend),
+            func.sum(AdsPerformanceDaily.orders),
+            func.sum(AdsPerformanceDaily.sales),
+            func.max(AdsPerformanceDaily.day),
+        )
+        .where(AdsPerformanceDaily.day >= start, AdsPerformanceDaily.day <= end)
+        .group_by(AdsPerformanceDaily.entity_id)
+    )
+    if campaign_ids:
+        query = query.where(AdsPerformanceDaily.campaign_id.in_([str(c) for c in campaign_ids]))
+    if ad_group_ids:
+        query = query.where(AdsPerformanceDaily.ad_group_id.in_([str(a) for a in ad_group_ids]))
+
+    grouped = (await db.execute(query)).all()
+    if not grouped:
+        return []
+
+    # The bid as at the last day each entity appears — one extra query for the whole set rather
+    # than one per entity.
+    latest = dict((await db.execute(
+        select(AdsPerformanceDaily.entity_id, AdsPerformanceDaily.reported_bid)
+        .where(
+            AdsPerformanceDaily.day >= start,
+            AdsPerformanceDaily.day <= end,
+            AdsPerformanceDaily.reported_bid.is_not(None),
+        )
+        .order_by(AdsPerformanceDaily.day)
+    )).all())
+
+    out = []
+    for row in grouped:
+        spend = round(float(row[8] or 0), 2)
+        sales = round(float(row[10] or 0), 2)
+        clicks = int(row[7] or 0)
+        impressions = int(row[6] or 0)
+        orders = int(row[9] or 0)
+        out.append({
+            "entity_id": row[0],
+            "writer": logic.writer_for(row[5]),
+            "match_type": row[5],
+            "text": row[4] or "",
+            "campaign_id": row[2] or "",
+            "campaign_name": "",
+            "ad_group_id": row[3] or "",
+            "ad_group_name": "",
+            "bid": _f(latest.get(row[0])),
+            "spend": spend,
+            "sales": sales,
+            "clicks": clicks,
+            "impressions": impressions,
+            "orders": orders,
+            "roas": (sales / spend) if spend else None,
+            "acos": (spend / sales) if sales else None,
+            "ctr": (clicks / impressions) if impressions else None,
+            "cvr": (orders / clicks) if clicks else None,
+            "cpc": (spend / clicks) if clicks else None,
+        })
+    out.sort(key=lambda r: -r["spend"])
+    return out
+
+
+async def purge_daily(db: AsyncSession, *, keep_days: int = DAILY_RETENTION_DAYS,
+                      today: date | None = None) -> int:
+    """Delete per-day rows older than the retention window. Returns the number removed.
+
+    **Not optional housekeeping.** Production is at 91% disk and every deploy copies the whole
+    database; without this the daily table grows without bound and eventually breaks both SQLite
+    writes and the deploy itself.
+    """
+    cutoff = ((today or date.today()) - timedelta(days=keep_days - 1)).isoformat()
+    result = await db.execute(
+        delete(AdsPerformanceDaily).where(AdsPerformanceDaily.day < cutoff)
+    )
+    await db.commit()
+    removed = int(result.rowcount or 0)
+    if removed:
+        logger.info("ads: purged %d daily row(s) older than %s", removed, cutoff)
+    return removed
 
 
 async def windows_available(db: AsyncSession) -> list[tuple[str, str]]:

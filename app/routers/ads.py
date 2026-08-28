@@ -49,15 +49,19 @@ def _window(start: str | None, end: str | None, days: int | None,
             *, today: date | None = None) -> tuple[str, str]:
     """Resolve and VALIDATE a requested window. Raises `ValueError` with a readable reason.
 
-    Two bounds, for different reasons:
+    Two bounds:
 
     * **at most 60 days**, the owner's stated horizon for optimisation data.
-    * **ending yesterday at the latest.** Today's figures are still settling — a click costs
-      immediately while its attributed sale can arrive hours later — so a window including today
-      shows a punishing ROAS every morning that recovers by evening. A bid rule acting on that
-      would cut bids on a measurement artefact.
+    * **ending today at the latest** — and NOT yesterday, which is what it used to be.
+
+    **Today is allowed because Amazon answers for it.** Verified against the live API: a report for
+    today returns HTTP 200 and real figures. What today is not is SETTLED — a click costs immediately
+    while its attributed sale can arrive hours later, so a window ending today reads a lower ROAS
+    than it will tomorrow. The screen labels that rather than forbidding it: refusing to show today's
+    spend at all is the wrong trade for a dashboard whose purpose is watching spend, and the owner
+    asked for near-real-time explicitly.
     """
-    yesterday = (today or date.today()) - timedelta(days=1)
+    latest = today or date.today()
 
     if start and end:
         try:
@@ -67,10 +71,10 @@ def _window(start: str | None, end: str | None, days: int | None,
             raise ValueError("Dates must be YYYY-MM-DD.")
         if first > last:
             raise ValueError(f"The window starts ({start}) after it ends ({end}).")
-        if last > yesterday:
+        if last > latest:
             raise ValueError(
-                f"The window may not include today — advertising figures are still settling, "
-                f"so the latest usable day is {yesterday.isoformat()}."
+                f"{end} is in the future — the latest day Amazon can report is "
+                f"{latest.isoformat()}."
             )
         span = (last - first).days + 1
         if span > MAX_WINDOW_DAYS:
@@ -139,15 +143,30 @@ async def ads_dashboard(
 
     settings = get_settings()
     available = await repository.windows_available(db)
-    cached = (window_start, window_end) in available
+    exact = (window_start, window_end) in available
 
+    # **Any range covered by the per-day rows is INSTANT, even if nobody fetched that exact window.**
+    # This is the answer to "I already have 30 days — why must I refetch to see 20 of them?". The
+    # daily rows are summed locally: no Amazon call, no ~6-minute report. `derived` tells the screen
+    # which of the two it is looking at, because "cached" and "computed from cached" are different
+    # claims and the owner should be able to tell.
+    derived = False
     rows = []
-    if cached:
+    if exact:
         rows = await repository.load_performance(
             db, window_start, window_end,
             campaign_ids=[campaign_id] if campaign_id else None,
         )
+    elif await repository.daily_range_complete(db, window_start, window_end):
+        rows = await repository.sum_daily(
+            db, window_start, window_end,
+            campaign_ids=[campaign_id] if campaign_id else None,
+        )
+        derived = True
+
+    if rows:
         rows = await repository.attach_names(db, rows)
+    cached = exact or derived
 
     campaigns = await repository.load_campaigns(db, include_paused=include_paused)
 
@@ -188,7 +207,13 @@ async def ads_dashboard(
     return {
         "window": [window_start, window_end],
         "cached": cached,
+        # True when the figures were SUMMED from per-day rows rather than read from a window that
+        # was fetched as such. Same numbers, different provenance, and the screen says which.
+        "derived": derived,
         "windows_available": [list(w) for w in available],
+        # The span of per-day rows held, so the picker can mark ANY range inside it as instant
+        # rather than only the exact windows someone happened to fetch.
+        "daily_coverage": list(await repository.daily_coverage(db) or ()),
         "preset_days": list(PRESET_DAYS),
         "max_window_days": MAX_WINDOW_DAYS,
         "configured": settings.ads_configured,
@@ -329,11 +354,21 @@ async def preview(
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
+    # Reads the window rows if that exact window was fetched, otherwise SUMS the per-day rows —
+    # so a rule runs on any range inside the daily coverage without a fresh report. Both paths
+    # return the identical shape, which is deliberate: a preview must not behave differently
+    # depending on where its figures came from, because the apply step consumes what it produces.
     rows = await repository.load_performance(
         db, window_start, window_end,
         campaign_ids=body.get("campaign_ids") or None,
         ad_group_ids=body.get("ad_group_ids") or None,
     )
+    if not rows and await repository.daily_range_complete(db, window_start, window_end):
+        rows = await repository.sum_daily(
+            db, window_start, window_end,
+            campaign_ids=body.get("campaign_ids") or None,
+            ad_group_ids=body.get("ad_group_ids") or None,
+        )
     if not rows:
         return JSONResponse(
             {"error": f"No performance data for {window_start}..{window_end}. "
