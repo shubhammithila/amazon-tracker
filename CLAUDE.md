@@ -1409,12 +1409,57 @@ ACOS, and one 500 g pack runs **105% ACOS on Easy Ship against 242% on FBA**.
   / rating. Reproduces the shortlists previously built by hand — `TACOS > 50` + `sales < 100000`
   returns the same 12 products in two clicks. A row with no value for the field is EXCLUDED rather
   than treated as 0, or every unadvertised product would match "ACOS < 50".
+
+  > **An EMPTY filter box is not a zero, and `Number("")` is 0 rather than NaN.** A new row is
+  > seeded at `TACOS > 50`; the bug bit on the next gesture — clearing that 50 to type your own
+  > number, which left the value `""` for those keystrokes and became a live `TACOS > 0`. Measured:
+  > **45 of 90 products vanished mid-edit** while the count label read "45 of 90 products match",
+  > the screen asserting the filtering was intended. `filterThreshold` now short-circuits on empty
+  > and whitespace; a deliberately typed `0` still filters, because that is a real threshold.
 - **Every column sorts**, click to toggle, held in `sessionStorage` so saving a decision does not
   throw the owner back to the top. **Nulls sort last in both directions** — "no data" is not a
   small number. Size rows always sort within their parent.
+
+  **`applySort` is ONE function, called by both the click and the keydown handler.** The headers are
+  `tabindex="0" role="button"` with Enter and Space, so the toggle rule lives in one place — two
+  copies is how a keyboard user ends up with different ordering from a mouse user. Space is
+  `preventDefault`ed (its default action scrolls, so sorting would also jump a screenful away) and
+  focus is restored after `renderTable` rebuilds the thead, without which every sort threw the caret
+  back to the top of the document and made the keyboard path present but unusable. `aria-sort`
+  carries the direction, because the ▲/▼ glyph is decoration and is `aria-hidden`.
 - **`Products` / `SKUs` toggle inside every verdict filter**, because "KILL, by SKU" is the actual
   question. The counts differ per grain (9 KILL products against 24 KILL sizes) and each chip
   shows the count for the grain on screen.
+
+  > **A zero-count verdict chip is still rendered while it is the ACTIVE filter**, dashed to show it
+  > matches nothing at this grain. **SURGICAL is structurally zero for SKUs** — it means a parent
+  > earns its place while one of its sizes does not, so no single size row can carry it — and
+  > dropping the chip left an empty table, nothing highlighted, and no control left to click to undo
+  > the filter. The empty note names *which* of the three controls (chip, custom filters, search)
+  > emptied the grid, and says outright that SURGICAL-by-SKU is impossible rather than reading as a
+  > dead end.
+
+**The thresholds are range-checked, not merely parsed as floats.** `good_rating: 99` saved cleanly
+under a finite-float check, and since Amazon rates out of 5 nothing could ever reach it: **BEST BET
+went to zero permanently** while the rule panel dutifully explained "rated 99 stars or better".
+`kill_tacos: -1` did the mirror image and made every product a KILL. Both read as findings rather
+than typos. `THRESHOLD_RANGES` gives each threshold the bounds its units actually have and
+`threshold_error` returns the *reason*, so a refusal can say "Amazon rates products out of 5 stars".
+**Validated on READ as well as write** — a value already stored, or edited by hand, would otherwise
+keep breaking the verdicts with no way to see why.
+
+**The table scrolls inside `.table-wrap`, and the table needs a `min-width` for that to do
+anything.** Every cell here is `white-space:nowrap` on purpose — 11 columns of money and
+percentages, where a wrapped `₹1,23,456` reads as two numbers — so the grid is legitimately wider
+than a phone and the only question is where the overflow goes. It went to the PAGE: measured **744px
+of sideways document scroll at a 350px viewport**, taking the nav, the window bar and the verdict
+chips off-screen with no anchored column to scroll back to. Without the `min-width` the table obeys
+`width:100%`, squeezes to the container, and the nowrap cells overflow their own gridlines instead —
+the same defect as the PDF cells that printed SKUs over product names.
+
+> Fixing that revealed a **separate, pre-existing overflow**: `.nav-links` is 547px wide with no
+> wrap rule, so all 8 pages still scroll ~411px sideways and Logout sits off-screen. Site-wide, not
+> this page's, and tracked separately.
 
 **A parent is exactly the SUM of its sizes**, never a separate parent-level query (which Amazon
 would happily answer). The size rows sit directly beneath the parent row, so two independent
