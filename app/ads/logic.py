@@ -1,0 +1,484 @@
+"""Pure rules for the Ads tab. No database, no network.
+
+**This is the first module in this app whose output CHANGES the seller account.** Everything
+else here reads Amazon and writes only our own records; a rule run computed in this file becomes
+a `PUT` that moves real bids and therefore real money. Every guard below exists because of
+something measured against the live account on 2026-08-28, and the module is pure so that all of
+it is testable without touching Amazon.
+
+Three facts drive the design, all measured:
+
+1. **One rule writes to TWO endpoints, and the report hides which.** The `spTargeting` report
+   labels both id columns `keywordId`, but only `EXACT`/`PHRASE`/`BROAD` rows are keywords. The
+   `TARGETING_EXPRESSION*` rows are targeting clauses on a different endpoint. Of six real matches
+   from the owner's own rule, four were targeting clauses. Sending one to `/sp/keywords` returns a
+   `207` with an error array — a silent partial failure inside a run that looks successful. See
+   `writer_for`.
+
+2. **Amazon enforces a bid FLOOR but effectively no CEILING.** Measured: `bid=0.5` was rejected
+   (`rangeError`, "lower than the minimum allowed by the marketplace"); **`bid=1000.0` was
+   ACCEPTED** on an account whose median enabled bid is ₹6.39. So a mistyped multiplier is caught
+   here or not at all. See `GUARDRAILS` and `check_guardrails`.
+
+3. **ROAS has no meaning without spend.** A zero-spend row must not match `roas < 3`, or every
+   dormant target in the account is swept into a bid cut. `_ratio` returns `None`, exactly as the
+   Portfolio tab's does, and `None` never satisfies a comparison.
+"""
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+
+# ─── Routing: which endpoint owns this row ───────────────────────────────────
+#
+# **The report calls both id columns `keywordId`, which is the trap.** Routing is decided by
+# `matchType`, whose real vocabulary was read off a 12,854-row report rather than the docs.
+
+#: Keyword match types. These rows are written with `{keywordId, bid}` to `/sp/keywords`.
+KEYWORD_MATCH_TYPES = frozenset({"EXACT", "PHRASE", "BROAD"})
+
+#: Targeting-clause match types, written with `{targetId, bid}` to `/sp/targets`:
+#:
+#: * `TARGETING_EXPRESSION_PREDEFINED` — Amazon's auto targets. Measured on this account:
+#:   `QUERY_HIGH_REL_MATCHES` (close-match), `QUERY_BROAD_REL_MATCHES` (loose-match),
+#:   `ASIN_ACCESSORY_RELATED` (complements), `ASIN_SUBSTITUTE_RELATED` (substitutes).
+#: * `TARGETING_EXPRESSION` — manual product and category targets, e.g. `category="4860253031"`.
+TARGET_MATCH_TYPES = frozenset({"TARGETING_EXPRESSION_PREDEFINED", "TARGETING_EXPRESSION"})
+
+WRITER_KEYWORD = "keyword"
+WRITER_TARGET = "target"
+
+
+def writer_for(match_type) -> str | None:
+    """Which endpoint owns a report row: `"keyword"`, `"target"`, or `None` if unrecognised.
+
+    **`None` means the row is EXCLUDED from the run, never guessed into one.** An unknown match
+    type is a new Amazon feature or a typo in our own vocabulary; guessing sends an id to the
+    wrong endpoint, and the `207` that comes back reports success for the rows that worked and
+    buries the failure in an `error` array. Excluding and naming it is recoverable; a silent
+    misroute is not.
+
+    Verified the two id spaces do not collide (0 overlaps across a 1,000-id sample), so a row
+    routed by `matchType` cannot be written to the wrong entity by accident.
+    """
+    if not match_type:
+        return None
+    value = str(match_type).strip().upper()
+    if value in KEYWORD_MATCH_TYPES:
+        return WRITER_KEYWORD
+    if value in TARGET_MATCH_TYPES:
+        return WRITER_TARGET
+    return None
+
+
+# ─── Guardrails ──────────────────────────────────────────────────────────────
+#
+# **Amazon accepted a ₹1,000 bid in testing.** The floor is enforced on their side; the ceiling
+# is not enforced at all. These are therefore the only thing standing between a mistyped
+# percentage and several hundred live bids.
+
+#: Editable, stored as one JSON row like `portfolio_settings`, and range-checked on read as well
+#: as write — the Portfolio tab shipped a `good_rating: 99` that silently zeroed a whole verdict
+#: because only "is it a float" was checked.
+DEFAULT_GUARDRAILS = {
+    #: No resulting bid may exceed this. ₹60 is ~9x the measured median enabled bid of ₹6.39 and
+    #: above the observed max of a normal manual bid, so it permits real work while refusing the
+    #: ₹1,000 that Amazon would happily take.
+    "max_bid": 60.0,
+    #: Amazon's own floor is per marketplace and it REJECTS below it (measured at ₹0.50 on .in,
+    #: which failed). Holding our own floor means those rows are excluded and reported up front
+    #: rather than coming back as errors after the run.
+    "min_bid": 1.0,
+    #: The largest proportional move a single run may make to any bid. 25% catches "10" typed as
+    #: "100" while leaving normal optimisation (5-20%) untouched.
+    "max_change_pct": 25.0,
+    #: A run touching more than this many rows needs explicit confirmation. The owner's own rule
+    #: matched 299, so the default has to sit above that to be useful rather than obstructive.
+    "max_rows": 500,
+}
+
+#: Bounds for each guardrail, so an edited value cannot be absurd. Same lesson as
+#: `portfolio.logic.THRESHOLD_RANGES`: a finite-float check let `good_rating: 99` through, and
+#: nothing could ever reach it.
+GUARDRAIL_RANGES = {
+    "max_bid": (1.0, 1000.0),
+    "min_bid": (0.02, 100.0),
+    "max_change_pct": (1.0, 100.0),
+    "max_rows": (1, 20000),
+}
+
+
+def guardrail_error(key: str, value) -> str | None:
+    """The REASON a guardrail value is refused, or None if it is acceptable.
+
+    Returns prose rather than False so a refusal can say what the units are — "a bid ceiling of
+    ₹0.10 would refuse every bid on the account" is actionable where "invalid" is not.
+    """
+    if key not in DEFAULT_GUARDRAILS:
+        valid = ", ".join(sorted(DEFAULT_GUARDRAILS))
+        return f"Unknown setting {key!r}. Valid names: {valid}."
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return f"{key} must be a number, got {value!r}."
+    if number != number or number in (float("inf"), float("-inf")):
+        return f"{key} must be a number, got {value!r}."
+    low, high = GUARDRAIL_RANGES[key]
+    if not (low <= number <= high):
+        if key == "max_change_pct":
+            return (f"{key} must be between {low:g}% and {high:g}% — a single run moving a bid "
+                    f"more than that is almost always a typo, got {number:g}.")
+        return f"{key} must be between {low:g} and {high:g}, got {number:g}."
+    return None
+
+
+def guardrails_or_default(stored: Mapping | None) -> dict:
+    """Merge stored guardrails over the defaults, discarding any value that fails its range.
+
+    **Validated on READ, not only on write.** A value already in the database — or edited by
+    hand — would otherwise keep weakening the only ceiling that exists, with nothing on screen
+    to show why.
+    """
+    merged = dict(DEFAULT_GUARDRAILS)
+    for key, value in (stored or {}).items():
+        if guardrail_error(key, value) is None:
+            merged[key] = float(value) if key != "max_rows" else int(float(value))
+    return merged
+
+
+# ─── Metrics ─────────────────────────────────────────────────────────────────
+
+
+def _as_float(value) -> float:
+    """Coerce defensively. Postgres returns `Decimal` for `Numeric` where SQLite returns float,
+    and the report returns JSON numbers; all three land here."""
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _as_int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _ratio(numerator, denominator):
+    """`None` when there is no denominator — never 0.0.
+
+    The distinction is load-bearing for exactly the reason it is in the Portfolio tab. A target
+    with no spend has no ROAS; returning 0.0 would make it match `roas < 3` and sweep every
+    dormant target in a 148,291-keyword account into a bid cut. `None` satisfies no comparison,
+    so those rows are simply not eligible.
+    """
+    bottom = _as_float(denominator)
+    if not bottom:
+        return None
+    return _as_float(numerator) / bottom
+
+
+def metrics_for(row: Mapping) -> dict:
+    """Normalise one `spTargeting` report row into the fields a rule can filter on.
+
+    Keeps Amazon's own names out of the rule vocabulary: the report says `cost`/`sales7d`, the
+    owner thinks in `spend`/`sales`, and a rule written against a report column name would break
+    the day Amazon renames one.
+    """
+    spend = _as_float(row.get("cost"))
+    sales = _as_float(row.get("sales7d"))
+    clicks = _as_int(row.get("clicks"))
+    impressions = _as_int(row.get("impressions"))
+    orders = _as_int(row.get("purchases7d"))
+    match_type = row.get("matchType") or row.get("keywordType")
+
+    return {
+        "entity_id": str(row.get("keywordId") or ""),
+        "writer": writer_for(match_type),
+        "match_type": match_type,
+        "text": row.get("keyword") or row.get("targeting") or "",
+        "campaign_id": str(row.get("campaignId") or ""),
+        "campaign_name": row.get("campaignName") or "",
+        "ad_group_id": str(row.get("adGroupId") or ""),
+        "ad_group_name": row.get("adGroupName") or "",
+        "bid": _as_float(row.get("keywordBid")) or None,
+        "spend": spend,
+        "sales": sales,
+        "clicks": clicks,
+        "impressions": impressions,
+        "orders": orders,
+        # ROAS and ACOS are reciprocals, and BOTH are shown: the owner's rules are written in
+        # ROAS, while the rest of this app (and the Portfolio tab) speaks ACOS. Deriving one and
+        # displaying the other keeps a single source for the pair.
+        "roas": _ratio(sales, spend),
+        "acos": _ratio(spend, sales),
+        "ctr": _ratio(clicks, impressions),
+        "cvr": _ratio(orders, clicks),
+        "cpc": _ratio(spend, clicks),
+    }
+
+
+# ─── Rule conditions ─────────────────────────────────────────────────────────
+
+#: The fields a condition may test, with the unit each is entered in. `pct` fields are typed as
+#: percentages and compared as ratios, so "acos > 50" means 0.5 — the same convention the
+#: Portfolio tab's filter builder uses, because the owner uses both screens.
+FIELDS = {
+    "spend": {"label": "Spend", "kind": "money"},
+    "sales": {"label": "Sales", "kind": "money"},
+    "bid": {"label": "Bid", "kind": "money"},
+    "cpc": {"label": "CPC", "kind": "money"},
+    "roas": {"label": "ROAS", "kind": "number"},
+    "acos": {"label": "ACOS", "kind": "pct"},
+    "ctr": {"label": "CTR", "kind": "pct"},
+    "cvr": {"label": "Conversion rate", "kind": "pct"},
+    "clicks": {"label": "Clicks", "kind": "count"},
+    "impressions": {"label": "Impressions", "kind": "count"},
+    "orders": {"label": "Orders", "kind": "count"},
+}
+
+OPERATORS = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<=", "eq": "="}
+
+
+def condition_error(condition: Mapping) -> str | None:
+    """Why a condition is unusable, or None. Checked before a run, not during it."""
+    field = condition.get("field")
+    if field not in FIELDS:
+        return f"Unknown field {field!r}. Valid: {', '.join(sorted(FIELDS))}."
+    if condition.get("op") not in OPERATORS:
+        return f"Unknown comparison {condition.get('op')!r}."
+    raw = condition.get("value")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        # An empty box is not a zero. The Portfolio tab shipped this exact bug: `Number("")` is
+        # 0, so a blank filter became a live `> 0` and hid half the portfolio.
+        return "This condition has no value, so it cannot be applied."
+    try:
+        number = float(raw)
+    except (TypeError, ValueError):
+        return f"{field} needs a number, got {raw!r}."
+    if number != number or number in (float("inf"), float("-inf")):
+        return f"{field} needs a real number, got {raw!r}."
+    return None
+
+
+def _threshold(condition: Mapping) -> float:
+    """A condition's value in the same unit as the metric — percentages become ratios."""
+    number = float(condition["value"])
+    return number / 100.0 if FIELDS[condition["field"]]["kind"] == "pct" else number
+
+
+def matches(row_metrics: Mapping, conditions: Sequence[Mapping]) -> bool:
+    """Do ALL conditions hold for this row? (ANDed, like the Portfolio filter builder.)
+
+    **A row whose value for a tested field is `None` does NOT match.** That is the rule that
+    keeps a zero-spend target out of a `roas < 3` bid cut, and it is why `_ratio` returns `None`
+    rather than 0.0. An empty condition list matches nothing rather than everything — "no rule"
+    must never mean "every row in the account".
+    """
+    if not conditions:
+        return False
+    for condition in conditions:
+        value = row_metrics.get(condition["field"])
+        if value is None:
+            return False
+        threshold = _threshold(condition)
+        op = condition["op"]
+        if op == "gt" and not value > threshold:
+            return False
+        if op == "gte" and not value >= threshold:
+            return False
+        if op == "lt" and not value < threshold:
+            return False
+        if op == "lte" and not value <= threshold:
+            return False
+        if op == "eq" and not value == threshold:
+            return False
+    return True
+
+
+# ─── The bid action ──────────────────────────────────────────────────────────
+
+ACTION_INCREASE_PCT = "increase_pct"
+ACTION_DECREASE_PCT = "decrease_pct"
+ACTION_INCREASE_ABS = "increase_abs"
+ACTION_DECREASE_ABS = "decrease_abs"
+ACTION_SET = "set"
+
+ACTIONS = (ACTION_INCREASE_PCT, ACTION_DECREASE_PCT,
+           ACTION_INCREASE_ABS, ACTION_DECREASE_ABS, ACTION_SET)
+
+
+def new_bid(current, action: str, amount) -> float | None:
+    """The bid this action produces, rounded to 2dp. `None` if it cannot be computed.
+
+    **Rounded to 2 decimals because Amazon takes 2**: the owner's own rule gives
+    `12.68 x 0.9 = 11.412`, and sending that unrounded relies on Amazon rounding it the way we
+    would have. Rounding here means the preview shows exactly what will be sent.
+
+    `None` for a row with no current bid rather than a guess from the ad group default: the ad
+    group's `defaultBid` is what an inheriting target spends, but writing a bid onto the target
+    CONVERTS it from inheriting to fixed, which is a structural change the owner did not ask for.
+    Measured: 0 of the 299 rows matched by the real rule lacked an explicit bid, so excluding
+    them costs nothing today and prevents a surprise later.
+    """
+    base = _as_float(current)
+    if action == ACTION_SET:
+        try:
+            return round(float(amount), 2)
+        except (TypeError, ValueError):
+            return None
+    if not base:
+        return None
+    try:
+        step = float(amount)
+    except (TypeError, ValueError):
+        return None
+
+    if action == ACTION_INCREASE_PCT:
+        return round(base * (1 + step / 100.0), 2)
+    if action == ACTION_DECREASE_PCT:
+        return round(base * (1 - step / 100.0), 2)
+    if action == ACTION_INCREASE_ABS:
+        return round(base + step, 2)
+    if action == ACTION_DECREASE_ABS:
+        return round(base - step, 2)
+    return None
+
+
+#: Why a matched row will NOT be written. Each is shown on the preview with a count, because a
+#: row silently missing from a 299-row run is indistinguishable from a bug.
+SKIP_NO_BID = "no explicit bid — it inherits the ad group default"
+SKIP_UNKNOWN_WRITER = "unrecognised target type, so we cannot tell which endpoint owns it"
+SKIP_BELOW_FLOOR = "the new bid would fall below the marketplace minimum"
+SKIP_ABOVE_CEILING = "the new bid would exceed the bid ceiling"
+SKIP_NO_CHANGE = "the bid would not change"
+
+
+def plan_run(
+    rows: Sequence[Mapping],
+    *,
+    conditions: Sequence[Mapping],
+    action: str,
+    amount,
+    guardrails: Mapping | None = None,
+    scope_campaign_ids: Sequence[str] | None = None,
+    scope_ad_group_ids: Sequence[str] | None = None,
+) -> dict:
+    """Turn a rule plus a report into an auditable, un-sent PLAN.
+
+    Returns `{"changes": [...], "skipped": [...], "blocked": str|None, "totals": {...}}`.
+
+    **Nothing here contacts Amazon.** The plan is what the preview renders and what the apply
+    step consumes, so what the owner approves is exactly what gets sent — the two cannot drift
+    because there is only one computation.
+
+    `blocked` is a REFUSAL of the whole run (a guardrail breach or an unusable condition), as
+    distinct from `skipped`, which lists individual rows that cannot be written. The difference
+    matters: a blocked run means the rule is wrong, a skipped row means that row is unsuitable.
+    """
+    limits = guardrails_or_default(guardrails)
+
+    for condition in conditions or ():
+        problem = condition_error(condition)
+        if problem:
+            return {"changes": [], "skipped": [], "blocked": problem, "totals": {}}
+    if action not in ACTIONS:
+        return {"changes": [], "skipped": [],
+                "blocked": f"Unknown action {action!r}.", "totals": {}}
+
+    # **A percentage move beyond the guardrail is refused BEFORE any row is considered**, so the
+    # owner sees "this rule is not allowed" rather than a 299-row preview they might approve.
+    if action in (ACTION_INCREASE_PCT, ACTION_DECREASE_PCT):
+        try:
+            step = abs(float(amount))
+        except (TypeError, ValueError):
+            step = None
+        if step is None:
+            return {"changes": [], "skipped": [],
+                    "blocked": "The bid change has no value.", "totals": {}}
+        if step > limits["max_change_pct"]:
+            return {"changes": [], "skipped": [], "totals": {}, "blocked": (
+                f"That would move bids by {step:g}%, and this account's limit is "
+                f"{limits['max_change_pct']:g}% per run. Raise the limit in Settings if you "
+                f"really mean it — the limit exists because Amazon accepts a ₹1,000 bid without "
+                f"complaint."
+            )}
+
+    campaigns = {str(c) for c in (scope_campaign_ids or ())}
+    ad_groups = {str(a) for a in (scope_ad_group_ids or ())}
+
+    changes: list[dict] = []
+    skipped: list[dict] = []
+
+    for row in rows:
+        m = row if "spend" in row and "roas" in row else metrics_for(row)
+
+        # Scope first: cheapest test, and it is what "go inside one campaign" means.
+        if campaigns and m.get("campaign_id") not in campaigns:
+            continue
+        if ad_groups and m.get("ad_group_id") not in ad_groups:
+            continue
+        if not matches(m, conditions):
+            continue
+
+        if not m.get("writer"):
+            skipped.append({**m, "reason": SKIP_UNKNOWN_WRITER})
+            continue
+        if not m.get("bid"):
+            skipped.append({**m, "reason": SKIP_NO_BID})
+            continue
+
+        proposed = new_bid(m["bid"], action, amount)
+        if proposed is None:
+            skipped.append({**m, "reason": SKIP_NO_BID})
+            continue
+        if proposed < limits["min_bid"]:
+            skipped.append({**m, "new_bid": proposed, "reason": SKIP_BELOW_FLOOR})
+            continue
+        if proposed > limits["max_bid"]:
+            skipped.append({**m, "new_bid": proposed, "reason": SKIP_ABOVE_CEILING})
+            continue
+        if round(proposed, 2) == round(_as_float(m["bid"]), 2):
+            skipped.append({**m, "new_bid": proposed, "reason": SKIP_NO_CHANGE})
+            continue
+
+        changes.append({**m, "old_bid": round(_as_float(m["bid"]), 2), "new_bid": proposed})
+
+    blocked = None
+    if len(changes) > limits["max_rows"]:
+        blocked = (
+            f"This rule matches {len(changes):,} rows and the limit is "
+            f"{limits['max_rows']:,} per run. Narrow it with another condition, or scope it to "
+            f"fewer campaigns."
+        )
+
+    return {
+        "changes": changes,
+        "skipped": skipped,
+        "blocked": blocked,
+        "totals": {
+            "matched": len(changes) + len(skipped),
+            "changing": len(changes),
+            "skipped": len(skipped),
+            "spend": round(sum(c["spend"] for c in changes), 2),
+            "keywords": sum(1 for c in changes if c["writer"] == WRITER_KEYWORD),
+            "targets": sum(1 for c in changes if c["writer"] == WRITER_TARGET),
+        },
+    }
+
+
+def split_by_writer(changes: Sequence[Mapping]) -> dict[str, list[dict]]:
+    """Group approved changes by the endpoint that must receive them.
+
+    The reason this is a separate function rather than a loop at the call site: it is the last
+    point where a keyword and a targeting clause are still in one list, and it is the mistake
+    that would be invisible. `/sp/keywords` given a `targetId` answers `207` with the failure
+    inside an `error` array, so the run reports success for everything else and quietly does
+    nothing for those rows.
+    """
+    out: dict[str, list[dict]] = {WRITER_KEYWORD: [], WRITER_TARGET: []}
+    for change in changes:
+        writer = change.get("writer")
+        if writer in out:
+            out[writer].append(dict(change))
+    return out

@@ -947,3 +947,196 @@ class PortfolioSettings(Base):
     value_json = Column(Text)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     updated_by = Column(String(50))
+
+
+class AdsEntity(Base):
+    """One campaign, ad group, keyword or targeting clause. **Amazon's, cached.**
+
+    ONE table for four entity types rather than four tables, because the Ads tab treats them as a
+    hierarchy to walk and a bid to edit: every query is "the children of X" or "the current bid of
+    Y". Four tables would need three joins to render one screen and would repeat the same five
+    columns four times.
+
+    **The bid lives here AND at Amazon, and Amazon wins.** Before a run is applied the bid is
+    re-read for the rows being changed, because a bid edited in Seller Central since the last
+    refresh would otherwise be silently overwritten with a percentage of a stale number.
+
+    Sizes are measured, not guessed: 24 campaigns, 2,542 ad groups, 148,291 keywords and 200,000+
+    targeting clauses on this account, over 9 minutes to page in full. **So the entity list is
+    never fully cached** — only rows a report or a rule has touched.
+
+    `entity_id` is Amazon's id as TEXT. They are 15-digit numbers that would fit a bigint today,
+    but Amazon documents them as opaque strings and a numeric column would lose a leading zero or
+    choke on a future non-numeric id. Verified the keyword and target id spaces do not overlap
+    (0 collisions in a 1,000-id sample), so `(entity_type, entity_id)` is a safe key.
+    """
+    __tablename__ = "ads_entity"
+    __table_args__ = (
+        Index("idx_ads_entity_type_id", "entity_type", "entity_id", unique=True),
+        Index("idx_ads_entity_parent", "entity_type", "parent_id"),
+        Index("idx_ads_entity_campaign", "campaign_id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    #: "campaign" | "ad_group" | "keyword" | "target"
+    entity_type = Column(String(12), nullable=False)
+    entity_id = Column(String(32), nullable=False)
+    #: The immediate parent: a campaign for an ad group, an ad group for a keyword or target.
+    parent_id = Column(String(32))
+    #: Denormalised so "everything in this campaign" is one indexed query rather than a recursive
+    #: walk. A keyword's campaign cannot change without the keyword being recreated, so this
+    #: cannot drift the way a cached total could.
+    campaign_id = Column(String(32))
+    name = Column(String(500))
+    state = Column(String(12))
+    #: `EXACT`/`PHRASE`/`BROAD` for keywords, `TARGETING_EXPRESSION*` for targeting clauses.
+    #: **This decides which endpoint a write goes to** (`ads.logic.writer_for`). The report labels
+    #: both id columns `keywordId`, so without this a targetId reaches `/sp/keywords`, which
+    #: answers 207 with the failure buried in an `error` array.
+    match_type = Column(String(40))
+    #: NULL for a target that inherits its ad group's `default_bid`, and kept distinct from 0.0:
+    #: `logic.new_bid` refuses to take a percentage of an inherited bid, because writing one
+    #: converts the target from inheriting to fixed.
+    bid = Column(Numeric(12, 2))
+    #: Ad groups only. What an inheriting child actually spends.
+    default_bid = Column(Numeric(12, 2))
+    #: Campaigns only, so the tab can show what a bid change is competing for.
+    daily_budget = Column(Numeric(12, 2))
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AdsPerformance(Base):
+    """Spend and sales for one entity over one window. **Amazon's, cached.**
+
+    Separate from `AdsEntity` because it is per WINDOW: the same keyword has a 7-day figure and a
+    30-day figure and both are valid at once. Metrics on the entity row would force one window to
+    be "the" window and make switching ranges a refetch of everything.
+
+    **These rows ARE the working set for a rule.** The report returns only entities with activity
+    in the window — measured, 12,854 rows against 148,291+ keywords and targets — and a bid rule
+    can only act on something with spend or impressions. So a run reads this table instead of
+    paging the entity API, which is what makes the feature possible at this scale.
+
+    `sales`/`orders` are Amazon's `sales7d`/`purchases7d`, the 14-day same-SKU attribution window.
+    **ROAS and ACOS are DERIVED in `logic`, never stored** — a stored ratio disagrees with its own
+    numerator the moment either input is corrected.
+    """
+    __tablename__ = "ads_performance"
+    __table_args__ = (
+        Index(
+            "idx_ads_perf_window_entity",
+            "window_start", "window_end", "entity_id",
+            unique=True,
+        ),
+        Index("idx_ads_perf_window_campaign", "window_start", "window_end", "campaign_id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    window_start = Column(String(10), nullable=False)
+    window_end = Column(String(10), nullable=False)
+    entity_id = Column(String(32), nullable=False)
+    entity_type = Column(String(12), nullable=False, default="target")
+    campaign_id = Column(String(32))
+    ad_group_id = Column(String(32))
+    #: The keyword text or resolved target expression. Stored rather than joined so a rule preview
+    #: can name a row even for an entity the cache has not seen — the report carries it anyway.
+    text = Column(String(500))
+    match_type = Column(String(40))
+    #: The bid AS REPORTED for the window. **Not authoritative for a write** — see `AdsEntity.bid`.
+    reported_bid = Column(Numeric(12, 2))
+    impressions = Column(Integer, default=0)
+    clicks = Column(Integer, default=0)
+    spend = Column(Numeric(12, 2), default=0)
+    orders = Column(Integer, default=0)
+    sales = Column(Numeric(12, 2), default=0)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AdsRule(Base):
+    """A saved bid rule: conditions plus an action. **The owner's, not Amazon's.**
+
+    JSON rather than columns for the conditions, for the same reason `portfolio_settings` is JSON:
+    the rule vocabulary is the part of this feature most likely to grow, and a new field would
+    otherwise need a migration. `logic.condition_error` validates every condition before a run, so
+    an unknown field is refused rather than quietly matching nothing.
+
+    Saved rules are a convenience, **not a schedule.** Nothing here runs a rule automatically:
+    every run is a human pressing Preview and then Apply. A screen that could move 299 live bids on
+    a timer is one that moves them on a bad data day — the same reason the Portfolio tab never
+    auto-applies a verdict.
+    """
+    __tablename__ = "ads_rule"
+    __table_args__ = (
+        Index("idx_ads_rule_name", "name", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(120), nullable=False)
+    #: `[{"field": "spend", "op": "gt", "value": 100}, ...]`, ANDed.
+    conditions_json = Column(Text)
+    action = Column(String(20))
+    amount = Column(Numeric(12, 2))
+    #: Window in days. 7/14/30 are single reports and attribution-exact; above 31 Amazon needs
+    #: several reports (its measured per-report cap).
+    window_days = Column(Integer, default=7)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_run_at = Column(DateTime)
+
+
+class AdsMutation(Base):
+    """One bid change sent to Amazon, with the value it held BEFORE. **Ours, and the audit trail.**
+
+    **`old_bid` is written before the request is sent, and it is what makes this feature safe.** A
+    rule changes several hundred bids in one click — the owner's own rule matched 299 rows carrying
+    Rs 102,945 of weekly spend — and Amazon has no undo. Without the previous value stored,
+    reversing a mistaken run means reading 299 numbers off a report that has already moved on. With
+    it, undo is just another bulk write. Same lesson as the 400 units of packed stock that survived
+    only because `update-ec2.sh` backs up before every deploy.
+
+    **`status` distinguishes real outcomes, because `207 Multi-Status` makes partial failure
+    NORMAL.** Measured: `PUT /sp/keywords` returns `{"success": [...], "error": [...]}`, and a bid
+    under the marketplace minimum comes back as a `rangeError` for that row alone while every other
+    row succeeds. Treating 207 as success is how a failed edit becomes invisible.
+
+    * `pending` — written, not yet sent. A crash mid-run leaves these, which is the point: they name
+      exactly what was in flight.
+    * `applied` — Amazon confirmed it in the `success` array.
+    * `failed` — Amazon refused it; `error` carries their own message.
+    * `reverted` — an undo has since restored `old_bid`.
+
+    `run_id` groups a whole application so undo operates on the unit the owner recognises ("the run
+    I did at 3pm") rather than on individual rows.
+    """
+    __tablename__ = "ads_mutation"
+    __table_args__ = (
+        Index("idx_ads_mutation_run", "run_id"),
+        Index("idx_ads_mutation_entity", "entity_id"),
+        Index("idx_ads_mutation_run_entity", "run_id", "entity_id", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    #: A uuid4 per Apply, not an autoincrement: it is minted before any row is written so every row
+    #: of a run can carry it, and it appears in the URL of an undo.
+    run_id = Column(String(36), nullable=False)
+    entity_id = Column(String(32), nullable=False)
+    entity_type = Column(String(12), nullable=False, default="keyword")
+    #: "keyword" or "target" — WHICH ENDPOINT this row was sent to. Recorded rather than re-derived
+    #: so a misrouted write is visible in the ledger after the fact.
+    writer = Column(String(12), nullable=False, default="keyword")
+    text = Column(String(500))
+    campaign_id = Column(String(32))
+    ad_group_id = Column(String(32))
+    old_bid = Column(Numeric(12, 2))
+    new_bid = Column(Numeric(12, 2))
+    status = Column(String(12), nullable=False, default="pending")
+    #: Amazon's own refusal, verbatim. Their validation messages name the cause — they are how the
+    #: 31-day report cap and the bid floor were both found — so they are surfaced, not replaced.
+    error = Column(Text)
+    #: The rule that produced this row, in words, so the ledger reads without joining to a rule
+    #: that may since have been edited or deleted.
+    rule_summary = Column(String(300))
+    #: Set when this row was created BY an undo, naming the run being reversed — so a double-undo
+    #: is detectable and the history reads as a chain rather than a loop.
+    reverts_run_id = Column(String(36))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    sent_at = Column(DateTime)
