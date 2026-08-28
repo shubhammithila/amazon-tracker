@@ -1547,6 +1547,121 @@ rating and a prose reason. Widening it would silently change four working docume
 > "+8.8% net" leaves the app with no caveat attached and gets read as profit. The portfolio builder
 > writes it into row 1.
 
+## Ads tab — campaign performance, and bulk bid edits
+
+`/ads-page`. Campaign → ad group → target performance for a window, and rule-based bulk bid
+changes: *"spend>100, 1<roas<3, decrease bid 10%"* applied across everything selected.
+
+### THIS IS THE ONLY FEATURE THAT WRITES TO AMAZON
+Every other tab reads Amazon and writes our own records; three separate sections of this file say
+so. This one sends bids, and one rule can move several hundred in a click.
+
+**Write access was measured before anything was designed.** `PUT /sp/keywords` and
+`PUT /sp/targets` both return `207` with a `success` array. Both probes were deliberate **no-ops**
+— a bid set to the value it already held (15.32 → 15.32) — so the permission was proven without
+moving a live bid. The Orders tab's note that "every Easy Ship endpoint returns 403" is about a
+different API and does not apply here.
+
+### The report is the working set; the entity list is not
+Measured on the live account: **24 campaigns, 2,542 ad groups, 148,291 keywords, 200,000+ targeting
+clauses** — over 9 minutes to page in full, and the target enumeration never finished.
+
+But a 7-day `spTargeting` report returns **12,854 rows**, because Amazon only reports entities with
+activity — and a bid rule can only act on something with spend or impressions. So a run reads the
+report and calls the entity API only for the rows it matched: **299, not 11,000.** A ~40×
+reduction, and it is what makes the feature possible on a 951 MB box.
+
+`ads_performance` is therefore the population a rule considers. `ads_entity` holds only what a
+report or a rule has touched.
+
+### One rule writes to TWO endpoints, and the report hides which
+**The report labels both id columns `keywordId`**, and `matchType` is the only thing that
+distinguishes them:
+
+| `matchType` | What it is | Endpoint |
+|---|---|---|
+| `EXACT` · `PHRASE` · `BROAD` | a keyword | `PUT /sp/keywords` `{keywordId, bid}` |
+| `TARGETING_EXPRESSION_PREDEFINED` | an auto target (close-match, complements…) | `PUT /sp/targets` `{targetId, bid}` |
+| `TARGETING_EXPRESSION` | a manual product/category target | `PUT /sp/targets` `{targetId, bid}` |
+
+**In the full report `TARGETING_EXPRESSION` is the LARGEST type — 6,665 of 12,854 rows.** Routing
+everything to `/sp/keywords` would fail for over half the account *while returning 207 and looking
+successful*. Of the six rows the owner's own rule matched, four were targeting clauses.
+
+`logic.writer_for` routes on `matchType` and returns `None` for anything unrecognised — **excluded
+and named, never guessed**. Verified the two id spaces do not collide (0 overlaps in a 1,000-id
+sample). The screen shows kw/auto/product as a **column**, because that is the endpoint the row
+will be written to and showing it is how a routing bug becomes visible rather than silent.
+
+### Amazon enforces a bid FLOOR but effectively no CEILING
+Measured: **`bid=0.5` was rejected** (`rangeError`, "lower than the minimum allowed by the
+marketplace") while **`bid=1000.0` was ACCEPTED** on an account whose median enabled bid is ₹6.39.
+
+So `max_bid` and `max_change_pct` are ours to enforce or they do not exist. A `10%` mistyped as
+`100%` is caught in `logic.plan_run` — which **blocks the whole run** rather than skipping rows,
+because the rule itself is wrong and a preview the owner might approve would be the wrong answer.
+Guardrails live in `portfolio_settings` under `ads_guardrails` (one JSON row, no migration for a
+new limit) and are **range-checked on READ as well as write**, the `good_rating: 99` lesson.
+
+### `207 Multi-Status` makes partial failure the NORMAL response
+`{"keywords": {"success": [...], "error": [...]}}`, with failures identified by **`index` into the
+request array** — so request order is the only link back to a row, and getting it wrong makes the
+ledger blame the wrong keyword.
+
+**A row Amazon does not mention is recorded as FAILED, not assumed applied.** Silence about a bid
+change is not evidence it happened, and recording it as applied would corrupt the undo chain so a
+later undo writes a bid Amazon never held.
+
+### The ledger is written BEFORE the wire, and that is the safety mechanism
+`ads_mutation` stores `old_bid` and every row is `pending` before the first request goes out. A
+crash mid-run then leaves a knowable, reversible state; writing afterwards would leave a real
+Amazon change with no local record, which is the one state nothing recovers from. Same lesson as
+the 400 units of packed stock that survived only because `update-ec2.sh` backs up first.
+
+Three undo rules, each protecting against a write nobody asked for:
+
+- **Only `applied` rows are reversed.** A `failed` row never changed at Amazon, so restoring
+  `old_bid` over it would turn a refused edit into a real one in the opposite direction.
+- **`pending` rows are excluded too** — their outcome is unknown, and guessing either way is a
+  write nobody asked for. The count is surfaced instead.
+- **A partly-failed undo leaves the remainder `applied`**, so a second attempt can still reach it.
+  Marking the whole run reverted would strand those rows for good.
+
+### Preview and Apply are two endpoints, never one
+`POST /ads/preview` computes and stores nothing; `POST /ads/apply` sends only the rows still
+ticked. `/ads/apply`'s order of operations is the design, and **a test caught a real bug in it**:
+the credentials check ran before the guardrails, so a hand-edited request breaching the ceiling was
+refused with *"credentials are not configured"* and the ceiling was never consulted. A client is
+not a trust boundary, and a guard that only runs after an unrelated check is not a guard.
+
+1. guardrails first — row count, then each bid, before any Amazon call
+2. **re-read the LIVE bid** per row; a percentage of a stale bid silently undoes manual work
+3. drop rows whose bid has moved since the window was fetched, and report them
+4. ledger as `pending` with `old_bid`
+5. split by writer
+6. record each row's own outcome
+
+### Windows: 7/14/30 are exact, 60 is the ceiling
+Amazon caps one report at 31 days (`ads.MAX_REPORT_DAYS`), so `reports.py` reuses
+`portfolio.ads.split_window` rather than reimplementing it. **7/14/30 are single reports and
+attribution-exact**; above 31 days the sum is slightly conservative for attributed sales, and the
+screen says so. 60 days is the cap because that is the owner's stated horizon for optimisation
+data. **The window ends yesterday**, for the same reason the Portfolio tab's does: a click costs
+immediately while its attributed sale can land hours later, so a rule reading today would cut bids
+on a measurement artefact.
+
+### Nothing runs a rule automatically
+The nightly job (03:50) refreshes **data only**, and a test asserts it cannot reach `apply_bids`,
+`plan_run` or `open_run`. A scheduled job that could move 299 live bids would move them on a bad
+data day, unattended — the same reason the Portfolio tab never auto-applies a verdict.
+
+**Bids only.** No pause, no archive, no budget edits, no keyword creation. Pausing stays a manual
+job in Seller Central.
+
+### `ads` is absent from the Packer and Accounts presets on purpose
+The only area that can spend money has to be granted knowingly, per person, rather than arriving
+with a job title. Deny-by-default already makes it invisible until granted.
+
 ## Known gaps (deliberate, not oversights)
 
 ### The deal badge depends on which page Amazon serves you
