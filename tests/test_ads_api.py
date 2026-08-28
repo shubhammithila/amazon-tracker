@@ -456,6 +456,43 @@ def test_the_window_picker_cannot_offer_today():
     assert "getDate() - 1" in source[source.index("function maxDate("):][:300]
 
 
+def test_changing_a_conditions_field_does_not_rebuild_the_row_being_edited():
+    """**Found in a browser: building "roas > 1" produced "roas < 2".**
+
+    `renderConditions()` rebuilds every row from scratch, so re-rendering on a `field` change
+    destroys the `<select>` and `<input>` the user is still working through — the operator and value
+    set immediately afterwards landed on detached elements and were silently lost. That is the normal
+    left-to-right way to build a condition, and the result was a rule that ran with the seeded
+    default while the screen looked correct.
+
+    Measured: the wrong rule matched 197 rows where the intended one matches 283, so a bid change
+    would have been applied to 86 targets the owner never selected.
+
+    Only the unit hint depends on the field, so only that is updated in place.
+    """
+    source = _template()
+    start = source.index('$("conditions").addEventListener("change"')
+    # Up to the NEXT listener registration, so the whole handler body is covered. Slicing to the
+    # first "});" stops inside the `if` block and would miss a re-render added after it.
+    end = source.index('$("conditions").addEventListener("click"', start)
+    handler = source[start:end]
+
+    # The comment explaining the bug names the function, so comments must be stripped before
+    # asserting on the code — otherwise the test matches the explanation rather than the fix. A
+    # line-prefix filter is not enough here: the comment is a `/* ... */` block whose middle lines
+    # start with ordinary prose.
+    import re
+    code = re.sub(r"/\*.*?\*/", "", handler, flags=re.S)
+    code = "\n".join(
+        line for line in code.splitlines() if not line.strip().startswith("//")
+    )
+    assert "renderConditions()" not in code, (
+        "the change handler re-renders the conditions, which destroys the row being edited and "
+        "silently discards the next edit the user makes"
+    )
+    assert "unitFor(" in code, "the unit hint no longer follows the field"
+
+
 def test_the_table_scrolls_inside_a_wrapper_rather_than_moving_the_page():
     """The defect /qa found on the Portfolio tab: 744px of sideways document scroll at 350px."""
     source = _template()

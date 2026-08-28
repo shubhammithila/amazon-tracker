@@ -814,10 +814,23 @@ $("conditions").addEventListener("change", e => {
   const part = e.target.closest("[data-part]");
   if(!row || !part) return;
   const index = Number(row.dataset.index);
-  conditions[index][part.dataset.part] = part.dataset.part === "value"
-    ? part.value : part.value;
+  conditions[index][part.dataset.part] = part.value;
   remember("conditions", conditions);
-  if(part.dataset.part === "field") renderConditions();
+
+  /* **Changing the field must NOT re-render the row being edited.**
+     It did, and the bug is worth recording: `renderConditions()` rebuilds every row from scratch,
+     so the `<select>` and `<input>` the user is working through are destroyed and replaced. Setting
+     the field and then the operator — the normal left-to-right way to build a condition — meant the
+     second change landed on a detached element and was silently lost. Caught while driving the real
+     rule through the browser: "roas > 1" came out as "roas < 2", the seeded default.
+
+     Only the UNIT hint depends on the field, so only that is updated. The field's own <select>
+     already shows the new value, and the operator and value are deliberately preserved — switching
+     spend -> sales should keep "> 100" rather than resetting it. */
+  if(part.dataset.part === "field"){
+    const hint = row.querySelector(".dim");
+    if(hint) hint.textContent = unitFor(part.value);
+  }
 });
 
 $("conditions").addEventListener("click", e => {

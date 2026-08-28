@@ -374,9 +374,16 @@ async def test_the_portfolio_pages_are_gated_on_the_area(client, db):
 
 
 async def test_the_refresh_stores_what_it_fetched(monkeypatch, db_schema):
-    """The job's whole point: fetch, store, and record that it ran."""
+    """The job's whole point: fetch, store, and record that it ran.
+
+    **The missing-ads-credentials case is STUBBED, not inherited from the environment.** This test
+    used to rely on the developer's `.env` having no `AMAZON_*` keys, and it broke the day those keys
+    were added to a worktree for the Ads tab — the suite then generated a real 6-minute Amazon report
+    and the assertion failed for a reason that had nothing to do with the code. A test whose premise
+    is "the machine happens to be configured a certain way" is a test that will eventually lie.
+    """
     from app.database import async_session
-    from app.portfolio import economics, refresh
+    from app.portfolio import ads, economics, refresh
 
     rows = _rows()
 
@@ -387,7 +394,11 @@ async def test_the_refresh_stores_what_it_fetched(monkeypatch, db_schema):
         # Four values now: the ASIN grain, the per-SKU grain, and the window.
         return rows, [], WINDOW[0], WINDOW[1]
 
+    async def no_ads_credentials(*args, **kwargs):
+        raise ads.AdsNotConfigured()
+
     monkeypatch.setattr(economics, "fetch_economics", fake_fetch)
+    monkeypatch.setattr(ads, "fetch_acos", no_ads_credentials)
     refresh.reset_state()
     result = await refresh.run(db_factory=async_session)
 
@@ -395,8 +406,8 @@ async def test_the_refresh_stores_what_it_fetched(monkeypatch, db_schema):
     assert result["rows"] == len(rows)
     assert result["percent"] == 100
     assert result["running"] is False
-    # No ads credentials in the test environment, so ACOS is skipped — and that must be reported
-    # as its own note rather than failing the refresh, because the margins are what matter.
+    # With no ads credentials ACOS is skipped — and that must be reported as its own note rather
+    # than failing the refresh, because the margins are what matter and they are already stored.
     assert result["ads_error"], "a skipped ACOS phase said nothing at all"
     assert "not configured" in result["ads_error"]
 
