@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
@@ -92,6 +93,43 @@ class Settings(BaseSettings):
             self.sp_api_client_id
             and self.sp_api_client_secret
             and self.sp_api_refresh_token
+        )
+
+    # ── Amazon ADVERTISING API — a SEPARATE application from SP-API ──────────
+    #
+    # **Different client id, different refresh token, different host, different auth
+    # header.** Not a variant of SP-API: the ads API wants `Authorization: Bearer` plus
+    # `Amazon-Advertising-API-ClientId` and `-Scope`, where SP-API wants
+    # `x-amz-access-token`. Trying the SP-API credentials against it returns a 401 that
+    # reads exactly like "this account has no ads access", which cost real time to rule out.
+    #
+    # Named `ads_*` here while the real .env uses `AMAZON_*` (that file predates this app
+    # and is shared with another project), so each field carries an explicit alias.
+    #
+    # `ads_profile_id` is mandatory and has no default: every ads call is scoped to one
+    # advertising profile, and the wrong one silently returns another account's numbers.
+    # Measured for this seller: 473573783863246 (IN, INR, F2D TECH PRIVATE LIMITED).
+    ads_client_id: str = Field("", validation_alias="AMAZON_CLIENT_ID")
+    ads_client_secret: str = Field("", validation_alias="AMAZON_CLIENT_SECRET")
+    ads_refresh_token: str = Field("", validation_alias="AMAZON_REFRESH_TOKEN")
+    ads_profile_id: str = Field("", validation_alias="AMAZON_PROFILE_ID")
+    #: India is served from the EU advertising endpoint, mirroring SP-API.
+    ads_endpoint: str = "https://advertising-api-eu.amazon.com"
+    ads_timeout: int = 60
+
+    @property
+    def ads_configured(self) -> bool:
+        """All four present. **The profile id counts**, unlike SP-API's marketplace default.
+
+        Checked before every ads call so a deployment without these keys shows "ACOS not
+        configured" on screen rather than failing the whole Portfolio refresh — the margins
+        are useful without ACOS, and were shipped before it.
+        """
+        return bool(
+            self.ads_client_id
+            and self.ads_client_secret
+            and self.ads_refresh_token
+            and self.ads_profile_id
         )
 
     class Config:

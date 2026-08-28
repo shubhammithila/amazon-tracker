@@ -768,7 +768,16 @@ class EconomicsSnapshot(Base):
     __table_args__ = (
         Index(
             "idx_economics_snapshot_window_asin",
-            "window_start", "window_end", "child_asin",
+            # `seller_sku` joined the key when per-SKU rows were added. NULL for the ASIN-level
+            # rows that carry the totals, and set for the MSKU breakdown rows that sit beside
+            # them — so one table holds both grains without either being able to double the
+            # other. `load_snapshot` filters to `seller_sku IS NULL`.
+            #
+            # SQLite treats NULLs as DISTINCT in a unique index, so this does NOT constrain the
+            # ASIN-level rows the way the three-column version did. `save_snapshot` therefore
+            # still selects-then-updates rather than relying on the index alone, which it always
+            # did — the index is a backstop, not the mechanism.
+            "window_start", "window_end", "child_asin", "seller_sku",
             unique=True,
         ),
     )
@@ -780,6 +789,17 @@ class EconomicsSnapshot(Base):
     window_end = Column(String(10), nullable=False)
     #: The pack size — the level at which a kill decision is taken.
     child_asin = Column(String(10), nullable=False)
+    #: **NULL on the authoritative ASIN-level rows; set on the per-SKU breakdown rows.**
+    #:
+    #: Measured on the live account: 186 of 267 child ASINs sell under TWO merchant SKUs — a
+    #: merchant/Easy Ship one and an identically-named "… FBA" one (`0.25 fc np` /
+    #: `0.25 fc np FBA`). The dashboard shows them COMBINED, which is what the CHILD_ASIN
+    #: aggregation already does; these rows exist only to show the split on expand.
+    #:
+    #: They are NOT the source of any total. Amazon's MSKU rows lose a little to rows it cannot
+    #: attribute to a single SKU, so ASIN-level stays authoritative — verified: merchant
+    #: 16,68,051 + FBA 32,81,373 = 49,49,424, matching the ASIN total to the rupee.
+    seller_sku = Column(String(80))
     #: The variation family. Not a foreign key: it is Amazon's non-buyable grouping id and
     #: appears in no other table.
     parent_asin = Column(String(10))
@@ -851,3 +871,79 @@ class ProductDecision(Base):
     snapshot_json = Column(Text)
     decided_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     decided_by = Column(String(50))
+
+
+class AdsSnapshot(Base):
+    """Ad spend against ATTRIBUTED sales, per SKU, for one window. **Amazon's, cached.**
+
+    A separate table from `EconomicsSnapshot` because it comes from a separate API with a
+    different grain and a different failure mode. The Advertising API report takes ~12 minutes to
+    generate (measured) against the economics query's 30 seconds, so the two are fetched in
+    separate phases and **an ads failure must not cost the margins**. Two tables make that
+    trivially true.
+
+    **What it adds that SP-API cannot: `attributed_sales`.** The Economics feed reports the ad
+    CHARGE, which gives TACOS (spend / total sales). It has no attributed-sales column, so true
+    ACOS (spend / sales the ads actually caused) is not derivable from it. Measured 27 Jul –
+    26 Aug: TACOS 33.1% against a true ACOS of **89.9%** — Rs 1 of ads returning Rs 1.11. Those
+    are different claims about the same money and the tab shows both.
+
+    **Keyed on the SELLER SKU, not just the ASIN**, because that is the grain Amazon reports and
+    because it carries the fulfilment channel: `0.25 fc np` versus `0.25 fc np FBA`. Measured, the
+    merchant SKU of `B0DCCL1531` spent Rs 1,444 for ZERO attributed sales while its FBA twin
+    returned 36% ACOS — one number per ASIN would have hidden that.
+
+    Money is `Numeric(12, 2)`; **callers convert to float before JSON**, as everywhere in this
+    app (`JSONResponse` cannot serialise `Decimal`).
+    """
+    __tablename__ = "ads_snapshot"
+    __table_args__ = (
+        Index(
+            "idx_ads_snapshot_window_asin_sku",
+            "window_start", "window_end", "child_asin", "seller_sku",
+            unique=True,
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    window_start = Column(String(10), nullable=False)
+    window_end = Column(String(10), nullable=False)
+    child_asin = Column(String(10), nullable=False)
+    #: Amazon's `advertisedSku`. Verified: all 213 advertised SKUs join to the economics MSKUs.
+    seller_sku = Column(String(80), nullable=False, default="")
+    cost = Column(Numeric(12, 2), default=0)
+    #: `attributedSalesSameSku14d` — sales Amazon credits to a click on this SKU within 14 days.
+    attributed_sales = Column(Numeric(12, 2), default=0)
+    purchases = Column(Integer, default=0)
+    clicks = Column(Integer, default=0)
+    impressions = Column(Integer, default=0)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PortfolioSettings(Base):
+    """The owner's verdict thresholds. **One JSON row, not a column per number.**
+
+    The verdict rules ship with values measured from this account (net >= 25% is healthy here,
+    TACOS <= 30% is efficient here, the account averages 29% and 33%). Those defaults are
+    evidence, not preference — but they are still thresholds someone should be able to argue
+    with, so they are editable and saved.
+
+    JSON rather than typed columns for the same reason `fees_json` is: adding a rule would
+    otherwise need a migration, and the rules are the part of this feature most likely to change
+    as the owner learns what he wants from it. `repository.load_settings` validates the keys
+    against `logic.DEFAULT_THRESHOLDS`, so an unknown key is refused rather than silently doing
+    nothing.
+
+    `name` exists so a second saved set (a stricter one for a bad month, say) needs no schema
+    change. Today there is exactly one row, `"thresholds"`.
+    """
+    __tablename__ = "portfolio_settings"
+    __table_args__ = (
+        Index("idx_portfolio_settings_name", "name", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(40), nullable=False, default="thresholds")
+    value_json = Column(Text)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_by = Column(String(50))

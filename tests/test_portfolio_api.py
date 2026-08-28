@@ -383,8 +383,9 @@ async def test_the_refresh_stores_what_it_fetched(monkeypatch, db_schema):
     async def fake_fetch(**kwargs):
         on_progress = kwargs.get("on_progress")
         if on_progress:
-            on_progress("poll", 1, 2)
-        return rows, WINDOW[0], WINDOW[1]
+            on_progress("econ_poll", 1, 2)
+        # Four values now: the ASIN grain, the per-SKU grain, and the window.
+        return rows, [], WINDOW[0], WINDOW[1]
 
     monkeypatch.setattr(economics, "fetch_economics", fake_fetch)
     refresh.reset_state()
@@ -394,6 +395,10 @@ async def test_the_refresh_stores_what_it_fetched(monkeypatch, db_schema):
     assert result["rows"] == len(rows)
     assert result["percent"] == 100
     assert result["running"] is False
+    # No ads credentials in the test environment, so ACOS is skipped — and that must be reported
+    # as its own note rather than failing the refresh, because the margins are what matter.
+    assert result["ads_error"], "a skipped ACOS phase said nothing at all"
+    assert "not configured" in result["ads_error"]
 
     async with async_session() as session:
         assert len(await repository.load_snapshot(session)) == len(rows)
@@ -509,3 +514,359 @@ def test_the_progress_bar_never_steps_backwards():
     refresh._progress("poll", 1, 40)
     assert refresh.STATE["percent"] == high, "the bar went backwards"
     refresh.reset_state()
+
+
+# ─── The per-SKU rows must never reach the totals ────────────────────────────
+
+
+async def test_sku_rows_live_beside_the_asin_rows_without_doubling_the_totals(db):
+    """**The invariant that keeps every figure on the dashboard honest.**
+
+    Both grains share one table: ASIN-level rows carry the totals (`seller_sku IS NULL`), and
+    per-SKU rows carry the merchant/FBA split. A product's two channel rows SUM to its ASIN row, so
+    if `load_snapshot` returned both, every number on screen would roughly double.
+
+    Asserted by storing both and checking the totals are unchanged — the failure would otherwise be
+    a plausible-looking dashboard reporting twice the real revenue.
+    """
+    asin_rows = _rows()
+    before = await repository.load_snapshot(db)
+    await _seed_snapshot(db, asin_rows)
+    after_asin_only = await repository.load_snapshot(db)
+
+    sku_rows = [
+        {"childAsin": r["childAsin"], "parentAsin": r.get("parentAsin"),
+         "msku": f"sku-{r['childAsin']}",
+         "sales": {"orderedProductSales": {"amount": 100.0}, "netUnitsSold": 1,
+                   "unitsOrdered": 1, "unitsRefunded": 0,
+                   "refundedProductSales": {"amount": 0.0}},
+         "netProceeds": {"total": {"amount": 10.0}}, "fees": [], "ads": []}
+        for r in asin_rows
+    ]
+    stored_skus = await repository.save_sku_snapshot(db, WINDOW[0], WINDOW[1], sku_rows)
+    assert stored_skus == len(sku_rows), "the per-SKU rows were not stored"
+
+    after_both = await repository.load_snapshot(db)
+    assert len(after_both) == len(after_asin_only), (
+        f"load_snapshot returned {len(after_both)} rows after adding per-SKU rows, up from "
+        f"{len(after_asin_only)} — the SKU rows are leaking into the totals and every figure "
+        "on the dashboard would be inflated"
+    )
+    # And they ARE retrievable by their own loader.
+    assert len(await repository.load_sku_snapshot(db)) == stored_skus
+
+
+async def test_re_saving_the_asin_rows_does_not_overwrite_a_sku_row(db):
+    """A refresh must not clobber the split it stored moments earlier.
+
+    Without the `seller_sku IS NULL` filter in `save_snapshot`, the SELECT could match a per-SKU
+    row and overwrite it with an ASIN total — corrupting the split rather than failing loudly.
+    """
+    asin_rows = _rows()[:2]
+    await _seed_snapshot(db, asin_rows)
+    sku_rows = [{
+        "childAsin": asin_rows[0]["childAsin"], "msku": "one-sku",
+        "sales": {"orderedProductSales": {"amount": 55.0}, "netUnitsSold": 5,
+                  "unitsOrdered": 5, "unitsRefunded": 0,
+                  "refundedProductSales": {"amount": 0.0}},
+        "netProceeds": {"total": {"amount": 5.0}}, "fees": [], "ads": [],
+    }]
+    await repository.save_sku_snapshot(db, WINDOW[0], WINDOW[1], sku_rows)
+
+    await _seed_snapshot(db, asin_rows)          # the refresh runs again
+    kept = await repository.load_sku_snapshot(db)
+    assert len(kept) == 1, "the per-SKU row was destroyed by a re-save of the ASIN rows"
+    assert kept[0]["sales"]["orderedProductSales"]["amount"] == 55.0
+
+
+# ─── Ad figures ──────────────────────────────────────────────────────────────
+
+
+async def test_ad_rows_round_trip_and_roll_up_to_the_asin(db):
+    """Two shapes from one store: per (asin, sku) for the split, per ASIN for the row."""
+    rows = [
+        {"child_asin": "B0AAA00001", "seller_sku": "2kg kc",
+         "cost": 1444.0, "attributed_sales": 0.0, "purchases": 0, "clicks": 12, "impressions": 900},
+        {"child_asin": "B0AAA00001", "seller_sku": "2kg kc FBA",
+         "cost": 5176.0, "attributed_sales": 14254.0, "purchases": 8, "clicks": 40,
+         "impressions": 3000},
+    ]
+    stored = await repository.save_ads_snapshot(db, WINDOW[0], WINDOW[1], rows)
+    assert stored == 2
+
+    # latest_window() reads the ECONOMICS table, so the window has to exist there too.
+    await _seed_snapshot(db)
+    by_asin, by_sku = await repository.load_ads_snapshot(db, WINDOW)
+    assert by_sku[("B0AAA00001", "2kg kc")]["cost"] == 1444.0
+    assert by_asin["B0AAA00001"]["cost"] == pytest.approx(6620.0)
+    assert by_asin["B0AAA00001"]["attributed_sales"] == pytest.approx(14254.0)
+    assert by_asin["B0AAA00001"]["clicks"] == 52
+
+
+async def test_ad_rows_upsert_rather_than_doubling_the_spend(db):
+    """Pressing Refresh twice must correct the ad figures, not double them."""
+    from sqlalchemy import func, select
+
+    from app.models import AdsSnapshot
+
+    rows = [{"child_asin": "B0AAA00001", "seller_sku": "s", "cost": 100.0,
+             "attributed_sales": 200.0, "purchases": 1, "clicks": 2, "impressions": 3}]
+    for _ in range(3):
+        await repository.save_ads_snapshot(db, WINDOW[0], WINDOW[1], rows)
+
+    count = (await db.execute(select(func.count()).select_from(AdsSnapshot))).scalar()
+    assert count == 1, f"{count} rows for one (asin, sku) — the upsert is inserting"
+
+
+async def test_no_decimal_reaches_json_from_the_ad_rows(db):
+    """`Numeric` returns Decimal, which JSONResponse cannot serialise."""
+    await repository.save_ads_snapshot(db, WINDOW[0], WINDOW[1], [
+        {"child_asin": "B0AAA00001", "seller_sku": "s", "cost": 12.34,
+         "attributed_sales": 56.78, "purchases": 1, "clicks": 2, "impressions": 3},
+    ])
+    await _seed_snapshot(db)
+    by_asin, by_sku = await repository.load_ads_snapshot(db, WINDOW)
+    json.dumps({"by_asin": by_asin, "by_sku": list(by_sku.values())})
+
+
+# ─── Thresholds ──────────────────────────────────────────────────────────────
+
+
+async def test_thresholds_round_trip_and_reset_by_deleting_the_row(db):
+    """An empty save RESETS, so "reset" and "never edited" are one state rather than two."""
+    from sqlalchemy import func, select
+
+    from app.models import PortfolioSettings
+    from app.portfolio import logic
+
+    saved = await repository.save_settings(db, {"kill_tacos": 0.40}, updated_by="owner")
+    assert saved["kill_tacos"] == 0.40
+    assert saved["good_net"] == logic.DEFAULT_THRESHOLDS["good_net"], "unedited keys should default"
+
+    reset = await repository.save_settings(db, {})
+    assert reset == logic.thresholds_or_default({})
+    count = (await db.execute(select(func.count()).select_from(PortfolioSettings))).scalar()
+    assert count == 0, "resetting left a row behind, so 'reset' and 'default' are two states"
+
+
+async def test_the_settings_route_reports_the_rules_in_words(auth_client, db):
+    """The panel needs the explanation AND the defaults, so Reset needs no hardcoded numbers."""
+    response = await auth_client.get("/portfolio/settings")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["thresholds"] and body["defaults"]
+    assert set(body["thresholds"]) == set(body["defaults"])
+    for verdict in body["verdict_order"]:
+        assert body["help"].get(verdict), f"{verdict} has no explanation"
+    # The help text substitutes live values rather than naming a constant.
+    assert "50%" in body["help"]["KILL"]
+
+
+async def test_saving_a_threshold_changes_the_help_text_with_it(auth_client, db):
+    """Help naming 50% while the rule fires at 40% would be worse than no help."""
+    response = await auth_client.post(
+        "/portfolio/settings", json={"thresholds": {"kill_tacos": 0.40}}
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["thresholds"]["kill_tacos"] == 0.40
+    assert "40%" in body["help"]["KILL"], body["help"]["KILL"]
+
+
+async def test_an_unknown_threshold_is_refused_rather_than_ignored(auth_client, db):
+    """**A typo that appeared to save and changed nothing would be worse than an error.**
+
+    The owner would believe a rule had moved when it had not, and act on verdicts computed the old
+    way. So the route 400s and names the valid keys.
+    """
+    response = await auth_client.post(
+        "/portfolio/settings", json={"thresholds": {"kil_tacos": 0.40}}
+    )
+    assert response.status_code == 400, response.text
+    assert "kil_tacos" in response.json()["error"]
+    assert "kill_tacos" in response.json()["error"], "the error should name the valid keys"
+
+
+async def test_a_non_numeric_threshold_is_refused(auth_client, db):
+    response = await auth_client.post(
+        "/portfolio/settings", json={"thresholds": {"kill_tacos": "half"}}
+    )
+    assert response.status_code == 400, response.text
+
+
+async def test_edited_thresholds_reach_the_dashboard(auth_client, db):
+    """The whole point: change a rule, and the verdicts recompute from the stored rows.
+
+    No Amazon call is involved, so this is instant — which is what makes the setting worth having.
+    """
+    await _seed_snapshot(db)
+    before = (await auth_client.get("/portfolio")).json()
+    await auth_client.post("/portfolio/settings", json={"thresholds": {"dead_units": 500}})
+    after = (await auth_client.get("/portfolio")).json()
+
+    assert after["thresholds"]["dead_units"] == 500
+    # With every product below the volume floor, they all become DEAD.
+    assert after["totals"]["verdicts"]["DEAD"] > before["totals"]["verdicts"]["DEAD"], (
+        "raising the volume floor did not change any verdict, so the saved thresholds are "
+        "not reaching logic.portfolio"
+    )
+
+
+# ─── Window selection ────────────────────────────────────────────────────────
+
+
+async def test_a_window_longer_than_ninety_days_is_refused(auth_client, db):
+    response = await auth_client.get("/portfolio?start=2026-01-01&end=2026-08-26")
+    assert response.status_code == 400, response.text
+    assert "90" in response.json()["error"]
+
+
+async def test_a_window_including_today_is_refused(auth_client, db):
+    """Today's figures are still settling: an ad charge lands hours after its sale.
+
+    A range including today would show a punishing ACOS every morning that settled by evening — a
+    number that moves on its own invites a decision the data cannot support.
+    """
+    from datetime import date as _date
+
+    today = _date.today().isoformat()
+    response = await auth_client.get(f"/portfolio?start=2026-08-01&end={today}")
+    assert response.status_code == 400, response.text
+    assert "still settling" in response.json()["error"]
+
+
+async def test_a_reversed_window_is_refused(auth_client, db):
+    response = await auth_client.get("/portfolio?start=2026-08-26&end=2026-08-01")
+    assert response.status_code == 400, response.text
+
+
+async def test_an_uncached_window_returns_empty_rather_than_fetching(auth_client, db):
+    """**A GET must never block on a twelve-minute ad report.**
+
+    So an unfetched window renders empty and the screen offers a Fetch button. Returning 200 with
+    no rows rather than 404, because "we hold nothing for that range" is a valid answer about a
+    valid range.
+    """
+    await _seed_snapshot(db)
+    response = await auth_client.get("/portfolio?start=2026-06-01&end=2026-06-30")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["parents"] == []
+    assert body["window"] == ["2026-06-01", "2026-06-30"]
+
+
+async def test_the_available_windows_are_reported_so_the_picker_can_mark_them(auth_client, db):
+    """The cost of a click should be visible before clicking."""
+    await _seed_snapshot(db)
+    body = (await auth_client.get("/portfolio")).json()
+    windows = body["windows_available"]
+    assert windows, "no cached windows reported, so every range would look uncached"
+    assert windows[0]["start"] == WINDOW[0] and windows[0]["end"] == WINDOW[1]
+    assert windows[0]["rows"] > 0
+
+
+async def test_the_payload_carries_the_acos_and_view_data_the_screen_needs(auth_client, db):
+    """One request feeds the whole page; a second round trip per control would be slower and
+    could disagree with the first."""
+    await _seed_snapshot(db)
+    body = (await auth_client.get("/portfolio")).json()
+    for key in ("skus", "thresholds", "verdict_help", "verdict_order", "phase_labels",
+                "windows_available", "acos_available", "max_window_days"):
+        assert key in body, f"the payload is missing {key}"
+    assert body["totals"]["sku_verdicts"], "no per-SKU verdict counts for the SKU view's chips"
+    # Every phase the refresh can report must have a label, or the bar shows a raw key.
+    from app.portfolio import refresh as portfolio_refresh
+    assert set(portfolio_refresh.PHASE_BOUNDS) == set(body["phase_labels"])
+
+
+# ─── The template ────────────────────────────────────────────────────────────
+
+
+def _template() -> str:
+    return (Path(__file__).parent.parent / "templates" / "portfolio.html").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_the_template_has_every_control_the_five_features_need():
+    """Asserted on the markup because these ids are contracts with the JavaScript.
+
+    `tests/test_template_render_targets.py` catches a getElementById with no element; this catches
+    the other direction — an element the design calls for that was never added.
+    """
+    source = _template()
+    for element in ("window-bar", "view-toggle", "filter-btn", "filter-area",
+                    "rules-btn", "rules-panel", "search", "table-area"):
+        assert f'id="{element}"' in source, f"{element} is missing"
+
+
+def test_the_template_uses_delegated_listeners_not_inline_handlers():
+    """**Product names come from an uploaded sheet and SKUs from Amazon.**
+
+    Building an `onclick` out of either is an injection waiting to happen. The Orders tab already
+    had to be fixed for exactly this, so the rule is asserted rather than remembered.
+    """
+    source = _template()
+    for forbidden in ("onclick=\"save", "onclick=\"tick", "onclick='", "onchange=\"save"):
+        assert forbidden not in source, f"inline handler {forbidden} builds a handler from data"
+    # And the controls ARE wired up.
+    for wired in ('$("table-area").addEventListener', '$("window-bar").addEventListener',
+                  '$("view-toggle").addEventListener', '$("filter-area").addEventListener',
+                  '$("rules-panel").addEventListener'):
+        assert wired in source, f"{wired} is missing, so that control does nothing"
+
+
+def test_the_template_shows_tacos_and_acos_as_separate_columns():
+    """Both, always. They answer different questions and neither replaces the other.
+
+    Measured: TACOS 33.1% against ACOS 89.9% on the same spend — collapsing them into one number
+    would lose the fact that the advertising barely breaks even.
+    """
+    source = _template()
+    assert '"tacos"' in source and '"acos"' in source
+    assert "ad spend over TOTAL sales" in source, "the TACOS column has no explanation"
+    assert "ad spend over ad-ATTRIBUTED sales" in source, "the ACOS column has no explanation"
+
+
+def test_the_template_never_renders_a_zero_acos_for_an_unadvertised_product():
+    """A dash, and a distinct label for spend-with-no-sales.
+
+    Three states, three renderings: no ads at all, ads with no attributed sales, and a real ratio.
+    Rendering the first as 0% would make it the most efficient product in the portfolio.
+    """
+    source = _template()
+    assert "function acosCell(" in source
+    start = source.index("function acosCell(")
+    body = source[start:start + 600]
+    assert "acos_infinite" in body, "the spend-with-no-sales case is not distinguished"
+    assert "—" in body, "an unadvertised product does not render a dash"
+
+
+def test_the_window_picker_cannot_offer_today():
+    """Today's data is partial, so the date inputs are capped at yesterday.
+
+    Enforced server-side too (a 400), but capping the input stops the owner picking something that
+    will be refused — a control that offers an invalid choice is a bad control.
+    """
+    source = _template()
+    assert "function maxDate(" in source
+    start = source.index("function maxDate(")
+    assert "getDate() - 1" in source[start:start + 300], (
+        "maxDate does not subtract a day, so the picker would offer today"
+    )
+    assert 'max="${esc(maxDate())}"' in source, "the date inputs are not capped"
+
+
+def test_the_view_and_sort_survive_a_reload():
+    """A saved decision re-renders the table; losing the sort would throw the owner to the top.
+
+    sessionStorage rather than localStorage: a filter left over from last week is a confusing way
+    to open a dashboard, but losing one mid-session is worse.
+    """
+    source = _template()
+    assert "sessionStorage" in source
+    assert 'remembered("view"' in source and 'remembered("sort"' in source
+    assert 'remembered("filters"' in source and 'remembered("window"' in source
+    assert "localStorage" not in source, (
+        "localStorage would carry a filter across sessions, so the tab would open filtered"
+    )

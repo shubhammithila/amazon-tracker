@@ -87,6 +87,12 @@ SPONSORED_PRODUCTS = "SponsoredProductFee"
 _TERMINAL = ("DONE", "FATAL", "CANCELLED")
 
 
+#: The widest window the dashboard offers. Amazon allows two years, but the date picker caps at
+#: 90 days because that is what was asked for and because a wider window makes the per-SKU query
+#: large enough to matter on a 951 MB box.
+MAX_WINDOW_DAYS = 90
+
+
 def window_for(today: date, days: int = WINDOW_DAYS) -> tuple[str, str]:
     """The ``(start, end)`` ISO dates for a refresh ending YESTERDAY.
 
@@ -100,7 +106,38 @@ def window_for(today: date, days: int = WINDOW_DAYS) -> tuple[str, str]:
     return start.isoformat(), end.isoformat()
 
 
-def build_query(start: str, end: str, marketplace_id: str) -> str:
+def validate_window(start: str, end: str, today: date | None = None) -> tuple[str, str]:
+    """Check an explicit window, or raise ``ValueError`` with a message fit for the screen.
+
+    Three rules, each protecting against a real mistake rather than a hypothetical one:
+
+    * **start <= end**, because a reversed range returns nothing and looks like an empty account.
+    * **end <= yesterday**, for the reason `window_for` documents: today is partial, so a range
+      including it shows a punishing TACOS every morning that settles by evening.
+    * **at most 90 days**, the cap the dashboard offers.
+    """
+    today = today or date.today()
+    try:
+        first = date.fromisoformat(start)
+        last = date.fromisoformat(end)
+    except (TypeError, ValueError):
+        raise ValueError("Dates must be YYYY-MM-DD.")
+
+    if first > last:
+        raise ValueError("The start date is after the end date.")
+    yesterday = today - timedelta(days=1)
+    if last > yesterday:
+        raise ValueError(
+            f"The window must end on or before {yesterday.isoformat()} — today's figures are "
+            "still settling, and an ad charge lands hours after the sale it belongs to."
+        )
+    span = (last - first).days + 1
+    if span > MAX_WINDOW_DAYS:
+        raise ValueError(f"The window is {span} days; the most this tab reads is {MAX_WINDOW_DAYS}.")
+    return first.isoformat(), last.isoformat()
+
+
+def build_query(start: str, end: str, marketplace_id: str, *, by_sku: bool = False) -> str:
     """The GraphQL document for one economics fetch.
 
     ONE function, so the screen, the tests and any future caller ask Amazon the same
@@ -117,6 +154,12 @@ def build_query(start: str, end: str, marketplace_id: str) -> str:
     ``msku`` is requested but comes back null under CHILD_ASIN aggregation (the schema says so:
     it is only populated for FNSKU/MSKU aggregation). It is left in because it costs nothing
     and documents that the field was considered.
+
+    ``by_sku=True`` switches the product grain to ``MSKU``, which is how the merchant/FBA split
+    is obtained: measured, 186 of 267 child ASINs sell under both a merchant SKU and an
+    identically-named "… FBA" one, and only this grain separates them. **The MSKU rows are never
+    a source of totals** — they lose a little to rows Amazon cannot attribute to one SKU, so the
+    CHILD_ASIN grain stays authoritative. See `repository.load_snapshot`.
     """
     return """
 query PortfolioEconomics {
@@ -125,7 +168,7 @@ query PortfolioEconomics {
       startDate: "%(start)s"
       endDate: "%(end)s"
       marketplaceIds: ["%(marketplace)s"]
-      aggregateBy: { date: RANGE, productId: CHILD_ASIN }
+      aggregateBy: { date: RANGE, productId: %(grain)s }
     ) {
       startDate
       endDate
@@ -156,76 +199,112 @@ query PortfolioEconomics {
     }
   }
 }
-""" % {"start": start, "end": end, "marketplace": marketplace_id}
+""" % {"start": start, "end": end, "marketplace": marketplace_id,
+       "grain": "MSKU" if by_sku else "CHILD_ASIN"}
 
 
-async def fetch_economics(
-    *,
-    days: int = WINDOW_DAYS,
-    today: date | None = None,
-    sleep=asyncio.sleep,
-    on_progress=None,
-) -> tuple[list[dict], str, str]:
-    """Run one economics query to completion. Returns ``(rows, start, end)``.
+async def _run_query(
+    query: str, *, label: str, sleep, on_progress=None, phase: str = "econ_poll"
+) -> list[dict]:
+    """Submit one Data Kiosk query, poll it, download it. Returns its rows.
 
-    Submit, poll, download, parse. ``sleep`` is injectable so a test can exercise the whole
-    sequence without spending eight minutes, and ``on_progress(phase, done, total)`` drives
-    the bar in ``refresh``.
-
-    Raises ``SpApiError`` on a FATAL query, on a poll timeout, or on a transport failure.
-    **Never returns an empty list to mean failure** — the screen has to distinguish "you sell
-    nothing" from "we could not ask Amazon", and only an exception does that.
+    Extracted so the ASIN-level and per-SKU fetches share ONE submit/poll/download
+    implementation — two copies is two chances for one of them to mishandle a FATAL status.
     """
-    settings = get_settings()
-    start, end = window_for(today or date.today(), days)
-    query = build_query(start, end, settings.sp_api_marketplace_id)
-
-    if on_progress:
-        on_progress("submit", 0, 1)
     created = await spapi._post(QUERY_PATH, {"query": query})
     query_id = created.get("queryId")
     if not query_id:
         raise SpApiError(f"Data Kiosk accepted the query but returned no queryId: {created}")
-    logger.info("portfolio: economics query %s submitted for %s..%s", query_id, start, end)
-    if on_progress:
-        on_progress("submit", 1, 1)
+    logger.info("portfolio: %s query %s submitted", label, query_id)
 
-    document_id = None
     for attempt in range(POLL_MAX):
         await sleep(POLL_INTERVAL)
         state = await spapi._get(f"{QUERY_PATH}/{query_id}")
         processing = state.get("processingStatus")
         if on_progress:
-            on_progress("poll", attempt + 1, POLL_MAX)
+            on_progress(phase, attempt + 1, POLL_MAX)
         if processing not in _TERMINAL:
             continue
         if processing != "DONE":
             # An errorDocumentId exists on failure, but it is a separate download and the
             # status alone is enough for the screen to say "it failed, try again".
             raise SpApiError(
-                f"Amazon could not produce the economics data ({processing}). "
+                f"Amazon could not produce the {label} data ({processing}). "
                 "Press Refresh to try again."
             )
         document_id = state.get("dataDocumentId")
         # DONE with no document is legitimate and means the query matched nothing.
         if not document_id:
-            logger.info("portfolio: economics query %s returned no document", query_id)
-            return [], start, end
-        break
+            logger.info("portfolio: %s query %s returned no document", label, query_id)
+            return []
+        return await _download(document_id)
+
+    raise SpApiError(
+        f"The {label} query was still running after "
+        f"{int(POLL_MAX * POLL_INTERVAL / 60)} minutes. It may finish later — press "
+        "Refresh to check again."
+    )
+
+
+async def fetch_economics(
+    *,
+    days: int = WINDOW_DAYS,
+    start: str | None = None,
+    end: str | None = None,
+    today: date | None = None,
+    sleep=asyncio.sleep,
+    on_progress=None,
+) -> tuple[list[dict], list[dict], str, str]:
+    """Both economics grains for one window. Returns ``(asin_rows, sku_rows, start, end)``.
+
+    **Two queries, and the second one is optional detail.** The ASIN-level rows are the
+    dashboard: sales, fees, ad charge, net proceeds per pack size, and the authoritative totals.
+    The MSKU rows exist only to show the merchant/FBA split on expand — measured, they sum to
+    slightly less than the ASIN figures because Amazon cannot attribute every row to one SKU, so
+    they must never become a source of totals.
+
+    A per-SKU failure is swallowed: the split is a nicety, and losing the whole refresh over it
+    would trade the margins for a detail. The ASIN query's failure is raised, because without it
+    there is no dashboard.
+
+    ``start``/``end`` request an explicit window (validated); ``days`` requests the last N days
+    ending yesterday. ``sleep`` is injectable so tests never spend minutes.
+
+    Raises ``SpApiError`` on a FATAL query, a poll timeout, or a transport failure. **Never
+    returns an empty list to mean failure** — the screen has to distinguish "you sell nothing"
+    from "we could not ask Amazon", and only an exception does that.
+    """
+    settings = get_settings()
+    if start and end:
+        start, end = validate_window(start, end, today)
     else:
-        raise SpApiError(
-            f"The economics query was still running after "
-            f"{int(POLL_MAX * POLL_INTERVAL / 60)} minutes. It may finish later — press "
-            "Refresh to check again."
-        )
+        start, end = window_for(today or date.today(), days)
 
     if on_progress:
-        on_progress("download", 0, 1)
-    rows = await _download(document_id)
+        on_progress("econ_submit", 0, 1)
+    asin_rows = await _run_query(
+        build_query(start, end, settings.sp_api_marketplace_id),
+        label="economics", sleep=sleep, on_progress=on_progress, phase="econ_poll",
+    )
     if on_progress:
-        on_progress("download", 1, 1)
-    logger.info("portfolio: economics returned %d row(s) for %s..%s", len(rows), start, end)
-    return rows, start, end
+        on_progress("econ_download", 1, 1)
+
+    sku_rows: list[dict] = []
+    try:
+        sku_rows = await _run_query(
+            build_query(start, end, settings.sp_api_marketplace_id, by_sku=True),
+            label="economics by SKU", sleep=sleep, on_progress=on_progress, phase="econ_poll",
+        )
+    except SpApiError as exc:
+        # Logged, not raised: the split is presentation. The margins are already in hand and
+        # losing them over a missing breakdown would be the wrong trade.
+        logger.warning("portfolio: the per-SKU economics query failed (%s); split unavailable", exc)
+
+    logger.info(
+        "portfolio: economics returned %d ASIN row(s) and %d SKU row(s) for %s..%s",
+        len(asin_rows), len(sku_rows), start, end,
+    )
+    return asin_rows, sku_rows, start, end
 
 
 async def _download(document_id: str) -> list[dict]:

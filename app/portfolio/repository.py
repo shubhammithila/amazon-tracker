@@ -25,8 +25,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    AdsSnapshot,
     EconomicsRefresh,
     EconomicsSnapshot,
+    PortfolioSettings,
     Product,
     ProductDecision,
     RatingHistory,
@@ -37,6 +39,10 @@ logger = logging.getLogger(__name__)
 #: What the owner may record. Validated against this rather than stored as free text, so a typo
 #: cannot create a fourth category that the dashboard then cannot filter or count.
 DECISIONS = ("kill", "keep", "watch")
+
+#: The one settings row's name. A constant because it is written in one place and read in
+#: another, and a typo would silently create a second row that nothing reads.
+SETTINGS_NAME = "thresholds"
 
 
 def _float(value) -> float:
@@ -95,6 +101,10 @@ async def save_snapshot(
                     EconomicsSnapshot.window_start == window_start,
                     EconomicsSnapshot.window_end == window_end,
                     EconomicsSnapshot.child_asin.in_(sorted(incoming)),
+                    # **ASIN-level rows only.** Per-SKU breakdown rows live in the same table
+                    # with `seller_sku` set; without this filter a re-save would match one of
+                    # those and overwrite it with an ASIN total, corrupting the split.
+                    EconomicsSnapshot.seller_sku.is_(None),
                 )
             )
         ).scalars()
@@ -105,7 +115,10 @@ async def save_snapshot(
         row = existing.get(asin)
         if row is None:
             row = EconomicsSnapshot(
-                window_start=window_start, window_end=window_end, child_asin=asin
+                window_start=window_start, window_end=window_end, child_asin=asin,
+                # Explicitly NULL: this is the authoritative total for the ASIN, not one
+                # channel's share of it.
+                seller_sku=None,
             )
             db.add(row)
         row.parent_asin = parsed["parent_asin"] or None
@@ -134,6 +147,9 @@ async def latest_window(db: AsyncSession) -> tuple[str, str] | None:
     row = (
         await db.execute(
             select(EconomicsSnapshot.window_start, EconomicsSnapshot.window_end)
+            # ASIN-level rows decide what "a window we hold" means. A window with only per-SKU
+            # rows would be a half-stored refresh, and offering it would render empty totals.
+            .where(EconomicsSnapshot.seller_sku.is_(None))
             .order_by(EconomicsSnapshot.window_end.desc(), EconomicsSnapshot.id.desc())
             .limit(1)
         )
@@ -141,13 +157,52 @@ async def latest_window(db: AsyncSession) -> tuple[str, str] | None:
     return (row[0], row[1]) if row else None
 
 
+def _as_amazon_row(row) -> dict:
+    """One stored row back in Amazon's nested shape.
+
+    Shared by the ASIN-level and per-SKU loaders so both grains reach `logic` looking exactly
+    like a fresh API response — one input format, no second code path that could drift.
+    """
+    fees = _json(row.fees_json)
+    ad_types = _json(row.ads_json)
+    return {
+        "parentAsin": row.parent_asin or "",
+        "childAsin": row.child_asin,
+        "msku": row.seller_sku or "",
+        "startDate": row.window_start,
+        "endDate": row.window_end,
+        "sales": {
+            "orderedProductSales": {"amount": _float(row.ordered_sales)},
+            "refundedProductSales": {"amount": _float(row.refunded_sales)},
+            "unitsOrdered": int(row.units_ordered or 0),
+            "unitsRefunded": int(row.units_refunded or 0),
+            "netUnitsSold": int(row.net_units or 0),
+        },
+        "fees": [
+            {"feeTypeName": name,
+             "charges": [{"aggregatedDetail": {"totalAmount": {"amount": _float(amount)}}}]}
+            for name, amount in fees.items()
+        ],
+        "ads": [
+            {"adTypeName": name, "charge": {"totalAmount": {"amount": _float(amount)}}}
+            for name, amount in ad_types.items()
+        ],
+        "netProceeds": {"total": {"amount": _float(row.net_proceeds)}},
+    }
+
+
 async def load_snapshot(db: AsyncSession, window: tuple[str, str] | None = None) -> list[dict]:
-    """The stored economics for one window, in Amazon's own row shape.
+    """The stored economics for one window, in Amazon's own row shape. **ASIN grain only.**
 
     **Returns Amazon's nested shape, not the flat columns**, so ``logic.portfolio`` has exactly
     one input format whether the rows came from the API a second ago or from the database. The
     alternative — a second code path for stored rows — is how a cached dashboard starts
     disagreeing with a freshly-refreshed one.
+
+    **`seller_sku IS NULL` is what keeps the totals honest.** The per-SKU breakdown rows live in
+    this same table; including them would double every figure on the dashboard, because a
+    product's merchant and FBA rows sum to its ASIN row. A test stores both grains and asserts
+    the totals are unchanged.
 
     Every money value is a float here; see the module docstring.
     """
@@ -160,38 +215,123 @@ async def load_snapshot(db: AsyncSession, window: tuple[str, str] | None = None)
             select(EconomicsSnapshot).where(
                 EconomicsSnapshot.window_start == window[0],
                 EconomicsSnapshot.window_end == window[1],
+                EconomicsSnapshot.seller_sku.is_(None),
             )
         )
     ).scalars()
+    return [_as_amazon_row(row) for row in rows]
 
-    out = []
-    for row in rows:
-        fees = _json(row.fees_json)
-        ads = _json(row.ads_json)
-        out.append({
-            "parentAsin": row.parent_asin or "",
-            "childAsin": row.child_asin,
-            "startDate": row.window_start,
-            "endDate": row.window_end,
-            "sales": {
-                "orderedProductSales": {"amount": _float(row.ordered_sales)},
-                "refundedProductSales": {"amount": _float(row.refunded_sales)},
-                "unitsOrdered": int(row.units_ordered or 0),
-                "unitsRefunded": int(row.units_refunded or 0),
-                "netUnitsSold": int(row.net_units or 0),
-            },
-            "fees": [
-                {"feeTypeName": name,
-                 "charges": [{"aggregatedDetail": {"totalAmount": {"amount": _float(amount)}}}]}
-                for name, amount in fees.items()
-            ],
-            "ads": [
-                {"adTypeName": name, "charge": {"totalAmount": {"amount": _float(amount)}}}
-                for name, amount in ads.items()
-            ],
-            "netProceeds": {"total": {"amount": _float(row.net_proceeds)}},
-        })
-    return out
+
+async def save_sku_snapshot(
+    db: AsyncSession, window_start: str, window_end: str, rows: list[dict]
+) -> int:
+    """Store the per-SKU economics for one window. Returns how many rows were written.
+
+    These are the MSKU-granularity rows, kept only so the dashboard can show the merchant/FBA
+    split on expand. **They are never a source of totals** — see `load_snapshot`.
+
+    A row with no `msku` is skipped rather than stored with an empty one: Amazon's schema says
+    the field can be null when a row spans several FNSKUs, and such a row belongs to no single
+    channel, so filing it under one would misattribute real money.
+    """
+    if not rows:
+        return 0
+
+    from app.portfolio import logic
+
+    incoming: dict[str, dict] = {}
+    for raw in rows:
+        sku = str(raw.get("msku") or "").strip()
+        if not sku:
+            continue
+        parsed = logic.size_row(raw, {})
+        if parsed["asin"]:
+            incoming[sku] = {**parsed, "seller_sku": sku}
+
+    if not incoming:
+        return 0
+
+    existing = {
+        row.seller_sku: row
+        for row in (
+            await db.execute(
+                select(EconomicsSnapshot).where(
+                    EconomicsSnapshot.window_start == window_start,
+                    EconomicsSnapshot.window_end == window_end,
+                    EconomicsSnapshot.seller_sku.in_(sorted(incoming)),
+                )
+            )
+        ).scalars()
+    }
+
+    now = datetime.utcnow()
+    for sku, parsed in incoming.items():
+        row = existing.get(sku)
+        if row is None:
+            row = EconomicsSnapshot(
+                window_start=window_start, window_end=window_end,
+                child_asin=parsed["asin"], seller_sku=sku,
+            )
+            db.add(row)
+        row.child_asin = parsed["asin"]
+        row.parent_asin = parsed["parent_asin"] or None
+        row.ordered_sales = parsed["sales"]
+        row.refunded_sales = parsed["refunded"]
+        row.ad_spend = parsed["ad_spend"]
+        row.net_proceeds = parsed["net"]
+        row.units_ordered = parsed["units_ordered"]
+        row.units_refunded = parsed["units_refunded"]
+        row.net_units = parsed["units"]
+        row.fees_json = json.dumps(parsed["fees"])
+        row.ads_json = json.dumps(parsed["ad_types"])
+        row.fetched_at = now
+
+    await db.commit()
+    return len(incoming)
+
+
+async def load_sku_snapshot(
+    db: AsyncSession, window: tuple[str, str] | None = None
+) -> list[dict]:
+    """The per-SKU economics rows for one window, in Amazon's shape. Empty when never fetched."""
+    window = window or await latest_window(db)
+    if not window:
+        return []
+
+    rows = (
+        await db.execute(
+            select(EconomicsSnapshot).where(
+                EconomicsSnapshot.window_start == window[0],
+                EconomicsSnapshot.window_end == window[1],
+                EconomicsSnapshot.seller_sku.is_not(None),
+            )
+        )
+    ).scalars()
+    return [_as_amazon_row(row) for row in rows]
+
+
+async def windows_available(db: AsyncSession, limit: int = 12) -> list[dict]:
+    """Which windows are already cached, newest first.
+
+    The date picker uses this to say whether a range loads instantly or needs a fetch — the cost
+    of a click should be visible before clicking, since an uncached range means waiting on a
+    twelve-minute ad report.
+    """
+    rows = await db.execute(
+        select(
+            EconomicsSnapshot.window_start,
+            EconomicsSnapshot.window_end,
+            func.count().label("rows"),
+        )
+        .where(EconomicsSnapshot.seller_sku.is_(None))
+        .group_by(EconomicsSnapshot.window_start, EconomicsSnapshot.window_end)
+        .order_by(EconomicsSnapshot.window_end.desc())
+        .limit(limit)
+    )
+    return [
+        {"start": start, "end": end, "rows": int(count or 0)}
+        for start, end, count in rows.all()
+    ]
 
 
 # ─── Refresh history ─────────────────────────────────────────────────────────
@@ -371,3 +511,168 @@ async def save_decision(
 
     await db.commit()
     return await load_decisions(db)
+
+
+# ─── Advertising: cost against ATTRIBUTED sales ───────────────────────────────
+#
+# A separate table from the economics because it comes from a separate API with its own failure
+# mode: the ad report takes ~12 minutes to generate against the economics query's 30 seconds, so
+# the two are fetched in separate phases and an ads failure must not be able to cost the margins.
+
+
+async def save_ads_snapshot(
+    db: AsyncSession, window_start: str, window_end: str, rows: list[dict]
+) -> int:
+    """Store per-SKU ad cost and attributed sales. Returns how many rows were written.
+
+    `rows` is what `ads.fetch_acos` returns — already aggregated to one row per (asin, sku), so
+    this does no summing of its own. Two grains in one table is what the aggregation in `ads.py`
+    exists to prevent.
+    """
+    if not rows:
+        return 0
+
+    incoming: dict[tuple, dict] = {}
+    for raw in rows:
+        asin = str(raw.get("child_asin") or "").strip().upper()
+        sku = str(raw.get("seller_sku") or "").strip()
+        if not asin:
+            continue
+        incoming[(asin, sku)] = raw
+
+    existing = {
+        (row.child_asin, row.seller_sku or ""): row
+        for row in (
+            await db.execute(
+                select(AdsSnapshot).where(
+                    AdsSnapshot.window_start == window_start,
+                    AdsSnapshot.window_end == window_end,
+                    AdsSnapshot.child_asin.in_(sorted({a for a, _ in incoming})),
+                )
+            )
+        ).scalars()
+    }
+
+    now = datetime.utcnow()
+    for (asin, sku), raw in incoming.items():
+        row = existing.get((asin, sku))
+        if row is None:
+            row = AdsSnapshot(
+                window_start=window_start, window_end=window_end,
+                child_asin=asin, seller_sku=sku,
+            )
+            db.add(row)
+        row.cost = raw.get("cost") or 0
+        row.attributed_sales = raw.get("attributed_sales") or 0
+        row.purchases = int(raw.get("purchases") or 0)
+        row.clicks = int(raw.get("clicks") or 0)
+        row.impressions = int(raw.get("impressions") or 0)
+        row.fetched_at = now
+
+    await db.commit()
+    return len(incoming)
+
+
+async def load_ads_snapshot(
+    db: AsyncSession, window: tuple[str, str] | None = None
+) -> tuple[dict, dict]:
+    """`(by_asin, by_sku)` ad figures for one window. Both empty when never fetched.
+
+    Two shapes because two consumers need different grains and each would otherwise re-derive
+    the other: `size_row` wants one figure per ASIN (the dashboard's row), and `channel_split`
+    wants per (asin, sku) so it can attribute spend to merchant or FBA. Rolling up here means the
+    two cannot disagree about a total.
+
+    Floats throughout — `Numeric` returns `Decimal`, which `JSONResponse` cannot serialise.
+    """
+    window = window or await latest_window(db)
+    if not window:
+        return {}, {}
+
+    rows = (
+        await db.execute(
+            select(AdsSnapshot).where(
+                AdsSnapshot.window_start == window[0],
+                AdsSnapshot.window_end == window[1],
+            )
+        )
+    ).scalars()
+
+    by_sku: dict[tuple, dict] = {}
+    by_asin: dict[str, dict] = {}
+    for row in rows:
+        figures = {
+            "cost": _float(row.cost),
+            "attributed_sales": _float(row.attributed_sales),
+            "purchases": int(row.purchases or 0),
+            "clicks": int(row.clicks or 0),
+            "impressions": int(row.impressions or 0),
+        }
+        by_sku[(row.child_asin, row.seller_sku or "")] = figures
+        rolled = by_asin.setdefault(row.child_asin, {
+            "cost": 0.0, "attributed_sales": 0.0, "purchases": 0, "clicks": 0, "impressions": 0,
+        })
+        for key in ("cost", "attributed_sales"):
+            rolled[key] = round(rolled[key] + figures[key], 2)
+        for key in ("purchases", "clicks", "impressions"):
+            rolled[key] += figures[key]
+    return by_asin, by_sku
+
+
+# ─── The owner's editable verdict thresholds ──────────────────────────────────
+
+
+async def load_settings(db: AsyncSession) -> dict:
+    """The saved thresholds, merged over the measured defaults.
+
+    Always returns a COMPLETE set: a partially-saved row must not take the dashboard down, and
+    `logic.thresholds_or_default` fills anything absent.
+    """
+    from app.portfolio import logic
+
+    row = (
+        await db.execute(
+            select(PortfolioSettings).where(PortfolioSettings.name == SETTINGS_NAME)
+        )
+    ).scalar_one_or_none()
+    return logic.thresholds_or_default(_json(row.value_json) if row else {})
+
+
+async def save_settings(db: AsyncSession, values: dict, *, updated_by: str = "") -> dict:
+    """Store edited thresholds. Returns the complete effective set.
+
+    **Unknown keys are REFUSED by the caller, not silently dropped here** — the route validates
+    against `logic.DEFAULT_THRESHOLDS` so a typo produces a 400 rather than an edit that appears
+    to work and changes nothing. This function stores only recognised keys as a second guard.
+
+    An empty dict RESETS to the measured defaults by deleting the row, so "reset" and "never
+    edited" are the same state rather than two — the same reasoning as clearing a decision.
+    """
+    from app.portfolio import logic
+
+    row = (
+        await db.execute(
+            select(PortfolioSettings).where(PortfolioSettings.name == SETTINGS_NAME)
+        )
+    ).scalar_one_or_none()
+
+    cleaned = {
+        key: float(value)
+        for key, value in (values or {}).items()
+        if key in logic.DEFAULT_THRESHOLDS and value is not None
+    }
+
+    if not cleaned:
+        if row is not None:
+            await db.delete(row)
+            await db.commit()
+        return logic.thresholds_or_default({})
+
+    if row is None:
+        row = PortfolioSettings(name=SETTINGS_NAME)
+        db.add(row)
+    row.value_json = json.dumps(cleaned)
+    row.updated_by = updated_by or ""
+    row.updated_at = datetime.utcnow()
+    await db.commit()
+    return logic.thresholds_or_default(cleaned)

@@ -305,8 +305,10 @@ def cols(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "ads_snapshot" in tables:
+    print("b8e3f1a67c94")                           # head: portfolio ACOS + settings
 elif "economics_snapshot" in tables:
-    print("a7c4e91b58d2")                           # head: portfolio economics
+    print("a7c4e91b58d2")                           # portfolio economics
 elif "order_packed_state" in tables:
     print("f6b2d4907ae3")                           # per-order packed tick
 elif "product_raw_stock" in tables:
@@ -371,7 +373,8 @@ have = {r[0] for r in con.execute("select name from sqlite_master where type='ta
 need = {"shipment_plans", "shipment_plan_items", "shipment_packing_days",
         "shipment_packing_entries", "product_categories", "users",
         "amazon_orders", "order_packed_entries", "product_raw_stock",
-        "order_packed_state", "economics_snapshot", "product_decision"}
+        "order_packed_state", "economics_snapshot", "product_decision",
+        "ads_snapshot", "portfolio_settings"}
 missing = sorted(need - have)
 if missing:
     print("    missing tables:", missing)

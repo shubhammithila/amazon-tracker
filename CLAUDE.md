@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (1414 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (1477 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -83,7 +83,7 @@ app/
 ├── main.py              # FastAPI app entry point
 ├── config.py            # Settings (pydantic-settings, .env)
 ├── database.py          # Async SQLAlchemy engine
-├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry, AmazonOrder/AmazonOrderItem/OrderPackedEntry/OrderPackedState/ProductRawStock, EconomicsSnapshot/EconomicsRefresh/ProductDecision)
+├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry, AmazonOrder/AmazonOrderItem/OrderPackedEntry/OrderPackedState/ProductRawStock, EconomicsSnapshot/EconomicsRefresh/ProductDecision/AdsSnapshot/PortfolioSettings)
 ├── scheduler.py         # APScheduler (scrape 06:00, keywords 07:30, orders every 30m, portfolio 03:20)
 ├── utils.py             # Date parsing helpers
 ├── routers/
@@ -107,6 +107,7 @@ app/
 │   └── documents.py     # The four documents, each returning io.BytesIO
 ├── portfolio/
 │   ├── economics.py     # The only Data Kiosk caller (analytics_economics_2024_03_15)
+│   ├── ads.py           # The only Advertising API caller (spAdvertisedProduct -> true ACOS)
 │   ├── logic.py         # Verdict rules; parent rollup; TACOS and margin arithmetic
 │   ├── repository.py    # Economics snapshot cache, one-query ratings, owner decisions
 │   └── refresh.py       # The nightly + manual background job, with progress
@@ -1293,8 +1294,16 @@ while "net −56.8%, TACOS 78%" is a claim he can verify against Seller Central 
 | 2 | `KILL` | returns ≥15% on ≥20 units — a product problem money cannot fix |
 | 3 | `KILL` | net < 0 **AND** TACOS > 50% |
 | 4 | `SURGICAL` | parent net > 0 but ≥1 size loses money |
-| 5 | `BEST BET` / `SCALE` | net ≥25% and TACOS ≤30%, split on rating ≥4.0 |
-| 6 | `MONITOR` | everything else |
+| 5 | `AD DEPENDENT` | net > 0 but **ACOS > 100%** — the ads lose money on their own terms |
+| 6 | `BEST BET` / `SCALE` | net ≥25% and TACOS ≤30%, split on rating ≥4.0 |
+| 7 | `MONITOR` | everything else |
+
+**The thresholds are editable and saved** (`portfolio_settings`, one JSON row), because they are
+measured from this account rather than laws — net 25% and TACOS 30% are where *these* healthy
+products sit. `verdict_for` takes them as a parameter and `DEFAULT_THRESHOLDS` is what Reset
+restores. Clicking a verdict chip's ⓘ shows the rule in words with the live numbers substituted,
+so an edited threshold and its explanation cannot drift apart. Editing recomputes from stored rows
+— no Amazon call, instant.
 
 > **Rule 1 must stay first, and the live data proves why.** A product sold 2 units for ₹608 and
 > reported **+505.6% net** (a refund reversal landed in the window). On margin alone it is the best
@@ -1309,6 +1318,103 @@ while "net −56.8%, TACOS 78%" is a claim he can verify against Seller Central 
 > earns +27.1% overall while its 500 g packs make +48.4% at 23% TACOS and one 250 g pack burns
 > **103% TACOS for −52.7% net**. Judged at the parent alone it reads as a mediocre keeper and the
 > correct action — kill the small packs, keep the big ones — is invisible.
+>
+> **Rule 5 only became expressible with the Advertising API.** Measured live: Roasted Chana earns
+> +31.9% net at **104% ACOS**, Moringa Sattu +17.4% at **182%**. Under TACOS alone both read as
+> MONITOR or BEST BET, because TACOS' denominator includes the organic sales carrying them. The
+> action differs from `KILL`: cut the spend, keep the product. Six products land here.
+
+### TACOS and ACOS are different questions, and both stay on screen
+`TACOS = ad spend ÷ TOTAL sales` — how ad-dependent is this product?
+`ACOS = ad spend ÷ ad-ATTRIBUTED sales` — do the ads pay for themselves?
+
+Measured account-wide, 27 Jul – 26 Aug: **TACOS 33.1% against a true ACOS of 89.9%.** ₹1 of
+advertising returns ₹1.11 of attributed sales — near break-even before product costs, and
+completely invisible in TACOS. Sorting by ACOS puts **Triphala Sattu at 316%** at the top.
+
+**ACOS has THREE states and they must not look alike:**
+
+| State | Renders as | Why |
+|---|---|---|
+| never advertised | `—` | no ACOS exists; 0% would rank it as the most efficient product |
+| spend, zero attributed sales | `no sales` | a ratio cannot express it — measured, **₹55,217 across 591 rows** |
+| spend and attribution | the % | red above break-even |
+
+**`acos` is computed from the Ads API's own `cost`, never from the economics `ad_spend`.** They
+reconcile to 0.2% account-wide (₹16,32,415 vs ₹16,35,983) but come from different attribution
+windows, so dividing one source's cost by another's sales is a ratio of two different things.
+
+> **A mutation found a real gap here.** ACOS is computed TWICE — in `size_row` for a pack size and
+> in `_sum_sizes` for its parent — so breaking one leaves the other correct. Mutating `size_row`
+> alone passed all 42 logic tests while the **SKU view showed 56% instead of 50%**: the parent
+> figure is recomputed and masked it. The test now asserts all three grains (parent, size, SKU row).
+
+### The Advertising API is a SEPARATE application, and one comment broke it
+Different LWA client, different refresh token, different host
+(`advertising-api-eu.amazon.com`), and a different auth header: `Authorization: Bearer` plus
+`Amazon-Advertising-API-ClientId` and `-Scope`, where SP-API wants `x-amz-access-token`. So
+`app/portfolio/ads.py` has its own token cache rather than borrowing `shipment.spapi`'s.
+
+The credentials live in `Amazon Tracker/.env` as `AMAZON_*` (that file predates this app), aliased
+to `ads_*` in `config.py`. `ads_profile_id` is **mandatory with no default** — every call is scoped
+to one advertising profile and the wrong one silently returns another account's numbers.
+
+> **Every ads call failed with LWA `invalid_client`, and it was an inline comment.** A `.env` value
+> runs to end-of-line, so `AMAZON_CLIENT_SECRET= amzn1.oa2-cs.v1.13c9…  # from LWA console — keep
+> secret, never commit` sent Amazon a **133-character** secret: the real 80 chars plus a leading
+> space plus the comment text. `invalid_client` reads exactly like "this account has no advertising
+> access", and it was reported as that before being measured. The comment now sits on its own line.
+
+Three request-shape traps, each a real 400 whose message does not name the cause:
+
+- **`groupBy` must be `["advertiser"]`.** Amazon's rejection helpfully lists the alternatives
+  (`campaign`, `adGroup`, `campaignPlacement`) — all plausible, none of them per-product.
+- **`date` is not a legal column under `timeUnit: SUMMARY`.** The window travels as
+  startDate/endDate.
+- **`Content-Type: application/vnd.createasyncreportrequest.v3+json`**, not `application/json`.
+
+**The report is split by CAMPAIGN even though `groupBy` is `advertiser`.** Measured: 1,697 rows for
+213 `(asin, sku)` pairs, up to 13 rows for one pair. `ads.aggregate` collapses them before anything
+downstream sees them, because two grains in one payload is how a total starts disagreeing with its
+rows. Generation takes **~12 minutes** (confirmed twice), against the economics query's 30 seconds.
+
+### Easy Ship and FBA are two SKUs per ASIN, and the tab combines them
+Asked for as *"the easy ship and fba sku's combined data not separate"*. Measured at `MSKU`
+granularity: **186 of 267 child ASINs sell under two SKUs** — a merchant one and an
+identically-named `… FBA` one (`0.25 fc np` / `0.25 fc np FBA`). Split by channel: merchant
+₹16,68,051 + FBA ₹32,81,373 = **₹49,49,424**, matching the ASIN total to the rupee.
+
+**The `CHILD_ASIN` aggregation the tab already queried sums both channels**, so "combined" was
+always the behaviour. The `MSKU` grain is fetched *additionally*, only to show the split on expand,
+and stored in the same table with `seller_sku` set while the authoritative rows keep it NULL.
+
+**`load_snapshot` filters `seller_sku IS NULL`, and that one clause keeps every figure honest** —
+without it the two channel rows would sum on top of their own ASIN row and the dashboard would
+report roughly double. Pinned by a test that stores both grains and asserts the totals are
+unchanged. The MSKU rows are never a source of totals in any case: Amazon cannot attribute every
+row to a single SKU, so they sum to slightly less than the ASIN figures.
+
+`_channel_of` splits on the trailing ` FBA` token — verified across all 453 MSKU rows and all 213
+advertised SKUs. **A convention of this account, not an Amazon rule**, which is why it is one
+function rather than an inline check. The split is decision-relevant, not decoration: the merchant
+SKU of `B0DCCL1531` spent **₹1,444 for zero attributed sales** while its FBA twin returned 36%
+ACOS, and one 500 g pack runs **105% ACOS on Easy Ship against 242% on FBA**.
+
+### Windows, filters and sorting
+- **7 / 30 / 60 / 90-day presets plus a custom range**, capped at 90 days and at yesterday
+  (today's figures are still settling — an ad charge lands hours after its sale). A cached window
+  is marked with a dot and loads instantly; an uncached one shows `Fetch (~12 min)`. **A GET never
+  blocks on a fetch** — it returns empty and offers the button.
+- **Add-a-condition filters**, ANDed, over sales / ad spend / net / TACOS / ACOS / units / returns
+  / rating. Reproduces the shortlists previously built by hand — `TACOS > 50` + `sales < 100000`
+  returns the same 12 products in two clicks. A row with no value for the field is EXCLUDED rather
+  than treated as 0, or every unadvertised product would match "ACOS < 50".
+- **Every column sorts**, click to toggle, held in `sessionStorage` so saving a decision does not
+  throw the owner back to the top. **Nulls sort last in both directions** — "no data" is not a
+  small number. Size rows always sort within their parent.
+- **`Products` / `SKUs` toggle inside every verdict filter**, because "KILL, by SKU" is the actual
+  question. The counts differ per grain (9 KILL products against 24 KILL sizes) and each chip
+  shows the count for the grain on screen.
 
 **A parent is exactly the SUM of its sizes**, never a separate parent-level query (which Amazon
 would happily answer). The size rows sit directly beneath the parent row, so two independent

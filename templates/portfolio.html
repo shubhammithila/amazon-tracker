@@ -125,6 +125,50 @@ tr.size td:first-child{padding-left:30px}
 .empty-note{font-size:12.5px;color:var(--text-muted);padding:8px 0}
 .section-title{font-size:14px;font-weight:700;margin-bottom:2px}
 .section-sub{font-size:12.5px;color:var(--text-muted);margin-bottom:8px;line-height:1.5}
+
+/* ── Window bar, view toggle, filters, rules panel ──────────────────────────── */
+.seg{display:inline-flex;border:1px solid var(--border-strong);border-radius:8px;overflow:hidden}
+.seg-btn{background:transparent;border:none;color:var(--text-muted);font-size:12.5px;
+  font-weight:600;padding:7px 13px;cursor:pointer}
+.seg-btn:hover{color:var(--text)}
+.seg-btn.on{background:var(--accent);color:var(--on-accent)}
+.win-btn{background:transparent;border:1px solid var(--border-strong);border-radius:8px;
+  color:var(--text);font-size:12.5px;padding:6px 12px;cursor:pointer;position:relative}
+.win-btn:hover{border-color:var(--accent)}
+.win-btn.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+/* A dot marks a window already cached, so the cost of a click is visible before clicking. */
+.win-btn .dot{display:inline-block;width:5px;height:5px;border-radius:50%;
+  background:var(--green);margin-left:5px;vertical-align:middle}
+.win-btn.on .dot{background:var(--on-accent)}
+.win-date{background:var(--bg);border:1px solid var(--border-strong);border-radius:8px;
+  color:var(--text);padding:6px 8px;font-size:12.5px}
+.win-label{font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase;
+  letter-spacing:.04em;margin-right:2px}
+
+.frow{display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap}
+.frow select,.frow input{background:var(--bg);border:1px solid var(--border-strong);
+  border-radius:6px;color:var(--text);padding:6px 9px;font-size:12.5px}
+.frow input{width:120px}
+.fdrop{background:transparent;border:none;color:var(--red);cursor:pointer;font-size:15px;
+  padding:0 6px;line-height:1}
+.fcount{font-size:12.5px;color:var(--text-muted);margin-left:4px}
+
+.rules-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px}
+.rule{border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+.rule h4{font-size:12.5px;margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.rule p{font-size:12px;color:var(--text-muted);line-height:1.55}
+.thresh{display:flex;gap:6px;align-items:center;margin-top:6px;font-size:12px;flex-wrap:wrap}
+.thresh input{width:76px;background:var(--bg);border:1px solid var(--border-strong);
+  border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px;text-align:right}
+.thresh label{color:var(--text-muted)}
+.info{background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:11px;
+  padding:0 3px}
+.info:hover{color:var(--accent)}
+
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:var(--text)}
+th.sorted{color:var(--accent)}
+.arrow{font-size:9px;margin-left:3px}
 </style>
 <link rel="stylesheet" href="/static/theme.css"/>
 </head>
@@ -142,9 +186,13 @@ tr.size td:first-child{padding-left:30px}
 <div id="messages"></div>
 
 <div class="card">
+  <!-- The window bar. A cached range renders instantly; an uncached one has to be fetched,
+       and the button says so because the ad report takes about twelve minutes. -->
+  <div class="controls" id="window-bar" style="margin-bottom:8px"></div>
   <div class="controls" style="margin-bottom:0">
-    <button class="btn" id="refresh-btn" onclick="startRefresh()">↻ Refresh from Amazon</button>
-    <a class="btn-outline" href="/portfolio/download.xlsx">⬇ Excel</a>
+    <button class="btn" id="refresh-btn">↻ Refresh from Amazon</button>
+    <a class="btn-outline" id="excel-link" href="/portfolio/download.xlsx">⬇ Excel</a>
+    <button class="btn-outline" id="rules-btn">⚙ Verdict rules</button>
     <span id="refresh-note" class="dim" style="font-size:12px">—</span>
   </div>
   <div id="progress-wrap">
@@ -154,11 +202,26 @@ tr.size td:first-child{padding-left:30px}
 </div>
 
 <div class="kpis" id="kpis"></div>
+
+<!-- Verdict chips double as filters. Each carries an ⓘ that explains its rule in words. -->
 <div class="verdicts" id="verdicts"></div>
 
+<!-- The rule panel: what each verdict means, and the thresholds behind it, editable. -->
+<div class="card" id="rules-panel" style="display:none"></div>
+
 <div class="card">
-  <input class="search-input" id="search" type="search"
-         placeholder="Search product, brand, ASIN or verdict…"/>
+  <div class="controls" style="margin-bottom:8px">
+    <input class="search-input" id="search" type="search"
+           placeholder="Search product, brand, ASIN or verdict…"/>
+    <!-- Products vs SKUs. Sits beside the verdict chips in spirit: "KILL, by SKU" is the
+         question, so the grain belongs next to the filter. -->
+    <div class="seg" id="view-toggle">
+      <button class="seg-btn on" data-view="products">Products</button>
+      <button class="seg-btn" data-view="skus">SKUs</button>
+    </div>
+    <button class="btn-outline" id="filter-btn">+ Filter</button>
+  </div>
+  <div id="filter-area"></div>
 </div>
 
 <div id="table-area"></div>
@@ -169,6 +232,38 @@ let filter = "";                 // the active verdict chip, "" = all
 let poll = null;
 const open = new Set();          // expanded parents, kept across re-renders
 const saving = new Set();        // decisions in flight, to stop a double-save
+
+/* ── View, window, filters and sort ──────────────────────────────────────────
+   Held in sessionStorage so a refresh, a saved decision or a reload does not throw the owner
+   back to the top of an unsorted 90-row table. Session rather than local: a filter left over
+   from last week would be a confusing way to open a dashboard. */
+const remembered = (key, fallback) => {
+  try { return JSON.parse(sessionStorage.getItem("pf." + key)) ?? fallback; }
+  catch(e){ return fallback; }
+};
+const remember = (key, value) => {
+  try { sessionStorage.setItem("pf." + key, JSON.stringify(value)); } catch(e){}
+};
+
+let view = remembered("view", "products");        // "products" | "skus"
+let window_ = remembered("window", null);         // {start, end} or null = whatever is stored
+let sort = remembered("sort", {key: "sales", dir: -1});
+let filters = remembered("filters", []);          // [{field, op, value}], ANDed
+let rulesOpen = false;
+
+/* The columns a filter can be built on, and how each is read from a row. ONE definition, so the
+   dropdown, the comparison and the sort cannot disagree about what "TACOS" means. */
+const FIELDS = {
+  sales:        {label: "Sales",        get: r => r.sales,        kind: "money"},
+  ad_spend:     {label: "Ad spend",     get: r => r.ad_spend,     kind: "money"},
+  net:          {label: "Net",          get: r => r.net,          kind: "money"},
+  net_pct:      {label: "Net %",        get: r => r.net_pct,      kind: "pct"},
+  tacos:        {label: "TACOS",        get: r => r.tacos,        kind: "pct"},
+  acos:         {label: "ACOS",         get: r => r.acos,         kind: "pct"},
+  units:        {label: "Units",        get: r => r.units,        kind: "int"},
+  returns_pct:  {label: "Returns %",    get: r => r.returns_pct,  kind: "pct"},
+  rating:       {label: "Rating",       get: r => r.rating,       kind: "num"},
+};
 
 const $ = id => document.getElementById(id);
 const n = v => Number(v || 0);
@@ -213,15 +308,36 @@ function stars(rating, count){
           <span class="dim" style="font-size:11px">(${n(count)})</span>`;
 }
 
+/* ACOS has THREE states and they must not look alike:
+     never advertised      -> em dash (no ACOS exists; 0% would read as perfectly efficient)
+     spend, no attribution -> "no sales" (measured: Rs 55,217 produced none; a ratio cannot say it)
+     spend and attribution -> the percentage, red above break-even */
+function acosCell(row){
+  if(row.acos_infinite) return '<span class="neg" title="ad spend with no attributed sales">no sales</span>';
+  if(row.acos === null || row.acos === undefined) return '<span class="dim">—</span>';
+  const cls = row.acos > 1 ? "neg" : (row.acos <= 0.3 ? "pos" : "");
+  return `<span class="${cls}">${(row.acos * 100).toFixed(0)}%</span>`;
+}
+
 function verdictClass(v){
   return "v-" + (v === "BEST BET" ? "BEST" : v.replace(/\s+/g, ""));
 }
 
+/* The querystring for the current window, shared by the payload fetch and the Excel link so the
+   file always matches the screen. */
+function windowQuery(){
+  return window_ && window_.start && window_.end
+    ? `?start=${encodeURIComponent(window_.start)}&end=${encodeURIComponent(window_.end)}`
+    : "";
+}
+
 async function load(){
   try{
-    const r = await fetch("/portfolio");
-    if(!r.ok){ message("Could not load the portfolio.", "error"); return; }
-    data = await r.json();
+    const r = await fetch("/portfolio" + windowQuery());
+    const body = await r.json();
+    if(!r.ok){ message(body.error || "Could not load the portfolio.", "error"); return; }
+    data = body;
+    $("excel-link").href = "/portfolio/download.xlsx" + windowQuery();
     render();
     renderRefresh(data.refresh);
   }catch(err){
@@ -234,7 +350,10 @@ function render(){
   renderSubtitle();
   renderBanners();
   renderKpis();
+  renderWindowBar();
   renderVerdicts();
+  renderFilters();
+  if(rulesOpen) renderRules();
   renderTable();
 }
 
@@ -244,9 +363,53 @@ function renderSubtitle(){
   // Set via textContent below, so these dates need no escaping — but they ARE stored values,
   // so the assignment target matters and must stay textContent.
   if(w) parts.push(`${w[0]} to ${w[1]}`);
-  parts.push(`${n(data.totals.parents)} products`);
-  parts.push("Amazon's own economics — sales, fees and ad spend per product");
+  parts.push(`${n(data.totals.parents)} products, ${n(data.totals.skus)} pack sizes`);
+  parts.push("Amazon's own economics and advertising figures");
   $("subtitle").textContent = parts.join(" · ");
+}
+
+/* ── The window bar ─────────────────────────────────────────────────────────────
+   Presets plus a custom range. A window already fetched is marked with a dot and loads
+   instantly; anything else has to be fetched, and the button says how long that takes because
+   the ad report is a twelve-minute wait rather than a spinner. */
+function renderWindowBar(){
+  const have = new Set((data.windows_available || []).map(w => w.start + ".." + w.end));
+  const current = data.window ? data.window[0] + ".." + data.window[1] : "";
+  const today = new Date();
+
+  function presetRange(days){
+    const end = new Date(today); end.setDate(end.getDate() - 1);
+    const start = new Date(end); start.setDate(start.getDate() - (days - 1));
+    const iso = d => d.toISOString().slice(0, 10);
+    return {start: iso(start), end: iso(end)};
+  }
+
+  const buttons = [7, 30, 60, 90].map(days => {
+    const r = presetRange(days);
+    const key = r.start + ".." + r.end;
+    return `<button class="win-btn ${key === current ? "on" : ""}"
+      data-start="${r.start}" data-end="${r.end}"
+      title="${r.start} to ${r.end}">${days}d${have.has(key) ? '<span class="dot"></span>' : ""}</button>`;
+  }).join("");
+
+  const w = data.window || ["", ""];
+  const uncached = w[0] && !have.has(current);
+  $("window-bar").innerHTML = `
+    <span class="win-label">Window</span>
+    ${buttons}
+    <span class="dim" style="font-size:12px">|</span>
+    <input class="win-date" type="date" id="win-from" value="${esc(w[0])}" max="${esc(maxDate())}"/>
+    <input class="win-date" type="date" id="win-to" value="${esc(w[1])}" max="${esc(maxDate())}"/>
+    <button class="btn-outline" id="win-apply">Show</button>
+    ${uncached ? `<button class="btn" id="win-fetch">Fetch this window (~12 min)</button>` : ""}
+    <span class="dim" style="font-size:11.5px">a dot means already fetched — instant</span>`;
+}
+
+/* Yesterday, because today's figures are still settling: an ad charge lands hours after the
+   sale it belongs to, so a window including today shows a punishing ACOS every morning. */
+function maxDate(){
+  const d = new Date(); d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
 }
 
 function renderBanners(){
@@ -296,37 +459,158 @@ function renderBanners(){
 function renderKpis(){
   const t = data.totals;
   const netCls = (t.net_pct !== null && t.net_pct < 0) ? "bad" : "good";
+  /* TACOS and ACOS side by side, with the difference spelled out in the label rather than left
+     for the reader to remember. Measured: 33.1% against 89.9% — they are not variants of one
+     number, they answer different questions, and the gap is the point. */
+  const acosCls = (t.acos !== null && t.acos !== undefined && t.acos > 1) ? "bad" : "warn";
   $("kpis").innerHTML = `
     <div class="kpi"><div class="v">${money(t.sales)}</div><div class="k">Sales</div></div>
     <div class="kpi warn"><div class="v">${money(t.ad_spend)}</div><div class="k">Ad spend</div></div>
-    <div class="kpi warn"><div class="v">${t.tacos === null ? "—" : (t.tacos*100).toFixed(1)+"%"}</div><div class="k">TACOS</div></div>
+    <div class="kpi warn"><div class="v">${t.tacos === null ? "—" : (t.tacos*100).toFixed(1)+"%"}</div>
+      <div class="k" title="ad spend over TOTAL sales">TACOS</div></div>
+    <div class="kpi ${acosCls}"><div class="v">${
+      t.acos === null || t.acos === undefined ? "—" : (t.acos*100).toFixed(1)+"%"}</div>
+      <div class="k" title="ad spend over ad-ATTRIBUTED sales">ACOS</div></div>
     <div class="kpi ${netCls}"><div class="v">${money(t.net)}</div><div class="k">Net (pre-COGS)</div></div>
     <div class="kpi ${netCls}"><div class="v">${t.net_pct === null ? "—" : (t.net_pct*100).toFixed(1)+"%"}</div><div class="k">Net margin</div></div>
     <div class="kpi"><div class="v">${n(t.units).toLocaleString("en-IN")}</div><div class="k">Units</div></div>`;
 }
 
+/* Verdict chips, counted for the CURRENT grain — "9 KILL products" and "24 KILL SKUs" are both
+   true and the chip must agree with the table beneath it. Each carries an ⓘ that opens the rule. */
 function renderVerdicts(){
-  const counts = data.totals.verdicts || {};
-  const order = ["KILL", "SURGICAL", "DEAD", "MONITOR", "SCALE", "BEST BET"];
+  const isSkus = view === "skus";
+  const counts = (isSkus ? data.totals.sku_verdicts : data.totals.verdicts) || {};
+  const total = isSkus ? data.totals.skus : data.totals.parents;
+  const order = (data.verdict_order || ["KILL","SURGICAL","AD DEPENDENT","DEAD","MONITOR","SCALE","BEST BET"]);
   const chips = [`<button class="vchip ${filter === "" ? "on" : ""}" data-v="">
-      <span class="n">${n(data.totals.parents)}</span>All</button>`];
+      <span class="n">${n(total)}</span>All</button>`];
   order.forEach(v => {
     if(!counts[v]) return;
     chips.push(`<button class="vchip ${filter === v ? "on" : ""}" data-v="${esc(v)}">
-      <span class="n">${n(counts[v])}</span>${esc(v)}</button>`);
+      <span class="n">${n(counts[v])}</span>${esc(v)}<span class="info" data-help="${esc(v)}">ⓘ</span></button>`);
   });
   $("verdicts").innerHTML = chips.join("");
 }
 
+/* ── The rule panel: what each verdict means, and the numbers behind it ─────────
+   Editable, because the thresholds are measured from this account rather than laws — but the
+   defaults are evidence, so Reset restores them rather than clearing to nothing. */
+function renderRules(){
+  const t = data.thresholds || {};
+  const help = data.verdict_help || {};
+  const order = data.verdict_order || Object.keys(help);
+  const num = (key, step, suffix) =>
+    `<label>${esc(key)}</label><input type="number" step="${step}" data-th="${esc(key)}"
+       value="${t[key]}"/>${suffix ? `<span class="dim">${suffix}</span>` : ""}`;
+
+  $("rules-panel").innerHTML = `
+    <div class="section-title">What each verdict means</div>
+    <div class="section-sub">The numbers are measured from this account — net 25% and TACOS 30%
+      are where <em>your</em> healthy products sit, not industry rules. Change them and every
+      verdict recomputes from the stored figures; no Amazon call is needed.</div>
+    <div class="rules-grid">
+      ${order.map(v => `<div class="rule">
+        <h4><span class="tag ${verdictClass(v)}">${esc(v)}</span></h4>
+        <p>${esc(help[v] || "")}</p>
+      </div>`).join("")}
+    </div>
+    <div class="section-title" style="margin-top:12px">Thresholds</div>
+    <div class="thresh">${num("good_net", "0.01", "net margin, e.g. 0.25 = 25%")}</div>
+    <div class="thresh">${num("good_tacos", "0.01", "TACOS at or below this is efficient")}</div>
+    <div class="thresh">${num("kill_tacos", "0.01", "loss + TACOS above this = KILL")}</div>
+    <div class="thresh">${num("break_even_acos", "0.05", "ACOS above this = AD DEPENDENT (1.0 = break-even)")}</div>
+    <div class="thresh">${num("good_rating", "0.1", "stars needed for BEST BET")}</div>
+    <div class="thresh">${num("dead_units", "1", "units at or below this = DEAD")}</div>
+    <div class="thresh">${num("returns_kill_rate", "0.01", "return rate that forces a KILL")}</div>
+    <div class="thresh">${num("returns_min_units", "1", "minimum units for the returns rule")}</div>
+    <div class="controls" style="margin:10px 0 0">
+      <button class="btn" id="rules-save">Save thresholds</button>
+      <button class="btn-outline" id="rules-reset">Reset to measured defaults</button>
+      <button class="btn-outline" id="rules-close">Close</button>
+    </div>`;
+}
+
+/* ── The filter builder ───────────────────────────────────────────────────────
+   Add-a-condition rows, ANDed. Reproduces the shortlists asked for by hand
+   ("TACOS > 50% + revenue < 1 lakh + rating < 4.0") and shows the active set, so it is always
+   clear WHY only five rows are on screen. */
+function renderFilters(){
+  if(!filters.length){ $("filter-area").innerHTML = ""; return; }
+  const fieldOpts = Object.entries(FIELDS).map(([key, f]) =>
+    `<option value="${key}">${esc(f.label)}</option>`).join("");
+  $("filter-area").innerHTML = filters.map((f, i) => {
+    const kind = (FIELDS[f.field] || {}).kind;
+    return `<div class="frow" data-i="${i}">
+      <select data-fld="${i}">${fieldOpts}</select>
+      <select data-op="${i}">
+        <option value="gt">is more than</option>
+        <option value="lt">is less than</option>
+      </select>
+      <input type="number" step="any" data-val="${i}" value="${f.value}"/>
+      <span class="dim" style="font-size:11.5px">${
+        kind === "pct" ? "as a percentage, e.g. 50" : (kind === "money" ? "rupees" : "")}</span>
+      <button class="fdrop" data-rm="${i}" title="Remove">×</button>
+    </div>`;
+  }).join("") + `<div class="fcount" id="filter-count"></div>`;
+
+  // Selects cannot carry their chosen value through innerHTML, so they are set afterwards.
+  filters.forEach((f, i) => {
+    const fld = document.querySelector(`[data-fld="${i}"]`);
+    const op = document.querySelector(`[data-op="${i}"]`);
+    if(fld) fld.value = f.field;
+    if(op) op.value = f.op;
+  });
+}
+
+/* A filter's value is typed in the unit the owner thinks in — 50 for 50% — while the data holds
+   0.5. Converting here rather than at comparison time keeps the stored filter readable. */
+function filterThreshold(f){
+  const kind = (FIELDS[f.field] || {}).kind;
+  const raw = Number(f.value);
+  if(!isFinite(raw)) return null;
+  return kind === "pct" ? raw / 100 : raw;
+}
+
+function passesFilters(row){
+  return filters.every(f => {
+    const def = FIELDS[f.field];
+    if(!def) return true;
+    const limit = filterThreshold(f);
+    if(limit === null) return true;
+    const value = def.get(row);
+    // A row with no value for the field cannot satisfy a numeric comparison. Excluded rather
+    // than treated as 0, which would make every unadvertised product match "ACOS < 50".
+    if(value === null || value === undefined) return false;
+    return f.op === "gt" ? value > limit : value < limit;
+  });
+}
+
+function rows(){
+  return view === "skus" ? (data.skus || []) : (data.parents || []);
+}
+
 function visible(){
   const q = $("search").value.trim().toLowerCase();
-  return (data.parents || []).filter(p => {
-    if(filter && p.verdict !== filter) return false;
+  const out = rows().filter(r => {
+    if(filter && r.verdict !== filter) return false;
+    if(!passesFilters(r)) return false;
     if(!q) return true;
     // Built for matching only and never inserted into the DOM, so it needs no escaping.
-    const hay = [p.product, p.brand, p.parent_asin, p.verdict, p.decision,
-                 ...p.sizes.map(s => s.asin)].join(" ").toLowerCase();
+    const hay = [r.product, r.brand, r.parent_asin, r.asin, r.verdict, r.decision,
+                 ...((r.sizes || []).map(s => s.asin))].join(" ").toLowerCase();
     return hay.includes(q);
+  });
+
+  const def = FIELDS[sort.key] || FIELDS.sales;
+  return out.sort((a, b) => {
+    const av = def.get(a), bv = def.get(b);
+    // Nulls sort LAST whichever direction, because "no data" is not a small number — a product
+    // with no ACOS is not the most efficient one.
+    if(av === null || av === undefined) return 1;
+    if(bv === null || bv === undefined) return -1;
+    if(av === bv) return String(a.product || "").localeCompare(String(b.product || ""));
+    return (av < bv ? -1 : 1) * sort.dir;
   });
 }
 
@@ -335,88 +619,178 @@ function sizeName(s){
   return s.asin;
 }
 
+/* The header cells, driven by FIELDS so a sortable column and its filter agree about the key. */
+const COLUMNS = [
+  {key: null,           label: "Product"},
+  {key: null,           label: "Verdict"},
+  {key: "sales",        label: "Sales",    num: true},
+  {key: "ad_spend",     label: "Ad spend", num: true},
+  {key: "tacos",        label: "TACOS",    num: true, tip: "ad spend over TOTAL sales"},
+  {key: "acos",         label: "ACOS",     num: true, tip: "ad spend over ad-ATTRIBUTED sales"},
+  {key: "net_pct",      label: "Net %",    num: true},
+  {key: "units",        label: "Units",    num: true},
+  {key: "returns_pct",  label: "Returns",  num: true},
+  {key: "rating",       label: "Rating"},
+  {key: null,           label: "Decision"},
+];
+
+function headerHtml(){
+  return COLUMNS.map(c => {
+    if(!c.key) return `<th${c.num ? ' class="num"' : ""}>${esc(c.label)}</th>`;
+    const on = sort.key === c.key;
+    return `<th class="sortable${c.num ? " num" : ""}${on ? " sorted" : ""}"
+      data-sort="${c.key}"${c.tip ? ` title="${esc(c.tip)}"` : ""}>${esc(c.label)}${
+      on ? `<span class="arrow">${sort.dir < 0 ? "▼" : "▲"}</span>` : ""}</th>`;
+  }).join("");
+}
+
+/* The merchant/FBA split for one size, shown on expand.
+   Decision-relevant rather than decorative: measured, one product's merchant SKU spent Rs 1,444
+   on ads for ZERO attributed sales while its FBA twin returned 36% ACOS. */
+function channelHtml(row){
+  const ch = row.channels || {};
+  if(!ch.merchant && !ch.fba) return "";
+  const one = (name, label) => {
+    const c = ch[name];
+    if(!c) return "";
+    // The trailing space before </span> matters: without it the next channel's label runs into
+    // this one's ACOS ("105%FBA"), which reads as a single garbled number.
+    return `<span style="margin-right:14px">${label}
+      <strong>${money(c.sales)}</strong>
+      <span class="dim">${n(c.units)}u</span>
+      ${c.acos !== null && c.acos !== undefined
+          ? `<span class="dim">ACOS ${(c.acos*100).toFixed(0)}%</span>`
+          : (c.acos_infinite ? '<span class="neg">ads, no sales</span>' : "")} </span>`;
+  };
+  return `<div class="dim" style="font-size:11.5px;margin-top:3px">
+    ${one("merchant", "Easy Ship /&nbsp;merchant")}${one("fba", "FBA")}
+    <span class="dim">— combined above; Amazon reports these as separate SKUs</span></div>`;
+}
+
+function dataCells(r){
+  return `
+    <td><span class="tag ${verdictClass(r.verdict)}">${esc(r.verdict)}</span></td>
+    <td class="num">${money(r.sales)}</td>
+    <td class="num">${money(r.ad_spend)}</td>
+    <td class="num">${pct(r.tacos)}</td>
+    <td class="num">${acosCell(r)}</td>
+    <td class="num">${pct(r.net_pct, {sign: true})}</td>
+    <td class="num">${n(r.units).toLocaleString("en-IN")}</td>
+    <td class="num">${r.returns_pct ? pct(r.returns_pct) : '<span class="dim">—</span>'}</td>
+    <td>${stars(r.rating, r.rating_count)}</td>
+    <td>${r.decision
+          ? `<span class="tag d-${esc(r.decision)}">${esc(r.decision.toUpperCase())}</span>`
+          : '<span class="dim">—</span>'}</td>`;
+}
+
 function renderTable(){
-  const rows = visible();
-  if(!rows.length){
+  const list = visible();
+  const isSkus = view === "skus";
+  if(!list.length){
     $("table-area").innerHTML = `<div class="card"><div class="empty-note">
-      ${(data.parents || []).length ? "Nothing matches that filter." : "No products yet."}
+      ${rows().length ? "Nothing matches that filter." : "No products yet."}
     </div></div>`;
     return;
   }
 
   let html = "";
-  rows.forEach(p => {
-    const isOpen = open.has(p.parent_asin);
-    html += `<tr class="parent" data-parent="${esc(p.parent_asin)}">
-      <td class="p-name"><span class="caret">${isOpen ? "▾" : "▸"}</span> ${esc(p.product)}
-        ${p.brand ? `<span class="brand">${esc(p.brand)}</span>` : ""}</td>
-      <td><span class="tag ${verdictClass(p.verdict)}">${esc(p.verdict)}</span></td>
-      <td class="num">${money(p.sales)}</td>
-      <td class="num">${money(p.ad_spend)}</td>
-      <td class="num">${pct(p.tacos)}</td>
-      <td class="num">${pct(p.net_pct, {sign: true})}</td>
-      <td class="num">${n(p.units).toLocaleString("en-IN")}</td>
-      <td class="num">${p.returns_pct ? pct(p.returns_pct) : '<span class="dim">—</span>'}</td>
-      <td>${stars(p.rating, p.rating_count)}</td>
-      <td>${p.decision
-            ? `<span class="tag d-${esc(p.decision)}">${esc(p.decision.toUpperCase())}</span>`
-            : '<span class="dim">—</span>'}</td>
-    </tr>`;
-
-    if(!isOpen) return;
-
-    /* The reason row: the verdict's own numbers, so the owner can check it rather than take
-       it on trust. Spans the table because it is prose, not a column. */
-    html += `<tr class="size"><td colspan="10">
-      <div class="reason"><strong>Why ${esc(p.verdict)}:</strong> ${esc(p.verdict_reason)}</div>
-      <div class="decide" style="margin-top:8px">
-        <select data-decide="${esc(p.parent_asin)}">
-          <option value=""${!p.decision ? " selected" : ""}>— no decision —</option>
-          <option value="kill"${p.decision === "kill" ? " selected" : ""}>Kill it</option>
-          <option value="keep"${p.decision === "keep" ? " selected" : ""}>Keep it</option>
-          <option value="watch"${p.decision === "watch" ? " selected" : ""}>Watch it</option>
-        </select>
-        <input type="text" placeholder="Why? (optional, but the most useful thing in 3 months)"
-               data-note="${esc(p.parent_asin)}" value="${esc(p.decision_note)}"/>
-        <button class="btn-outline" data-save="${esc(p.parent_asin)}">Save</button>
-        ${p.decision_at
-          ? `<span class="decided">decided ${esc(String(p.decision_at).slice(0,10))}</span>`
-          : ""}
-      </div>
-    </td></tr>`;
-
-    p.sizes.forEach(s => {
-      html += `<tr class="size">
-        <td>${esc(sizeName(s))} <span class="asin">${esc(s.asin)}</span></td>
-        <td></td>
-        <td class="num">${money(s.sales)}</td>
-        <td class="num">${money(s.ad_spend)}</td>
-        <td class="num">${pct(s.tacos)}</td>
-        <td class="num">${pct(s.net_pct, {sign: true})}</td>
-        <td class="num">${n(s.units)}</td>
-        <td class="num">${s.returns_pct ? pct(s.returns_pct) : '<span class="dim">—</span>'}</td>
-        <td colspan="2" class="dim" style="font-size:11px">
-          ${/* Ratings are pooled per family by Amazon, so a per-size star rating would be the
-               parent's number repeated — implying a precision the review data does not have. */ ""}
-          rating is per product, not per size</td>
+  if(isSkus){
+    /* ── SKU view: one row per pack size, merchant + FBA COMBINED ──
+       Asked for as "the easy ship and fba sku's combined data not separate". The combining is
+       Amazon's own CHILD_ASIN aggregation, so these figures are not a local sum that could
+       drift; the split is shown on expand for the cases where the channel matters. */
+    list.forEach(s => {
+      const isOpen = open.has("sku:" + s.asin);
+      html += `<tr class="parent" data-sku="${esc(s.asin)}">
+        <td class="p-name"><span class="caret">${isOpen ? "▾" : "▸"}</span>
+          ${esc(s.product)} <span class="brand">${esc(sizeName(s))}</span>
+          <span class="asin">${esc(s.asin)}</span></td>
+        ${dataCells(s)}
       </tr>`;
+      if(isOpen){
+        html += `<tr class="size"><td colspan="11">
+          <div class="reason"><strong>Why ${esc(s.verdict)}:</strong> ${esc(s.verdict_reason)}</div>
+          ${channelHtml(s)}
+          <div class="dim" style="font-size:11.5px;margin-top:4px">
+            Part of <strong>${esc(s.parent_product)}</strong>, whose overall verdict is
+            ${esc(s.parent_verdict)}. Decisions are recorded on the product, not the size —
+            switch to Products to set one.</div>
+        </td></tr>`;
+      }
     });
-  });
+  } else {
+    list.forEach(p => {
+      const isOpen = open.has(p.parent_asin);
+      html += `<tr class="parent" data-parent="${esc(p.parent_asin)}">
+        <td class="p-name"><span class="caret">${isOpen ? "▾" : "▸"}</span> ${esc(p.product)}
+          ${p.brand ? `<span class="brand">${esc(p.brand)}</span>` : ""}</td>
+        ${dataCells(p)}
+      </tr>`;
 
+      if(!isOpen) return;
+
+      /* The reason row: the verdict's own numbers, so the owner can check it rather than take
+         it on trust. Spans the table because it is prose, not a column. */
+      html += `<tr class="size"><td colspan="11">
+        <div class="reason"><strong>Why ${esc(p.verdict)}:</strong> ${esc(p.verdict_reason)}</div>
+        <div class="decide" style="margin-top:8px">
+          <select data-decide="${esc(p.parent_asin)}">
+            <option value=""${!p.decision ? " selected" : ""}>— no decision —</option>
+            <option value="kill"${p.decision === "kill" ? " selected" : ""}>Kill it</option>
+            <option value="keep"${p.decision === "keep" ? " selected" : ""}>Keep it</option>
+            <option value="watch"${p.decision === "watch" ? " selected" : ""}>Watch it</option>
+          </select>
+          <input type="text" placeholder="Why? (optional, but the most useful thing in 3 months)"
+                 data-note="${esc(p.parent_asin)}" value="${esc(p.decision_note)}"/>
+          <button class="btn-outline" data-save="${esc(p.parent_asin)}">Save</button>
+          ${p.decision_at
+            ? `<span class="decided">decided ${esc(String(p.decision_at).slice(0,10))}</span>`
+            : ""}
+        </div>
+      </td></tr>`;
+
+      /* Sizes always sort WITHIN their parent, never globally: a size row floating away from the
+         product it belongs to would be meaningless. */
+      p.sizes.forEach(s => {
+        html += `<tr class="size">
+          <td>${esc(sizeName(s))} <span class="asin">${esc(s.asin)}</span>${channelHtml(s)}</td>
+          <td></td>
+          <td class="num">${money(s.sales)}</td>
+          <td class="num">${money(s.ad_spend)}</td>
+          <td class="num">${pct(s.tacos)}</td>
+          <td class="num">${acosCell(s)}</td>
+          <td class="num">${pct(s.net_pct, {sign: true})}</td>
+          <td class="num">${n(s.units)}</td>
+          <td class="num">${s.returns_pct ? pct(s.returns_pct) : '<span class="dim">—</span>'}</td>
+          <td colspan="2" class="dim" style="font-size:11px">
+            ${/* Ratings are pooled per family by Amazon, so a per-size star rating would be the
+                 parent's number repeated — implying a precision the review data lacks. */ ""}
+            rating is per product</td>
+        </tr>`;
+      });
+    });
+  }
+
+  const sortLabel = (FIELDS[sort.key] || {}).label || "Sales";
   $("table-area").innerHTML = `<div class="card">
-    <div class="section-title">${rows.length} product(s), heaviest revenue first</div>
-    <div class="section-sub">Click a product to see its pack sizes, the reason for its verdict,
-      and to record a decision. <strong>A product can be worth keeping while one of its sizes is
-      not</strong> — that is what SURGICAL means, and why the sizes are here.</div>
+    <div class="section-title">${list.length} ${isSkus ? "pack size(s)" : "product(s)"},
+      by ${esc(sortLabel)} ${sort.dir < 0 ? "highest first" : "lowest first"}</div>
+    <div class="section-sub">${isSkus
+      ? `One row per pack size, with <strong>Easy Ship and FBA combined</strong> — Amazon reports
+         them as two SKUs and this adds them up. Click a row for the split and the reason.`
+      : `Click a product for its pack sizes, the reason for its verdict, and to record a decision.
+         <strong>A product can be worth keeping while one of its sizes is not</strong> — that is
+         what SURGICAL means.`}</div>
     <table>
-      <thead><tr>
-        <th>Product</th><th>Verdict</th><th class="num">Sales</th><th class="num">Ad spend</th>
-        <th class="num">TACOS</th><th class="num">Net %</th><th class="num">Units</th>
-        <th class="num">Returns</th><th>Rating</th><th>Decision</th>
-      </tr></thead>
+      <thead><tr>${headerHtml()}</tr></thead>
       <tbody>${html}</tbody>
     </table>
   </div>`;
+
+  const count = $("filter-count");
+  if(count){
+    count.textContent = `${list.length} of ${rows().length} ${isSkus ? "sizes" : "products"} match`;
+  }
 }
 
 /* ── Events ───────────────────────────────────────────────────────────────────
@@ -424,6 +798,16 @@ function renderTable(){
    an uploaded sheet and Amazon — building an onclick out of those strings is an injection
    waiting to happen. Same rule the Orders tab follows. */
 $("verdicts").addEventListener("click", e => {
+  // The ⓘ opens the rule rather than filtering, so "what does KILL mean" and "show me the
+  // KILLs" are separate gestures on the same chip.
+  const info = e.target.closest("[data-help]");
+  if(info){
+    rulesOpen = true;
+    $("rules-panel").style.display = "";
+    renderRules();
+    $("rules-panel").scrollIntoView({behavior: "smooth", block: "nearest"});
+    return;
+  }
   const chip = e.target.closest(".vchip");
   if(!chip) return;
   filter = chip.dataset.v || "";
@@ -433,14 +817,141 @@ $("verdicts").addEventListener("click", e => {
 $("table-area").addEventListener("click", e => {
   const save = e.target.closest("[data-save]");
   if(save){ saveDecision(save.dataset.save); return; }
+
+  const header = e.target.closest("[data-sort]");
+  if(header){
+    const key = header.dataset.sort;
+    // Same column toggles direction; a new column starts descending, because "the biggest" is
+    // what someone clicking Sales or ACOS almost always means.
+    sort = (sort.key === key) ? {key, dir: -sort.dir} : {key, dir: -1};
+    remember("sort", sort);
+    renderTable();
+    return;
+  }
+
   const row = e.target.closest("tr.parent");
   if(!row) return;
-  const key = row.dataset.parent;
+  const key = row.dataset.parent || ("sku:" + row.dataset.sku);
   if(open.has(key)) open.delete(key); else open.add(key);
   renderTable();
 });
 
 $("search").addEventListener("input", renderTable);
+
+/* ── The window bar ─────────────────────────────────────────────────────────── */
+$("window-bar").addEventListener("click", async e => {
+  const preset = e.target.closest(".win-btn");
+  if(preset){
+    window_ = {start: preset.dataset.start, end: preset.dataset.end};
+    remember("window", window_);
+    await load();
+    return;
+  }
+  if(e.target.id === "win-apply"){
+    const from = $("win-from").value, to = $("win-to").value;
+    if(!from || !to){ message("Pick both dates.", "warn"); return; }
+    window_ = {start: from, end: to};
+    remember("window", window_);
+    await load();
+    return;
+  }
+  if(e.target.id === "win-fetch"){
+    startRefresh(window_);
+  }
+});
+
+/* ── The view toggle ────────────────────────────────────────────────────────── */
+$("view-toggle").addEventListener("click", e => {
+  const btn = e.target.closest("[data-view]");
+  if(!btn || btn.dataset.view === view) return;
+  view = btn.dataset.view;
+  remember("view", view);
+  [...$("view-toggle").children].forEach(b => b.classList.toggle("on", b === btn));
+  // The verdict filter carries over, which is the point of the toggle: "KILL, by SKU". But the
+  // COUNTS differ per grain, so the chips are re-rendered too.
+  render();
+});
+
+/* ── Filters ────────────────────────────────────────────────────────────────── */
+$("filter-btn").addEventListener("click", () => {
+  filters = filters.concat([{field: "tacos", op: "gt", value: 50}]);
+  remember("filters", filters);
+  renderFilters();
+  renderTable();
+});
+
+$("filter-area").addEventListener("input", e => {
+  const t = e.target;
+  const i = t.dataset.fld ?? t.dataset.op ?? t.dataset.val;
+  if(i === undefined) return;
+  const row = filters[Number(i)];
+  if(!row) return;
+  if(t.dataset.fld !== undefined) row.field = t.value;
+  if(t.dataset.op !== undefined) row.op = t.value;
+  if(t.dataset.val !== undefined) row.value = t.value;
+  remember("filters", filters);
+  renderTable();
+});
+
+$("filter-area").addEventListener("change", e => {
+  // `change` as well as `input`, because a <select> in some browsers fires only change.
+  if(e.target.dataset.fld !== undefined || e.target.dataset.op !== undefined){
+    renderFilters();
+    renderTable();
+  }
+});
+
+$("filter-area").addEventListener("click", e => {
+  const rm = e.target.closest("[data-rm]");
+  if(!rm) return;
+  filters.splice(Number(rm.dataset.rm), 1);
+  remember("filters", filters);
+  renderFilters();
+  renderTable();
+});
+
+/* ── The rules panel ────────────────────────────────────────────────────────── */
+$("rules-btn").addEventListener("click", () => {
+  rulesOpen = !rulesOpen;
+  $("rules-panel").style.display = rulesOpen ? "" : "none";
+  if(rulesOpen) renderRules();
+});
+
+$("rules-panel").addEventListener("click", async e => {
+  if(e.target.id === "rules-close"){
+    rulesOpen = false;
+    $("rules-panel").style.display = "none";
+    return;
+  }
+  if(e.target.id === "rules-reset"){ await saveThresholds({}); return; }
+  if(e.target.id === "rules-save"){
+    const values = {};
+    document.querySelectorAll("[data-th]").forEach(input => {
+      const raw = input.value.trim();
+      if(raw !== "") values[input.dataset.th] = Number(raw);
+    });
+    await saveThresholds(values);
+  }
+});
+
+async function saveThresholds(values){
+  try{
+    const r = await fetch("/portfolio/settings", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({thresholds: values}),
+    });
+    const body = await r.json();
+    if(!r.ok){ message(body.error || "Could not save the thresholds.", "error"); return; }
+    // Reload rather than patching in place: every verdict and every count changes, so a partial
+    // update would leave the chips disagreeing with the rows.
+    await load();
+    message(Object.keys(values).length
+      ? "Thresholds saved — every verdict recomputed."
+      : "Thresholds reset to the measured defaults.", "good");
+  }catch(err){
+    message("Could not reach the server.", "error");
+  }
+}
 
 async function saveDecision(parentAsin){
   if(saving.has(parentAsin)) return;
@@ -477,10 +988,14 @@ async function saveDecision(parentAsin){
 }
 
 /* ── Refresh ──────────────────────────────────────────────────────────────── */
-async function startRefresh(){
+$("refresh-btn").addEventListener("click", () => startRefresh(window_));
+
+async function startRefresh(win){
   $("refresh-btn").disabled = true;
+  const query = win && win.start && win.end
+    ? `?start=${encodeURIComponent(win.start)}&end=${encodeURIComponent(win.end)}` : "";
   try{
-    const r = await fetch("/portfolio/refresh", {method: "POST"});
+    const r = await fetch("/portfolio/refresh" + query, {method: "POST"});
     const body = await r.json();
     if(!r.ok){
       message(body.error || "Could not start the refresh.", "error");
@@ -489,6 +1004,10 @@ async function startRefresh(){
     }
     renderRefresh(body.refresh);
     startPoll();
+    // Said plainly up front: the ad report is a twelve-minute wait, and a silent bar for that
+    // long reads as a hang. The page can be left — the job runs server-side.
+    message("Fetching. The margins land in about a minute; the advertising figures take about "
+            + "twelve minutes. You can leave this page — it keeps running.", "info");
   }catch(err){
     message("Could not reach the server.", "error");
     $("refresh-btn").disabled = false;
@@ -514,6 +1033,8 @@ function startPoll(){
   }, 4000);
 }
 
+/* Labels come from the server (`refresh.PHASE_LABELS`) so a phase renamed in Python cannot show
+   up here as a raw key. A fallback covers a phase this page has not been taught about yet. */
 function renderRefresh(st){
   st = st || {};
   const running = !!st.running;
@@ -521,18 +1042,22 @@ function renderRefresh(st){
   $("progress-wrap").style.display = running ? "" : "none";
   if(running){
     $("progress-fill").style.width = n(st.percent) + "%";
-    const phase = {
-      submit: "Asking Amazon for the figures…",
-      poll: "Amazon is preparing the data — this takes a minute or two…",
-      download: "Downloading…",
-      store: "Storing…",
-    }[st.phase] || "Working…";
+    const labels = (data && data.phase_labels) || {};
+    const phase = labels[st.phase] || "Working…";
     $("progress-label").textContent = `${phase} ${n(st.percent)}%`;
   }
   const lr = data && data.last_refresh;
-  $("refresh-note").textContent = lr && lr.finished_at
-    ? `last refreshed ${String(lr.finished_at).slice(0,16).replace("T"," ")} · ${n(lr.rows_stored)} rows`
-    : "never refreshed";
+  const bits = [];
+  if(lr && lr.finished_at){
+    bits.push(`last refreshed ${String(lr.finished_at).slice(0,16).replace("T"," ")}`);
+    bits.push(`${n(lr.rows_stored)} rows`);
+  } else {
+    bits.push("never refreshed");
+  }
+  // ACOS availability belongs here rather than in a banner: it is a property of the data's
+  // freshness, and a whole banner for "no ads credentials" would nag on every load.
+  if(data && !data.acos_available) bits.push("no ACOS data yet");
+  $("refresh-note").textContent = bits.join(" · ");
 }
 
 load();

@@ -167,13 +167,19 @@ async def test_a_completed_query_returns_its_rows(monkeypatch):
     kiosk = _Kiosk(statuses=["IN_PROGRESS", "IN_PROGRESS", "DONE"], rows=rows)
     _patch(monkeypatch, kiosk)
 
-    got, start, end = await economics.fetch_economics(
+    got, skus, start, end = await economics.fetch_economics(
         days=30, today=date(2026, 8, 27), sleep=_no_sleep
     )
     assert len(got) == len(rows)
     assert got[0]["childAsin"] == rows[0]["childAsin"]
     assert (start, end) == ("2026-07-28", "2026-08-26")
-    assert kiosk.polls == 3, "it stopped polling before DONE, or kept polling after"
+    # **TWO queries now**: the ASIN grain that carries the dashboard, then the MSKU grain that
+    # carries the merchant/FBA split. The fake answers DONE on its third poll and then repeats
+    # it, so the second query completes on its first — 4 polls in total.
+    assert kiosk.polls == 4, (
+        f"{kiosk.polls} polls: expected 3 for the ASIN query plus 1 for the per-SKU query"
+    )
+    assert skus, "the per-SKU grain was not fetched, so the channel split would be empty"
 
 
 async def test_a_gzipped_document_is_decompressed(monkeypatch):
@@ -187,7 +193,7 @@ async def test_a_gzipped_document_is_decompressed(monkeypatch):
     kiosk = _Kiosk(statuses=["DONE"], rows=rows, compressed=True)
     _patch(monkeypatch, kiosk)
 
-    got, _start, _end = await economics.fetch_economics(
+    got, _skus, _start, _end = await economics.fetch_economics(
         days=30, today=date(2026, 8, 27), sleep=_no_sleep
     )
     assert got == rows
@@ -225,7 +231,7 @@ async def test_done_with_no_document_is_an_empty_portfolio_not_an_error(monkeypa
     kiosk = _Kiosk(statuses=["DONE"], document=False)
     _patch(monkeypatch, kiosk)
 
-    got, _start, _end = await economics.fetch_economics(
+    got, _skus, _start, _end = await economics.fetch_economics(
         days=30, today=date(2026, 8, 27), sleep=_no_sleep
     )
     assert got == []
@@ -257,14 +263,20 @@ async def test_a_malformed_row_does_not_lose_the_others(monkeypatch):
 
     monkeypatch.setattr(economics.httpx, "AsyncClient", lambda *a, **k: _Client())
 
-    got, _s, _e = await economics.fetch_economics(
+    got, _skus, _s, _e = await economics.fetch_economics(
         days=30, today=date(2026, 8, 27), sleep=_no_sleep
     )
     assert len(got) == 2, "a malformed line took the valid rows with it"
 
 
 async def test_progress_is_reported_for_every_phase(monkeypatch):
-    """The bar must move while a one-to-two-minute query runs, or it reads as hung."""
+    """The bar must move while the query runs, or it reads as hung.
+
+    Phase names are asserted against `refresh.PHASE_BOUNDS` rather than as literals, so a phase
+    renamed in one place and not the other fails here instead of rendering a raw key on screen.
+    """
+    from app.portfolio import refresh
+
     kiosk = _Kiosk(statuses=["IN_PROGRESS", "DONE"], rows=[{"childAsin": "B0AAA00001"}])
     _patch(monkeypatch, kiosk)
 
@@ -273,4 +285,9 @@ async def test_progress_is_reported_for_every_phase(monkeypatch):
         days=30, today=date(2026, 8, 27), sleep=_no_sleep,
         on_progress=lambda phase, done, total: seen.append(phase),
     )
-    assert "submit" in seen and "poll" in seen and "download" in seen, seen
+    assert "econ_submit" in seen and "econ_poll" in seen and "econ_download" in seen, seen
+    unknown = set(seen) - set(refresh.PHASE_BOUNDS)
+    assert not unknown, (
+        f"phases {unknown} have no entry in refresh.PHASE_BOUNDS, so the bar would not move "
+        "for them and the label would render as a raw key"
+    )
