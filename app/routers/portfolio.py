@@ -258,13 +258,14 @@ async def save_settings_route(
                       f"Valid names: {', '.join(sorted(logic.DEFAULT_THRESHOLDS))}."},
             status_code=400,
         )
+    # **Range-checked, not merely parseable.** `good_rating: 99` and `kill_tacos: -1` both used to
+    # store cleanly, and both silently broke a rule: the first zeroed BEST BET (nothing is rated 99
+    # stars) and the second made the help text read "TACOS above -100%". Found by /qa. The check
+    # lives in `logic` so the same bounds apply when reading a row back.
     for key, value in values.items():
-        try:
-            float(value)
-        except (TypeError, ValueError):
-            return JSONResponse(
-                {"error": f"{key} must be a number, got {value!r}."}, status_code=400
-            )
+        error = logic.threshold_error(key, value)
+        if error:
+            return JSONResponse({"error": error}, status_code=400)
 
     thresholds = await repository.save_settings(
         db, values, updated_by=getattr(grant, "username", "") or ""

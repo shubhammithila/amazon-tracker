@@ -797,3 +797,88 @@ def test_a_sku_row_with_no_msku_is_skipped_rather_than_misfiled():
          "sales": {"orderedProductSales": {"amount": 9999.0}, "netUnitsSold": 50}},
     ])
     assert split == {}
+
+
+# ─── Regression: ISSUE-002 — absurd thresholds were stored and broke the rules ─
+#
+# Found by /qa on 2026-08-28.
+# Report: .gstack/qa-reports/qa-report-portfolio-2026-08-28.md
+
+
+def test_a_rating_threshold_above_amazons_scale_is_refused():
+    """**`good_rating: 99` stored cleanly and zeroed BEST BET from 9 products to 0.**
+
+    Amazon rates out of 5 stars, so 99 is not a stricter bar — it is unreachable, and the help
+    text then read "rated 99.0 stars or better" as though that were a rule. The owner would see
+    every best bet disappear and have no way to know the number was meaningless.
+    """
+    error = logic.threshold_error("good_rating", 99)
+    assert error, "a 99-star threshold was accepted"
+    assert "5 stars" in error, f"the message should name Amazon's scale: {error}"
+    assert logic.threshold_error("good_rating", 4.0) is None, "a legal rating was refused"
+
+
+def test_a_negative_ratio_threshold_is_refused():
+    """**`kill_tacos: -1` made the help text read "TACOS above -100%".**
+
+    Every loss-making product then satisfies the TACOS half of the KILL rule regardless of ad
+    spend, which quietly deletes the AND that the rule is built on — a negative margin at low
+    TACOS is a pricing problem, not a kill.
+    """
+    assert logic.threshold_error("kill_tacos", -1), "a negative TACOS threshold was accepted"
+    assert logic.threshold_error("good_net", -0.5), "a negative margin threshold was accepted"
+    assert logic.threshold_error("kill_tacos", 0.4) is None
+
+
+def test_a_return_rate_over_one_hundred_percent_is_refused():
+    """More than every unit cannot come back, so the rule could never fire."""
+    assert logic.threshold_error("returns_kill_rate", 1.5)
+    assert logic.threshold_error("returns_kill_rate", 0.15) is None
+
+
+def test_a_zero_minimum_volume_for_the_returns_rule_is_refused():
+    """`returns_min_units: 0` would fire the quality rule on no evidence at all.
+
+    The floor exists precisely because one unit sold and returned is 100% returns and no signal —
+    the live data holds exactly that row.
+    """
+    assert logic.threshold_error("returns_min_units", 0)
+    assert logic.threshold_error("returns_min_units", 20) is None
+
+
+def test_nan_and_infinity_are_refused():
+    """`float("nan")` compares false against every bound, so it would slip through a naive check
+    and then make every comparison in `verdict_for` silently false."""
+    assert logic.threshold_error("kill_tacos", float("nan"))
+    assert logic.threshold_error("kill_tacos", float("inf"))
+    assert logic.threshold_error("kill_tacos", float("-inf"))
+
+
+def test_an_out_of_range_stored_value_falls_back_when_read():
+    """**Belt and braces: the bounds apply on the way OUT as well as in.**
+
+    The route refuses these now, but a row written before the guard existed — or edited by hand in
+    the database — must not be able to make a verdict meaningless. So `thresholds_or_default`
+    re-checks and falls back to the measured default rather than trusting what it finds.
+    """
+    merged = logic.thresholds_or_default({"good_rating": 99, "kill_tacos": -1, "good_net": 0.30})
+    assert merged["good_rating"] == logic.DEFAULT_THRESHOLDS["good_rating"]
+    assert merged["kill_tacos"] == logic.DEFAULT_THRESHOLDS["kill_tacos"]
+    # A LEGAL edit in the same dict must still be honoured.
+    assert merged["good_net"] == 0.30, "a valid threshold was discarded along with the invalid ones"
+
+
+def test_every_threshold_has_a_declared_range():
+    """A new threshold without bounds would be silently unvalidated.
+
+    Asserted as an exact key match so adding one to `DEFAULT_THRESHOLDS` and forgetting
+    `THRESHOLD_RANGES` fails here rather than shipping an unbounded setting.
+    """
+    assert set(logic.THRESHOLD_RANGES) == set(logic.DEFAULT_THRESHOLDS), (
+        f"missing ranges: {set(logic.DEFAULT_THRESHOLDS) - set(logic.THRESHOLD_RANGES)}"
+    )
+    # And every default must itself be inside its own declared range.
+    for key, value in logic.DEFAULT_THRESHOLDS.items():
+        assert logic.threshold_error(key, value) is None, (
+            f"the measured default for {key} ({value}) is outside its own range"
+        )

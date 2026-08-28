@@ -147,20 +147,74 @@ VERDICT_HELP = {
 }
 
 
+#: The range each threshold may legally take, as ``(low, high)`` inclusive.
+#:
+#: **These are not preferences, they are the bounds outside which the RULE stops meaning
+#: anything.** Found by /qa: the settings route accepted `good_rating: 99` and `kill_tacos: -1`.
+#: The first zeroed BEST BET (no product can be rated 99 stars) and the second made the help text
+#: read "TACOS above -100%", i.e. every loss-making product is a KILL regardless of ad spend. Both
+#: were stored, both silently changed what a verdict meant, and the screen presented the nonsense
+#: as a rule.
+#:
+#: Ratings are bounded by Amazon's own scale (1-5). Ratios are bounded at 0 below — a negative
+#: margin or TACOS threshold is not a stricter rule, it is a broken one — and generously above,
+#: because a 300% ACOS ceiling is a legitimate thing to want on this account where products run
+#: at 316%.
+THRESHOLD_RANGES = {
+    "dead_units": (0, 1000),
+    "returns_kill_rate": (0.0, 1.0),        # a return rate cannot exceed 100%
+    "returns_min_units": (1, 10000),        # 0 would make the rule fire on no evidence
+    "good_net": (0.0, 5.0),
+    "good_tacos": (0.0, 5.0),
+    "kill_tacos": (0.0, 5.0),
+    "good_rating": (1.0, 5.0),              # Amazon's star scale, so 99 is not a stricter bar
+    "break_even_acos": (0.0, 20.0),         # 316% ACOS exists here, so the ceiling is generous
+}
+
+
+def threshold_error(key: str, value) -> str | None:
+    """``None`` if ``value`` is a legal setting for ``key``, else a message fit for the screen.
+
+    Used by the route to refuse rather than store. A threshold that silently accepts nonsense is
+    worse than one that cannot be edited: the owner believes a rule moved, sees verdicts change,
+    and has no way to know the number was never meaningful.
+    """
+    if key not in DEFAULT_THRESHOLDS:
+        return f"Unknown threshold {key!r}."
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return f"{key} must be a number, got {value!r}."
+    if number != number or number in (float("inf"), float("-inf")):   # NaN or infinity
+        return f"{key} must be a real number."
+    low, high = THRESHOLD_RANGES[key]
+    if not (low <= number <= high):
+        if key == "good_rating":
+            return (f"{key} must be between {low:g} and {high:g} — Amazon rates products out of "
+                    f"5 stars, so {number:g} could never be reached.")
+        if key in ("dead_units", "returns_min_units"):
+            return f"{key} must be between {low:g} and {high:g} units, got {number:g}."
+        return (f"{key} must be between {low:.0%} and {high:.0%} (as a ratio, "
+                f"{low:g} to {high:g}), got {number:g}.")
+    return None
+
+
 def thresholds_or_default(thresholds: Mapping | None) -> dict:
-    """A complete threshold dict, filling anything absent from the measured defaults.
+    """A complete threshold dict, filling anything absent or unusable from the measured defaults.
 
     Callers may pass a partial set (the settings row only stores what was edited), and a missing
     key must fall back rather than raise — a half-saved settings row would otherwise take the
     whole dashboard down.
+
+    **Out-of-range values fall back too, not just unparseable ones.** The route refuses them at the
+    boundary, but a row written before that guard existed (or by hand) must not be able to make a
+    verdict meaningless — so the same bounds apply on the way out.
     """
     merged = dict(DEFAULT_THRESHOLDS)
     for key, value in (thresholds or {}).items():
         if key in DEFAULT_THRESHOLDS and value is not None:
-            try:
+            if threshold_error(key, value) is None:
                 merged[key] = float(value)
-            except (TypeError, ValueError):
-                continue
     return merged
 
 
