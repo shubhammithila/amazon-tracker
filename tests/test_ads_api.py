@@ -493,6 +493,187 @@ def test_changing_a_conditions_field_does_not_rebuild_the_row_being_edited():
     assert "unitFor(" in code, "the unit hint no longer follows the field"
 
 
+# ─── The five follow-up requests ─────────────────────────────────────────────
+
+
+async def test_paused_campaigns_and_ad_groups_are_hidden_by_default(auth_client, db):
+    """**Measured on the live account: all 11 paused campaigns carry Rs 0 of spend**, and so do all
+    4 paused ad groups that have rows. So hiding them cannot conceal money.
+
+    It stays a PARAMETER rather than a hard exclusion, because a campaign paused *today* may have
+    spent earlier in the window and that spend must remain findable.
+    """
+    await _seed(db)
+    await repository.save_entities(db, [
+        {"entity_type": "campaign", "entity_id": "c9", "campaign_id": "c9",
+         "name": "Old paused campaign", "state": "PAUSED"},
+        {"entity_type": "ad_group", "entity_id": "g9", "parent_id": "c1", "campaign_id": "c1",
+         "name": "paused group", "state": "PAUSED", "default_bid": 2.0},
+    ])
+
+    default = (await auth_client.get("/ads?start=2026-08-21&end=2026-08-27")).json()
+    assert default["include_paused"] is False
+    assert "c9" not in [c["campaign_id"] for c in default["campaigns"]]
+
+    with_paused = (await auth_client.get(
+        "/ads?start=2026-08-21&end=2026-08-27&include_paused=true")).json()
+    assert "c9" in [c["campaign_id"] for c in with_paused["campaigns"]]
+
+    # Ad groups follow the same rule.
+    groups = (await auth_client.get(
+        "/ads/ad-groups?campaign_id=c1&start=2026-08-21&end=2026-08-27")).json()["ad_groups"]
+    assert "g9" not in [g["ad_group_id"] for g in groups]
+    all_groups = (await auth_client.get(
+        "/ads/ad-groups?campaign_id=c1&start=2026-08-21&end=2026-08-27"
+        "&include_paused=true")).json()["ad_groups"]
+    assert "g9" in [g["ad_group_id"] for g in all_groups]
+
+
+async def test_the_ad_group_count_matches_what_expanding_will_show(auth_client, db):
+    """A campaign reading "12 ad groups" that opens to 3 rows reads as a bug.
+
+    So the count respects the same paused filter as the rows it predicts.
+    """
+    await _seed(db)
+    await repository.save_entities(db, [
+        {"entity_type": "ad_group", "entity_id": "g9", "parent_id": "c1", "campaign_id": "c1",
+         "name": "paused group", "state": "PAUSED"},
+    ])
+    body = (await auth_client.get("/ads?start=2026-08-21&end=2026-08-27")).json()
+    campaign = next(c for c in body["campaigns"] if c["campaign_id"] == "c1")
+    groups = (await auth_client.get(
+        "/ads/ad-groups?campaign_id=c1&start=2026-08-21&end=2026-08-27")).json()["ad_groups"]
+    assert campaign["ad_groups"] == len(groups), (
+        "the count beside a campaign disagrees with the rows expanding it produces"
+    )
+
+
+async def test_ad_groups_carry_their_own_performance_rolled_up_from_the_targets(auth_client, db):
+    """Asked for: "need the ad group data also to be shown here in the rows".
+
+    **Rolled up from the target rows, never stored.** An ad group's spend is by definition the sum of
+    its keywords and targets, and the rows sit directly beneath it — two independent figures would
+    visibly fail to add up, the defect class the Orders tab hit reporting 86 orders beside 87 lines.
+    """
+    await _seed(db)
+    groups = (await auth_client.get(
+        "/ads/ad-groups?campaign_id=c1&start=2026-08-21&end=2026-08-27")).json()["ad_groups"]
+    g1 = next(g for g in groups if g["ad_group_id"] == "g1")
+
+    # The two seeded rows in c1/g1: spend 2620 + 832, sales 3589.4 + 2337.9
+    assert g1["spend"] == pytest.approx(3452.0)
+    assert g1["sales"] == pytest.approx(5927.3)
+    assert g1["targets"] == 2
+    assert g1["roas"] == pytest.approx(5927.3 / 3452.0)
+
+    # And it equals the campaign row shown above it.
+    body = (await auth_client.get("/ads?start=2026-08-21&end=2026-08-27")).json()
+    campaign = next(c for c in body["campaigns"] if c["campaign_id"] == "c1")
+    assert campaign["spend"] == pytest.approx(g1["spend"]), (
+        "an ad group's spend must sum to its campaign's — they are rendered one above the other"
+    )
+
+
+async def test_an_ad_group_with_no_spend_has_no_roas(auth_client, db):
+    """None, not 0 — otherwise a dormant ad group sorts beside the genuinely terrible ones."""
+    await _seed(db)
+    await repository.save_entities(db, [
+        {"entity_type": "ad_group", "entity_id": "gx", "parent_id": "c1", "campaign_id": "c1",
+         "name": "dormant group", "state": "ENABLED"},
+    ])
+    groups = (await auth_client.get(
+        "/ads/ad-groups?campaign_id=c1&start=2026-08-21&end=2026-08-27")).json()["ad_groups"]
+    dormant = next(g for g in groups if g["ad_group_id"] == "gx")
+    assert dormant["spend"] == 0
+    assert dormant["roas"] is None
+    assert dormant["acos"] is None
+
+
+def test_every_numeric_column_is_sortable_and_nulls_sort_last():
+    """Asked for: "make the columns sortable. spend/roas etc".
+
+    **Nulls last in BOTH directions.** "No data" is not a small number: a campaign with no ROAS must
+    not head the ascending list as the worst performer nor the descending one as the best.
+    """
+    source = _template()
+    assert "const COLUMNS = [" in source
+    columns = source[source.index("const COLUMNS = ["):]
+    columns = columns[:columns.index("];")]
+    for key in ("spend", "sales", "roas", "acos", "clicks", "orders", "targets", "daily_budget"):
+        assert f'key: "{key}"' in columns, f"{key} is not sortable"
+
+    assert "function compareRows(" in source
+    body = source[source.index("function compareRows("):][:700]
+    assert "xNull" in body and "return 1" in body, "nulls are not forced to the end"
+
+    # One sort function shared by mouse and keyboard, and focus restored after the thead rebuild.
+    assert "function applySort(" in source
+    apply_body = source[source.index("function applySort("):][:800]
+    assert ".focus()" in apply_body
+    assert '$("table-area").addEventListener("keydown"' in source
+    assert source.count("dir: -sort.dir") == 1, (
+        "the sort toggle is written more than once, so mouse and keyboard paths can drift"
+    )
+
+
+def test_ad_groups_sort_within_their_parent_campaign():
+    """A child row floating away from the campaign it belongs to would be meaningless."""
+    source = _template()
+    # Up to the NEXT function, not to the first `innerHTML` — that appears in the early-return
+    # empty-state branch and would cut the extract off before the row loop.
+    start = source.index("function renderTable(")
+    body = source[start:source.index("function applySort(", start)]
+
+    assert "groups.slice().sort(" in body, "ad groups are not sorted"
+    # The sort happens INSIDE the per-campaign loop, so it cannot reorder across parents.
+    assert body.index("groups.slice().sort(") > body.index("list.forEach("), (
+        "ad groups are sorted outside the campaign loop, so a child could float away from its parent"
+    )
+
+
+def test_ticking_a_campaign_ticks_its_ad_groups_even_when_not_expanded():
+    """Asked for: "on ticking say MF_SP_keywords all the ad groups under it should be ticked as well".
+
+    **The ad groups may not be loaded yet**, because the campaign has never been expanded — so they
+    are fetched before ticking. Without that, "select this campaign" would select the campaign and
+    none of its ad groups, and the scope note would claim a selection the rule does not have.
+    """
+    source = _template()
+    handler = source[source.index('$("table-area").addEventListener("change"'):]
+    handler = handler[:handler.index('$("table-area").addEventListener("click"')]
+    assert "fetchAdGroups(" in handler, (
+        "ticking a campaign does not load its ad groups, so an unexpanded campaign selects none"
+    )
+    assert "selectedAdGroups.add" in handler and "selectedAdGroups.delete" in handler, (
+        "the cascade does not work in both directions"
+    )
+
+
+def test_a_saved_rule_fills_the_bar_and_does_not_run_anything():
+    """Asked for: "save a rule so next time I can just select it, select the campaigns and press run".
+
+    **Loading a rule must not preview or apply.** A saved rule is a shortcut to the same two-click
+    path, not a bypass of it — otherwise picking a name from a list becomes the click that moves
+    bids.
+    """
+    source = _template()
+    assert "function loadRule(" in source
+    body = source[source.index("function loadRule("):]
+    body = body[:body.index("async function saveRule(")]
+    for forbidden in ("runPreview(", "applyPlan(", "/ads/apply"):
+        assert forbidden not in body, (
+            f"loading a saved rule reaches {forbidden} — picking a name would move bids"
+        )
+    # It REPLACES the conditions rather than merging: leftovers would run something never built.
+    assert "conditions = (rule.conditions" in body
+    # And it clears any plan on screen, which belonged to the previous rule.
+    assert "plan = null" in body
+
+    assert "function renderSaved(" in source
+    assert 'id="save-rule-btn"' in source
+    assert "data-load-rule=" in source
+
+
 def test_the_table_scrolls_inside_a_wrapper_rather_than_moving_the_page():
     """The defect /qa found on the Portfolio tab: 744px of sideways document scroll at 350px."""
     source = _template()

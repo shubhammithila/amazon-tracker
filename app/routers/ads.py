@@ -116,10 +116,17 @@ async def ads_dashboard(
     start: str | None = None,
     end: str | None = None,
     campaign_id: str | None = None,
+    include_paused: bool = False,
     db: AsyncSession = Depends(get_db),
     grant=Depends(require_area(permissions.ADS)),
 ):
     """The campaign list with per-campaign performance for one window. Reads stored rows only.
+
+    **Paused campaigns are hidden by DEFAULT** (`include_paused=false`). Measured on the live
+    account: all 11 paused campaigns carry Rs 0 of spend, so hiding them cannot conceal money, and a
+    screen whose purpose is editing bids should not lead with rows nothing can be bid on. It stays a
+    parameter rather than a hard rule because a campaign paused today may have spent earlier in the
+    window.
 
     **An uncached window returns EMPTY rather than fetching**, with `cached: false` so the screen can
     offer the button. A GET that started a 6-minute report would hold the connection open, and a
@@ -142,7 +149,7 @@ async def ads_dashboard(
         )
         rows = await repository.attach_names(db, rows)
 
-    campaigns = await repository.load_campaigns(db)
+    campaigns = await repository.load_campaigns(db, include_paused=include_paused)
 
     # Roll the report rows up per campaign. Summed from the SAME rows the table shows, never a
     # second query — the Orders tab's "86 orders beside 87 lines" was exactly that mistake.
@@ -185,6 +192,7 @@ async def ads_dashboard(
         "preset_days": list(PRESET_DAYS),
         "max_window_days": MAX_WINDOW_DAYS,
         "configured": settings.ads_configured,
+        "include_paused": include_paused,
         "campaigns": campaigns,
         "rows": rows if campaign_id else [],
         "totals": {
@@ -209,11 +217,32 @@ async def ads_dashboard(
 @router.get("/ad-groups")
 async def ad_groups(
     campaign_id: str,
+    days: int | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    include_paused: bool = False,
     db: AsyncSession = Depends(get_db),
     grant=Depends(require_area(permissions.ADS)),
 ):
-    """Ad groups for one campaign — the middle level of the hierarchy."""
-    return {"campaign_id": campaign_id, "ad_groups": await repository.load_ad_groups(db, campaign_id)}
+    """Ad groups for one campaign, WITH their performance for the window.
+
+    The numbers are rolled up from the target rows rather than stored, so an ad group's spend is by
+    definition the sum of the keywords and targets beneath it. Two independent figures sitting one
+    above the other would visibly fail to add up — the defect class the Orders tab hit when it
+    reported 86 orders beside 87 lines.
+    """
+    try:
+        window = _window(start, end, days)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    return {
+        "campaign_id": campaign_id,
+        "window": list(window),
+        "ad_groups": await repository.load_ad_groups(
+            db, campaign_id, window=window, include_paused=include_paused,
+        ),
+    }
 
 
 @router.get("/targets")

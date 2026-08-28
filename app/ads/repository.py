@@ -92,17 +92,30 @@ async def save_entities(db: AsyncSession, rows: list[dict]) -> int:
     return written
 
 
-async def load_campaigns(db: AsyncSession) -> list[dict]:
-    """Every cached campaign, with its ad group count. 24 on this account, so no paging needed."""
-    rows = (await db.execute(
-        select(AdsEntity).where(AdsEntity.entity_type == "campaign").order_by(AdsEntity.name)
-    )).scalars().all()
+async def load_campaigns(db: AsyncSession, *, include_paused: bool = True) -> list[dict]:
+    """Every cached campaign, with its ad group count. 24 on this account, so no paging needed.
 
-    counts = dict((await db.execute(
+    `include_paused=False` returns ENABLED only. **Verified on the live account: all 11 paused
+    campaigns carry exactly Rs 0 of spend**, so hiding them cannot conceal money — which is why this
+    is safe as the default view. It stays a filter rather than a hard exclusion because a campaign
+    paused *today* may have spent earlier in the window, and that spend must remain findable.
+
+    The ad group count is the ENABLED count when paused are hidden, so the number beside a campaign
+    matches what expanding it will show. A count of 12 that opens to 3 rows reads as a bug.
+    """
+    query = select(AdsEntity).where(AdsEntity.entity_type == "campaign")
+    if not include_paused:
+        query = query.where(AdsEntity.state == "ENABLED")
+    rows = (await db.execute(query.order_by(AdsEntity.name))).scalars().all()
+
+    count_query = (
         select(AdsEntity.campaign_id, func.count())
         .where(AdsEntity.entity_type == "ad_group")
         .group_by(AdsEntity.campaign_id)
-    )).all())
+    )
+    if not include_paused:
+        count_query = count_query.where(AdsEntity.state == "ENABLED")
+    counts = dict((await db.execute(count_query)).all())
 
     return [
         {
@@ -116,22 +129,84 @@ async def load_campaigns(db: AsyncSession) -> list[dict]:
     ]
 
 
-async def load_ad_groups(db: AsyncSession, campaign_id: str | None = None) -> list[dict]:
-    """Cached ad groups, optionally for one campaign."""
+async def load_ad_groups(
+    db: AsyncSession,
+    campaign_id: str | None = None,
+    *,
+    window: tuple[str, str] | None = None,
+    include_paused: bool = True,
+) -> list[dict]:
+    """Cached ad groups, optionally for one campaign, optionally with their performance.
+
+    **`window` rolls spend and sales up from the target rows rather than storing them.** An ad
+    group's spend is by definition the sum of its keywords and targets, so a stored figure could
+    disagree with the rows shown directly beneath it — the same reason the Portfolio tab computes a
+    parent as the sum of its sizes and the Orders tab's "86 orders beside 87 lines" was a bug.
+
+    Two queries regardless of how many ad groups there are: one for the entities, one for the
+    rollup. 619 ad groups carry rows in a 7-day window, so a per-row query would be 619 round trips.
+    """
     query = select(AdsEntity).where(AdsEntity.entity_type == "ad_group")
     if campaign_id:
         query = query.where(AdsEntity.campaign_id == str(campaign_id))
+    if not include_paused:
+        # ENABLED only. Verified on the live account: no paused ad group carries any spend, so this
+        # cannot hide money — but it is a filter rather than a permanent exclusion, because a
+        # paused-today group may have spent earlier in the window.
+        query = query.where(AdsEntity.state == "ENABLED")
     rows = (await db.execute(query.order_by(AdsEntity.name))).scalars().all()
-    return [
-        {
+
+    totals: dict[str, dict] = {}
+    if window:
+        grouped = (await db.execute(
+            select(
+                AdsPerformance.ad_group_id,
+                func.count().label("targets"),
+                func.sum(AdsPerformance.spend).label("spend"),
+                func.sum(AdsPerformance.sales).label("sales"),
+                func.sum(AdsPerformance.clicks).label("clicks"),
+                func.sum(AdsPerformance.impressions).label("impressions"),
+                func.sum(AdsPerformance.orders).label("orders"),
+            )
+            .where(
+                AdsPerformance.window_start == window[0],
+                AdsPerformance.window_end == window[1],
+            )
+            .group_by(AdsPerformance.ad_group_id)
+        )).all()
+        for row in grouped:
+            totals[str(row[0] or "")] = {
+                "targets": int(row[1] or 0),
+                "spend": round(float(row[2] or 0), 2),
+                "sales": round(float(row[3] or 0), 2),
+                "clicks": int(row[4] or 0),
+                "impressions": int(row[5] or 0),
+                "orders": int(row[6] or 0),
+            }
+
+    out = []
+    for r in rows:
+        figures = totals.get(r.entity_id) or {}
+        spend = figures.get("spend", 0.0)
+        sales = figures.get("sales", 0.0)
+        out.append({
             "ad_group_id": r.entity_id,
             "campaign_id": r.campaign_id,
             "name": r.name,
             "state": r.state,
             "default_bid": _f(r.default_bid),
-        }
-        for r in rows
-    ]
+            "targets": figures.get("targets", 0),
+            "spend": spend,
+            "sales": sales,
+            "clicks": figures.get("clicks", 0),
+            "impressions": figures.get("impressions", 0),
+            "orders": figures.get("orders", 0),
+            # None, not 0 — an ad group with no spend has no ROAS, and 0 would sort it beside the
+            # genuinely terrible ones.
+            "roas": (sales / spend) if spend else None,
+            "acos": (spend / sales) if sales else None,
+        })
+    return out
 
 
 # ─── Performance ─────────────────────────────────────────────────────────────

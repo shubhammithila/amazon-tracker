@@ -110,6 +110,14 @@ thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;fon
   border-bottom:2px solid var(--border-strong)}
 tbody td{padding:7px 10px;font-size:13px;border-bottom:1px solid var(--border);white-space:nowrap}
 th.num,td.num{text-align:right}
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:var(--text)}
+th.sorted{color:var(--accent)}
+/* A tabbable element with no focus ring is in the tab order and invisible while you are on it.
+   theme.css rings inputs and buttons; a `th` matches neither selector. `:focus-visible` rather
+   than `:focus`, or every mouse click on a header leaves an outline behind. */
+th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.arrow{font-size:9px;margin-left:3px}
 tbody tr.parent{cursor:pointer}
 tbody tr.parent:hover td{background:var(--accent-soft)}
 tr.child td{background:var(--surface2);font-size:12.5px;color:var(--text-muted)}
@@ -176,6 +184,12 @@ tr.child td:first-child{padding-left:30px}
   <div class="section-title">Bid rule</div>
   <div class="section-sub">Conditions are combined with AND. Preview shows every change before
     anything is sent to Amazon — <strong>nothing is applied until you press Apply</strong>.</div>
+
+  <!-- Saved rules: pick one, select campaigns, press Preview. Loading a rule REPLACES the
+       conditions rather than merging, and it does not run anything on its own — the two-click
+       Preview -> Apply path is the same for a saved rule as for a hand-built one. -->
+  <div class="controls" id="saved-bar" style="margin-bottom:8px"></div>
+
   <div id="conditions"></div>
   <div class="controls" style="margin-bottom:0">
     <button class="btn-outline" id="add-condition">+ condition</button>
@@ -193,6 +207,7 @@ tr.child td:first-child{padding-left:30px}
     <input type="number" id="amount" value="10" step="0.5" style="width:90px"/>
     <span class="dim" id="amount-unit">%</span>
     <button class="btn" id="preview-btn">Preview changes</button>
+    <button class="btn-outline" id="save-rule-btn">💾 Save this rule</button>
   </div>
 </div>
 
@@ -204,6 +219,9 @@ tr.child td:first-child{padding-left:30px}
     <span class="count-chip" id="selection-count">nothing selected</span>
     <button class="btn-outline" id="select-all">Select all</button>
     <button class="btn-outline" id="select-none">Clear</button>
+    <label class="dim" style="font-size:12.5px;display:flex;align-items:center;gap:5px;cursor:pointer">
+      <input type="checkbox" id="show-paused"/> show paused
+    </label>
   </div>
   <div id="table-area"></div>
 </div>
@@ -220,6 +238,17 @@ let selectedAdGroups = new Set();  // ad group ids, when drilling into one campa
 let plan = null;                   // the previewed plan; null until Preview runs
 let approved = new Set();          // entity ids still ticked in the preview
 let polling = null;
+/* Paused campaigns and ad groups are HIDDEN by default. Measured on the live account: all 11
+   paused campaigns and all 4 paused ad groups with rows carry exactly Rs 0 of spend, so hiding
+   them cannot conceal money — and a screen whose purpose is editing bids should not lead with
+   rows nothing can be bid on. A toggle rather than a permanent exclusion, because a campaign
+   paused TODAY may have spent earlier in the window and that spend must stay findable. */
+let showPaused = remembered("showPaused", false);
+/* Click-to-sort, held for the session so applying a rule does not throw the owner back to the
+   top of the list. Descending by spend first: "where is the money going" is why the tab is open. */
+let sort = remembered("sort", {key: "spend", dir: -1});
+//: The saved rule currently in the bar, so Save offers to replace it by name.
+let loadedRule = null;
 
 function remembered(key, fallback){
   try {
@@ -262,10 +291,16 @@ function roas(v){
 }
 
 /* ── Load ──────────────────────────────────────────────────────────────────── */
+function windowQuery(){
+  const w = data.window && data.window[0] ? data.window : remembered("window", null);
+  const base = w ? `start=${encodeURIComponent(w[0])}&end=${encodeURIComponent(w[1])}` : "days=7";
+  return `${base}&include_paused=${showPaused ? "true" : "false"}`;
+}
+
 async function load(){
   const w = remembered("window", null);
-  const query = w ? `?start=${encodeURIComponent(w[0])}&end=${encodeURIComponent(w[1])}` : "?days=7";
-  const response = await fetch("/ads" + query);
+  const base = w ? `start=${encodeURIComponent(w[0])}&end=${encodeURIComponent(w[1])}` : "days=7";
+  const response = await fetch(`/ads?${base}&include_paused=${showPaused ? "true" : "false"}`);
   const body = await response.json();
   if(!response.ok){
     $("messages").innerHTML = `<div class="banner error">${esc(body.error || "Could not load.")}</div>`;
@@ -273,6 +308,10 @@ async function load(){
   }
   data = body;
   remember("window", data.window);
+  /* Expanded ad groups are re-fetched, not reused: the window or the paused filter may have
+     changed, and rendering last window's numbers under this window's campaign is the kind of
+     mismatch nobody would spot. */
+  adGroupCache = {};
   render();
   if((data.refresh || {}).running) startPolling();
 }
@@ -282,9 +321,12 @@ function render(){
   renderWindow();
   renderKpis();
   renderConditions();
+  renderSaved();
   renderTable();
   renderSelection();
   renderRefreshNote();
+  const box = $("show-paused");
+  if(box) box.checked = showPaused;
 }
 
 function renderBanners(){
@@ -398,17 +440,136 @@ function unitFor(field){
   return "";
 }
 
+/* ── Saved rules ──────────────────────────────────────────────────────────────
+   Asked for as "save a rule so next time I can just select it, select the campaigns and just
+   press run". Loading one fills the rule bar; it deliberately does NOT preview or apply on its
+   own, because a saved rule is a shortcut to the same two-click path, not a bypass of it. */
+function renderSaved(){
+  const rules = data.rules || [];
+  if(!rules.length){
+    $("saved-bar").innerHTML = `<span class="dim" style="font-size:12px">No saved rules yet —
+      build one below and press <strong>Save this rule</strong>.</span>`;
+    return;
+  }
+  $("saved-bar").innerHTML = `<span class="win-label">Saved</span>` + rules.map(r =>
+    `<button class="win-btn" data-load-rule="${esc(r.name)}"
+       title="${esc(ruleWords(r))}">${esc(r.name)}</button>`
+  ).join("") + `<button class="fdrop" id="delete-rule" title="delete the loaded rule">×</button>`;
+}
+
+/* The rule in words, for the button's tooltip — so picking a saved rule does not require
+   remembering what the name meant. */
+function ruleWords(rule){
+  const fields = data.fields || {}, ops = data.operators || {};
+  const parts = (rule.conditions || []).map(c =>
+    `${(fields[c.field] || {}).label || c.field} ${ops[c.op] || c.op} ${c.value}`);
+  const verb = {
+    decrease_pct: `decrease ${rule.amount}%`, increase_pct: `increase ${rule.amount}%`,
+    decrease_abs: `decrease by ₹${rule.amount}`, increase_abs: `increase by ₹${rule.amount}`,
+    set: `set to ₹${rule.amount}`,
+  }[rule.action] || rule.action;
+  return `${parts.join(", ")} → bid ${verb}`;
+}
+
+function loadRule(name){
+  const rule = (data.rules || []).find(r => r.name === name);
+  if(!rule) return;
+  // REPLACES the conditions rather than merging: a loaded rule that inherited leftover conditions
+  // from the previous one would run something the owner never built.
+  conditions = (rule.conditions || []).map(c => ({...c}));
+  remember("conditions", conditions);
+  if(rule.action) $("action").value = rule.action;
+  if(rule.amount !== null && rule.amount !== undefined) $("amount").value = rule.amount;
+  $("amount-unit").textContent = String(rule.action || "").endsWith("_pct") ? "%" : "₹";
+  loadedRule = name;
+  renderConditions();
+  renderSaved();
+  // The plan on screen belongs to the PREVIOUS rule, so it is cleared — leaving it would invite
+  // pressing Apply against a rule that is no longer the one displayed.
+  plan = null;
+  $("preview-area").innerHTML = `<div class="card"><div class="banner info">
+    Loaded <strong>${esc(name)}</strong> — ${esc(ruleWords(rule))}.
+    Select campaigns if you want to narrow it, then press <strong>Preview changes</strong>.
+  </div></div>`;
+}
+
+async function saveRule(){
+  const name = (window.prompt("Name this rule (saving again with the same name replaces it):",
+    loadedRule || "") || "").trim();
+  if(!name) return;
+  const response = await fetch("/ads/rules", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name, conditions, action: $("action").value,
+                          amount: Number($("amount").value), window_days: 7}),
+  });
+  const body = await response.json();
+  if(!response.ok){
+    $("preview-area").innerHTML = `<div class="card"><div class="banner error">${
+      esc(body.error || "Could not save the rule.")}</div></div>`;
+    return;
+  }
+  loadedRule = name;
+  await load();
+}
+
 /* ── The campaign table ────────────────────────────────────────────────────── */
+/* The sortable columns, driven by one table so a header and its sort key cannot disagree. */
+const COLUMNS = [
+  {key: null,       label: ""},
+  {key: "name",     label: "Campaign", text: true},
+  {key: "spend",    label: "Spend",    num: true},
+  {key: "sales",    label: "Sales",    num: true},
+  {key: "roas",     label: "ROAS",     num: true},
+  {key: "acos",     label: "ACOS",     num: true},
+  {key: "clicks",   label: "Clicks",   num: true},
+  {key: "orders",   label: "Orders",   num: true},
+  {key: "targets",  label: "Targets",  num: true},
+  {key: "daily_budget", label: "Budget", num: true},
+];
+
+/* **Nulls sort LAST in both directions.** "No data" is not a small number: a campaign with no
+   ROAS must not head the ascending list as though it were the worst performer, nor the descending
+   one as though it were the best. Same rule the Portfolio tab's sort follows. */
+function compareRows(a, b, key, dir){
+  const x = a[key], y = b[key];
+  const xNull = x === null || x === undefined || x === "";
+  const yNull = y === null || y === undefined || y === "";
+  if(xNull && yNull) return 0;
+  if(xNull) return 1;
+  if(yNull) return -1;
+  if(typeof x === "string" || typeof y === "string"){
+    return String(x).localeCompare(String(y)) * dir;
+  }
+  return (x - y) * dir;
+}
+
+function headerHtml(){
+  return COLUMNS.map(col => {
+    if(!col.key) return '<th scope="col"></th>';
+    const on = sort.key === col.key;
+    const aria = on ? (sort.dir < 0 ? "descending" : "ascending") : "none";
+    return `<th scope="col" class="sortable${col.num ? " num" : ""}${on ? " sorted" : ""}"
+      data-sort="${col.key}" tabindex="0" role="button" aria-sort="${aria}"
+      aria-label="Sort by ${esc(col.label)}">${esc(col.label)}${
+      on ? `<span class="arrow" aria-hidden="true">${sort.dir < 0 ? "▼" : "▲"}</span>` : ""}</th>`;
+  }).join("");
+}
+
 function renderTable(){
   const query = ($("search").value || "").trim().toLowerCase();
-  const list = (data.campaigns || []).filter(c =>
-    !query || (c.name || "").toLowerCase().includes(query));
+  const list = (data.campaigns || [])
+    .filter(c => !query || (c.name || "").toLowerCase().includes(query))
+    .slice()
+    .sort((a, b) => compareRows(a, b, sort.key, sort.dir));
 
   if(!list.length){
     $("table-area").innerHTML = `<div class="empty-note">${
       (data.campaigns || []).length
         ? `No campaigns match &ldquo;${esc(query)}&rdquo;.`
-        : "No campaigns cached yet. Press Refresh from Amazon."
+        : (showPaused
+            ? "No campaigns cached yet. Press Refresh from Amazon."
+            : "No enabled campaigns cached yet. Press Refresh from Amazon, or tick "
+              + "&ldquo;show paused&rdquo; if you are looking for a paused one.")
     }</div>`;
     return;
   }
@@ -437,18 +598,28 @@ function renderTable(){
       if(!groups){
         html += `<tr class="child"><td></td><td colspan="9" class="dim">Loading ad groups…</td></tr>`;
       } else if(!groups.length){
-        html += `<tr class="child"><td></td><td colspan="9" class="dim">No ad groups cached for this campaign.</td></tr>`;
+        html += `<tr class="child"><td></td><td colspan="9" class="dim">${
+          showPaused ? "No ad groups cached for this campaign."
+                     : "No enabled ad groups in this campaign."
+        }</td></tr>`;
       } else {
-        groups.forEach(g => {
+        /* Ad groups sort by the SAME key as the campaigns, but always WITHIN their parent — a
+           child row floating away from the campaign it belongs to would be meaningless. */
+        groups.slice().sort((a, b) => compareRows(a, b, sort.key, sort.dir)).forEach(g => {
           const gTicked = selectedAdGroups.has(g.ad_group_id);
           html += `<tr class="child">
             <td><input type="checkbox" data-gtick="${esc(g.ad_group_id)}"${gTicked ? " checked" : ""}
                   aria-label="Select ad group ${esc(g.name)}"/></td>
-            <td colspan="7">${esc(g.name)}
-              ${g.state !== "ENABLED" ? `<span class="tag paused">${esc(g.state)}</span>` : ""}
-              <span class="mono">${esc(g.ad_group_id)}</span></td>
-            <td colspan="2" class="num dim">default bid ${
-              g.default_bid == null ? "—" : money(g.default_bid)}</td>
+            <td>${esc(g.name)}
+              ${g.state !== "ENABLED" ? `<span class="tag paused">${esc(g.state)}</span>` : ""}</td>
+            <td class="num">${money(g.spend)}</td>
+            <td class="num">${money(g.sales)}</td>
+            <td class="num">${roas(g.roas)}</td>
+            <td class="num">${ratio(g.acos, 0)}</td>
+            <td class="num">${n(g.clicks).toLocaleString("en-IN")}</td>
+            <td class="num">${n(g.orders)}</td>
+            <td class="num">${n(g.targets)}</td>
+            <td class="num dim">bid ${g.default_bid == null ? "—" : money(g.default_bid)}</td>
           </tr>`;
         });
       }
@@ -456,15 +627,24 @@ function renderTable(){
   });
 
   $("table-area").innerHTML = `<div class="table-wrap"><table>
-    <thead><tr>
-      <th scope="col"></th><th scope="col">Campaign</th>
-      <th scope="col" class="num">Spend</th><th scope="col" class="num">Sales</th>
-      <th scope="col" class="num">ROAS</th><th scope="col" class="num">ACOS</th>
-      <th scope="col" class="num">Clicks</th><th scope="col" class="num">Orders</th>
-      <th scope="col" class="num">Targets</th><th scope="col" class="num">Budget</th>
-    </tr></thead>
+    <thead><tr>${headerHtml()}</tr></thead>
     <tbody>${html}</tbody>
   </table></div>`;
+}
+
+/* ONE sort function, shared by the click and the keydown handler — two copies is how a keyboard
+   user ends up with different ordering from a mouse user. */
+function applySort(key){
+  if(!key) return;
+  // Same column flips; a new column starts descending, because "the biggest" is what someone
+  // clicking Spend or ACOS almost always means.
+  sort = (sort.key === key) ? {key, dir: -sort.dir} : {key, dir: -1};
+  remember("sort", sort);
+  renderTable();
+  // renderTable() rebuilds the thead, so the focused header is destroyed. Without restoring focus
+  // every keyboard sort throws the caret back to the top of the document.
+  const again = document.querySelector(`[data-sort="${CSS.escape(key)}"]`);
+  if(again) again.focus();
 }
 
 /* **The selected count is always visible.** "Select all" here can mean thousands of rows, and a
@@ -775,11 +955,32 @@ function startPolling(){
    Delegated listeners rather than inline handlers: keyword text comes from Amazon and campaign
    names from the owner, and building an onclick out of either is an injection waiting to happen.
    Same rule the Orders and Portfolio tabs follow. */
+async function fetchAdGroups(campaignId){
+  if(adGroupCache[campaignId]) return adGroupCache[campaignId];
+  const body = await (await fetch(
+    `/ads/ad-groups?campaign_id=${encodeURIComponent(campaignId)}&${windowQuery()}`)).json();
+  adGroupCache[campaignId] = body.ad_groups || [];
+  return adGroupCache[campaignId];
+}
+
 $("table-area").addEventListener("change", async e => {
   const tick = e.target.closest("[data-tick]");
   if(tick){
     const id = tick.dataset.tick;
     if(tick.checked) selected.add(id); else selected.delete(id);
+
+    /* **Ticking a campaign ticks its ad groups too**, which is what the gesture means.
+       The ad groups may not be loaded yet — the campaign has never been expanded — so they are
+       FETCHED before ticking. Without that, "select this campaign" would select the campaign and
+       none of its ad groups, and the scope note would say "1 campaign" while the rule ran against
+       a scope the owner cannot see. Only ENABLED groups come back by default, so a paused ad group
+       is not silently swept into the selection. */
+    const groups = await fetchAdGroups(id);
+    groups.forEach(g => {
+      if(tick.checked) selectedAdGroups.add(g.ad_group_id);
+      else selectedAdGroups.delete(g.ad_group_id);
+    });
+    renderTable();
     renderSelection();
     return;
   }
@@ -793,6 +994,10 @@ $("table-area").addEventListener("change", async e => {
 
 $("table-area").addEventListener("click", async e => {
   if(e.target.closest("input")) return;   // a tick is handled by `change`
+
+  const header = e.target.closest("[data-sort]");
+  if(header){ applySort(header.dataset.sort); return; }
+
   const row = e.target.closest("tr.parent");
   if(!row) return;
   const id = row.dataset.campaign;
@@ -802,11 +1007,21 @@ $("table-area").addEventListener("click", async e => {
     openCampaigns.add(id);
     if(!adGroupCache[id]){
       renderTable();   // show "Loading ad groups…" immediately
-      const body = await (await fetch(`/ads/ad-groups?campaign_id=${encodeURIComponent(id)}`)).json();
-      adGroupCache[id] = body.ad_groups || [];
+      await fetchAdGroups(id);
     }
   }
   renderTable();
+});
+
+/* Enter and Space on a focused header, which is what `role="button"` promises. Space is
+   preventDefault'ed because its default action scrolls — otherwise sorting would also jump a
+   screenful away from the table. */
+$("table-area").addEventListener("keydown", e => {
+  if(e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+  const header = e.target.closest("[data-sort]");
+  if(!header) return;
+  e.preventDefault();
+  applySort(header.dataset.sort);
 });
 
 $("conditions").addEventListener("change", e => {
@@ -921,6 +1136,31 @@ $("window-bar").addEventListener("click", async e => {
 
 $("refresh-btn").addEventListener("click", startRefresh);
 $("search").addEventListener("input", renderTable);
+$("save-rule-btn").addEventListener("click", saveRule);
+
+$("saved-bar").addEventListener("click", async e => {
+  const load_ = e.target.closest("[data-load-rule]");
+  if(load_){ loadRule(load_.dataset.loadRule); return; }
+  if(e.target.closest("#delete-rule")){
+    if(!loadedRule){
+      $("preview-area").innerHTML = `<div class="card"><div class="banner warn">
+        Pick a saved rule first — the × deletes the one currently loaded.</div></div>`;
+      return;
+    }
+    await fetch(`/ads/rules/${encodeURIComponent(loadedRule)}`, {method: "DELETE"});
+    loadedRule = null;
+    load();
+  }
+});
+
+/* The paused toggle re-FETCHES rather than filtering client-side: the server decides which rows
+   exist, so a client-side filter would leave the campaign list and its ad-group counts disagreeing
+   about what is visible. */
+$("show-paused").addEventListener("change", e => {
+  showPaused = e.target.checked;
+  remember("showPaused", showPaused);
+  load();
+});
 
 $("select-all").addEventListener("click", () => {
   (data.campaigns || []).forEach(c => selected.add(c.campaign_id));
