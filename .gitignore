@@ -29,3 +29,4 @@ projection_data.json
 # would let a stale copy override the sheet on a fresh deploy.
 app/invoice/active_products.json
 .tmp-shots/
+adsrefresh.log
