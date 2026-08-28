@@ -1365,13 +1365,35 @@ to one advertising profile and the wrong one silently returns another account's 
 > space plus the comment text. `invalid_client` reads exactly like "this account has no advertising
 > access", and it was reported as that before being measured. The comment now sits on its own line.
 
-Three request-shape traps, each a real 400 whose message does not name the cause:
+Four request-shape traps, each a real 400:
 
 - **`groupBy` must be `["advertiser"]`.** Amazon's rejection helpfully lists the alternatives
   (`campaign`, `adGroup`, `campaignPlacement`) — all plausible, none of them per-product.
 - **`date` is not a legal column under `timeUnit: SUMMARY`.** The window travels as
   startDate/endDate.
 - **`Content-Type: application/vnd.createasyncreportrequest.v3+json`**, not `application/json`.
+- **One report covers at most 31 DAYS** (`ads.MAX_REPORT_DAYS`), so `fetch_acos` splits a longer
+  window into chunks and sums them — 7d and 30d stay one report, 60d is two, 90d is three.
+
+> **The 31-day cap broke the 60d and 90d buttons from the moment they shipped**, and the reason it
+> went unnoticed for a day is the reason worth keeping: **the economics API has no equivalent
+> limit** and answers 90 days happily, so a long refresh stored all 267 margin rows and failed on
+> ACOS alone. The isolation worked as designed, which is also what made the bug quiet. The two
+> window caps are therefore different numbers for different reasons —
+> `economics.MAX_WINDOW_DAYS = 90` because that is what the dashboard offers,
+> `ads.MAX_REPORT_DAYS = 31` because Amazon says so.
+>
+> **Chunking is exact for COST but slightly conservative for attributed SALES.** A click on 30 Jul
+> can be credited a sale up to 13 Aug (the column is `attributedSalesSameSku14d`); asked as one
+> report Amazon counts it, asked as three the boundary chunk cannot see it and the next chunk does
+> not own the click. So a chunked ACOS reads a little HIGH. Accepted deliberately: pessimistic is
+> the safe direction for a "do the ads pay for themselves" check, and the alternative — overlapping
+> the chunks by 14 days — would **double-count cost**, distorting the numerator, which is the
+> figure that reconciles against the economics feed to 0.2%. The 7d and 30d presets used for
+> decisions are single reports and unaffected.
+>
+> **One failed chunk fails the whole window.** Two chunks of spend against three of sales is not a
+> smaller ACOS, it is a wrong one, and it looks entirely plausible on screen.
 
 **The report is split by CAMPAIGN even though `groupBy` is `advertiser`.** Measured: 1,697 rows for
 213 `(asin, sku)` pairs, up to 13 rows for one pair. `ads.aggregate` collapses them before anything
