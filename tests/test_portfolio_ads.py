@@ -316,7 +316,12 @@ async def test_a_refused_request_surfaces_amazons_own_message(monkeypatch):
 
 
 async def test_progress_is_reported_while_the_report_generates(monkeypatch):
-    """Twelve minutes with a still bar reads as a hang, so the poll count drives it."""
+    """Twelve minutes with a still bar reads as a hang, so the poll count drives it.
+
+    The total is `POLL_MAX` for a SINGLE-report window (30 days here). A longer window is several
+    reports and the denominator scales with them — see
+    `test_the_progress_bar_spans_all_the_chunks_rather_than_restarting`.
+    """
     fake = _Ads(statuses=["PENDING", "PENDING", "COMPLETED"],
                 rows=[{"advertisedAsin": "B0AAA00001", "advertisedSku": "s", "cost": 1.0}])
     _patch(monkeypatch, fake)
@@ -328,3 +333,155 @@ async def test_progress_is_reported_while_the_report_generates(monkeypatch):
     )
     assert seen, "no progress was reported during a 12-minute wait"
     assert seen[-1][1] == ads.POLL_MAX
+
+
+# ─── Regression: Amazon caps ONE report at 31 days ────────────────────────────
+#
+# Found on PRODUCTION on 2026-08-28 by pressing Refresh on a 90-day window:
+#
+#   {"code":"400","detail":"startDate to endDate range (89 days)
+#                           must not exceed maximum range (31 days)"}
+#
+# The 60d and 90d buttons were broken from the moment they shipped. They were never exercised
+# end to end: the economics API has no such cap and answers 90 days happily, so the margins
+# loaded and only ACOS was missing — which is exactly the isolation the refresh was built for,
+# and also why nothing failed loudly enough to notice during development.
+
+
+def test_a_window_inside_the_cap_is_still_a_single_report():
+    """The 7d and 30d presets — the ones used for decisions — must not become multi-report.
+
+    Chunking is the fix for long windows, not a change to the common path. 31 days is the boundary
+    and must stay INCLUSIVE: Amazon's message says "must not exceed", so 31 is legal.
+    """
+    assert ads.split_window("2026-07-29", "2026-08-27") == [("2026-07-29", "2026-08-27")]
+    assert len(ads.split_window("2026-07-01", "2026-07-31")) == 1, "31 days is legal, not 2 reports"
+    assert len(ads.split_window("2026-08-01", "2026-08-01")) == 1, "a single day is one report"
+
+
+def test_a_long_window_is_split_into_contiguous_chunks_that_cover_it_exactly():
+    """**An off-by-one here silently drops or double-counts a day of ad spend.**
+
+    Neither is visible in the result: a total that is one day light still looks like a plausible
+    ACOS. So this asserts the three properties that make the sum correct rather than the chunk
+    boundaries themselves — no chunk over the cap, no gap, no overlap, and the covered days add up
+    to the requested span.
+    """
+    from datetime import date, timedelta
+
+    for start, end in [("2026-06-01", "2026-08-29"), ("2026-07-01", "2026-08-01"),
+                       ("2026-05-15", "2026-08-12")]:
+        chunks = ads.split_window(start, end)
+        span = (date.fromisoformat(end) - date.fromisoformat(start)).days + 1
+
+        covered = 0
+        for index, (chunk_start, chunk_end) in enumerate(chunks):
+            first, last = date.fromisoformat(chunk_start), date.fromisoformat(chunk_end)
+            length = (last - first).days + 1
+            assert length <= ads.MAX_REPORT_DAYS, f"{chunk_start}..{chunk_end} exceeds the cap"
+            assert first <= last, "a chunk runs backwards"
+            covered += length
+            if index:
+                previous_end = date.fromisoformat(chunks[index - 1][1])
+                assert first == previous_end + timedelta(days=1), (
+                    "chunks must be contiguous — a gap loses a day's spend, an overlap counts "
+                    "one twice, and both look plausible in the total"
+                )
+
+        assert covered == span, f"{start}..{end}: covered {covered} days of {span}"
+        assert chunks[0][0] == start and chunks[-1][1] == end, "the window edges moved"
+
+
+def test_ninety_days_is_three_reports_and_thirty_is_one():
+    """The two window presets that mattered, stated as the counts the fix exists to produce."""
+    assert len(ads.split_window("2026-06-01", "2026-08-29")) == 3
+    assert len(ads.split_window("2026-07-31", "2026-08-29")) == 1
+
+
+def test_a_reversed_window_is_refused_rather_than_returning_nothing():
+    """An empty chunk list would mean "no advertising", which is a different answer."""
+    with pytest.raises(ValueError):
+        ads.split_window("2026-08-27", "2026-07-29")
+
+
+async def test_a_ninety_day_window_runs_several_reports_and_sums_them(monkeypatch):
+    """The end-to-end fix: three reports, one aggregated result at one grain.
+
+    Costs SUM across the chunks — the same ASIN advertised in all three months is one row whose
+    cost is the total, not the last chunk's. `aggregate` is reused unchanged for this, so there is
+    one summing rule rather than a second one for merging.
+    """
+    row = [{"advertisedAsin": "B0AAA00001", "advertisedSku": "sku-1", "cost": 100.0,
+            "attributedSalesSameSku14d": 250.0, "purchasesSameSku14d": 2,
+            "clicks": 10, "impressions": 1000}]
+    fake = _Ads(statuses=["COMPLETED"], rows=row)
+    _patch(monkeypatch, fake)
+
+    out = await ads.fetch_acos("2026-06-01", "2026-08-29", sleep=_no_sleep)
+
+    assert len(fake.created) == 3, "a 90-day window must be fetched as three reports"
+    # Every request Amazon received is inside the cap — the actual production failure.
+    from datetime import date
+    for body in fake.created:
+        span = (date.fromisoformat(body["endDate"]) - date.fromisoformat(body["startDate"])).days + 1
+        assert span <= ads.MAX_REPORT_DAYS, f"a {span}-day report would be refused by Amazon"
+
+    assert len(out) == 1, "the three chunks were not collapsed to one row per (asin, sku)"
+    assert out[0]["cost"] == 300.0, "chunk costs must SUM, not overwrite"
+    assert out[0]["attributed_sales"] == 750.0
+    assert out[0]["clicks"] == 30 and out[0]["impressions"] == 3000
+
+
+async def test_the_progress_bar_spans_all_the_chunks_rather_than_restarting(monkeypatch):
+    """Three reports must read 0->100% once, not snap back to zero twice.
+
+    A bar that restarts reads as a fault, which is the same reasoning as the orders refresh's
+    monotonic percentage.
+    """
+    fake = _Ads(statuses=["PENDING", "COMPLETED"],
+                rows=[{"advertisedAsin": "B0AAA00001", "advertisedSku": "s", "cost": 1.0}])
+    _patch(monkeypatch, fake)
+
+    seen = []
+    await ads.fetch_acos(
+        "2026-06-01", "2026-08-29", sleep=_no_sleep,
+        on_progress=lambda done, total: seen.append((done, total)),
+    )
+    assert seen, "no progress during three consecutive reports"
+    assert seen[-1][1] == ads.POLL_MAX * 3, "the denominator does not account for the chunks"
+    fractions = [done / total for done, total in seen]
+    assert fractions == sorted(fractions), "the bar went backwards between chunks"
+    assert fractions[-1] > fractions[0]
+
+
+async def test_one_failed_chunk_fails_the_whole_window(monkeypatch):
+    """**A partial sum is not a smaller ACOS, it is a wrong one — and it looks plausible.**
+
+    Two chunks of spend against three chunks of sales would understate ACOS by a third, which is
+    the direction that talks someone into more advertising. So a failure propagates rather than
+    returning what succeeded.
+    """
+    class _FailsOnTheSecond(_Ads):
+        def __init__(self):
+            super().__init__(statuses=["COMPLETED"],
+                             rows=[{"advertisedAsin": "B0AAA00001", "advertisedSku": "s",
+                                    "cost": 5.0}])
+
+    fake = _FailsOnTheSecond()
+    _patch(monkeypatch, fake)
+
+    original = ads._one_report
+    calls = {"n": 0}
+
+    async def flaky(client, start, end, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise ads.AdsError("Amazon refused the ad report request: chunk two broke")
+        return await original(client, start, end, **kwargs)
+
+    monkeypatch.setattr(ads, "_one_report", flaky)
+
+    with pytest.raises(ads.AdsError) as exc:
+        await ads.fetch_acos("2026-06-01", "2026-08-29", sleep=_no_sleep)
+    assert "chunk two broke" in str(exc.value)
+    assert calls["n"] == 2, "it kept going after a failed chunk"

@@ -79,7 +79,9 @@ PHASE_LABELS = {
     "econ_poll": "Amazon is preparing the economics — about a minute…",
     "econ_download": "Downloading the economics…",
     "econ_store": "Storing the margins…",
-    "ads_report": "Amazon is generating the advertising report — usually 15-25 minutes…",
+    # Windows over 31 days are several reports (Amazon's cap), so the wording covers both: a 30d
+    # refresh is one report, 90d is three run in sequence and the wait multiplies.
+    "ads_report": "Amazon is generating the advertising report — 15-25 minutes per 31 days…",
     "ads_store": "Storing the ad figures…",
 }
 

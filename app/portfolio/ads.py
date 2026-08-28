@@ -21,14 +21,17 @@ from it. Measured on the live account, 27 Jul – 26 Aug:
 Rs 1 of advertising returns Rs 1.11 of attributed sales — close to break-even before product
 costs, and invisible in TACOS. That gap is the reason for the whole module.
 
-Three request-shape traps, each of which produced a real 400 and none of which the error message
-names directly:
+Four request-shape traps, each of which produced a real 400:
 
 * **`groupBy` must be `["advertiser"]`.** `advertiser` is not documented as obvious; the API's own
   rejection lists the alternatives (`campaign`, `adGroup`, `campaignPlacement`).
 * **`date` is not a legal column under `timeUnit: SUMMARY`.** The window comes from
   startDate/endDate instead. Including it fails the whole request.
 * **`Content-Type: application/vnd.createasyncreportrequest.v3+json`**, not `application/json`.
+* **One report covers at most 31 DAYS**, so `fetch_acos` splits a longer window into several
+  reports and sums them — see `MAX_REPORT_DAYS`. This one reached production, and the reason it got
+  that far is worth keeping: the economics API has no equivalent limit, so a 90-day refresh stored
+  every margin and failed on ACOS alone.
 
 **The report is split by CAMPAIGN even though nothing asked it to be.** Measured: 1,697 rows for
 213 `(asin, sku)` pairs, up to 13 rows for one pair. This module aggregates to one row per pair
@@ -45,6 +48,7 @@ import time
 import urllib.parse
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 import httpx
 
@@ -75,6 +79,18 @@ REPORT_COLUMNS = (
 
 #: Content type for creating a v3 report. Plain application/json is rejected.
 CREATE_CONTENT_TYPE = "application/vnd.createasyncreportrequest.v3+json"
+
+#: **Amazon caps ONE report at 31 days**, so a longer window is fetched as several reports and
+#: summed. Measured by having a 90-day request rejected on production:
+#:
+#:     {"code":"400","detail":"startDate to endDate range (89 days)
+#:                             must not exceed maximum range (31 days)"}
+#:
+#: The economics API has no such limit and happily answers 90 days, which is why the 60d and 90d
+#: buttons looked fine: the margins loaded and only ACOS was missing. Both halves of the window
+#: therefore need their own cap, and they are NOT the same number — `economics.MAX_WINDOW_DAYS`
+#: is 90 because that is what the dashboard offers, this is 31 because Amazon says so.
+MAX_REPORT_DAYS = 31
 
 #: Seconds between polls. Amazon's report generation is measured in MINUTES, so polling faster
 #: only wastes calls. Deliberately far slower than the economics poller for that reason.
@@ -215,6 +231,49 @@ def build_report_request(start: str, end: str) -> dict:
     }
 
 
+def split_window(start: str, end: str, *, max_days: int = MAX_REPORT_DAYS) -> list[tuple[str, str]]:
+    """Break a window into consecutive chunks of at most `max_days`, inclusive of both ends.
+
+    Amazon caps one report at 31 days, so 60- and 90-day windows are fetched as 2 and 3 reports
+    and summed. Pure and separately tested, because an off-by-one here either drops a day of spend
+    or double-counts one, and both are invisible in a total that still looks plausible.
+
+    Chunks are **contiguous and non-overlapping**: the next chunk starts the day after the previous
+    one ends. A one-day window returns one chunk of that single day.
+
+    > **Summing chunks is sound for COST but slightly conservative for attributed SALES**, and that
+    > is a real property of the 14-day attribution column rather than of this function. A click on
+    > 30 Jul can be credited a sale up to 13 Aug; asked as one 90-day report Amazon counts it,
+    > asked as three 31-day reports the chunk ending 31 Jul cannot see it and the chunk starting
+    > 1 Aug does not own the click. So a chunked ACOS can read a little HIGHER than a single-report
+    > ACOS (same numerator, marginally smaller denominator).
+    >
+    > Accepted deliberately, and it is the safe direction: ACOS is a "do the ads pay for
+    > themselves" check, and erring pessimistic cannot talk the owner into more spend. The
+    > alternative — overlapping the chunks by 14 days to catch those sales — would double-count
+    > cost in the overlap, which distorts the numerator, and the numerator is the number that
+    > reconciles against the economics feed to 0.2%. Losing a little attribution at 2 internal
+    > boundaries is a smaller error than inflating spend by 14 days out of every 31.
+    >
+    > The 7- and 30-day presets — the ones actually used for decisions — are single reports and
+    > are unaffected.
+    """
+    if max_days < 1:
+        raise ValueError("max_days must be at least 1")
+    first = date.fromisoformat(start)
+    last = date.fromisoformat(end)
+    if first > last:
+        raise ValueError(f"start {start} is after end {end}")
+
+    chunks: list[tuple[str, str]] = []
+    cursor = first
+    while cursor <= last:
+        stop = min(cursor + timedelta(days=max_days - 1), last)
+        chunks.append((cursor.isoformat(), stop.isoformat()))
+        cursor = stop + timedelta(days=1)
+    return chunks
+
+
 def aggregate(rows: list[dict]) -> list[dict]:
     """Collapse the raw report to ONE row per (asin, sku).
 
@@ -262,85 +321,135 @@ async def fetch_acos(
     sleep=asyncio.sleep,
     on_progress=None,
 ) -> list[dict]:
-    """Run one advertised-product report to completion. Returns aggregated per-SKU rows.
+    """Fetch ad cost and attributed sales for a window. Returns aggregated per-SKU rows.
 
-    Create, poll, download, aggregate. `sleep` is injectable so a test drives the whole sequence
-    without spending twenty minutes; `on_progress(done, total)` moves the bar during the long
-    poll.
+    **A window longer than 31 days becomes several reports, summed** — Amazon's cap, see
+    `MAX_REPORT_DAYS`. One chunk is the common case (the 7d and 30d presets); 60d is two and 90d
+    is three. `aggregate` sums by `(asin, sku)` and is therefore reused unchanged to merge the
+    chunks, so a multi-chunk result has exactly the same shape and grain as a single one.
 
     Raises `AdsNotConfigured` when there are no credentials — the caller is expected to treat
     that as "skip ACOS", not as a failure. Raises `AdsError` on a FAILURE status or a timeout,
     **never returning an empty list to mean failure**: the screen has to tell "nothing was
     advertised" apart from "we could not ask".
+
+    **A failed chunk fails the whole window** rather than returning a partial sum. Half a window's
+    spend against a full window's sales is not a smaller ACOS, it is a wrong one — and it would
+    look entirely plausible on screen.
     """
     settings = get_settings()
     if not settings.ads_configured:
         raise AdsNotConfigured()
 
+    chunks = split_window(start, end)
+    raw: list[dict] = []
+
     async with httpx.AsyncClient(timeout=settings.ads_timeout) as client:
-        token = await _access_token(client)
-        head = _headers(token)
+        for index, (chunk_start, chunk_end) in enumerate(chunks):
+            if len(chunks) > 1:
+                logger.info(
+                    "portfolio: ad report chunk %d/%d (%s..%s) — Amazon caps a report at %d days",
+                    index + 1, len(chunks), chunk_start, chunk_end, MAX_REPORT_DAYS,
+                )
 
-        create = await client.post(
-            settings.ads_endpoint + REPORT_PATH,
-            content=json.dumps(build_report_request(start, end)),
-            headers={**head, "Content-Type": CREATE_CONTENT_TYPE},
+            # The bar is shared across the chunks, so three reports still read 0->100% once
+            # rather than snapping back to zero twice.
+            def chunk_progress(done, total, _i=index):
+                if on_progress:
+                    on_progress(_i * total + done, total * len(chunks))
+
+            raw.extend(await _one_report(
+                client, chunk_start, chunk_end, sleep=sleep, on_progress=chunk_progress,
+            ))
+
+    rows = aggregate(raw)
+    logger.info(
+        "portfolio: %d ad report(s) for %s..%s -> %d raw row(s) aggregated to %d (asin, sku) pair(s)",
+        len(chunks), start, end, len(raw), len(rows),
+    )
+    return rows
+
+
+async def _one_report(
+    client: httpx.AsyncClient,
+    start: str,
+    end: str,
+    *,
+    sleep,
+    on_progress=None,
+) -> list[dict]:
+    """Create, poll and download ONE report. Returns its RAW rows, un-aggregated.
+
+    Raw rather than aggregated so `fetch_acos` can sum several chunks through the single
+    `aggregate` path — aggregating per chunk and then merging would be two summing rules for one
+    grain, which is how a total starts disagreeing with its rows.
+    """
+    settings = get_settings()
+    token = await _access_token(client)
+    head = _headers(token)
+
+    create = await client.post(
+        settings.ads_endpoint + REPORT_PATH,
+        content=json.dumps(build_report_request(start, end)),
+        headers={**head, "Content-Type": CREATE_CONTENT_TYPE},
+    )
+    if create.status_code >= 400:
+        # Amazon's validation messages here are unusually good — they name the allowed values,
+        # and the 31-day cap was discovered from one — so they are surfaced verbatim rather than
+        # replaced with a generic error.
+        raise AdsError(
+            f"Amazon refused the ad report request: {create.text[:300]}",
+            status=create.status_code,
         )
-        if create.status_code >= 400:
-            # Amazon's validation messages here are unusually good — they name the allowed
-            # values — so they are surfaced verbatim rather than replaced with a generic error.
-            raise AdsError(
-                f"Amazon refused the ad report request: {create.text[:300]}",
-                status=create.status_code,
-            )
-        report_id = (create.json() or {}).get("reportId")
-        if not report_id:
-            raise AdsError(f"Amazon accepted the report but returned no reportId: {create.text[:200]}")
-        logger.info("portfolio: ad report %s requested for %s..%s", report_id, start, end)
+    report_id = (create.json() or {}).get("reportId")
+    if not report_id:
+        raise AdsError(f"Amazon accepted the report but returned no reportId: {create.text[:200]}")
+    logger.info("portfolio: ad report %s requested for %s..%s", report_id, start, end)
 
-        url = None
-        for attempt in range(POLL_MAX):
-            await sleep(POLL_INTERVAL)
-            status = await client.get(
-                f"{settings.ads_endpoint}{REPORT_PATH}/{report_id}", headers=head
-            )
-            if status.status_code >= 400:
-                raise AdsError(
-                    f"Polling the ad report failed: {status.text[:200]}",
-                    status=status.status_code,
-                )
-            state = status.json() or {}
-            if on_progress:
-                on_progress(attempt + 1, POLL_MAX)
-            processing = state.get("status")
-            if processing not in _TERMINAL:
-                continue
-            if processing != "COMPLETED":
-                raise AdsError(
-                    f"Amazon could not produce the ad report ({processing})"
-                    + (f": {state.get('failureReason')}" if state.get("failureReason") else "")
-                )
-            url = state.get("url")
-            # COMPLETED with no url means the window matched no advertising at all.
-            if not url:
-                logger.info("portfolio: ad report %s completed with no data", report_id)
-                return []
-            break
-        else:
+    url = None
+    for attempt in range(POLL_MAX):
+        await sleep(POLL_INTERVAL)
+        status = await client.get(
+            f"{settings.ads_endpoint}{REPORT_PATH}/{report_id}", headers=head
+        )
+        if status.status_code >= 400:
             raise AdsError(
-                f"The ad report was still generating after "
-                f"{int(POLL_MAX * POLL_INTERVAL / 60)} minutes. It may finish later — press "
-                "Refresh to check again."
+                f"Polling the ad report failed: {status.text[:200]}",
+                status=status.status_code,
             )
+        state = status.json() or {}
+        if on_progress:
+            on_progress(attempt + 1, POLL_MAX)
+        processing = state.get("status")
+        if processing not in _TERMINAL:
+            continue
+        if processing != "COMPLETED":
+            raise AdsError(
+                f"Amazon could not produce the ad report ({processing})"
+                + (f": {state.get('failureReason')}" if state.get("failureReason") else "")
+            )
+        url = state.get("url")
+        # COMPLETED with no url means this window matched no advertising at all. An empty list
+        # is correct here and is NOT how failure is reported — every failure raises.
+        if not url:
+            logger.info("portfolio: ad report %s completed with no data", report_id)
+            return []
+        break
+    else:
+        raise AdsError(
+            f"The ad report was still generating after "
+            f"{int(POLL_MAX * POLL_INTERVAL / 60)} minutes. It may finish later — press "
+            "Refresh to check again."
+        )
 
-        # The download url is pre-signed, so it is fetched WITHOUT the ads headers. Sending the
-        # bearer token to S3 would leak it to a different host.
-        download = await client.get(url)
-        if download.status_code >= 400:
-            raise AdsError(
-                f"Downloading the ad report failed ({download.status_code}).",
-                status=download.status_code,
-            )
+    # The download url is pre-signed, so it is fetched WITHOUT the ads headers. Sending the
+    # bearer token to S3 would leak it to a different host.
+    download = await client.get(url)
+    if download.status_code >= 400:
+        raise AdsError(
+            f"Downloading the ad report failed ({download.status_code}).",
+            status=download.status_code,
+        )
 
     payload = download.content
     # GZIP_JSON was requested, but the header is honoured rather than assumed: the economics
@@ -355,9 +464,5 @@ async def fetch_acos(
     if not isinstance(raw_rows, list):
         raise AdsError("The ad report was not a list of rows.")
 
-    rows = aggregate(raw_rows)
-    logger.info(
-        "portfolio: ad report %s -> %d raw row(s) aggregated to %d (asin, sku) pair(s)",
-        report_id, len(raw_rows), len(rows),
-    )
-    return rows
+    logger.info("portfolio: ad report %s -> %d raw row(s)", report_id, len(raw_rows))
+    return raw_rows
