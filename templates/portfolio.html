@@ -83,8 +83,31 @@ h2{font-size:19px;font-weight:600;margin-bottom:2px}
 .vchip:hover{border-color:var(--accent)}
 .vchip.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .vchip .n{font-weight:800;margin-right:4px}
+/* A selected chip that matches nothing at this grain. It only ever renders while it IS the
+   filter, so it is always `.on` too — the dashed edge is what distinguishes "selected, 24
+   rows" from "selected, 0 rows", which otherwise look identical apart from the digit. */
+.vchip.zero{border-style:dashed;opacity:.75}
 
-table{width:100%;border-collapse:separate;border-spacing:0}
+/* The table scrolls INSIDE this box rather than dragging the page sideways.
+
+   Every cell here is `white-space:nowrap` on purpose — 11 columns of money, percentages
+   and ratings, where a wrapped "₹1,23,456" reads as two numbers. So the table is
+   legitimately wider than a phone, and the choice is where the overflow goes. Without a
+   wrapper it went to the PAGE: measured at a 350px viewport, the document scrolled 744px
+   sideways, which takes the nav, the window bar and the verdict chips off-screen with it
+   and leaves no anchored column to scroll back to.
+
+   `min-width` on the table is what makes the wrapper do anything at all: without it the
+   table obeys `width:100%`, squeezes to the container, and the nowrap cells overflow their
+   own gridlines instead — the same class of bug as the PDF cells that printed SKUs over
+   product names. The value is the sum of the 11 columns' natural widths, rounded down.
+
+   No sticky header and no max-height, unlike ops.html: this grid expands rows inline, so
+   capping the height would put a scroll region inside a page that also scrolls. ops.html
+   records what a sticky thead does inside such a box. */
+.table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border);
+  -webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:separate;border-spacing:0;min-width:900px}
 thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;font-size:10.5px;
   font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:left;white-space:nowrap;
   border-bottom:2px solid var(--border-strong)}
@@ -168,6 +191,12 @@ tr.size td:first-child{padding-left:30px}
 th.sortable{cursor:pointer;user-select:none}
 th.sortable:hover{color:var(--text)}
 th.sorted{color:var(--accent)}
+/* A tabbable element with no focus ring is in the tab order and invisible while you are on
+   it. theme.css rings inputs and buttons; a `th` matches neither of those selectors, so the
+   ring is declared here. `:focus-visible`, not `:focus`, or every mouse click on a header
+   leaves an outline behind. `outline-offset:-2px` keeps it inside the cell, since an
+   outset ring on a header sits on top of the neighbouring column's gridline. */
+th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 .arrow{font-size:9px;margin-left:3px}
 </style>
 <link rel="stylesheet" href="/static/theme.css"/>
@@ -387,9 +416,17 @@ function renderWindowBar(){
   const buttons = [7, 30, 60, 90].map(days => {
     const r = presetRange(days);
     const key = r.start + ".." + r.end;
+    const cached = have.has(key);
+    // The dot is a bare coloured span, so it says nothing to a screen reader — and what it
+    // says is not decoration: cached is instant, uncached is a 20-minute Amazon report. It
+    // goes into the accessible name in words, and is aria-hidden as a glyph.
     return `<button class="win-btn ${key === current ? "on" : ""}"
       data-start="${r.start}" data-end="${r.end}"
-      title="${r.start} to ${r.end}">${days}d${have.has(key) ? '<span class="dot"></span>' : ""}</button>`;
+      aria-pressed="${key === current}"
+      aria-label="Last ${days} days, ${r.start} to ${r.end}${
+        cached ? " — already fetched, loads instantly" : " — not fetched yet"}"
+      title="${r.start} to ${r.end}">${days}d${
+      cached ? '<span class="dot" aria-hidden="true"></span>' : ""}</button>`;
   }).join("");
 
   const w = data.window || ["", ""];
@@ -398,8 +435,10 @@ function renderWindowBar(){
     <span class="win-label">Window</span>
     ${buttons}
     <span class="dim" style="font-size:12px">|</span>
-    <input class="win-date" type="date" id="win-from" value="${esc(w[0])}" max="${esc(maxDate())}"/>
-    <input class="win-date" type="date" id="win-to" value="${esc(w[1])}" max="${esc(maxDate())}"/>
+    <input class="win-date" type="date" id="win-from" value="${esc(w[0])}" max="${esc(maxDate())}"
+      aria-label="Window start date"/>
+    <input class="win-date" type="date" id="win-to" value="${esc(w[1])}" max="${esc(maxDate())}"
+      aria-label="Window end date, no later than yesterday"/>
     <button class="btn-outline" id="win-apply">Show</button>
     ${uncached ? `<button class="btn" id="win-fetch">Fetch this window (~20 min)</button>` : ""}
     <span class="dim" style="font-size:11.5px">a dot means already fetched — instant</span>`;
@@ -486,8 +525,15 @@ function renderVerdicts(){
   const chips = [`<button class="vchip ${filter === "" ? "on" : ""}" data-v="">
       <span class="n">${n(total)}</span>All</button>`];
   order.forEach(v => {
-    if(!counts[v]) return;
-    chips.push(`<button class="vchip ${filter === v ? "on" : ""}" data-v="${esc(v)}">
+    /* **A verdict with no rows in THIS grain is still shown when it is the active filter.**
+       Otherwise switching Products -> SKUs while SURGICAL is selected left an empty table with
+       nothing highlighted: the filter was still applied but its chip had vanished, so the screen
+       read as broken rather than as filtered. SURGICAL is the case that bites, because it is a
+       parent-only verdict and is always 0 for SKUs. Found by /qa. */
+    if(!counts[v] && filter !== v) return;
+    const zero = !counts[v];
+    chips.push(`<button class="vchip ${filter === v ? "on" : ""}${zero ? " zero" : ""}"
+      data-v="${esc(v)}"${zero ? ' title="no rows at this grain — click All, or switch back to Products"' : ""}>
       <span class="n">${n(counts[v])}</span>${esc(v)}<span class="info" data-help="${esc(v)}">ⓘ</span></button>`);
   });
   $("verdicts").innerHTML = chips.join("");
@@ -641,13 +687,27 @@ const COLUMNS = [
   {key: null,           label: "Decision"},
 ];
 
+/* `scope="col"` on every header, and the sortable ones are real controls.
+
+   A sortable `th` was a click target with no way in from the keyboard: no tabindex, no
+   role, no key handler. `tabindex="0"` plus `role="button"` puts it in the tab order and
+   announces it as pressable, and `aria-sort` is what tells a screen reader which column is
+   ordering the grid and which way — the ▲/▼ glyph is decoration and carries none of that,
+   so it is `aria-hidden`.
+
+   `title` is a tooltip, not a name, so the two explained columns (TACOS, ACOS) also get an
+   `aria-label` carrying the same words. Otherwise "ad spend over TOTAL sales" — the one
+   thing that distinguishes them — is sighted-mouse-only. */
 function headerHtml(){
   return COLUMNS.map(c => {
-    if(!c.key) return `<th${c.num ? ' class="num"' : ""}>${esc(c.label)}</th>`;
+    if(!c.key) return `<th scope="col"${c.num ? ' class="num"' : ""}>${esc(c.label)}</th>`;
     const on = sort.key === c.key;
-    return `<th class="sortable${c.num ? " num" : ""}${on ? " sorted" : ""}"
-      data-sort="${c.key}"${c.tip ? ` title="${esc(c.tip)}"` : ""}>${esc(c.label)}${
-      on ? `<span class="arrow">${sort.dir < 0 ? "▼" : "▲"}</span>` : ""}</th>`;
+    const aria = on ? (sort.dir < 0 ? "descending" : "ascending") : "none";
+    const name = c.tip ? `${c.label} — ${c.tip}` : c.label;
+    return `<th scope="col" class="sortable${c.num ? " num" : ""}${on ? " sorted" : ""}"
+      data-sort="${c.key}" tabindex="0" role="button" aria-sort="${aria}"
+      aria-label="Sort by ${esc(name)}"${c.tip ? ` title="${esc(c.tip)}"` : ""}>${esc(c.label)}${
+      on ? `<span class="arrow" aria-hidden="true">${sort.dir < 0 ? "▼" : "▲"}</span>` : ""}</th>`;
   }).join("");
 }
 
@@ -694,9 +754,32 @@ function renderTable(){
   const list = visible();
   const isSkus = view === "skus";
   if(!list.length){
-    $("table-area").innerHTML = `<div class="card"><div class="empty-note">
-      ${rows().length ? "Nothing matches that filter." : "No products yet."}
-    </div></div>`;
+    /* The empty note NAMES which control emptied the table, because three of them can and
+       "Nothing matches that filter" points at none of them. The case that sent me here: a
+       parent-only verdict (SURGICAL) still selected after switching to SKUs, where the
+       honest answer is not "no matches" but "this verdict only exists for products". */
+    let why = "Nothing matches.";
+    if(!rows().length){
+      why = "No products yet.";
+    } else {
+      const bits = [];
+      if(filter) bits.push(`verdict <strong>${esc(filter)}</strong>`);
+      if(filters.length) bits.push(`${filters.length} custom filter(s)`);
+      const q = ($("search").value || "").trim();
+      if(q) bits.push(`search &ldquo;${esc(q)}&rdquo;`);
+      why = bits.length
+        ? `No ${isSkus ? "pack sizes" : "products"} match ${bits.join(" + ")}.`
+        : `No ${isSkus ? "pack sizes" : "products"} to show.`;
+      // SURGICAL compares a parent against its own sizes, so it can never describe a single
+      // size row. Saying so is the difference between an explanation and a dead end.
+      if(filter === "SURGICAL" && isSkus){
+        why += ` <span class="dim">SURGICAL is a product-level verdict — it means one pack size
+          loses money while the product overall does not, so no single size can carry it.
+          Switch to Products to see them.</span>`;
+      }
+    }
+    $("table-area").innerHTML =
+      `<div class="card"><div class="empty-note">${why}</div></div>`;
     return;
   }
 
@@ -788,10 +871,12 @@ function renderTable(){
       : `Click a product for its pack sizes, the reason for its verdict, and to record a decision.
          <strong>A product can be worth keeping while one of its sizes is not</strong> — that is
          what SURGICAL means.`}</div>
-    <table>
-      <thead><tr>${headerHtml()}</tr></thead>
-      <tbody>${html}</tbody>
-    </table>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>${headerHtml()}</tr></thead>
+        <tbody>${html}</tbody>
+      </table>
+    </div>
   </div>`;
 
   const count = $("filter-count");
@@ -804,6 +889,25 @@ function renderTable(){
    Delegated listeners rather than inline handlers, because product names and ASINs come from
    an uploaded sheet and Amazon — building an onclick out of those strings is an injection
    waiting to happen. Same rule the Orders tab follows. */
+
+/* ONE sort function, called by both the click and the keydown handler.
+
+   Not duplicated into each: the toggle rule ("same column flips, a new column starts
+   descending") is a real decision, and two copies is how a keyboard user ends up with
+   different ordering from a mouse user on the same grid. */
+function applySort(key){
+  if(!key) return;
+  // Same column toggles direction; a new column starts descending, because "the biggest" is
+  // what someone clicking Sales or ACOS almost always means.
+  sort = (sort.key === key) ? {key, dir: -sort.dir} : {key, dir: -1};
+  remember("sort", sort);
+  renderTable();
+  // renderTable() rebuilds the thead, so the element that had focus is gone. Without this
+  // the caret lands back at the top of the document and tabbing through 11 columns starts
+  // over on every sort, which makes the keyboard path technically present and unusable.
+  const again = document.querySelector(`[data-sort="${CSS.escape(key)}"]`);
+  if(again) again.focus();
+}
 $("verdicts").addEventListener("click", e => {
   // The ⓘ opens the rule rather than filtering, so "what does KILL mean" and "show me the
   // KILLs" are separate gestures on the same chip.
@@ -826,21 +930,25 @@ $("table-area").addEventListener("click", e => {
   if(save){ saveDecision(save.dataset.save); return; }
 
   const header = e.target.closest("[data-sort]");
-  if(header){
-    const key = header.dataset.sort;
-    // Same column toggles direction; a new column starts descending, because "the biggest" is
-    // what someone clicking Sales or ACOS almost always means.
-    sort = (sort.key === key) ? {key, dir: -sort.dir} : {key, dir: -1};
-    remember("sort", sort);
-    renderTable();
-    return;
-  }
+  if(header){ applySort(header.dataset.sort); return; }
 
   const row = e.target.closest("tr.parent");
   if(!row) return;
   const key = row.dataset.parent || ("sku:" + row.dataset.sku);
   if(open.has(key)) open.delete(key); else open.add(key);
   renderTable();
+});
+
+/* Enter and Space on a focused header, which is what `role="button"` promises.
+
+   Space is preventDefault'ed because its default action scrolls the page — so without it a
+   keyboard user pressing Space would sort the grid AND jump a screenful away from it. */
+$("table-area").addEventListener("keydown", e => {
+  if(e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+  const header = e.target.closest("[data-sort]");
+  if(!header) return;
+  e.preventDefault();
+  applySort(header.dataset.sort);
 });
 
 $("search").addEventListener("input", renderTable);

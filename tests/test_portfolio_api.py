@@ -881,10 +881,15 @@ def test_the_view_and_sort_survive_a_reload():
 def test_an_empty_filter_value_is_not_treated_as_a_zero_threshold():
     """**`Number("")` is 0, not NaN — which made a blank filter box a live `> 0` comparison.**
 
-    Adding a filter row starts it at "TACOS is more than [ ]" with the value empty. The old
-    `filterThreshold` ran `Number("")` → 0, passed `isFinite`, and returned 0 — so the filter
-    immediately excluded every product whose TACOS is null. Measured on real data: 45 of 90
-    products vanished the instant the row was added, with nothing on screen to explain it.
+    A new filter row is SEEDED at `TACOS > 50` (a useful starting point, and it filters straight
+    away — verified live: 13 of 90). The bug bit on the next gesture: the owner clears that 50 to
+    type his own number, and for those keystrokes the value is "". The old `filterThreshold` ran
+    `Number("")` → 0, passed `isFinite`, and returned 0 — so an empty box became `TACOS > 0` and
+    silently dropped every product with no TACOS at all. Measured on real data: 45 of 90 products
+    vanished mid-edit, with the count label calling it a match.
+
+    Now clearing the box shows all 90 while the owner types, which is the only honest reading of
+    "no threshold entered".
 
     Asserted on the template because the guard is one line of JavaScript and the symptom is
     invisible from Python: the payload was correct, the rendering was correct, and the filter
@@ -899,3 +904,148 @@ def test_an_empty_filter_value_is_not_treated_as_a_zero_threshold():
     )
     # The trim matters too: a box containing only spaces is just as empty.
     assert ".trim()" in body, "an all-whitespace filter value would still coerce to 0"
+
+
+# ─── Regression: ISSUE-003 — the active verdict chip vanished on a grain switch ─
+#
+# Found by /qa on 2026-08-28.
+
+
+def test_the_active_verdict_chip_survives_a_grain_with_no_rows():
+    """**Switching Products → SKUs while SURGICAL was selected left an empty table and no chip.**
+
+    The chips are counted for the grain on screen, which is right — "9 KILL products" and "24 KILL
+    SKUs" are both true. But the loop skipped any verdict with a zero count, and SURGICAL is
+    *structurally* zero for SKUs: it compares a parent against its own sizes, so no single size
+    can carry it. The filter stayed applied with its chip gone, so the screen read as broken
+    rather than as filtered, and there was no control left to click to undo it.
+    """
+    source = _template()
+    start = source.index("function renderVerdicts(")
+    body = source[start:start + 1400]
+    assert "filter !== v" in body, (
+        "renderVerdicts drops a zero-count verdict unconditionally, so selecting a parent-only "
+        "verdict and switching to SKUs removes the only control that could undo the filter"
+    )
+
+
+def test_an_empty_table_names_the_control_that_emptied_it():
+    """Three controls can empty this grid, and "Nothing matches that filter" points at none.
+
+    The verdict chip, the custom filters and the search box are three separate ways to reach zero
+    rows, and the owner has to be able to tell which one did it. The SURGICAL-under-SKUs case gets
+    a sentence of its own, because there the honest answer is not "no matches" but "this verdict
+    cannot describe a single size".
+    """
+    source = _template()
+    start = source.index("function renderTable(")
+    body = source[start:start + 1800]
+    assert "custom filter(s)" in body, "the empty note does not mention the custom filters"
+    assert "search" in body, "the empty note does not mention the search box"
+    assert 'filter === "SURGICAL" && isSkus' in body, (
+        "the one structurally-impossible combination is not explained, so it reads as a dead end"
+    )
+
+
+# ─── Regression: ISSUE-004 — the table dragged the whole page sideways ─────────
+#
+# Found by /qa on 2026-08-28. Measured: at a 350px viewport the document scrolled 744px.
+
+
+def test_the_table_scrolls_inside_a_wrapper_rather_than_moving_the_page():
+    """**Every cell here is `white-space:nowrap`, so the table is legitimately wider than a phone.**
+
+    The question is where the overflow goes. With no wrapper it went to the PAGE: measured at a
+    350px viewport the document scrolled 744px sideways, which takes the nav, the window bar and
+    the verdict chips off-screen and leaves no anchored column to scroll back to.
+
+    `min-width` on the table is half the fix and easy to omit: without it the table obeys
+    `width:100%`, squeezes to the container, and the nowrap cells overflow their own gridlines
+    instead — the same defect as the PDF cells that printed SKUs over product names.
+    """
+    source = _template()
+    assert ".table-wrap{" in source, "no scroll container is declared"
+    assert "overflow-x:auto" in source
+    assert '<div class="table-wrap">' in source, (
+        "the wrapper is styled but the table is not inside it"
+    )
+    table_rule = source[source.index("table{width:100%"):]
+    table_rule = table_rule[:table_rule.index("}")]
+    assert "min-width" in table_rule, (
+        "without a min-width the table shrinks to the wrapper and the nowrap cells overflow "
+        "their own gridlines, so the wrapper never scrolls and the fix does nothing"
+    )
+
+
+# ─── Regression: ISSUE-005 — the sortable headers were mouse-only ─────────────
+#
+# Found by /qa on 2026-08-28.
+
+
+def test_every_sortable_header_is_reachable_from_the_keyboard():
+    """A `th` with a click listener and no tabindex is a control only a mouse can use.
+
+    `role="button"` promises Enter and Space, so both are handled, and Space is
+    preventDefault'ed — its default action scrolls the page, so without that a keyboard user
+    would sort the grid and jump a screenful away from it in one keystroke.
+    """
+    source = _template()
+    start = source.index("function headerHtml(")
+    body = source[start:start + 1200]
+    assert 'tabindex="0"' in body, "a sortable header is not in the tab order"
+    assert 'role="button"' in body, "a sortable header does not announce itself as pressable"
+    assert "aria-sort=" in body, (
+        "nothing tells a screen reader which column is ordering the grid — the arrow glyph "
+        "carries that visually and is aria-hidden"
+    )
+    assert 'scope="col"' in body, "the header cells are not associated with their columns"
+
+    assert '$("table-area").addEventListener("keydown"' in source, "no key handler is bound"
+    handler = source[source.index('$("table-area").addEventListener("keydown"'):]
+    handler = handler[:600]
+    assert '"Enter"' in handler and '" "' in handler, "Enter and Space are not both handled"
+    assert "preventDefault" in handler, (
+        "Space is not preventDefault'ed, so sorting also scrolls the page away from the table"
+    )
+
+
+def test_the_sort_rule_is_one_function_shared_by_mouse_and_keyboard():
+    """Two copies of the toggle rule is how a keyboard user gets different ordering from a mouse.
+
+    Also: `renderTable()` rebuilds the thead, so the focused element is destroyed on every sort.
+    Without restoring focus the caret returns to the top of the document and tabbing to the next
+    column starts over, which makes the keyboard path present but unusable.
+    """
+    source = _template()
+    assert "function applySort(" in source
+    body = source[source.index("function applySort("):]
+    body = body[:900]
+    assert "remember(" in body and "renderTable()" in body
+    assert ".focus()" in body, (
+        "focus is not restored after the thead is rebuilt, so every keyboard sort throws the "
+        "caret back to the top of the page"
+    )
+    # And both entry points go through it rather than reimplementing the toggle.
+    assert source.count("dir: -sort.dir") == 1, (
+        "the sort toggle is written more than once, so the mouse and keyboard paths can drift"
+    )
+
+
+def test_the_window_controls_carry_accessible_names():
+    """Two bare date inputs and a coloured dot that means "instant" versus "20 minutes".
+
+    The dot is not decoration: a cached window loads immediately and an uncached one starts a
+    ~20-minute Amazon report, so that distinction goes into the accessible name in words.
+    """
+    source = _template()
+    start = source.index('id="win-from"')
+    assert "aria-label=" in source[start:start + 200], "the start date input is unlabelled"
+    start = source.index('id="win-to"')
+    assert "aria-label=" in source[start:start + 220], "the end date input is unlabelled"
+    presets = source[source.index("const buttons = [7, 30, 60, 90]"):]
+    presets = presets[:900]
+    assert "already fetched" in presets and "not fetched yet" in presets, (
+        "the cached/uncached distinction is carried only by a coloured dot, which says nothing "
+        "to a screen reader — and it is the difference between instant and ~20 minutes"
+    )
+    assert 'aria-hidden="true"' in presets, "the dot glyph is announced as well as its words"
