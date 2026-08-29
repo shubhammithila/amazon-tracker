@@ -614,6 +614,32 @@ async def purge_windows(db: AsyncSession, *, keep: int = WINDOW_RETENTION_COUNT)
     return removed
 
 
+async def reclaim_space(db: AsyncSession) -> None:
+    """`VACUUM` — actually return freed pages to the filesystem.
+
+    **A `DELETE` does not shrink the file.** SQLite marks the pages free for REUSE inside the
+    database, so a purge that removes 40,000 rows shows no change in `df` and the disk stays as full
+    as it was. Measured: a purge plus VACUUM on production took the file from 46 MB to 43 MB, where
+    the purge alone moved it not at all.
+
+    Called after the nightly sweep rather than after every write: VACUUM rewrites the whole file, so
+    it needs free space equal to the database size while it runs and briefly locks it. Once a night on
+    an idle box is the right place; inside a request would be the wrong one.
+
+    Best-effort by design — a VACUUM that cannot run (no room, or a concurrent write) must not fail
+    the retention sweep that just succeeded.
+    """
+    from sqlalchemy import text
+
+    try:
+        # Outside a transaction: SQLite refuses VACUUM inside one.
+        await db.commit()
+        await db.execute(text("VACUUM"))
+        logger.info("ads: VACUUM complete, freed pages returned to the filesystem")
+    except Exception as exc:  # noqa: BLE001 - housekeeping must never break the sweep
+        logger.warning("ads: VACUUM skipped (%s)", exc)
+
+
 async def purge_daily(db: AsyncSession, *, keep_days: int = DAILY_RETENTION_DAYS,
                       today: date | None = None) -> int:
     """Delete per-day rows older than the retention window. Returns the number removed.

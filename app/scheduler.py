@@ -219,6 +219,16 @@ async def scheduled_purge_old_history():
             f"(kept the {ads_repo.WINDOW_RETENTION_COUNT} most recently viewed windows)"
         )
 
+    # **A DELETE does not shrink the file** — SQLite marks the pages free for reuse inside the
+    # database, so a sweep that removes 40,000 rows leaves `df` unchanged and the disk as full as
+    # it was. VACUUM returns them to the filesystem. Once a night, after the deletes, because it
+    # rewrites the whole file and briefly locks it.
+    if deleted_total:
+        from app.ads import repository as ads_repo_vacuum
+
+        async with async_session() as db:
+            await ads_repo_vacuum.reclaim_space(db)
+
     logger.info(
         f"Retention sweep complete: {deleted_total} rows older than {days} days removed"
     )
