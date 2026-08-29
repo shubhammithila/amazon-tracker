@@ -251,6 +251,10 @@ async def ads_dashboard(
         "rules": await repository.load_rules(db),
         "runs": await repository.load_runs(db, limit=10),
         "refresh": refresh.status(),
+        # Reported separately from `error`: an SB failure leaves the Sponsored Products figures
+        # entirely current, so the screen must be able to say "SP is fine, SB is stale" rather than
+        # "the refresh failed".
+        "sb_error": refresh.status().get("sb_error"),
         "grant": grant.areas if hasattr(grant, "areas") else [],
     }
 

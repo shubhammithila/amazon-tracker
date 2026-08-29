@@ -64,12 +64,20 @@ SB_REPORT_COLUMNS = (
     "campaignId", "campaignName", "adGroupId", "adGroupName",
 )
 
-#: **`sbTargeting` throttles and then succeeds on retry** — measured: three immediate creates all
-#: returned 429, one create after a 60-second pause returned 200. `sbCampaigns` was accepted first
-#: time, so the limit is per report type rather than per account. A 429 is therefore a WAIT, not a
-#: failure; treating it as one would make the SB refresh fail most of the time.
-THROTTLE_ATTEMPTS = 6
-THROTTLE_BACKOFF = 30.0
+#: Retries on a 429 report CREATION. Short on purpose — and the reason is a corrected assumption.
+#:
+#: I first measured "429 three times, then 200 after a 60-second pause" and concluded the throttle
+#: was a short burst limit. **That was wrong.** On production the SB create then returned 429 through
+#: 10.5 minutes of backoff, and still 429 after a further 15 minutes completely idle. Amazon sends no
+#: `Retry-After`. So `sbTargeting` report creation is rate-limited over a window of HOURS, counted
+#: across the several reports I had already created that day while probing.
+#:
+#: A longer backoff is therefore the wrong fix: it would hold a background job open for an hour to
+#: *maybe* succeed. The right behaviour is to try briefly for the genuine burst case, then report
+#: "not now" plainly and let the nightly job try again — which is safe because the SB failure is
+#: already isolated from the Sponsored Products data (`refresh.run` catches it into `sb_error`).
+THROTTLE_ATTEMPTS = 3
+THROTTLE_BACKOFF = 20.0
 
 #: `groupBy: ["targeting"]` is what makes this per-target rather than per-campaign. Verified
 #: accepted; the alternatives answer a different question.
@@ -273,6 +281,17 @@ async def _one_report(client, start: str, end: str, *, daily: bool = False,
                 "ads: report request deduplicated by Amazon, following its existing report %s",
                 duplicate_id,
             )
+
+    if create.status_code == 429:
+        # A bare "Throttled" tells the owner nothing actionable, so this says what it means. Measured:
+        # the limit spans hours, not seconds, and is shared across report creations for the day.
+        raise AdsError(
+            "Amazon is rate-limiting report creation for this report type "
+            f"({'Sponsored Brands' if ad_product == 'sb' else 'Sponsored Products'}). "
+            "This is a limit on how many reports can be requested per day, not a fault — the "
+            "nightly refresh will pick it up. Existing figures are unaffected.",
+            status=429,
+        )
 
     if create.status_code >= 400 and not duplicate_id:
         # Amazon's validation messages name the cause — they are how the 31-day cap and the legal

@@ -382,6 +382,13 @@ function renderBanners(){
   if(r.error){
     out.push(`<div class="banner error">The last refresh failed: ${esc(r.error)}</div>`);
   }
+  /* An SB failure is NOT a refresh failure — the Sponsored Products figures are current. Saying so
+     matters because the alternative is an SB section that silently reads zero, which looks like
+     "we spend nothing on Sponsored Brands" rather than "we could not ask". */
+  if(data.sb_error){
+    out.push(`<div class="banner warn"><strong>Sponsored Brands figures are stale.</strong>
+      ${esc(data.sb_error)} Your Sponsored Products data above is current.</div>`);
+  }
   $("messages").innerHTML = out.join("");
 }
 

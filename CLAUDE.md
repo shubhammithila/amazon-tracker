@@ -1595,9 +1595,18 @@ Five differences, every one of which fails silently:
 - **SB `maxResults` caps at 100, not 500, and REFUSES rather than clamping** — Amazon names the
   limit in the error (`upperLimit: "100"`). Found by calling the real endpoint *after* every unit
   test was green; a fake that echoes what it is sent could not have caught it. SB has its own pager.
-- **`sbTargeting` returns 429 then succeeds on retry** (three immediate creates throttled, one after
-  60 s returned 200; `sbCampaigns` was accepted first time, so the limit is per report type). A 429
-  is a WAIT — treating it as failure would fail most SB refreshes.
+- **`sbTargeting` report creation is rate-limited over HOURS, and my first reading of it was wrong.**
+  I measured "429 three times, then 200 after a 60-second pause" and built a 10.5-minute backoff on
+  the assumption it was a burst limit. On production the create then returned 429 through all of it,
+  **and still 429 after a further 15 minutes completely idle** — because I had created several
+  reports that day while probing. Amazon sends no `Retry-After`.
+
+  So the retry is deliberately SHORT (3 attempts, ~2 min): a longer one holds a background job open
+  for an hour to *maybe* succeed. A throttled SB report is reported as "not now" and the nightly job
+  picks it up. **What makes that acceptable is the ordering** — the SP figures are committed before
+  the SB report is requested, verified on production: SP stored 12,213 window rows and 43,605 daily
+  rows in the same run where SB stored 0 and set `sb_error`. The screen says "Sponsored Brands
+  figures are stale, your Sponsored Products data is current" rather than "the refresh failed".
 - **425 means "duplicate of `<reportId>`"** — Amazon deduplicates identical requests, so the retry
   above makes hitting this *likely*. The existing report is followed rather than discarded.
 

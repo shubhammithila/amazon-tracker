@@ -463,3 +463,41 @@ def test_the_sb_lists_have_their_own_pager():
     body = body[:body.index("async def fetch_sb_campaigns(")]
     assert "SB_PAGE_SIZE" in body, "the SB pager does not use the SB cap"
     assert "nextToken" in body, "the SB pager does not follow pagination"
+
+
+def test_a_throttled_sb_report_says_what_it_means_and_is_isolated():
+    """**A corrected assumption, recorded so it is not re-made.**
+
+    I first measured "429 three times, then 200 after a 60-second pause" and concluded the throttle
+    was a short burst limit — so the retry backed off for 10.5 minutes. On production the SB create
+    then returned 429 through ALL of it, and still 429 after a further 15 minutes completely idle.
+    Amazon sends no `Retry-After`. Report creation for `sbTargeting` is limited over a window of
+    HOURS, counted across every report created that day.
+
+    So a longer backoff is the wrong fix — it would hold a background job open for an hour to *maybe*
+    succeed. The retry stays short for the genuine burst case, and the error says what it means
+    instead of echoing Amazon's bare "Throttled".
+
+    What makes that safe is the isolation: the SP figures are committed before the SB report is
+    requested, so a throttled SB report leaves Sponsored Products entirely current. Verified on
+    production: SP stored 12,213 window rows and 43,605 daily rows while SB reported 0 and an error.
+    """
+    source = (Path(__file__).parent.parent / "app" / "ads" / "reports.py").read_text(
+        encoding="utf-8")
+    assert reports.THROTTLE_ATTEMPTS <= 4, (
+        "the retry is long enough to hold a background job open for a limit measured in hours"
+    )
+    assert "rate-limiting report creation" in source, (
+        "a 429 surfaces Amazon's bare 'Throttled', which tells the owner nothing actionable"
+    )
+
+    refresh_source = (Path(__file__).parent.parent / "app" / "ads" / "refresh.py").read_text(
+        encoding="utf-8")
+    assert 'STATE["sb_error"]' in refresh_source, (
+        "an SB failure is not isolated, so it would mark the whole refresh failed and hide the fact "
+        "that the Sponsored Products figures are current"
+    )
+    # And the SP data must be stored BEFORE the SB report is attempted.
+    assert refresh_source.index('STATE["daily_rows"] = daily_stored') < refresh_source.index(
+        'ad_product="sb"'
+    ), "the SB report runs before the SP figures are committed, so a throttle would cost both"
