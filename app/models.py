@@ -980,6 +980,11 @@ class AdsEntity(Base):
     id = Column(Integer, primary_key=True)
     #: "campaign" | "ad_group" | "keyword" | "target"
     entity_type = Column(String(12), nullable=False)
+    #: "sp" (Sponsored Products) | "sb" (Sponsored Brands). **A first-class dimension, not a
+    #: boolean**, because Sponsored Display is a plausible third and adding it should be a fetch
+    #: plus a writer rather than a redesign. `EXACT` is a legal match type on both products, so the
+    #: row itself cannot say which endpoint owns it — see `ads.logic.writer_for`.
+    ad_product = Column(String(4), nullable=False, default="sp", server_default="sp")
     entity_id = Column(String(32), nullable=False)
     #: The immediate parent: a campaign for an ad group, an ad group for a keyword or target.
     parent_id = Column(String(32))
@@ -1036,6 +1041,8 @@ class AdsPerformance(Base):
     window_end = Column(String(10), nullable=False)
     entity_id = Column(String(32), nullable=False)
     entity_type = Column(String(12), nullable=False, default="target")
+    #: "sp" | "sb" — which Amazon ad product, and therefore which writer a bid change goes to.
+    ad_product = Column(String(4), nullable=False, default="sp", server_default="sp")
     campaign_id = Column(String(32))
     ad_group_id = Column(String(32))
     #: The keyword text or resolved target expression. Stored rather than joined so a rule preview
@@ -1095,6 +1102,7 @@ class AdsPerformanceDaily(Base):
     day = Column(String(10), nullable=False)
     entity_id = Column(String(32), nullable=False)
     entity_type = Column(String(12), nullable=False, default="target")
+    ad_product = Column(String(4), nullable=False, default="sp", server_default="sp")
     campaign_id = Column(String(32))
     ad_group_id = Column(String(32))
     text = Column(String(500))
@@ -1178,7 +1186,11 @@ class AdsMutation(Base):
     run_id = Column(String(36), nullable=False)
     entity_id = Column(String(32), nullable=False)
     entity_type = Column(String(12), nullable=False, default="keyword")
-    #: "keyword" or "target" — WHICH ENDPOINT this row was sent to. Recorded rather than re-derived
+    #: "sp" | "sb". Recorded so the audit trail says which API was written to, not merely which
+    #: entity — an undo must go back to the same endpoint with the same payload shape.
+    ad_product = Column(String(4), nullable=False, default="sp", server_default="sp")
+    #: "keyword", "target" or "sb_keyword" — WHICH ENDPOINT this row was sent to. Recorded rather
+    #: than re-derived
     #: so a misrouted write is visible in the ledger after the fact.
     writer = Column(String(12), nullable=False, default="keyword")
     text = Column(String(500))

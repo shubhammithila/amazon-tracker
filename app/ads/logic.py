@@ -34,6 +34,12 @@ from collections.abc import Mapping, Sequence
 # `matchType`, whose real vocabulary was read off a 12,854-row report rather than the docs.
 
 #: Keyword match types. These rows are written with `{keywordId, bid}` to `/sp/keywords`.
+#: Which Amazon ad product a row belongs to. A first-class dimension rather than a boolean, because
+#: Sponsored Display is a plausible third and adding it should be a fetch plus a writer rather than
+#: a redesign.
+AD_PRODUCT_SP = "sp"
+AD_PRODUCT_SB = "sb"
+
 KEYWORD_MATCH_TYPES = frozenset({"EXACT", "PHRASE", "BROAD"})
 
 #: Targeting-clause match types, written with `{targetId, bid}` to `/sp/targets`:
@@ -46,10 +52,34 @@ TARGET_MATCH_TYPES = frozenset({"TARGETING_EXPRESSION_PREDEFINED", "TARGETING_EX
 
 WRITER_KEYWORD = "keyword"
 WRITER_TARGET = "target"
+#: Sponsored Brands keywords. A THIRD writer, not a variant of the first: the endpoint differs
+#: (`/sb/keywords`), and so does the payload — **SB requires `adGroupId` and SP does not.** Measured:
+#: sending SP's shape returns `207` with `KEYWORD_MISSING_AD_GROUP_ID` for every row, so the HTTP
+#: status says success while nothing was applied.
+WRITER_SB_KEYWORD = "sb_keyword"
+
+#: Sponsored Brands product and category targets, and brand THEMES. A FOURTH writer.
+#:
+#: **Found by testing against the real report rather than assumed.** The captured 2,914-row
+#: `sbTargeting` report contains four match types, and the two non-keyword ones are not a rounding
+#: error: `TARGETING_EXPRESSION` is 666 rows / Rs 45,854 and `THEME` is 9 rows / Rs 1,044 — together
+#: **51% of all SB spend.** Excluding them would have left half of Sponsored Brands unmanageable
+#: while the tab claimed full support.
+WRITER_SB_TARGET = "sb_target"
+
+#: SB match types, lowercase as Amazon returns them from the entity API (`exact`, `phrase`) and
+#: uppercase from the report. Compared upper-cased, so the case Amazon happens to use cannot
+#: silently drop a row.
+SB_KEYWORD_MATCH_TYPES = frozenset({"EXACT", "PHRASE", "BROAD"})
+
+#: `TARGETING_EXPRESSION` is a product or category target (`asin="B0..."`, `category="..."`).
+#: `THEME` is a Sponsored Brands brand theme (`keywords-related-to-your-brand`). Both live on
+#: `/sb/targets` and both carry an editable bid — measured, all 675 such rows have one.
+SB_TARGET_MATCH_TYPES = frozenset({"TARGETING_EXPRESSION", "THEME"})
 
 
-def writer_for(match_type) -> str | None:
-    """Which endpoint owns a report row: `"keyword"`, `"target"`, or `None` if unrecognised.
+def writer_for(match_type, ad_product: str = AD_PRODUCT_SP) -> str | None:
+    """Which endpoint owns a row: `"keyword"`, `"target"`, `"sb_keyword"`, or `None` if unrecognised.
 
     **`None` means the row is EXCLUDED from the run, never guessed into one.** An unknown match
     type is a new Amazon feature or a typo in our own vocabulary; guessing sends an id to the
@@ -57,17 +87,83 @@ def writer_for(match_type) -> str | None:
     buries the failure in an `error` array. Excluding and naming it is recoverable; a silent
     misroute is not.
 
-    Verified the two id spaces do not collide (0 overlaps across a 1,000-id sample), so a row
-    routed by `matchType` cannot be written to the wrong entity by accident.
+    **`ad_product` is required to route, and the match type alone is NOT enough.** `EXACT` is a legal
+    match type for both a Sponsored Products keyword and a Sponsored Brands keyword, and they are
+    written to different endpoints with different payloads. Verified the two id spaces do not collide
+    (0 overlaps across 500 SP and 4,888 SB ids), so a misroute fails rather than editing the wrong
+    entity — but it still fails silently inside a 207, which is why the routing is explicit.
+
+    Defaults to `sp` so every existing caller and every pre-existing stored row keeps its meaning.
     """
     if not match_type:
         return None
     value = str(match_type).strip().upper()
+    product = (ad_product or AD_PRODUCT_SP).strip().lower()
+
+    if product == AD_PRODUCT_SB:
+        if value in SB_KEYWORD_MATCH_TYPES:
+            return WRITER_SB_KEYWORD
+        if value in SB_TARGET_MATCH_TYPES:
+            return WRITER_SB_TARGET
+        return None
+
     if value in KEYWORD_MATCH_TYPES:
         return WRITER_KEYWORD
     if value in TARGET_MATCH_TYPES:
         return WRITER_TARGET
     return None
+
+
+# ─── Who manages a campaign ──────────────────────────────────────────────────
+#
+# Some campaigns are optimised by something other than this app, and a bid we set in them gets
+# overwritten. Excluding them is not tidiness: our rule and their optimiser would fight, and neither
+# result is what anyone chose.
+
+MANAGER_US = "us"
+MANAGER_M19 = "m19"
+MANAGER_AMAZON = "amazon"
+
+#: Measured on the live account: all 4 M19 campaigns carry this in their NAME, e.g.
+#: `SP -  - All products -  - exact - m19 autopilot - yQ30JKqbm+`. M19 is a third-party bid
+#: automation tool the owner already runs.
+M19_MARKER = "m19 autopilot"
+
+#: Amazon's own automated campaigns, named `Adaptive Campaign - <timestamp>` (3 on this account).
+AMAZON_MARKER = "adaptive campaign"
+
+
+def manager_of(campaign_name) -> str:
+    """Who optimises this campaign: `"us"`, `"m19"` or `"amazon"`.
+
+    **A pure function over the NAME rather than a stored column, and that is deliberate.** The name
+    is Amazon's own data and is refreshed on every fetch, so a stored flag would go stale the moment
+    a campaign is renamed — and the failure mode of a stale flag here is a rule editing bids it was
+    explicitly told not to. Re-deriving on every read cannot drift.
+
+    A **convention of this account**, not an Amazon rule, which is why it is one function with its
+    evidence here — exactly how `portfolio.logic._channel_of` treats the trailing ` FBA` SKU suffix.
+    If M19 is dropped, deleting `M19_MARKER` restores those campaigns to the tab.
+
+    **An unrecognised name is `us`.** A new campaign of the owner's must appear and be tunable; the
+    opposite default would silently hide campaigns he had just created, which is the worse failure.
+
+    Measured share of the account: us 16 campaigns / ₹318,036 spend / 4,948 target rows;
+    m19 4 / ₹3,975 / 6,915; amazon 3 / ₹1,713 / 342. So the automated campaigns are **59% of the
+    rows and 1.8% of the money** — excluding them shrinks the working set and removes the collision
+    at the same time.
+    """
+    name = str(campaign_name or "").strip().lower()
+    if M19_MARKER in name:
+        return MANAGER_M19
+    if AMAZON_MARKER in name:
+        return MANAGER_AMAZON
+    return MANAGER_US
+
+
+def is_automated(campaign_name) -> bool:
+    """True when something other than this app is optimising the campaign's bids."""
+    return manager_of(campaign_name) != MANAGER_US
 
 
 # ─── Guardrails ──────────────────────────────────────────────────────────────
@@ -178,30 +274,46 @@ def _ratio(numerator, denominator):
     return _as_float(numerator) / bottom
 
 
-def metrics_for(row: Mapping) -> dict:
-    """Normalise one `spTargeting` report row into the fields a rule can filter on.
+def metrics_for(row: Mapping, ad_product: str = AD_PRODUCT_SP) -> dict:
+    """Normalise one report row into the fields a rule can filter on.
 
     Keeps Amazon's own names out of the rule vocabulary: the report says `cost`/`sales7d`, the
     owner thinks in `spend`/`sales`, and a rule written against a report column name would break
     the day Amazon renames one.
+
+    **Handles both report shapes**, because the two ad products name the same quantities differently:
+    Sponsored Products reports `sales7d`/`purchases7d`, Sponsored Brands reports plain
+    `sales`/`purchases`. Read with a fallback rather than a branch, so a column Amazon renames on one
+    product does not silently zero that product's sales.
+
+    `ad_product` is carried through rather than inferred: `EXACT` is a legal match type on both, so
+    the row itself cannot say which endpoint owns it.
     """
     spend = _as_float(row.get("cost"))
-    sales = _as_float(row.get("sales7d"))
+    sales = _as_float(row.get("sales7d") if row.get("sales7d") is not None else row.get("sales"))
     clicks = _as_int(row.get("clicks"))
     impressions = _as_int(row.get("impressions"))
-    orders = _as_int(row.get("purchases7d"))
+    orders = _as_int(
+        row.get("purchases7d") if row.get("purchases7d") is not None else row.get("purchases")
+    )
     match_type = row.get("matchType") or row.get("keywordType")
+    product = (ad_product or AD_PRODUCT_SP).strip().lower()
+    campaign_name = row.get("campaignName") or ""
 
     return {
-        "entity_id": str(row.get("keywordId") or ""),
-        "writer": writer_for(match_type),
+        "entity_id": str(row.get("keywordId") or row.get("targetId") or ""),
+        "ad_product": product,
+        "writer": writer_for(match_type, product),
+        # Who optimises this campaign. Re-derived from the name on every read rather than stored,
+        # so a rename cannot leave a rule editing bids it was told to leave alone.
+        "manager": manager_of(campaign_name),
         "match_type": match_type,
-        "text": row.get("keyword") or row.get("targeting") or "",
+        "text": row.get("keyword") or row.get("keywordText") or row.get("targeting") or "",
         "campaign_id": str(row.get("campaignId") or ""),
-        "campaign_name": row.get("campaignName") or "",
+        "campaign_name": campaign_name,
         "ad_group_id": str(row.get("adGroupId") or ""),
         "ad_group_name": row.get("adGroupName") or "",
-        "bid": _as_float(row.get("keywordBid")) or None,
+        "bid": _as_float(row.get("keywordBid") or row.get("bid")) or None,
         "spend": spend,
         "sales": sales,
         "clicks": clicks,
@@ -352,6 +464,13 @@ SKIP_UNKNOWN_WRITER = "unrecognised target type, so we cannot tell which endpoin
 SKIP_BELOW_FLOOR = "the new bid would fall below the marketplace minimum"
 SKIP_ABOVE_CEILING = "the new bid would exceed the bid ceiling"
 SKIP_NO_CHANGE = "the bid would not change"
+#: **Refused here, in the pure function, rather than filtered in the UI.** A screen-level filter
+#: would leave `POST /ads/apply` editable by a hand-built request, and this is the one router in the
+#: app that spends money. Every path — preview, apply, a saved rule, an undo — goes through
+#: `plan_run`, so this is the only place the exclusion cannot be bypassed.
+SKIP_AUTOMATED = (
+    "this campaign is optimised by M19 or Amazon, so a bid we set would be overwritten"
+)
 
 
 def plan_run(
@@ -421,6 +540,17 @@ def plan_run(
         if not matches(m, conditions):
             continue
 
+        # **Automated campaigns are refused after matching, so the count is honest.** Checked here
+        # rather than before `matches` deliberately: the owner should see "12 rows matched but are
+        # M19's" rather than a silently smaller match count that looks like the rule not working.
+        #
+        # `manager` is recomputed from the name when absent, so a row assembled by an older code
+        # path or a hand-built request cannot slip through without the classification.
+        manager = m.get("manager") or manager_of(m.get("campaign_name"))
+        if manager != MANAGER_US:
+            skipped.append({**m, "manager": manager, "reason": SKIP_AUTOMATED})
+            continue
+
         if not m.get("writer"):
             skipped.append({**m, "reason": SKIP_UNKNOWN_WRITER})
             continue
@@ -463,6 +593,11 @@ def plan_run(
             "spend": round(sum(c["spend"] for c in changes), 2),
             "keywords": sum(1 for c in changes if c["writer"] == WRITER_KEYWORD),
             "targets": sum(1 for c in changes if c["writer"] == WRITER_TARGET),
+            "sb_keywords": sum(1 for c in changes if c["writer"] == WRITER_SB_KEYWORD),
+            "sb_targets": sum(1 for c in changes if c["writer"] == WRITER_SB_TARGET),
+            # How many matched rows belong to a campaign somebody else optimises, so the preview can
+            # say "12 more matched but M19 manages them" rather than leaving them unexplained.
+            "automated": sum(1 for s in skipped if s.get("reason") == SKIP_AUTOMATED),
         },
     }
 
@@ -471,12 +606,15 @@ def split_by_writer(changes: Sequence[Mapping]) -> dict[str, list[dict]]:
     """Group approved changes by the endpoint that must receive them.
 
     The reason this is a separate function rather than a loop at the call site: it is the last
-    point where a keyword and a targeting clause are still in one list, and it is the mistake
-    that would be invisible. `/sp/keywords` given a `targetId` answers `207` with the failure
-    inside an `error` array, so the run reports success for everything else and quietly does
-    nothing for those rows.
+    point where a Sponsored Products keyword, a targeting clause and a Sponsored Brands keyword are
+    still in one list, and mixing them is the mistake that would be invisible. `/sp/keywords` given a
+    `targetId` answers `207` with the failure inside an `error` array; `/sb/keywords` given SP's
+    payload answers `207` with `KEYWORD_MISSING_AD_GROUP_ID` for every row. Both look like success at
+    the HTTP level.
     """
-    out: dict[str, list[dict]] = {WRITER_KEYWORD: [], WRITER_TARGET: []}
+    out: dict[str, list[dict]] = {
+        WRITER_KEYWORD: [], WRITER_TARGET: [], WRITER_SB_KEYWORD: [], WRITER_SB_TARGET: [],
+    }
     for change in changes:
         writer = change.get("writer")
         if writer in out:

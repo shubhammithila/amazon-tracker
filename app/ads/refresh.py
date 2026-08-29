@@ -48,7 +48,12 @@ def reset_state() -> None:
         "ad_groups": 0,
         "rows": 0,
         "daily_rows": 0,
+        "sb_rows": 0,
         "purged": 0,
+        #: An SB failure that did NOT cost the Sponsored Products data. Reported separately from
+        #: `error` so the screen can say "SP is current, SB is stale" rather than "the refresh
+        #: failed" — the same distinction the portfolio refresh draws for ACOS.
+        "sb_error": None,
         "window_start": None,
         "window_end": None,
         "error": None,
@@ -170,24 +175,48 @@ async def run(
     try:
         async with httpx.AsyncClient(timeout=settings.ads_timeout) as client:
             # ── Campaigns ──
-            _progress("campaigns", 0, 1)
+            _progress("campaigns", 0, 2)
             campaigns = await spapi_ads.fetch_campaigns(client)
+            _progress("campaigns", 1, 2)
+
+            # **Sponsored Brands is a separate API, and it was missing entirely until now.**
+            # Measured: 6 SB campaigns, 66 ad groups, 4,939 keywords all with editable bids. An SB
+            # failure must not cost the SP data, so it is caught and reported rather than raised —
+            # the same isolation the portfolio refresh uses to keep margins when ACOS fails.
+            try:
+                campaigns += await spapi_ads.fetch_sb_campaigns(client)
+            except AdsError as exc:
+                STATE["sb_error"] = f"Sponsored Brands campaigns could not be read: {exc}"
+                logger.warning("ads refresh: SB campaigns failed: %s", exc)
+
             async with db_factory() as db:
                 await repository.save_entities(db, campaigns)
             STATE["campaigns"] = len(campaigns)
-            _progress("campaigns", 1, 1)
+            _progress("campaigns", 2, 2)
 
             # ── Ad groups ──
             #
             # For the ENABLED campaigns only. 2,542 ad groups exist across all campaigns; fetching
             # those belonging to paused campaigns costs pages to render rows nothing can be bid on.
-            _progress("ad_groups", 0, 1)
-            active_ids = [c["entity_id"] for c in campaigns if c.get("state") == "ENABLED"]
-            ad_groups = await spapi_ads.fetch_ad_groups(client, campaign_ids=active_ids or None)
+            _progress("ad_groups", 0, 2)
+            sp_active = [c["entity_id"] for c in campaigns
+                         if c.get("state") == "ENABLED" and c.get("ad_product", "sp") == "sp"]
+            sb_active = [c["entity_id"] for c in campaigns
+                         if c.get("state") == "ENABLED" and c.get("ad_product") == "sb"]
+            ad_groups = await spapi_ads.fetch_ad_groups(client, campaign_ids=sp_active or None)
+            _progress("ad_groups", 1, 2)
+            if sb_active:
+                try:
+                    ad_groups += await spapi_ads.fetch_sb_ad_groups(
+                        client, campaign_ids=sb_active
+                    )
+                except AdsError as exc:
+                    STATE["sb_error"] = f"Sponsored Brands ad groups could not be read: {exc}"
+                    logger.warning("ads refresh: SB ad groups failed: %s", exc)
             async with db_factory() as db:
                 await repository.save_entities(db, ad_groups)
             STATE["ad_groups"] = len(ad_groups)
-            _progress("ad_groups", 1, 1)
+            _progress("ad_groups", 2, 2)
 
         # ── The report ──
         #
@@ -226,6 +255,31 @@ async def run(
         STATE["rows"] = stored
         STATE["daily_rows"] = daily_stored
         STATE["purged"] = purged
+
+        # ── Sponsored Brands performance ──
+        #
+        # A SEPARATE report (`sbTargeting`) after the SP one, not in parallel: both throttle, and
+        # `sbTargeting` in particular returns 429 until it is given room — measured, three immediate
+        # creates all throttled while one after a 60-second pause succeeded.
+        #
+        # **Stored as SUMMARY only, not daily.** SB is 2,914 rows against SP's 12,205, so the
+        # sub-range machinery matters far less there, and a second daily report would double the
+        # slowest phase of the refresh for a fifth of the data. If SB grows, this is where to change.
+        try:
+            sb_rows = await reports.fetch_targeting(
+                window_start, window_end, ad_product="sb", sleep=sleep,
+            )
+            async with db_factory() as db:
+                sb_stored = await repository.save_performance(
+                    db, window_start, window_end, reports.aggregate(sb_rows), ad_product="sb",
+                )
+            STATE["sb_rows"] = sb_stored
+            logger.info("ads refresh: %d Sponsored Brands row(s) stored", sb_stored)
+        except AdsError as exc:
+            # Isolated: the SP figures above are already committed and current.
+            STATE["sb_error"] = f"The Sponsored Brands report failed: {exc}"
+            logger.warning("ads refresh: SB report failed: %s", exc)
+
         _progress("store", 2, 2)
 
         STATE.update({"phase": "done", "percent": 100})

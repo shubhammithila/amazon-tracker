@@ -121,10 +121,17 @@ async def ads_dashboard(
     end: str | None = None,
     campaign_id: str | None = None,
     include_paused: bool = False,
+    show_automated: bool = False,
     db: AsyncSession = Depends(get_db),
     grant=Depends(require_area(permissions.ADS)),
 ):
     """The campaign list with per-campaign performance for one window. Reads stored rows only.
+
+    **Campaigns optimised by M19 or Amazon are hidden by default** (`show_automated=false`), and
+    `logic.plan_run` refuses them regardless of this flag. Measured: they are 59% of the target rows
+    and 1.8% of the spend, and a bid we set in them gets overwritten — so hiding them shrinks the
+    working set and removes a conflict at the same time. The flag only affects the LIST; it cannot
+    make them editable.
 
     **Paused campaigns are hidden by DEFAULT** (`include_paused=false`). Measured on the live
     account: all 11 paused campaigns carry Rs 0 of spend, so hiding them cannot conceal money, and a
@@ -169,6 +176,9 @@ async def ads_dashboard(
     cached = exact or derived
 
     campaigns = await repository.load_campaigns(db, include_paused=include_paused)
+    automated_total = sum(1 for c in campaigns if c.get("automated"))
+    if not show_automated:
+        campaigns = [c for c in campaigns if not c.get("automated")]
 
     # Roll the report rows up per campaign. Summed from the SAME rows the table shows, never a
     # second query — the Orders tab's "86 orders beside 87 lines" was exactly that mistake.
@@ -218,6 +228,10 @@ async def ads_dashboard(
         "max_window_days": MAX_WINDOW_DAYS,
         "configured": settings.ads_configured,
         "include_paused": include_paused,
+        "show_automated": show_automated,
+        # How many were hidden, so the screen can offer the toggle with a number rather than
+        # leaving their absence unexplained.
+        "automated_hidden": 0 if show_automated else automated_total,
         "campaigns": campaigns,
         "rows": rows if campaign_id else [],
         "totals": {
@@ -227,6 +241,8 @@ async def ads_dashboard(
             "acos": (total_spend / total_sales) if total_sales else None,
             "campaigns": len(campaigns),
             "targets": len(rows),
+            "sp_campaigns": sum(1 for c in campaigns if c.get("ad_product", "sp") == "sp"),
+            "sb_campaigns": sum(1 for c in campaigns if c.get("ad_product") == "sb"),
         },
         "fields": logic.FIELDS,
         "operators": logic.OPERATORS,

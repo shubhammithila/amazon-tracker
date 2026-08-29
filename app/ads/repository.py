@@ -78,6 +78,7 @@ async def save_entities(db: AsyncSession, rows: list[dict]) -> int:
         )).scalar_one_or_none()
 
         values = {
+            "ad_product": (row.get("ad_product") or "sp"),
             "parent_id": row.get("parent_id"),
             "campaign_id": row.get("campaign_id"),
             "name": (row.get("name") or "")[:500],
@@ -129,6 +130,11 @@ async def load_campaigns(db: AsyncSession, *, include_paused: bool = True) -> li
             "campaign_id": r.entity_id,
             "name": r.name,
             "state": r.state,
+            "ad_product": r.ad_product or "sp",
+            # Who optimises it. Derived from the NAME on every read, never stored — a rename would
+            # otherwise leave a rule editing bids it was told to leave alone.
+            "manager": logic.manager_of(r.name),
+            "automated": logic.is_automated(r.name),
             "daily_budget": _f(r.daily_budget),
             "ad_groups": int(counts.get(r.entity_id) or 0),
         }
@@ -243,7 +249,8 @@ async def load_ad_groups(
 
 
 async def save_performance(
-    db: AsyncSession, window_start: str, window_end: str, rows: list[dict]
+    db: AsyncSession, window_start: str, window_end: str, rows: list[dict],
+    *, ad_product: str = "sp",
 ) -> int:
     """Store report rows for one window. Keyed on `(window, entity_id)`.
 
@@ -255,7 +262,7 @@ async def save_performance(
 
     written = 0
     for raw in rows:
-        m = logic.metrics_for(raw)
+        m = logic.metrics_for(raw, ad_product)
         entity_id = m["entity_id"]
         if not entity_id:
             continue
@@ -269,7 +276,8 @@ async def save_performance(
         )).scalar_one_or_none()
 
         values = {
-            "entity_type": "keyword" if m["writer"] == logic.WRITER_KEYWORD else "target",
+            "entity_type": "target" if m["writer"] == logic.WRITER_TARGET else "keyword",
+            "ad_product": m["ad_product"],
             "campaign_id": m["campaign_id"] or None,
             "ad_group_id": m["ad_group_id"] or None,
             "text": (m["text"] or "")[:500],
@@ -325,9 +333,13 @@ async def load_performance(
     for r in rows:
         spend = _f(r.spend) or 0.0
         sales = _f(r.sales) or 0.0
+        product = r.ad_product or "sp"
         out.append({
             "entity_id": r.entity_id,
-            "writer": logic.writer_for(r.match_type),
+            "ad_product": product,
+            # Routing needs the ad product: `EXACT` is legal on both, and they are different
+            # endpoints with different payloads.
+            "writer": logic.writer_for(r.match_type, product),
             "match_type": r.match_type,
             "text": r.text or "",
             "campaign_id": r.campaign_id or "",
@@ -363,7 +375,7 @@ async def load_performance(
 DAILY_RETENTION_DAYS = 30
 
 
-async def save_daily(db: AsyncSession, rows: list[dict]) -> int:
+async def save_daily(db: AsyncSession, rows: list[dict], *, ad_product: str = "sp") -> int:
     """Store per-day report rows. **Delete-then-bulk-insert per day, not the house upsert.**
 
     This is the one place in the codebase that deviates from SELECT-then-UPDATE-or-INSERT, and the
@@ -387,7 +399,7 @@ async def save_daily(db: AsyncSession, rows: list[dict]) -> int:
     now = datetime.utcnow()
 
     for raw in rows:
-        m = logic.metrics_for(raw)
+        m = logic.metrics_for(raw, ad_product)
         if not m["entity_id"]:
             continue
         day = str(raw.get("date") or "")[:10]
@@ -399,7 +411,8 @@ async def save_daily(db: AsyncSession, rows: list[dict]) -> int:
         mapped.append({
             "day": day,
             "entity_id": m["entity_id"],
-            "entity_type": "keyword" if m["writer"] == logic.WRITER_KEYWORD else "target",
+            "entity_type": "target" if m["writer"] == logic.WRITER_TARGET else "keyword",
+            "ad_product": m["ad_product"],
             "campaign_id": m["campaign_id"] or None,
             "ad_group_id": m["ad_group_id"] or None,
             "text": (m["text"] or "")[:500],
@@ -504,6 +517,7 @@ async def sum_daily(
             func.sum(AdsPerformanceDaily.orders),
             func.sum(AdsPerformanceDaily.sales),
             func.max(AdsPerformanceDaily.day),
+            func.max(AdsPerformanceDaily.ad_product),
         )
         .where(AdsPerformanceDaily.day >= start, AdsPerformanceDaily.day <= end)
         .group_by(AdsPerformanceDaily.entity_id)
@@ -536,9 +550,11 @@ async def sum_daily(
         clicks = int(row[7] or 0)
         impressions = int(row[6] or 0)
         orders = int(row[9] or 0)
+        product = row[12] if len(row) > 12 and row[12] else "sp"
         out.append({
             "entity_id": row[0],
-            "writer": logic.writer_for(row[5]),
+            "ad_product": product,
+            "writer": logic.writer_for(row[5], product),
             "match_type": row[5],
             "text": row[4] or "",
             "campaign_id": row[2] or "",
@@ -689,8 +705,13 @@ async def attach_names(db: AsyncSession, rows: list[dict]) -> list[dict]:
     )).all())
 
     for row in rows:
-        row["campaign_name"] = names.get(row.get("campaign_id")) or row.get("campaign_id") or ""
+        campaign_name = names.get(row.get("campaign_id")) or row.get("campaign_id") or ""
+        row["campaign_name"] = campaign_name
         row["ad_group_name"] = names.get(row.get("ad_group_id")) or ""
+        # **Set HERE, where the campaign name is resolved.** `plan_run` recomputes it if absent, but
+        # attaching it at the one point the name becomes known means the preview can show which rows
+        # M19 or Amazon manages without every caller remembering to classify.
+        row["manager"] = logic.manager_of(campaign_name)
     return rows
 
 

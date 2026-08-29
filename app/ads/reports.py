@@ -26,6 +26,7 @@ from __future__ import annotations
 import gzip
 import json
 import logging
+import re
 
 import httpx
 
@@ -49,6 +50,27 @@ REPORT_TYPE_ID = "spTargeting"
 
 AD_PRODUCT = "SPONSORED_PRODUCTS"
 
+#: Sponsored Brands' equivalent. A different report type AND a different ad product, and its column
+#: names differ too: SB reports plain `sales`/`purchases` where SP reports `sales7d`/`purchases7d`.
+SB_REPORT_TYPE_ID = "sbTargeting"
+SB_AD_PRODUCT = "SPONSORED_BRANDS"
+
+#: SB's columns. Deliberately a separate tuple rather than a filtered copy of `REPORT_COLUMNS`: a bad
+#: column name fails the whole request, and the two products genuinely disagree about these names.
+SB_REPORT_COLUMNS = (
+    "impressions", "clicks", "cost",
+    "sales", "purchases",
+    "keywordId", "keywordText", "matchType", "keywordBid",
+    "campaignId", "campaignName", "adGroupId", "adGroupName",
+)
+
+#: **`sbTargeting` throttles and then succeeds on retry** — measured: three immediate creates all
+#: returned 429, one create after a 60-second pause returned 200. `sbCampaigns` was accepted first
+#: time, so the limit is per report type rather than per account. A 429 is therefore a WAIT, not a
+#: failure; treating it as one would make the SB refresh fail most of the time.
+THROTTLE_ATTEMPTS = 6
+THROTTLE_BACKOFF = 30.0
+
 #: `groupBy: ["targeting"]` is what makes this per-target rather than per-campaign. Verified
 #: accepted; the alternatives answer a different question.
 GROUP_BY = ["targeting"]
@@ -69,7 +91,8 @@ REPORT_COLUMNS = (
 )
 
 
-def build_report_request(start: str, end: str, *, daily: bool = False) -> dict:
+def build_report_request(start: str, end: str, *, daily: bool = False,
+                         ad_product: str = "sp") -> dict:
     """The report body Amazon accepts. ONE function, so the shape is stated once.
 
     The same three traps `portfolio.ads` documents apply here and were re-verified for this report
@@ -83,19 +106,20 @@ def build_report_request(start: str, end: str, *, daily: bool = False) -> dict:
     Note the asymmetry, which is Amazon's rather than ours: `date` is ILLEGAL under SUMMARY (it fails
     the whole request) and REQUIRED under DAILY to be useful. One flag, two column lists.
     """
-    columns = list(REPORT_COLUMNS)
+    is_sb = (ad_product or "sp").strip().lower() == "sb"
+    columns = list(SB_REPORT_COLUMNS if is_sb else REPORT_COLUMNS)
     if daily:
         columns.append("date")
 
     return {
-        "name": f"ads targeting {'daily ' if daily else ''}{start}..{end}",
+        "name": f"ads {'sb ' if is_sb else ''}targeting {'daily ' if daily else ''}{start}..{end}",
         "startDate": start,
         "endDate": end,
         "configuration": {
-            "adProduct": AD_PRODUCT,
+            "adProduct": SB_AD_PRODUCT if is_sb else AD_PRODUCT,
             "groupBy": list(GROUP_BY),
             "columns": columns,
-            "reportTypeId": REPORT_TYPE_ID,
+            "reportTypeId": SB_REPORT_TYPE_ID if is_sb else REPORT_TYPE_ID,
             "timeUnit": "DAILY" if daily else "SUMMARY",
             "format": "GZIP_JSON",
         },
@@ -125,11 +149,16 @@ def aggregate(rows: list[dict]) -> list[dict]:
         if existing is None:
             merged[identifier] = dict(row)
             continue
-        for field in ("impressions", "clicks", "purchases7d"):
-            existing[field] = (existing.get(field) or 0) + (row.get(field) or 0)
-        for field in ("cost", "sales7d"):
-            existing[field] = round(float(existing.get(field) or 0)
-                                    + float(row.get(field) or 0), 2)
+        # BOTH products' column names: SP reports `sales7d`/`purchases7d`, SB reports plain
+        # `sales`/`purchases`. Summing only SP's names would silently discard SB sales when a
+        # window is chunked, leaving an SB ROAS of zero that looks like a real result.
+        for field in ("impressions", "clicks", "purchases7d", "purchases"):
+            if field in existing or field in row:
+                existing[field] = (existing.get(field) or 0) + (row.get(field) or 0)
+        for field in ("cost", "sales7d", "sales"):
+            if field in existing or field in row:
+                existing[field] = round(float(existing.get(field) or 0)
+                                        + float(row.get(field) or 0), 2)
         # A later chunk's bid is the more recent one.
         if row.get("keywordBid") is not None:
             existing["keywordBid"] = row["keywordBid"]
@@ -141,6 +170,7 @@ async def fetch_targeting(
     end: str,
     *,
     daily: bool = False,
+    ad_product: str = "sp",
     sleep=None,
     on_progress=None,
 ) -> list[dict]:
@@ -179,7 +209,7 @@ async def fetch_targeting(
                     on_progress(_i * total + done, total * len(chunks))
 
             raw.extend(await _one_report(
-                client, chunk_start, chunk_end, daily=daily,
+                client, chunk_start, chunk_end, daily=daily, ad_product=ad_product,
                 sleep=sleep, on_progress=chunk_progress,
             ))
 
@@ -195,7 +225,7 @@ async def fetch_targeting(
 
 
 async def _one_report(client, start: str, end: str, *, daily: bool = False,
-                      sleep, on_progress=None) -> list[dict]:
+                      ad_product: str = "sp", sleep, on_progress=None) -> list[dict]:
     """Create, poll and download ONE report. Returns RAW rows, un-aggregated.
 
     Raw so `fetch_targeting` sums every chunk through the single `aggregate` path — aggregating per
@@ -205,19 +235,53 @@ async def _one_report(client, start: str, end: str, *, daily: bool = False,
     token = await _access_token(client)
     head = _headers(token)
 
-    create = await client.post(
-        settings.ads_endpoint + REPORT_PATH,
-        content=json.dumps(build_report_request(start, end, daily=daily)),
-        headers={**head, "Content-Type": CREATE_CONTENT_TYPE},
-    )
-    if create.status_code >= 400:
+    body = json.dumps(build_report_request(start, end, daily=daily, ad_product=ad_product))
+
+    # **A 429 here is a WAIT, not a failure.** Measured on `sbTargeting`: three immediate creates all
+    # returned 429 and one after a 60-second pause returned 200, while `sbCampaigns` was accepted
+    # first time — so the limit is per report type. Treating 429 as an error would make the SB
+    # refresh fail most of the time it is asked to run.
+    for attempt in range(THROTTLE_ATTEMPTS):
+        create = await client.post(
+            settings.ads_endpoint + REPORT_PATH,
+            content=body,
+            headers={**head, "Content-Type": CREATE_CONTENT_TYPE},
+        )
+        if create.status_code != 429:
+            break
+        wait = THROTTLE_BACKOFF * (attempt + 1)
+        logger.info(
+            "ads: report creation throttled (attempt %d/%d), waiting %.0fs",
+            attempt + 1, THROTTLE_ATTEMPTS, wait,
+        )
+        await sleep(wait)
+
+    # **425 means "duplicate of <reportId>" and is a SUCCESS in disguise.** Measured while capturing
+    # a fixture: after two 429s, the third create returned
+    #     425 {"code":"425","detail":"The Request is a duplicate of : 9553f2aa-..."}
+    # Amazon had accepted an identical request during one of the throttled attempts and deduplicated
+    # this one. That report existed and completed normally — so treating 425 as a failure would throw
+    # away a report we had already paid for, and the retry above makes hitting it LIKELY rather than
+    # rare. The id is recovered from the message because Amazon does not return it as a field.
+    duplicate_id = None
+    if create.status_code == 425:
+        match = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+                          create.text or "")
+        duplicate_id = match.group(1) if match else None
+        if duplicate_id:
+            logger.info(
+                "ads: report request deduplicated by Amazon, following its existing report %s",
+                duplicate_id,
+            )
+
+    if create.status_code >= 400 and not duplicate_id:
         # Amazon's validation messages name the cause — they are how the 31-day cap and the legal
         # `groupBy` values were both found — so they are surfaced verbatim.
         raise AdsError(
             f"Amazon refused the targeting report request: {create.text[:300]}",
             status=create.status_code,
         )
-    report_id = (create.json() or {}).get("reportId")
+    report_id = duplicate_id or (create.json() or {}).get("reportId")
     if not report_id:
         raise AdsError(
             f"Amazon accepted the report but returned no reportId: {create.text[:200]}"

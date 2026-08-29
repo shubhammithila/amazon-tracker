@@ -135,6 +135,10 @@ tr.child td:first-child{padding-left:30px}
 .tag.auto{background:var(--yellow-soft);color:var(--yellow)}
 .tag.product{background:var(--green-soft);color:var(--green)}
 .tag.paused{background:var(--surface2);color:var(--text-dim)}
+/* Which Amazon ad product. Not decoration: SP and SB are different APIs with
+   different write payloads, so the row's product decides where a bid change goes. */
+.tag.sp{background:var(--surface2);color:var(--text-muted)}
+.tag.sb{background:var(--blue-soft);color:var(--blue)}
 .bid-old{color:var(--text-dim);text-decoration:line-through;font-size:12px}
 .bid-new{font-weight:800}
 .empty-note{padding:18px;text-align:center;color:var(--text-muted);font-size:13px;line-height:1.6}
@@ -225,6 +229,10 @@ tr.child td:first-child{padding-left:30px}
     <label class="dim" style="font-size:12.5px;display:flex;align-items:center;gap:5px;cursor:pointer">
       <input type="checkbox" id="show-paused"/> show paused
     </label>
+    <label class="dim" style="font-size:12.5px;display:flex;align-items:center;gap:5px;cursor:pointer"
+           title="M19 and Amazon Adaptive campaigns. Shown read-only — rules never edit them.">
+      <input type="checkbox" id="show-automated"/> <span id="automated-label">show automated</span>
+    </label>
   </div>
   <div id="table-area"></div>
 </div>
@@ -247,6 +255,11 @@ let polling = null;
    rows nothing can be bid on. A toggle rather than a permanent exclusion, because a campaign
    paused TODAY may have spent earlier in the window and that spend must stay findable. */
 let showPaused = remembered("showPaused", false);
+/* Campaigns optimised by M19 or Amazon Adaptive. **Hidden by default, and NEVER editable** — the
+   server refuses them in `plan_run` regardless of this flag, so this only decides whether they are
+   listed. Measured: 59% of the target rows and 1.8% of the spend, and a bid we set in them is
+   overwritten by whoever automates that campaign. */
+let showAutomated = remembered("showAutomated", false);
 /* Click-to-sort, held for the session so applying a rule does not throw the owner back to the
    top of the list. Descending by spend first: "where is the money going" is why the tab is open. */
 let sort = remembered("sort", {key: "spend", dir: -1});
@@ -297,13 +310,15 @@ function roas(v){
 function windowQuery(){
   const w = data.window && data.window[0] ? data.window : remembered("window", null);
   const base = w ? `start=${encodeURIComponent(w[0])}&end=${encodeURIComponent(w[1])}` : "days=7";
-  return `${base}&include_paused=${showPaused ? "true" : "false"}`;
+  return `${base}&include_paused=${showPaused ? "true" : "false"}`
+       + `&show_automated=${showAutomated ? "true" : "false"}`;
 }
 
 async function load(){
   const w = remembered("window", null);
   const base = w ? `start=${encodeURIComponent(w[0])}&end=${encodeURIComponent(w[1])}` : "days=7";
-  const response = await fetch(`/ads?${base}&include_paused=${showPaused ? "true" : "false"}`);
+  const response = await fetch(`/ads?${base}&include_paused=${showPaused ? "true" : "false"}`
+    + `&show_automated=${showAutomated ? "true" : "false"}`);
   const body = await response.json();
   if(!response.ok){
     $("messages").innerHTML = `<div class="banner error">${esc(body.error || "Could not load.")}</div>`;
@@ -330,6 +345,15 @@ function render(){
   renderRefreshNote();
   const box = $("show-paused");
   if(box) box.checked = showPaused;
+  const autoBox = $("show-automated");
+  if(autoBox) autoBox.checked = showAutomated;
+  const autoLabel = $("automated-label");
+  if(autoLabel){
+    // Names the COUNT hidden, so their absence is explained rather than mysterious.
+    autoLabel.textContent = (!showAutomated && n(data.automated_hidden))
+      ? `show ${n(data.automated_hidden)} automated (M19 / Amazon)`
+      : "show automated (M19 / Amazon)";
+  }
 }
 
 function renderBanners(){
@@ -659,10 +683,19 @@ function renderTable(){
   list.forEach(c => {
     const isOpen = openCampaigns.has(c.campaign_id);
     const ticked = selected.has(c.campaign_id);
+    /* **An automated campaign cannot be ticked.** The server refuses it in `plan_run` anyway, so a
+       tickable box would offer a selection that silently does nothing — worse than no box at all. */
     html += `<tr class="parent" data-campaign="${esc(c.campaign_id)}">
-      <td><input type="checkbox" data-tick="${esc(c.campaign_id)}"${ticked ? " checked" : ""}
-            aria-label="Select ${esc(c.name)}"/></td>
+      <td>${c.automated
+        ? `<span class="dim" title="M19 or Amazon optimises this campaign, so rules skip it">🔒</span>`
+        : `<input type="checkbox" data-tick="${esc(c.campaign_id)}"${ticked ? " checked" : ""}
+            aria-label="Select ${esc(c.name)}"/>`}</td>
       <td><span class="p-name">${isOpen ? "▾" : "▸"} ${esc(c.name)}</span>
+        <span class="tag ${c.ad_product === "sb" ? "sb" : "sp"}">${
+          c.ad_product === "sb" ? "SB" : "SP"}</span>
+        ${c.automated
+          ? `<span class="tag auto" title="optimised by ${esc(c.manager)} — rules never edit it"
+               >${esc(String(c.manager || "").toUpperCase())}</span>` : ""}
         ${c.state !== "ENABLED" ? `<span class="tag paused">${esc(c.state)}</span>` : ""}</td>
       <td class="num">${money(c.spend)}</td>
       <td class="num">${money(c.sales)}</td>
@@ -1257,6 +1290,12 @@ $("saved-bar").addEventListener("click", async e => {
 $("show-paused").addEventListener("change", e => {
   showPaused = e.target.checked;
   remember("showPaused", showPaused);
+  load();
+});
+
+$("show-automated").addEventListener("change", e => {
+  showAutomated = e.target.checked;
+  remember("showAutomated", showAutomated);
   load();
 });
 

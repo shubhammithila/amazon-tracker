@@ -355,8 +355,10 @@ def cols(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "ads_entity" in tables and "ad_product" in cols("ads_entity"):
+    print("e2b7d94c15af")                           # head: Sponsored Brands (ad_product column)
 elif "ads_performance_daily" in tables:
-    print("d1a5c83b76e2")                           # head: per-day ads rows (instant sub-ranges)
+    print("d1a5c83b76e2")                           # per-day ads rows (instant sub-ranges)
 elif "ads_mutation" in tables:
     print("c9f4a2e17b83")                           # ads tab (bid rules + ledger)
 elif "ads_snapshot" in tables:

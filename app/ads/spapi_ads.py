@@ -50,8 +50,49 @@ AD_GROUPS = ("/sp/adGroups", "application/vnd.spAdGroup.v3+json", "adGroups")
 KEYWORDS = ("/sp/keywords", "application/vnd.spKeyword.v3+json", "keywords")
 TARGETS = ("/sp/targets", "application/vnd.spTargetingClause.v3+json", "targetingClauses")
 
-#: Amazon's hard cap. Asking for more is not an error — it silently returns 500.
+# ─── Sponsored Brands: a different API, not a variant of the one above ───────
+#
+# **SB was invisible in this tab because nothing ever asked for it.** Measured on the live account:
+# 6 campaigns (5 enabled, budgets Rs 4,000-20,000), 66 ad groups, 4,939 keywords all with bids.
+#
+# Four differences from SP, each verified by probing and each capable of failing silently:
+#
+# * **The list endpoints are `/sb/v4/...` and the deprecated `/sb/campaigns` returns 403** naming its
+#   replacement. But keywords and targets are the OPPOSITE way round: `/sb/keywords` is a plain GET
+#   that works, while `/sb/v4/keywords/list` 403s. Not a pattern — measured per endpoint.
+# * **Campaign and ad group lists are POST with their own vendor media types**; keywords and targets
+#   are GET with no special type.
+# * **The write payload needs `adGroupId`.** SP does not. Omitting it returns `207` with
+#   `KEYWORD_MISSING_AD_GROUP_ID` for every row — nothing applied, HTTP says success.
+# * **The 207 body is a bare ARRAY**, not `{success: [...], error: [...]}`. See `_parse_sb_outcome`.
+
+SB_CAMPAIGNS = ("/sb/v4/campaigns/list", "application/vnd.sbcampaignresource.v4+json", "campaigns")
+SB_AD_GROUPS = ("/sb/v4/adGroups/list", "application/vnd.sbadgroupresource.v4+json", "adGroups")
+
+#: Plain GET, no vendor media type, no `/list` suffix, no pagination body. `/sb/v4/keywords/list`
+#: exists but 403s on this account, so this is the working path rather than the tidy-looking one.
+SB_KEYWORDS_PATH = "/sb/keywords"
+SB_TARGETS_PATH = "/sb/targets/list"
+
+#: Writing an SB target bid. Note it is `/sb/targets` (no `/list`) and the payload is a DICT under
+#: `targets` — where SB KEYWORDS take a bare list. Measured: the list form here returns
+#: `422 "A JSON parsing error was encountered"`; the dict form returns 200.
+SB_TARGETS_WRITE_PATH = "/sb/targets"
+
+#: Amazon's hard cap for Sponsored Products. Asking for more is not an error — it silently returns 500.
 PAGE_SIZE = 500
+
+#: **Sponsored Brands caps `maxResults` at 100, not 500**, and it REFUSES rather than clamping:
+#:
+#:     INVALID_ARGUMENT ... "rangeError": {"cause": {"location": "$.maxResults", "trigger": "500"},
+#:                           "lowerLimit": "1", "upperLimit": "100",
+#:                           "reason": "LIST_REQUEST_MAX_RESULTS_OUT_OF_RANGE"}
+#:
+#: Found by calling the real endpoint after the unit tests were green — a fake that echoes whatever
+#: it is sent could never have caught it. Amazon names the limit in the error, which is why it is a
+#: constant rather than a guess. 66 SB ad groups need one page; the pagination below exists so a
+#: growing account does not silently truncate at 100.
+SB_PAGE_SIZE = 100
 
 #: Pages before we stop and say so. 400 pages x 500 = 200,000 rows, which is where the targeting
 #: clause enumeration was still unfinished. A ceiling rather than an expectation: every caller
@@ -280,6 +321,148 @@ def _describe_expression(target: Mapping) -> str:
     return " / ".join(parts) or (str(target.get("targetId") or ""))
 
 
+# ─── Sponsored Brands reads ──────────────────────────────────────────────────
+
+
+async def _sb_list(client, endpoint: tuple[str, str, str], filters: Mapping,
+                   label: str) -> list[dict]:
+    """Page one Sponsored Brands list endpoint. Its own pager because SB differs from SP twice.
+
+    `maxResults` caps at **100** here (SP allows 500) and SB REFUSES an over-limit request rather
+    than clamping it, so borrowing `_list` would fail every call. And the paths already include
+    `/list`, where `_list` appends it.
+    """
+    settings = get_settings()
+    path, vnd, key = endpoint
+    token = await _access_token(client)
+    head = _media(vnd, token)
+
+    rows: list[dict] = []
+    next_token = None
+    for page in range(MAX_PAGES):
+        body = {"maxResults": SB_PAGE_SIZE, **dict(filters)}
+        if next_token:
+            body["nextToken"] = next_token
+        response = await client.post(settings.ads_endpoint + path, json=body, headers=head)
+        if response.status_code >= 400:
+            raise AdsError(
+                f"Listing Sponsored Brands {label} failed on page {page + 1}: "
+                f"{response.text[:200]}",
+                status=response.status_code,
+            )
+        payload = response.json() or {}
+        rows.extend(payload.get(key) or [])
+        next_token = payload.get("nextToken")
+        if not next_token:
+            return rows
+
+    logger.warning("ads: Sponsored Brands %s truncated at %d pages", label, MAX_PAGES)
+    return rows
+
+
+async def fetch_sb_campaigns(client, *, states=("ENABLED", "PAUSED")) -> list[dict]:
+    """Sponsored Brands campaigns. 6 on this account, so no paging needed.
+
+    A POST to `/sb/v4/campaigns/list` with its own vendor media type — the deprecated
+    `/sb/campaigns` GET returns 403 naming this replacement.
+    """
+    raw = await _sb_list(
+        client, SB_CAMPAIGNS, {"stateFilter": {"include": list(states)}}, "campaigns"
+    )
+    return [
+        {
+            "entity_type": "campaign",
+            "ad_product": "sb",
+            "entity_id": str(c.get("campaignId") or ""),
+            "parent_id": None,
+            "campaign_id": str(c.get("campaignId") or ""),
+            "name": c.get("name") or "",
+            "state": (c.get("state") or "").upper(),
+            "match_type": None,
+            "bid": None,
+            "default_bid": None,
+            # SB returns `budget` as a plain number, where SP nests it in an object. Flattened at
+            # both call sites so nothing downstream has to know either shape.
+            "daily_budget": c.get("budget"),
+        }
+        for c in raw
+    ]
+
+
+async def fetch_sb_ad_groups(client, *, campaign_ids=None,
+                             states=("ENABLED", "PAUSED")) -> list[dict]:
+    """Sponsored Brands ad groups. 66 on this account."""
+    filters: dict = {"stateFilter": {"include": list(states)}}
+    if campaign_ids:
+        filters["campaignIdFilter"] = {"include": [str(c) for c in campaign_ids]}
+    raw = await _sb_list(client, SB_AD_GROUPS, filters, "ad groups")
+    return [
+        {
+            "entity_type": "ad_group",
+            "ad_product": "sb",
+            "entity_id": str(a.get("adGroupId") or ""),
+            "parent_id": str(a.get("campaignId") or ""),
+            "campaign_id": str(a.get("campaignId") or ""),
+            "name": a.get("name") or "",
+            "state": (a.get("state") or "").upper(),
+            "match_type": None,
+            "bid": None,
+            "default_bid": None,
+            "daily_budget": None,
+        }
+        for a in raw
+    ]
+
+
+async def fetch_sb_keywords(client, *, states=("enabled",)) -> list[dict]:
+    """Sponsored Brands keywords — 4,939 on this account, ALL with an editable bid.
+
+    A plain GET with no vendor media type and no pagination body, which is the opposite convention
+    from the campaign and ad group lists above. `/sb/v4/keywords/list` exists but returns 403 here,
+    so this is the working path rather than the consistent-looking one.
+
+    **No server-side state filter**, so filtering happens locally. Acceptable at 4,939 rows in one
+    response; if SB ever reaches SP's 148,291 this needs revisiting.
+
+    `state` arrives LOWERCASE from this endpoint (`enabled`) where SP returns `ENABLED`. Normalised
+    here, because two spellings of one value is how a filter silently matches nothing.
+    """
+    settings = get_settings()
+    token = await _access_token(client)
+    response = await client.get(
+        settings.ads_endpoint + SB_KEYWORDS_PATH, headers=_headers(token)
+    )
+    if response.status_code >= 400:
+        raise AdsError(
+            f"Listing Sponsored Brands keywords failed: {response.text[:200]}",
+            status=response.status_code,
+        )
+    raw = response.json() or []
+    wanted = {str(s).upper() for s in states}
+
+    out = []
+    for k in raw:
+        state = (k.get("state") or "").upper()
+        if wanted and state not in wanted:
+            continue
+        out.append({
+            "entity_type": "keyword",
+            "ad_product": "sb",
+            "entity_id": str(k.get("keywordId") or ""),
+            "parent_id": str(k.get("adGroupId") or ""),
+            "campaign_id": str(k.get("campaignId") or ""),
+            "name": k.get("keywordText") or "",
+            "state": state,
+            # Upper-cased so `logic.writer_for` sees the same vocabulary from both products —
+            # SB sends `exact`, SP sends `EXACT`.
+            "match_type": (k.get("matchType") or "").upper(),
+            "bid": k.get("bid"),
+            "default_bid": None,
+            "daily_budget": None,
+        })
+    return out
+
+
 async def fetch_current_bids(client, changes: Sequence[Mapping]) -> dict[str, float | None]:
     """Re-read the LIVE bid for the rows a run is about to change.
 
@@ -342,29 +525,54 @@ async def apply_bids(
 
     A row Amazon does not mention at all is reported as failed with a note, rather than assumed to
     have worked. Silence about a bid change is not evidence that it happened.
+
+    **Sponsored Brands differs in TWO ways, and both fail silently if missed.** Its payload needs
+    `adGroupId` (SP does not), and its 207 body is a bare array rather than
+    `{success: [...], error: [...]}`. See `_sb_payload_row` and `_parse_sb_outcome`.
     """
-    from app.ads.logic import WRITER_KEYWORD
+    from app.ads.logic import WRITER_KEYWORD, WRITER_SB_KEYWORD, WRITER_SB_TARGET
 
     if not changes:
         return []
 
     settings = get_settings()
-    path, vnd, key = KEYWORDS if writer == WRITER_KEYWORD else TARGETS
-    id_field = "keywordId" if writer == WRITER_KEYWORD else "targetId"
-    body_key = "keywords" if writer == WRITER_KEYWORD else "targetingClauses"
+    is_sb_keyword = writer == WRITER_SB_KEYWORD
+    is_sb_target = writer == WRITER_SB_TARGET
+    is_sb = is_sb_keyword or is_sb_target
+
+    if is_sb_keyword:
+        path, head_type, id_field = SB_KEYWORDS_PATH, None, "keywordId"
+    elif is_sb_target:
+        path, head_type, id_field = SB_TARGETS_WRITE_PATH, None, "targetId"
+    elif writer == WRITER_KEYWORD:
+        path, head_type, id_field = KEYWORDS[0], KEYWORDS[1], "keywordId"
+        body_key = "keywords"
+    else:
+        path, head_type, id_field = TARGETS[0], TARGETS[1], "targetId"
+        body_key = "targetingClauses"
 
     token = await _access_token(client)
-    head = _media(vnd, token)
+    head = _headers(token) if is_sb else _media(head_type, token)
     results: list[dict] = []
 
     for batch_start in range(0, len(changes), WRITE_BATCH):
         batch = list(changes[batch_start:batch_start + WRITE_BATCH])
         # Built together so index N of `order` is index N of the request Amazon validates.
         order = [str(c["entity_id"]) for c in batch]
-        payload = {body_key: [
-            {id_field: str(c["entity_id"]), "bid": round(float(c["new_bid"]), 2)}
-            for c in batch
-        ]}
+
+        if is_sb_keyword:
+            # A bare LIST, and every row carries `adGroupId`.
+            payload = [_sb_payload_row(c) for c in batch]
+        elif is_sb_target:
+            # A DICT under `targets`, unlike SB keywords' bare list. Measured: the list form returns
+            # `422 "A JSON parsing error was encountered"`, the dict form returns 200. Three
+            # endpoints, three payload shapes — none of them guessable.
+            payload = {"targets": [_sb_target_payload_row(c) for c in batch]}
+        else:
+            payload = {body_key: [
+                {id_field: str(c["entity_id"]), "bid": round(float(c["new_bid"]), 2)}
+                for c in batch
+            ]}
 
         if batch_start:
             await sleep(WRITE_INTERVAL)
@@ -379,41 +587,229 @@ async def apply_bids(
             results.extend({"entity_id": i, "ok": False, "error": message} for i in order)
             continue
 
-        outcome = (response.json() or {}).get(body_key) or {}
-        seen: set[str] = set()
-
-        for item in outcome.get("success") or []:
-            identifier = str(item.get(id_field) or "")
-            if not identifier:
-                index = item.get("index")
-                identifier = order[index] if isinstance(index, int) and index < len(order) else ""
-            if identifier:
-                seen.add(identifier)
-                results.append({"entity_id": identifier, "ok": True, "error": None})
-
-        for item in outcome.get("error") or []:
-            index = item.get("index")
-            identifier = str(item.get(id_field) or "")
-            if not identifier and isinstance(index, int) and index < len(order):
-                identifier = order[index]
-            if identifier:
-                seen.add(identifier)
-                results.append({
-                    "entity_id": identifier, "ok": False,
-                    "error": _error_message(item),
-                })
-
-        # Amazon said nothing about these. Reported as failed, deliberately: an unmentioned row is
-        # an unknown outcome, and recording it as applied would put a wrong `old_bid` chain in the
-        # ledger and make a later undo restore the wrong value.
-        for identifier in order:
-            if identifier not in seen:
-                results.append({
-                    "entity_id": identifier, "ok": False,
-                    "error": "Amazon did not report an outcome for this row.",
-                })
+        body = response.json()
+        if is_sb_target:
+            results.extend(_parse_sb_target_outcome(body, order))
+        elif is_sb_keyword:
+            results.extend(_parse_sb_outcome(body, order, id_field))
+        else:
+            results.extend(_parse_sp_outcome(body, order, id_field, body_key))
 
     return results
+
+
+def _sb_payload_row(change: Mapping) -> dict:
+    """One row of a Sponsored Brands bid write.
+
+    **`adGroupId` is REQUIRED and Sponsored Products does not need it.** Measured: sending SP's shape
+    to `/sb/keywords` returns
+
+        207 [{"code": "INVALID_ARGUMENT",
+              "description": "Keyword was specified without an ad group id",
+              "errors": [{"KeywordError": {"reason": "KEYWORD_MISSING_AD_GROUP_ID"}}], ...}]
+
+    — every row refused, while the HTTP status says success. Verified corrected: with `adGroupId`,
+    `[{"code": "SUCCESS", "keywordId": ...}]`.
+
+    Kept as its own function so the requirement is stated once and pinned by a test, rather than
+    living as an easily-dropped extra key inside a comprehension.
+    """
+    return {
+        "keywordId": int(change["entity_id"]) if str(change["entity_id"]).isdigit()
+        else change["entity_id"],
+        "adGroupId": int(change["ad_group_id"]) if str(change.get("ad_group_id", "")).isdigit()
+        else change.get("ad_group_id"),
+        "bid": round(float(change["new_bid"]), 2),
+    }
+
+
+def _sb_target_payload_row(change: Mapping) -> dict:
+    """One row of a Sponsored Brands TARGET bid write.
+
+    Same `adGroupId` requirement as SB keywords, but wrapped in a dict rather than sent as a bare
+    list — verified, the list form is refused with a JSON parsing error.
+    """
+    identifier = str(change["entity_id"])
+    ad_group = str(change.get("ad_group_id") or "")
+    return {
+        "targetId": int(identifier) if identifier.isdigit() else identifier,
+        "adGroupId": int(ad_group) if ad_group.isdigit() else ad_group,
+        "bid": round(float(change["new_bid"]), 2),
+    }
+
+
+def _parse_sb_target_outcome(body, order: list[str]) -> list[dict]:
+    """Sponsored Brands TARGETS use a THIRD response shape, keyed by request index.
+
+    Measured live:
+
+        {"updateTargetSuccessResults": [{"targetRequestIndex": 0, "targetId": 126516214884382}],
+         "updateTargetErrorResults":   []}
+
+    So this app now parses three different 207-style bodies — SP's `{success, error}`, SB keywords'
+    bare array, and this. Each is its own function because none of them can read another's shape, and
+    a parser that finds nothing reports every row as an unknown outcome, which reads as an Amazon
+    fault rather than our bug.
+
+    `targetRequestIndex` indexes the REQUEST array, so request order is the only link back to a row.
+    """
+    if not isinstance(body, Mapping):
+        logger.warning("ads: unexpected SB target response shape (%s)", type(body).__name__)
+        return _unmentioned(order, set())
+
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    def resolve(item: Mapping) -> str:
+        identifier = str(item.get("targetId") or "")
+        if not identifier:
+            index = item.get("targetRequestIndex")
+            if isinstance(index, int) and index < len(order):
+                identifier = order[index]
+        return identifier
+
+    for item in body.get("updateTargetSuccessResults") or []:
+        if not isinstance(item, Mapping):
+            continue
+        identifier = resolve(item)
+        if identifier:
+            seen.add(identifier)
+            results.append({"entity_id": identifier, "ok": True, "error": None})
+
+    for item in body.get("updateTargetErrorResults") or []:
+        if not isinstance(item, Mapping):
+            continue
+        identifier = resolve(item)
+        if identifier:
+            seen.add(identifier)
+            results.append({
+                "entity_id": identifier, "ok": False,
+                "error": _sb_error_message(item) or str(item.get("code") or "refused"),
+            })
+
+    results.extend(_unmentioned(order, seen))
+    return results
+
+
+def _parse_sp_outcome(body, order: list[str], id_field: str, body_key: str) -> list[dict]:
+    """Sponsored Products' 207: `{"<key>": {"success": [...], "error": [...]}}`.
+
+    Failures are identified by `index` into the REQUEST array, so request order is the only link back
+    to a row — getting it wrong makes the ledger blame the wrong keyword.
+    """
+    # Defensive against the WRONG SHAPE rather than trusting the caller: if Amazon (or a future
+    # refactor) hands this the SB bare-array form, every row must come back as "no outcome" —
+    # reported and recoverable — rather than raising `AttributeError` mid-run, after some batches
+    # have already been sent and the ledger is half-written.
+    outcome = body.get(body_key) if isinstance(body, Mapping) else None
+    if not isinstance(outcome, Mapping):
+        logger.warning(
+            "ads: unexpected %s response shape (%s) — reporting every row as unknown",
+            body_key, type(body).__name__,
+        )
+        return _unmentioned(order, set())
+
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    for item in outcome.get("success") or []:
+        identifier = str(item.get(id_field) or "")
+        if not identifier:
+            index = item.get("index")
+            identifier = order[index] if isinstance(index, int) and index < len(order) else ""
+        if identifier:
+            seen.add(identifier)
+            results.append({"entity_id": identifier, "ok": True, "error": None})
+
+    for item in outcome.get("error") or []:
+        index = item.get("index")
+        identifier = str(item.get(id_field) or "")
+        if not identifier and isinstance(index, int) and index < len(order):
+            identifier = order[index]
+        if identifier:
+            seen.add(identifier)
+            results.append({
+                "entity_id": identifier, "ok": False, "error": _error_message(item),
+            })
+
+    results.extend(_unmentioned(order, seen))
+    return results
+
+
+def _parse_sb_outcome(body, order: list[str], id_field: str) -> list[dict]:
+    """Sponsored Brands' 207: a **bare ARRAY** of `{"code": "SUCCESS"|..., "keywordId": ...}`.
+
+    A separate function rather than a branch inside the SP parser, because the two shapes share no
+    structure: feeding SB's array to `_parse_sp_outcome` finds neither `success` nor `error` and
+    reports "Amazon did not report an outcome" for every single row — a total failure that reads as
+    an Amazon problem rather than our parsing.
+
+    Measured shapes, both from live probes:
+
+        success:  [{"code": "SUCCESS", "keywordId": 102932256635969}]
+        refusal:  [{"code": "INVALID_ARGUMENT",
+                    "description": "Keyword was specified without an ad group id",
+                    "errors": [{"KeywordError": {"message": "...", "reason": "..."}}],
+                    "keywordId": 102932256635969}]
+    """
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    for index, item in enumerate(body or []):
+        if not isinstance(item, Mapping):
+            continue
+        identifier = str(item.get(id_field) or "")
+        if not identifier and index < len(order):
+            identifier = order[index]
+        if not identifier:
+            continue
+        seen.add(identifier)
+
+        code = str(item.get("code") or "").upper()
+        if code == "SUCCESS":
+            results.append({"entity_id": identifier, "ok": True, "error": None})
+        else:
+            results.append({
+                "entity_id": identifier, "ok": False,
+                "error": _sb_error_message(item) or code or "refused without a reason",
+            })
+
+    results.extend(_unmentioned(order, seen))
+    return results
+
+
+def _unmentioned(order: list[str], seen: set[str]) -> list[dict]:
+    """Rows Amazon said nothing about, reported as FAILED.
+
+    An unmentioned row is an unknown outcome, and recording it as applied would put a wrong `old_bid`
+    chain in the ledger — so a later undo would write a bid Amazon never held.
+    """
+    return [
+        {"entity_id": identifier, "ok": False,
+         "error": "Amazon did not report an outcome for this row."}
+        for identifier in order if identifier not in seen
+    ]
+
+
+def _sb_error_message(item: Mapping) -> str:
+    """Flatten Sponsored Brands' error shape, which nests differently from Sponsored Products'.
+
+    SB: `{"description": ..., "errors": [{"KeywordError": {"message": ..., "reason": ...}}]}` —
+    the inner key is the error CLASS name, so it cannot be looked up by a fixed key.
+    """
+    parts: list[str] = []
+    description = item.get("description")
+    if description:
+        parts.append(str(description))
+    for error in item.get("errors") or []:
+        if not isinstance(error, Mapping):
+            continue
+        for value in error.values():
+            if isinstance(value, Mapping):
+                detail = value.get("message") or value.get("reason")
+                if detail and str(detail) not in parts:
+                    parts.append(str(detail))
+    return "; ".join(parts)
 
 
 def _error_message(item: Mapping) -> str:
