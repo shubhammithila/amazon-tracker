@@ -436,7 +436,12 @@ def verdict_for(
         if (s.get("net_pct") or 0) < 0 and int(s.get("units") or 0) > dead_units
     ]
     if net_pct > 0 and losers:
-        names = ", ".join(_size_label(s) for s in losers[:3])
+        # **Name the FLAVOUR too when the parent has more than one**, or the reason reads
+        # "2 size(s) lose money (250 g, 250 g)" — which names two different products
+        # identically and gives the owner nothing to act on. Decided from `sizes` rather than
+        # passed in, so the reason cannot disagree with the rows it is describing.
+        multi = len({str(s.get("product") or "") for s in sizes if s.get("product")}) > 1
+        names = ", ".join(_size_label(s, with_flavour=multi) for s in losers[:3])
         return VERDICT_SURGICAL, (
             f"the product earns {net_pct * 100:.1f}% overall, but {len(losers)} size(s) "
             f"lose money ({names}) — kill those, keep the rest"
@@ -482,12 +487,135 @@ def verdict_for(
     return VERDICT_MONITOR, ", ".join(parts)
 
 
-def _size_label(size: Mapping) -> str:
-    """A pack size named for a human: "500 g" if the weight is known, else the ASIN."""
+def _size_label(size: Mapping, *, with_flavour: bool = False) -> str:
+    """A pack size named for a human: "500 g" if the weight is known, else the ASIN.
+
+    ``with_flavour`` prefixes the child's own catalogue name, for the parents that vary by
+    flavour as well as by weight — see `flavour_groups`. Off by default because for 85 of the 90
+    parents the flavour IS the parent name, and repeating it on every size row is noise.
+    """
     from app.shipment.logic import weight_label
 
     weight = float(size.get("weight") or 0)
-    return weight_label(weight) if weight else (size.get("asin") or "?")
+    label = weight_label(weight) if weight else (size.get("asin") or "?")
+    flavour = str(size.get("product") or "").strip()
+    return f"{flavour} {label}" if with_flavour and flavour else label
+
+
+# ─── Two variation dimensions, not one ───────────────────────────────────────
+#
+# **A parent can vary by FLAVOUR as well as by weight, and the tab only knew about weight.**
+# Measured on the live account: 5 of the 90 parents hold more than one flavour, and the worst
+# case is a single parent holding **15 sizes = 5 flavours x 3 weights**, every row labelled by
+# weight alone — so the expanded product read as "500 g, 500 g, 250 g, 250 g, 250 g, 250 g,
+# 1 kg, 1 kg, 500 g, ..." with no way to tell which flavour any row belonged to. Three rows
+# genuinely said "250 g" and were three different products.
+#
+# The flavour is already on every size row: `size["product"]` is the catalogue NAME of the child
+# ASIN, which differs per flavour while the parent carries only the first one Amazon happened to
+# list. That is also why the parent was called "Cheese & Cream Roasted Chana" when Cheese & Cream
+# is 3 of its 15 sizes and its SMALLEST seller — the name was an accident of iteration order.
+
+
+def _tokens(name: str) -> list[str]:
+    return [t for t in str(name or "").split() if t]
+
+
+def _shared_run(token_lists: Sequence[Sequence[str]], *, from_end: bool) -> list[str]:
+    """The longest run of tokens every name shares, read from one end.
+
+    Case-insensitive, because the catalogue mixes "urad dal badi" with "Chana dal badi" and a
+    case-sensitive compare would find nothing in common between them. The casing returned is the
+    first list's, which callers pass as the biggest seller's — so the label reads the way the
+    best-known product spells it.
+    """
+    if not token_lists:
+        return []
+    shortest = min(len(t) for t in token_lists)
+    shared = 0
+    while shared < shortest:
+        index = -(shared + 1) if from_end else shared
+        word = token_lists[0][index].casefold()
+        if any(other[index].casefold() != word for other in token_lists[1:]):
+            break
+        shared += 1
+    if not shared:
+        return []
+    return list(token_lists[0][-shared:] if from_end else token_lists[0][:shared])
+
+
+def family_label(names: Sequence[str]) -> str:
+    """What a set of flavour names have in common, as a name for their shared product.
+
+    Asked for as *"the parent name can be flavours of chana"* — so the label is derived rather
+    than typed, because five parents need it and a hand-written name for each would go stale the
+    moment a flavour is added.
+
+    **Both ends are checked, and they are joined when both exist.** Measured against all five
+    multi-flavour parents on the account, which need three different shapes:
+
+    ======================================  ============================
+    the flavours                            the shared name
+    ======================================  ============================
+    Nimbu Pudina / Peri Peri / ... Chana    ``Roasted Chana`` (end only)
+    Desi Tilkut / Desi Tilkut - Jaggery     ``Desi Tilkut`` (start only)
+    Bengali Moong / Urad **dal bori**       ``Bengali dal bori`` (both)
+    ======================================  ============================
+
+    Taking one end only would have called the last of those "dal bori", dropping the brand line
+    the products are actually sold under. The runs cannot be allowed to overlap: two names
+    differing in one middle token would otherwise emit that token twice.
+
+    Falls back to the first name — passed as the biggest seller's — when nothing is shared, which
+    is honest: an unrelated set has no family name, and inventing one would be worse than
+    repeating a member's.
+    """
+    clean = [_tokens(name) for name in names if str(name or "").strip()]
+    if not clean:
+        return ""
+    if len(clean) == 1:
+        return " ".join(clean[0])
+
+    head = _shared_run(clean, from_end=False)
+    tail = _shared_run(clean, from_end=True)
+    # Overlap guard: with names like "A x B" / "A y B" the head is [A] and the tail is [B] and
+    # they are disjoint, but "A B" / "A B C" would give head [A, B] and tail [B] — emitting B
+    # twice. The shortest name bounds how many tokens can legitimately be claimed in total.
+    shortest = min(len(t) for t in clean)
+    if len(head) + len(tail) > shortest:
+        return " ".join(tail or head)
+    shared = head + tail
+    return " ".join(shared) if shared else " ".join(clean[0])
+
+
+def flavour_groups(sizes: Sequence[Mapping]) -> list[dict]:
+    """``sizes`` regrouped by flavour, each group's weights beneath it, biggest seller first.
+
+    ``[]`` when the parent has only one flavour — 85 of the 90 parents — so the screen keeps
+    rendering a flat list of weights for them rather than growing a pointless heading level.
+    The caller checks for emptiness rather than for a count, so "does this need grouping" is
+    asked in exactly one place.
+
+    Each group carries the summed economics of its own sizes, computed by ``_sum_sizes`` like
+    every other total here, so a flavour heading and the weights under it can never disagree.
+    """
+    by_flavour: dict[str, list] = {}
+    for size in sizes:
+        by_flavour.setdefault(str(size.get("product") or "").strip(), []).append(size)
+    if len(by_flavour) < 2:
+        return []
+
+    groups = []
+    for flavour, rows in by_flavour.items():
+        # Heaviest revenue first WITHIN the flavour, matching how sizes are ordered elsewhere.
+        rows = sorted(rows, key=lambda s: (-_num(s.get("sales")), s.get("asin") or ""))
+        groups.append({
+            "flavour": flavour or (rows[0].get("asin") or ""),
+            "sizes": rows,
+            **_sum_sizes(rows),
+        })
+    groups.sort(key=lambda g: (-g["sales"], g["flavour"].casefold()))
+    return groups
 
 
 def channel_split(sku_rows: Sequence, ads_by_sku: Mapping | None = None) -> dict:
@@ -588,11 +716,11 @@ def portfolio(
             "product": "", "brand": "",
         })
         parent["sizes"].append(size)
-        # The catalogue agrees on the name across a family (measured: one name per parent), so
-        # the first non-empty one names the row. Falls back to the ASIN rather than "Unknown",
-        # which at least identifies the listing.
-        if not parent["product"] and size["product"]:
-            parent["product"] = size["product"]
+        # The brand is consistent across a family, so the first non-empty one is the row's.
+        # **The NAME is not taken this way any more**, and that was a real defect: it took
+        # whichever flavour Amazon happened to list first, so a parent holding 5 flavours was
+        # named after the one that sold LEAST. It is derived from all of them below instead.
+        if not parent["brand"] and size["brand"]:
             parent["brand"] = size["brand"]
 
     parents = []
@@ -602,12 +730,27 @@ def portfolio(
         rating_row = _rating_for(sizes, ratings)
         rating = rating_row.get("rating")
 
+        # The flavour dimension. `groups` is empty for the 85 single-flavour parents, so the
+        # screen only grows a heading level where there is genuinely a second dimension.
+        groups = flavour_groups(sizes)
+        # Names are passed BIGGEST SELLER FIRST (`sizes` is already sorted that way), because
+        # `family_label` returns the leading name's casing when nothing is shared and its
+        # spelling of the shared tokens when something is.
+        flavour_names = list(dict.fromkeys(s["product"] for s in sizes if s["product"]))
+        product = (
+            family_label(flavour_names) if len(groups) > 1
+            else (flavour_names[0] if flavour_names else "")
+        )
+
         verdict, reason = verdict_for(agg, rating=rating, sizes=sizes, thresholds=limits)
         decision = decisions.get(parent_asin) or {}
         parents.append({
             "parent_asin": parent_asin,
-            "product": parent["product"] or parent_asin,
+            "product": product or parent_asin,
             "brand": parent["brand"],
+            # The flavour dimension, empty when the parent has only one.
+            "flavour_groups": groups,
+            "flavours": [g["flavour"] for g in groups],
             "rating": rating,
             "rating_count": rating_row.get("rating_count"),
             "rating_at": rating_row.get("scraped_at"),
@@ -619,6 +762,30 @@ def portfolio(
             "sizes": sizes,
             **agg,
         })
+
+    # **A derived name can COLLIDE with a real one, and on this account it does.**
+    #
+    # Measured after the rename: B0DWFC3QT9 holds 5 flavours whose shared name is "Roasted Chana",
+    # and B0CY8HFJT9 is a *different* parent already CALLED "Roasted Chana" — 1,309 units against
+    # 1,301, so the two sat next to each other in the table as apparent duplicates with no way to
+    # tell which was which. Both are legitimate products; the ambiguity is entirely an artefact of
+    # shortening one of them.
+    #
+    # The disambiguation only ever touches the DERIVED name, never a catalogue one: the product
+    # actually called "Roasted Chana" keeps its name, and the family that was shortened into a
+    # collision says what it is a family OF. A suffix rather than a prefix so the shared words
+    # still lead, which is what makes the rows sort and scan together.
+    #
+    # (`Singhara Atta` appears four times and `Govindbhog Rice` twice, both from the catalogue
+    # itself and neither introduced here — real separate listings with the same name, left alone
+    # because renaming what Amazon and the sheet agree on would be this function overreaching.)
+    derived = {p["parent_asin"] for p in parents if p["flavours"]}
+    taken: dict[str, int] = {}
+    for parent in parents:
+        taken[parent["product"]] = taken.get(parent["product"], 0) + 1
+    for parent in parents:
+        if parent["parent_asin"] in derived and taken.get(parent["product"], 0) > 1:
+            parent["product"] = f"{parent['product']} ({len(parent['flavours'])} flavours)"
 
     # Heaviest revenue first: the portfolio question is "where is the money", and a product
     # with ten times the sales deserves the first look. Name breaks the tie so two renders of

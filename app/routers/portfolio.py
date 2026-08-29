@@ -384,8 +384,21 @@ async def download_portfolio(
     window = data.get("window")
     totals = data["totals"]
 
+    def _size_line(size: dict, indent: str) -> list:
+        # Indented rather than a separate sheet: the pack-size detail is only meaningful
+        # under its parent, and two sheets get read separately.
+        return [
+            f"{indent}{_size_name(size)}", _channel_note(size), size["asin"],
+            "", _pct(size["net_pct"]), _pct(size["tacos"]), _acos(size),
+            size["sales"], size["ad_spend"],
+            size.get("ad_attributed_sales") or 0,
+            size["net"], size["units"],
+            "", "", "",
+        ]
+
     rows = []
     for parent in data["parents"]:
+        flavours = parent.get("flavours") or []
         rows.append([
             parent["product"], parent["brand"], "",
             parent["verdict"],
@@ -395,19 +408,45 @@ async def download_portfolio(
             parent["net"], parent["units"],
             _stars(parent["rating"], parent["rating_count"]),
             parent["decision"] or "",
-            parent["verdict_reason"],
+            # The flavour count belongs in the reason column on the parent line, because in a
+            # spreadsheet the indentation alone does not say how many levels deep a row is.
+            (f"{len(flavours)} flavours x {len(parent['sizes'])} sizes. "
+             if flavours else "") + parent["verdict_reason"],
         ])
-        for size in parent["sizes"]:
-            # Indented rather than a separate sheet: the pack-size detail is only meaningful
-            # under its parent, and two sheets get read separately.
-            rows.append([
-                f"    {_size_name(size)}", _channel_note(size), size["asin"],
-                "", _pct(size["net_pct"]), _pct(size["tacos"]), _acos(size),
-                size["sales"], size["ad_spend"],
-                size.get("ad_attributed_sales") or 0,
-                size["net"], size["units"],
-                "", "", "",
-            ])
+        # **The same two levels the screen shows.** A file with one flat weight level under a
+        # multi-flavour product would repeat "250 g" three times with no way to tell the rows
+        # apart — and a spreadsheet is where those rows get sorted and filtered by hand, so an
+        # ambiguous label there is worse than on screen, not better.
+        if parent.get("flavour_groups"):
+            for group in parent["flavour_groups"]:
+                rows.append([
+                    f"    {group['flavour']}", "", "",
+                    "", _pct(group["net_pct"]), _pct(group["tacos"]), _acos(group),
+                    group["sales"], group["ad_spend"],
+                    group.get("ad_attributed_sales") or 0,
+                    group["net"], group["units"],
+                    "", "", f"{len(group['sizes'])} size(s)",
+                ])
+                for size in group["sizes"]:
+                    rows.append(_size_line(size, "        "))
+        else:
+            for size in parent["sizes"]:
+                rows.append(_size_line(size, "    "))
+
+    # The account total, as its own last row. `_totals_row` in `documents` cannot produce it:
+    # it sums every trailing column with `int(...)`, and these columns hold percentages, an em
+    # dash and prose. The percentages are `totals`' own — recomputed from the sums by
+    # `logic._sum_sizes`, never averaged.
+    rows.append([
+        f"TOTAL — {totals['parents']} products, {totals['skus']} pack sizes", "", "",
+        "",
+        _pct(totals["net_pct"]), _pct(totals["tacos"]), _acos(totals),
+        totals["sales"], totals["ad_spend"],
+        totals.get("ad_attributed_sales") or 0,
+        totals["net"], totals["units"],
+        "", "",
+        "Money and units are summed; percentages are recomputed from those sums, never averaged.",
+    ])
 
     subtitle = (
         f"{window[0]} to {window[1]} (IST) · " if window else ""
