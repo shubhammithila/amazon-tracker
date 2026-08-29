@@ -120,6 +120,40 @@ tbody tr.parent:hover td{background:var(--accent-soft)}
 /* Size rows recede: they are detail under a heading, not peers of it. */
 tr.size td{background:var(--surface2);font-size:12.5px;color:var(--text-muted)}
 tr.size td:first-child{padding-left:30px}
+
+/* **The channel note MUST wrap, and this is what made Units disappear.**
+   `tbody td` sets `white-space:nowrap` for good reason — a wrapped "₹1,23,456" reads as two
+   numbers — but the merchant/FBA note is a SENTENCE, ~150 characters of it, injected into the
+   first cell of every expanded size row. Held on one line it made the Product column
+   **780px** instead of 353px and the table 1526px instead of 1193px.
+
+   The wrapper then scrolls, as designed, so the overflow is contained — but it is contained by
+   pushing Units, Returns and Rating off the right-hand edge. Reported as "when I click on the
+   parent sku, the child sku isnt showing units", and the units were rendered correctly all
+   along: `${n(s.units)}` was in the markup, past the visible edge. Measured: the Units header
+   sat at x=914 collapsed and x=1283 expanded.
+
+   Prose wraps; numbers do not. `max-width` keeps the note from claiming the column on its own
+   at a wide viewport, where there is no scrollbar to make the cost of it visible. */
+.chan{white-space:normal;max-width:520px;font-size:11.5px;margin-top:3px;line-height:1.5}
+
+/* Flavour headings: a level BETWEEN the parent and its weights, for the 5 parents that vary by
+   flavour as well as by size. Styled between the two — bolder than a size row, lighter than a
+   parent — because that is exactly what it is, and the nesting has to be readable at a glance or
+   the grouping has not solved anything. */
+tr.flav td{background:var(--surface2);font-weight:700;font-size:12.5px;color:var(--text)}
+tr.flav td:first-child{padding-left:30px}
+.fcount{font-size:10.5px;color:var(--text-muted);font-weight:600;margin-left:6px}
+tr.size.nested td:first-child{padding-left:52px}
+
+/* The totals row. Heavier than the data and pinned to the bottom of the grid, so a long list
+   still shows what the column adds up to without scrolling back. `position:sticky` on the cells
+   rather than the row, because a `tr` is not a positioned box in the table layout model. */
+tfoot tr.totals td{background:var(--surface2);font-weight:700;font-size:13px;color:var(--text);
+  border-top:2px solid var(--border-strong);border-bottom:none;
+  position:sticky;bottom:0;z-index:1}
+.tnote{display:block;font-size:10.5px;color:var(--text-dim);font-weight:500;white-space:normal;
+  max-width:340px;line-height:1.45;margin-top:2px}
 .asin{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--text-dim)}
 .neg{color:var(--red);font-weight:700}
 .pos{color:var(--green);font-weight:700}
@@ -409,8 +443,7 @@ function renderWindowBar(){
   function presetRange(days){
     const end = new Date(today); end.setDate(end.getDate() - 1);
     const start = new Date(end); start.setDate(start.getDate() - (days - 1));
-    const iso = d => d.toISOString().slice(0, 10);
-    return {start: iso(start), end: iso(end)};
+    return {start: localDate(start), end: localDate(end)};
   }
 
   const buttons = [7, 30, 60, 90].map(days => {
@@ -446,9 +479,24 @@ function renderWindowBar(){
 
 /* Yesterday, because today's figures are still settling: an ad charge lands hours after the
    sale it belongs to, so a window including today shows a punishing ACOS every morning. */
+/* **`toISOString()` is a UTC formatter, and IST is UTC+5:30 — so it shifts a LOCAL date back a
+   day for the 5½ hours after midnight.** Between 00:00 and 05:30 IST, "yesterday" built from a
+   local `Date` formatted as UTC comes out as the day before yesterday, so the picker refused a
+   window whose data was sitting in the database and the presets silently asked for the wrong
+   range. It only misbehaves overnight, which is when nobody is looking.
+
+   Exactly the defect CLAUDE.md already records twice: on the Ads tab (`localDate`, which is why
+   this is the same function name) and on the Orders tab, where `new Date("2026-08-25")` rendered
+   as 05:30 the following morning. Building the string from the local getters cannot shift. */
+function localDate(d){
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
 function maxDate(){
   const d = new Date(); d.setDate(d.getDate() - 1);
-  return d.toISOString().slice(0, 10);
+  return localDate(d);
 }
 
 function renderBanners(){
@@ -650,8 +698,17 @@ function visible(){
     if(!passesFilters(r)) return false;
     if(!q) return true;
     // Built for matching only and never inserted into the DOM, so it needs no escaping.
+    //
+    // **The FLAVOUR names are in here, and they have to be.** A parent that varies by flavour is
+    // now named for what its flavours share ("Roasted Chana"), so searching "Cheese" would find
+    // nothing at all — the word is on the child rows and no longer on the parent. Every size's
+    // own product name goes in, which is also how a search matches a flavour the owner remembers
+    // buying without knowing which parent Amazon filed it under.
     const hay = [r.product, r.brand, r.parent_asin, r.asin, r.verdict, r.decision,
-                 ...((r.sizes || []).map(s => s.asin))].join(" ").toLowerCase();
+                 r.parent_product,
+                 ...((r.sizes || []).map(s => s.asin)),
+                 ...((r.sizes || []).map(s => s.product)),
+                 ...(r.flavours || [])].join(" ").toLowerCase();
     return hay.includes(q);
   });
 
@@ -729,7 +786,11 @@ function channelHtml(row){
           ? `<span class="dim">ACOS ${(c.acos*100).toFixed(0)}%</span>`
           : (c.acos_infinite ? '<span class="neg">ads, no sales</span>' : "")} </span>`;
   };
-  return `<div class="dim" style="font-size:11.5px;margin-top:3px">
+  // `.chan` rather than an inline style: this note is prose and must WRAP, and `tbody td` sets
+  // nowrap for the number columns. Held on one line it widened the Product column from 353px to
+  // 780px and pushed Units off the right edge of the scroll wrapper — see the CSS for the
+  // measurement. A class keeps the rule where the other layout rules are.
+  return `<div class="dim chan">
     ${one("merchant", "Easy Ship /&nbsp;merchant")}${one("fba", "FBA")}
     <span class="dim">— combined above; Amazon reports these as separate SKUs</span></div>`;
 }
@@ -748,6 +809,94 @@ function dataCells(r){
     <td>${r.decision
           ? `<span class="tag d-${esc(r.decision)}">${esc(r.decision.toUpperCase())}</span>`
           : '<span class="dim">—</span>'}</td>`;
+}
+
+/* ── The totals row ──────────────────────────────────────────────────────────────
+   Asked for as "show total/average of all columns", and the honest answer differs per column —
+   which is the whole design of this function rather than a caveat on it.
+
+   **Money and units SUM. Percentages are RECOMPUTED from those sums, never averaged.** This is
+   the same rule `logic._sum_sizes` follows on the server and for the same reason: the mean of 90
+   products' TACOS weights a product that sold 1 unit equally with one that sold 400, and produces
+   a number belonging to no product. Measured on the live window — the mean of the per-product
+   TACOS values is not 33.0%, because the products with the wildest ratios are the smallest.
+
+   **Rating is the one genuine average, and it is weighted by review count.** A 5.0 from 2 reviews
+   is not evidence equal to a 3.8 from 400. Measured: the plain mean is 3.86 against a
+   review-weighted 3.95, and the weighted figure is the one that describes the catalogue a shopper
+   sees. 7 of the 90 products have no rating at all and are excluded rather than counted as zero.
+
+   **It totals the FILTERED rows, not the whole account.** The row sits at the foot of a grid that
+   a verdict chip, three custom filters and a search box can all narrow, so a constant account
+   total there would silently answer a different question from the rows above it — the "86 orders
+   beside 87 lines" defect this codebase has already been bitten by. The label says how many rows
+   it covers, so "8 products" beside a KILL filter is self-explanatory.
+
+   Computed in the browser from the same row objects the table renders, so it cannot disagree with
+   the column above it. It deliberately does NOT reuse `data.totals`: that is the unfiltered
+   account, correct for the KPI strip and wrong here. */
+function totalsRow(list, isSkus){
+  const sum = key => list.reduce((a, r) => a + n(r[key]), 0);
+  const sales = sum("sales"), spend = sum("ad_spend"), net = sum("net");
+  const adsCost = sum("ads_cost"), attributed = sum("ad_attributed_sales");
+  const units = sum("units"), ordered = sum("units_ordered"), refunded = sum("units_refunded");
+
+  // A ratio with no denominator is a dash, never 0% — `_ratio`'s rule on the server, and for the
+  // same reason: 0% TACOS would read as the most ad-efficient set of products on the account.
+  const ratio = (part, whole) => whole ? part / whole : null;
+
+  // Rating: only the rows that HAVE one, weighted by how many reviews stand behind it.
+  const rated = list.filter(r => r.rating !== null && r.rating !== undefined);
+  const reviews = rated.reduce((a, r) => a + n(r.rating_count), 0);
+  const rating = reviews
+    ? rated.reduce((a, r) => a + r.rating * n(r.rating_count), 0) / reviews
+    : null;
+
+  const decided = list.filter(r => r.decision).length;
+  // Ad spend with zero attributed sales across the whole selection: a ratio cannot say it, so it
+  // travels as the same flag a single row uses.
+  const infinite = adsCost > 0 && attributed === 0;
+
+  return `<tr class="totals">
+    <td>All ${n(list.length).toLocaleString("en-IN")} ${isSkus ? "pack size(s)" : "product(s)"} shown
+      <span class="tnote">money and units summed; percentages recomputed from those sums, not averaged</span></td>
+    <td></td>
+    <td class="num">${money(sales)}</td>
+    <td class="num">${money(spend)}</td>
+    <td class="num">${pct(ratio(spend, sales))}</td>
+    <td class="num">${acosCell({acos: adsCost ? ratio(adsCost, attributed) : null,
+                                acos_infinite: infinite})}</td>
+    <td class="num">${pct(ratio(net, sales), {sign: true})}</td>
+    <td class="num">${n(units).toLocaleString("en-IN")}</td>
+    <td class="num">${pct(ratio(refunded, ordered))}</td>
+    <td>${rating === null
+          ? '<span class="dim">—</span>'
+          : `${stars(rating, reviews)}<span class="tnote">weighted by reviews</span>`}</td>
+    <td>${decided
+          ? `<span class="dim">${n(decided)} decided</span>`
+          : '<span class="dim">—</span>'}</td>
+  </tr>`;
+}
+
+/* One pack-size row. ONE function, called from both the flat and the flavour-grouped paths,
+   so a nested size row and a flat one cannot come to disagree about a column — the same reason
+   `applySort` is shared by the click and the keydown handlers. `nested` only indents. */
+function sizeRowHtml(s, nested){
+  return `<tr class="size${nested ? " nested" : ""}">
+    <td>${esc(sizeName(s))} <span class="asin">${esc(s.asin)}</span>${channelHtml(s)}</td>
+    <td></td>
+    <td class="num">${money(s.sales)}</td>
+    <td class="num">${money(s.ad_spend)}</td>
+    <td class="num">${pct(s.tacos)}</td>
+    <td class="num">${acosCell(s)}</td>
+    <td class="num">${pct(s.net_pct, {sign: true})}</td>
+    <td class="num">${n(s.units).toLocaleString("en-IN")}</td>
+    <td class="num">${s.returns_pct ? pct(s.returns_pct) : '<span class="dim">—</span>'}</td>
+    <td colspan="2" class="dim" style="font-size:11px">
+      ${/* Ratings are pooled per family by Amazon, so a per-size star rating would be the
+           parent's number repeated — implying a precision the review data lacks. */ ""}
+      rating is per product</td>
+  </tr>`;
 }
 
 function renderTable(){
@@ -811,9 +960,15 @@ function renderTable(){
   } else {
     list.forEach(p => {
       const isOpen = open.has(p.parent_asin);
+      // The flavour count is on the COLLAPSED row on purpose: it is the reason to expand this
+      // product rather than a fact discovered after doing so, and 15 rows appearing under a name
+      // that mentions none of them is what made the grouping unreadable before.
+      const flav = (p.flavours || []).length;
       html += `<tr class="parent" data-parent="${esc(p.parent_asin)}">
         <td class="p-name"><span class="caret">${isOpen ? "▾" : "▸"}</span> ${esc(p.product)}
-          ${p.brand ? `<span class="brand">${esc(p.brand)}</span>` : ""}</td>
+          ${p.brand ? `<span class="brand">${esc(p.brand)}</span>` : ""}
+          ${flav ? `<span class="fcount" title="${esc(p.flavours.join(", "))}">${flav} flavours
+            &times; ${p.sizes.length} sizes</span>` : ""}</td>
         ${dataCells(p)}
       </tr>`;
 
@@ -840,24 +995,33 @@ function renderTable(){
       </td></tr>`;
 
       /* Sizes always sort WITHIN their parent, never globally: a size row floating away from the
-         product it belongs to would be meaningless. */
-      p.sizes.forEach(s => {
-        html += `<tr class="size">
-          <td>${esc(sizeName(s))} <span class="asin">${esc(s.asin)}</span>${channelHtml(s)}</td>
-          <td></td>
-          <td class="num">${money(s.sales)}</td>
-          <td class="num">${money(s.ad_spend)}</td>
-          <td class="num">${pct(s.tacos)}</td>
-          <td class="num">${acosCell(s)}</td>
-          <td class="num">${pct(s.net_pct, {sign: true})}</td>
-          <td class="num">${n(s.units)}</td>
-          <td class="num">${s.returns_pct ? pct(s.returns_pct) : '<span class="dim">—</span>'}</td>
-          <td colspan="2" class="dim" style="font-size:11px">
-            ${/* Ratings are pooled per family by Amazon, so a per-size star rating would be the
-                 parent's number repeated — implying a precision the review data lacks. */ ""}
-            rating is per product</td>
-        </tr>`;
-      });
+         product it belongs to would be meaningless.
+
+         **Two dimensions when the parent has them.** `flavour_groups` is empty for 85 of the 90
+         products, which keeps a flat list of weights for them; the five that vary by flavour AND
+         weight get a flavour heading with its own summed figures and the weights nested beneath.
+         Without it the worst case rendered 15 rows labelled by weight alone — "250 g" three times
+         over, each a different product. */
+      if((p.flavour_groups || []).length){
+        p.flavour_groups.forEach(g => {
+          html += `<tr class="flav">
+            <td>${esc(g.flavour)}
+              <span class="fcount">${g.sizes.length} size(s)</span></td>
+            <td></td>
+            <td class="num">${money(g.sales)}</td>
+            <td class="num">${money(g.ad_spend)}</td>
+            <td class="num">${pct(g.tacos)}</td>
+            <td class="num">${acosCell(g)}</td>
+            <td class="num">${pct(g.net_pct, {sign: true})}</td>
+            <td class="num">${n(g.units).toLocaleString("en-IN")}</td>
+            <td class="num">${g.returns_pct ? pct(g.returns_pct) : '<span class="dim">—</span>'}</td>
+            <td colspan="2" class="dim" style="font-size:11px">rating is per product</td>
+          </tr>`;
+          g.sizes.forEach(s => { html += sizeRowHtml(s, true); });
+        });
+      } else {
+        p.sizes.forEach(s => { html += sizeRowHtml(s, false); });
+      }
     });
   }
 
@@ -875,6 +1039,13 @@ function renderTable(){
       <table>
         <thead><tr>${headerHtml()}</tr></thead>
         <tbody>${html}</tbody>
+        ${/* A real `tfoot`, not a last `tbody` row. It is a summary of the column rather than
+             another member of it, and the element is what says so to a screen reader — which
+             matters more here than usual, because the row's percentages are recomputed rather
+             than summed and a reader announcing it as data would invite adding it to the rows
+             above. It also survives sorting without any special case: sorting reorders the
+             tbody, and a total that could drift into the middle of the list would be wrong. */""}
+        <tfoot>${totalsRow(list, isSkus)}</tfoot>
       </table>
     </div>
   </div>`;

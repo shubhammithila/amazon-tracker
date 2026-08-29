@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (1477 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (1846 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -27,6 +27,31 @@ explicit role/username, never escalated, because forging either needs the signin
 > no password-reset email and no console, so if anything is wrong with the `users`
 > table after a deploy they are the only way back in. The Users panel warns while
 > `APP_PASSWORD` is live so it gets retired knowingly rather than by accident.
+
+### Signed out, EVERY route goes to /login — and FastAPI added four that did not
+Asked for as *"when someone is not logged in and opens any page or link, it should go to the login
+page"*. Every page and all ~110 API routes already did, verified by probing each one with no cookie.
+What nobody had looked at were the routes **FastAPI mounts by itself**: `/docs`, `/redoc`,
+`/docs/oauth2-redirect` and `/openapi.json`.
+
+`/openapi.json` was the one that mattered. It answered **200 to anyone** and enumerated **109 route
+paths** with their parameters, request bodies and complete docstrings — including `/ads/apply`, the
+only route in this app that spends money, together with the prose describing its guardrails. `/docs`
+rendered the same thing as a form with an Execute button.
+
+They are now **removed** (`docs_url=None`, `redoc_url=None`, `openapi_url=None`) rather than gated.
+Removed is stronger: a docs page that does not exist needs no dependency to protect it and cannot be
+re-opened by loosening one. `openapi_url` is the load-bearing one — measured, FastAPI will not mount
+the docs UI with no schema to render, so restoring `docs_url` alone is inert.
+
+**`tests/test_unauthenticated_access.py` ENUMERATES the routes from `app.routes`** rather than
+listing them. The pre-existing test checked five paths it had been given and passed for the life of
+the project while the schema was public — a hand-written list is exactly how this went unnoticed. Five
+exemptions are declared with a reason each (`/login`, `/logout`, `/no-access`, `/health`, `/static/*`),
+and the allow-list is itself asserted in both directions so it cannot silently grow.
+
+An unknown path is a **404, not a redirect**. A catch-all would satisfy the request lazily and make
+every mistyped URL look like a session timeout.
 
 ### Permissions are per AREA, not per role
 `app/permissions.py` owns one list: Dashboard · Invoice · Portfolio · Projections ·
@@ -1483,6 +1508,88 @@ the same defect as the PDF cells that printed SKUs over product names.
 > wrap rule, so all 8 pages still scroll ~411px sideways and Logout sits off-screen. Site-wide, not
 > this page's, and tracked separately.
 
+> **The same `nowrap` rule then hid the Units column, and it was reported as missing DATA.**
+> "when I click on the parent sku, the child sku isnt showing units" — and the units were rendered
+> correctly the whole time. The merchant/FBA note is a ~150-character *sentence* injected into the
+> first cell of every expanded size row, and it inherited `white-space:nowrap` from `tbody td`.
+> Measured in the browser: the Product column went **353px → 780px** on expand and the table
+> 1193px → 1526px, so the Units header moved from x=914 to x=1283 and off the right edge of the
+> wrapper. The wrapper was containing the overflow exactly as designed — by scrolling three columns
+> out of sight.
+>
+> `.chan` sets `white-space:normal` with a `max-width`. **Prose wraps; numbers do not** — the two
+> rules are not in conflict, they were just never told apart, and the fix is one class rather than
+> loosening the nowrap that keeps `₹1,23,456` on one line.
+
+### Two variation dimensions: flavour AND weight
+Asked for as *"the cheese and cream chana hai two variant grouping. flavours and weight. they should
+be shown prpoerly and the parent name can be flavours of chana"*.
+
+Measured: **5 of the 90 parents hold more than one flavour**, and the worst holds **15 child ASINs =
+5 flavours × 3 weights**. Expanded, it rendered 15 rows labelled by weight alone — "500 g" four
+times, "250 g" five times — with nothing saying which flavour any row was. Three rows genuinely read
+"250 g" and were three different products.
+
+**The parent was also named after its SMALLEST-selling flavour.** `portfolio()` took the first
+non-empty child name it happened to iterate, and Cheese & Cream is 3 of those 15 sizes and the least
+sold of the five. So the row was called "Cheese & Cream Roasted Chana" by accident of iteration
+order — which is why the fix is not a hand-typed name per product but `family_label`, deriving the
+name from what the flavours *share*.
+
+**Both ends of the names are read, and the five real cases need three different shapes:**
+
+| The flavours | Shared name | Which end |
+|---|---|---|
+| Nimbu Pudina / Peri Peri / … Roasted Chana | `Roasted Chana` | end |
+| Desi Tilkut / Desi Tilkut - Jaggery | `Desi Tilkut` | start |
+| Bengali Moong **dal bori** / Bengali Urad **dal bori** | `Bengali dal bori` | both |
+
+Taking one end only would have called the last of those "dal bori", dropping the brand line the
+products are actually sold under. Matching is **case-insensitive** (the sheet mixes "urad dal badi"
+with "Chana dal badi") while the *output* keeps the biggest seller's casing, since that is the
+spelling a human recognises.
+
+- **`flavour_groups` returns `[]` for the 85 single-flavour parents**, so they keep a flat list of
+  weights. A heading level on every product would repeat the parent's own name 85 times to fix 5.
+- **A group is exactly the sum of its own sizes**, `_sum_sizes` like everywhere else, because the
+  heading sits directly above the rows it describes.
+- **The SURGICAL reason names the flavour too** when there is more than one. It read "2 size(s) lose
+  money (250 g, 250 g)" — two different products named identically, which gives the owner nothing to
+  act on.
+- **The SKU grain is NOT relabelled.** A size row keeps its own flavour name; only `parent_product`
+  carries the family. That view is where a per-flavour kill decision is read.
+
+> **A derived name can COLLIDE with a real one, and on this account it did.** Shortening the family
+> to "Roasted Chana" landed on a *different* parent already called exactly that — 1,309 units against
+> 1,301, sitting adjacent in the table as apparent duplicates. Only the **derived** name is
+> disambiguated (`Roasted Chana (5 flavours)`); the product whose catalogue name it genuinely is
+> keeps it. `Singhara Atta` (×4) and `Govindbhog Rice` (×2) are catalogue duplicates, not introduced
+> here, and are left alone — inventing a distinction Amazon does not make would leave the owner
+> unable to match either row against Seller Central.
+
+**Searching had to learn the flavours.** With the parent renamed to what its flavours share, the word
+"Cheese" left the parent row entirely — so every size's own product name is in the search haystack,
+which is also how a flavour is found without knowing which parent Amazon filed it under.
+
+### The totals row totals what is ON SCREEN
+Asked for as *"show total/average of all columns"*, and the honest answer differs per column.
+
+**Money and units sum; every percentage is RECOMPUTED from those sums, never averaged.** The same
+rule `_sum_sizes` follows, for the same reason: the mean of 90 products' TACOS weights a product that
+sold 1 unit equally with one that sold 400 and produces a number belonging to no product.
+
+**Rating is the one genuine average, and it is weighted by review count** — a 5.0 from 2 reviews is
+not evidence equal to a 3.8 from 400. Measured: plain mean **3.86** against review-weighted **3.95**.
+The 7 unrated products are excluded rather than counted as zero.
+
+**It totals the FILTERED rows.** A verdict chip, three custom filters and a search box can each
+narrow the grid, so a constant account total there would silently answer a different question from
+the rows above it — the "86 orders beside 87 lines" defect this file already records. The label says
+how many rows it covers.
+
+A real `<tfoot>`, not a last `tbody` row: **sorting reorders the tbody**, and a total that could
+drift into the middle of the list would read as one product carrying the whole account's sales.
+
 **A parent is exactly the SUM of its sizes**, never a separate parent-level query (which Amazon
 would happily answer). The size rows sit directly beneath the parent row, so two independent
 figures would visibly not add up — the same defect class as the Orders tab reporting 86 orders
@@ -1764,6 +1871,25 @@ Presets still end **yesterday** (`settledDate()`), so a routine 7d view is attri
 > `getFullYear/getMonth/getDate`, and a test asserts the whole `<script>` contains no `toISOString`.
 > Same defect class CLAUDE.md already records for the Orders tab, where `new Date("2026-08-25")`
 > rendered as 05:30 the following morning.
+>
+> **And it was ALSO in `portfolio.html` and — worse — on the GST invoice date.** Looking for the
+> third occurrence found a fourth: `invoice.html` set `f-date` from `new Date().toISOString()`, so
+> simulated at 00:39 IST on 29 Aug the invoice read **2026-08-28**. A tax document in a
+> legally-sequential series, dated before the shipment it bills, in the 5½-hour window when the
+> day's last invoice is most likely to be raised — and nothing in the app compares the two
+> afterwards.
+>
+> **Four occurrences, three previous fixes, each with its own passing test.** The mistake spans
+> files, so a guard scoped to the file that broke could never stop it. `tests/test_local_dates.py`
+> now asserts one rule over **every** template: no `toISOString` in any script, `localDate` built
+> from the local getters wherever it exists, and no date-only string passed to `new Date()` (the
+> Orders-tab variant, which the ban alone does not cover). Verified by mutation to catch all four
+> historical shapes.
+>
+> `ops.html` was already CORRECT and was rewritten anyway. It shifted the instant by
+> `getTimezoneOffset()` before formatting, which works and is **indistinguishable at a glance from
+> the bug** — and correct-but-unreadable is what gets copied into the next template. A named helper
+> states the intent; a subtly-correct idiom makes the reader redo the timezone arithmetic.
 
 > **Clicking anywhere in a date box opens the calendar.** A native `<input type="date">` only opens
 > its picker from the small icon at the right edge; clicking the middle focuses a text field, which
