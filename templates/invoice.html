@@ -239,8 +239,27 @@
   const HANDOFF_KEY = "shipmentInvoicePayload";
   let shipmentPackDates = [];
 
-  // Set today's date
-  document.getElementById("f-date").value = new Date().toISOString().split("T")[0];
+  /* A YYYY-MM-DD string from a Date, in LOCAL time. Same function, same name, as
+     templates/ads.html and templates/portfolio.html — see the comment below for why the obvious
+     `toISOString()` cannot be used. */
+  function localDate(d){
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${d.getFullYear()}-${m}-${day}`;
+  }
+
+  /* Today's date, built from the LOCAL getters.
+     **`new Date().toISOString()` back-dated the GST invoice by a day, and this is the fourth place
+     in this codebase that defect has appeared.** `toISOString()` formats in UTC and IST is
+     UTC+5:30, so between 00:00 and 05:30 IST it answers yesterday: simulated at 00:39 IST on
+     29 Aug (19:09 UTC on the 28th) this field read **2026-08-28**.
+     That matters more here than anywhere else it has occurred. This value goes onto a tax document
+     in a legally-sequential series, so an invoice raised late in the evening carries a date before
+     the shipment it bills — and nothing in the app can detect it afterwards. The window is small
+     and it is exactly the window in which the day's last invoice gets raised.
+     CLAUDE.md records the same bug on the Ads, Orders and Portfolio tabs; `tests/test_local_dates.py`
+     is now the codebase-wide guard, because three per-template fixes did not stop the fourth. */
+  document.getElementById("f-date").value = localDate(new Date());
 
   // Auto-load next invoice number
   (async () => {

@@ -981,13 +981,23 @@ window.addEventListener("beforeunload", e => {
   if(dirty.size || cartonsDirty){ e.preventDefault(); e.returnValue = ""; }
 });
 
-// Default the date picker to today in LOCAL time. toISOString() would convert to
-// UTC and show "yesterday" for anyone packing in the evening in IST.
-(function () {
-  const now = new Date();
-  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
-  document.getElementById('packDate').value = local.toISOString().slice(0, 10);
-})();
+/* Default the date picker to today in LOCAL time.
+   This was already CORRECT — it shifted the instant by the timezone offset before formatting, so
+   the UTC render landed on the right calendar day. It is rewritten anyway, because the correctness
+   was invisible: "subtract getTimezoneOffset, then call toISOString" is indistinguishable at a
+   glance from the bug that has now appeared four times in this codebase (Ads, Orders, Portfolio
+   and a GST invoice date in invoice.html), and the next person to copy a date helper from one
+   template to another has no way to tell which kind this is.
+
+   `localDate` states the intent instead of encoding it, and it is the same function under the same
+   name in ads.html, portfolio.html and invoice.html — so `tests/test_local_dates.py` can assert one
+   rule across every template rather than three exceptions. */
+function localDate(d){
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+document.getElementById('packDate').value = localDate(new Date());
 
 load();
 </script>
