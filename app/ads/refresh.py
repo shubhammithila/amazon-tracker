@@ -222,6 +222,7 @@ async def run(
             # Keep the daily table bounded — production is at 91% disk and every deploy copies the
             # whole database.
             purged = await repository.purge_daily(db)
+            purged += await repository.purge_windows(db)
         STATE["rows"] = stored
         STATE["daily_rows"] = daily_stored
         STATE["purged"] = purged

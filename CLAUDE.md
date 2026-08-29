@@ -1705,6 +1705,66 @@ refetch of that day, so there is no earlier value to preserve. Scoped **per day*
   sits at **91% full with 670 MB free** and `update-ec2.sh` copies the whole database before every
   deploy, so an unbounded daily table would break both SQLite writes and the deploy itself. 30 days
   is also the longest range Amazon answers in one report.
+
+## Disk space — the app now grows with USAGE, not just time
+
+The Ads tab is the first feature here whose storage grows with how much you look at it. Measured on
+production after two days of use:
+
+| | Rows | Bytes |
+|---|---|---|
+| `ads_performance` (per window) | **97,112** | **15.4 MB** |
+| `ads_performance_daily` (per day) | 50,934 | 8.1 MB |
+| their indexes | — | 9.7 MB |
+| everything else in the app | ~35,000 | ~3 MB |
+
+> **`ads_performance` was the real growth problem, and it had NO retention at all.** One row set per
+> window viewed, kept for ever — five windows had already accumulated 97,112 rows, *larger than the
+> per-day table*, and every new custom range added another 12,000–27,000 rows permanently. Now
+> `purge_windows` keeps the **6 most recently viewed** windows, keyed on `max(fetched_at)` rather
+> than on the window dates: the useful window is the one most recently looked at. Safe to be tight
+> because any range inside the daily coverage is re-derived in milliseconds, so an evicted window
+> costs nothing to reproduce.
+
+**Both purges run in the nightly sweep AND in the refresh**, and that redundancy is deliberate: the
+refresh only purges on its success path, so a week of failed ad reports would leave the
+fastest-growing table in the app unpruned. A retention sweep that only runs when a fetch succeeds is
+a side effect, not a policy.
+
+`update-ec2.sh` now **checks free space before the backup**, because the backup is what fills the
+disk — it copies the whole database, so a deploy on a full box is the most likely thing to run out of
+room, and a truncated backup is worse than none because the next step trusts it. It refuses only when
+the backup genuinely cannot fit (`2 × DB + 100 MB`), and warns above 90%. `KEEP_BACKUPS` dropped
+from 10 to **5**: it was sized when the database was 3 MB, and ten copies of a 45 MB database is more
+than the app itself.
+
+### What is safe to reclaim, in order (measured on this box)
+
+| Action | Freed | Safe? |
+|---|---|---|
+| `sudo journalctl --vacuum-size=50M` | **195 MB** | yes — old log history only |
+| remove disabled snap revisions | **~180 MB** | yes — superseded copies |
+| `sudo apt-get clean && apt-get -y autoremove` | ~100 MB | yes — re-downloadable |
+| delete old `tracker-*.db` backups beyond 5 | ~90 MB | yes if a recent one is kept |
+
+That took the box from **670 MB free (91%) to 1.1 GB free (85%)**. Both are now capped so they
+cannot regrow: `/etc/systemd/journald.conf.d/size.conf` sets `SystemMaxUse=50M`, and
+`snap set system refresh.retain=2`.
+
+### When that is not enough: grow the volume
+
+The root disk is an **8 GB EBS volume** (`/dev/xvda1`, 6.9 GB usable). Growing it needs no downtime
+and no rebuild:
+
+1. AWS console → EC2 → Volumes → select the volume → **Modify volume** → set a new size.
+2. On the box: `sudo growpart /dev/xvda 1 && sudo resize2fs /dev/xvda1`
+3. `df -h /` to confirm.
+
+Cost is about **$0.08/GB-month** in `ap-south-1`, so 8 → 30 GB is roughly **$1.80/month** for 22 GB
+of headroom — far cheaper than the engineering time spent trimming megabytes, and the obvious move
+once daily ads data is being kept for real.
+
+> **Do not shrink an EBS volume.** It is not supported; it needs a new volume and a copy.
 - `load_ad_groups` falls back to the daily rows too — without it, expanding a campaign on a derived
   window would show every ad group at zero beneath a campaign row showing real spend.
 

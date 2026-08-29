@@ -12,7 +12,7 @@ A latent startup crash was fixed at the same time: keyword tracking used
 ``daily_scrape_hour + 1`` with no wrap, so ``DAILY_SCRAPE_HOUR=23`` built
 ``CronTrigger(hour=24)`` and blew up scheduler setup.
 """
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -152,6 +152,47 @@ async def test_purge_on_an_empty_database_does_not_raise(db):
 
     await scheduled_purge_old_history()  # must not raise
     assert await _count(db, PriceHistory) == 0
+
+
+async def test_the_nightly_sweep_prunes_the_ads_daily_table_independently(db, monkeypatch):
+    """**The fastest-growing table in the app must not depend on a fetch succeeding to be pruned.**
+
+    `ads_performance_daily` gains ~6,500 rows per day. The ads refresh purges it on its SUCCESS
+    path, so a week of failed Amazon reports would leave it unpruned on a box that has sat at 91%
+    disk. A retention sweep that only runs when a fetch works is a side effect, not a policy — so
+    the nightly job prunes it too.
+
+    Its retention is its OWN (30 days), deliberately not `data_retention_days` (90): the daily rows
+    exist to make recent sub-ranges instant, and 30 days is the longest range Amazon answers in one
+    report.
+    """
+    import app.scheduler as sch
+    from app.ads import repository as ads_repo
+    from app.scheduler import scheduled_purge_old_history
+
+    today = date.today()
+    recent = (today - timedelta(days=2)).isoformat()
+    ancient = (today - timedelta(days=90)).isoformat()
+
+    rows = [
+        {"keywordId": "1", "matchType": "EXACT", "keyword": "kw", "cost": 10.0, "sales7d": 20.0,
+         "keywordBid": 5.0, "clicks": 1, "impressions": 10, "purchases7d": 1,
+         "campaignId": "c1", "adGroupId": "g1", "date": day}
+        for day in (recent, ancient)
+    ]
+    await ads_repo.save_daily(db, rows)
+    assert await ads_repo.daily_days_held(db) == {recent, ancient}
+
+    # A long history retention must NOT keep the ads daily rows alive past their own 30 days.
+    monkeypatch.setattr(sch.settings, "data_retention_days", 365)
+    await scheduled_purge_old_history()
+
+    held = await ads_repo.daily_days_held(db)
+    assert recent in held, "the sweep deleted rows inside the 30-day window"
+    assert ancient not in held, (
+        "the nightly sweep does not prune ads_performance_daily, so a run of failed ad reports "
+        "would let the fastest-growing table in the app grow without bound"
+    )
 
 
 async def test_purge_is_idempotent(db):

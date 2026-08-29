@@ -188,6 +188,37 @@ async def scheduled_purge_old_history():
         deleted_total += orders_gone
         logger.info(f"Retention: deleted {orders_gone} rows from amazon_orders")
 
+    # The Ads tab's per-day rows, on their OWN retention (30 days, not `data_retention_days`).
+    #
+    # **Purged here as well as inside the refresh, and that redundancy is the point.** The refresh
+    # purges on its success path, so a week of failed ad reports would leave the table unpruned —
+    # and this is the fastest-growing table in the app: ~6,500 rows per day, against a disk that
+    # has sat at 91%. A retention sweep that only runs when a fetch succeeds is not a retention
+    # policy, it is a side effect.
+    from app.ads import repository as ads_repo
+
+    async with async_session() as db:
+        ads_gone = await ads_repo.purge_daily(db)
+    if ads_gone:
+        deleted_total += ads_gone
+        logger.info(
+            f"Retention: deleted {ads_gone} rows from ads_performance_daily "
+            f"(kept {ads_repo.DAILY_RETENTION_DAYS} days)"
+        )
+
+    # And the WINDOW-grain rows, which had no retention at all and were the larger problem:
+    # measured, five windows had accumulated 97,112 rows / 15.4 MB because every range ever
+    # viewed was kept for ever. Safe to evict now that any range inside the daily coverage is
+    # re-derived in milliseconds.
+    async with async_session() as db:
+        windows_gone = await ads_repo.purge_windows(db)
+    if windows_gone:
+        deleted_total += windows_gone
+        logger.info(
+            f"Retention: deleted {windows_gone} rows from ads_performance "
+            f"(kept the {ads_repo.WINDOW_RETENTION_COUNT} most recently viewed windows)"
+        )
+
     logger.info(
         f"Retention sweep complete: {deleted_total} rows older than {days} days removed"
     )

@@ -34,7 +34,15 @@ SERVICE="${SERVICE:-tracker}"
 BRANCH="${1:-claude/stoic-allen-bb3a55}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/tracker-backups}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8000/health}"
-KEEP_BACKUPS="${KEEP_BACKUPS:-10}"
+# How many pre-deploy database copies to keep.
+#
+# **Was 10, and that was sized when the database was 3 MB.** It is 45 MB now and the Ads
+# tab's per-day rows grow it with usage, so ten copies is ~450 MB of an 8 GB disk — more
+# than the app itself. Five still covers "the last few deploys went wrong", which is the
+# only window a pre-deploy backup is actually used in.
+#
+# Raise it with `KEEP_BACKUPS=10 bash deploy/update-ec2.sh` before a risky deploy.
+KEEP_BACKUPS="${KEEP_BACKUPS:-5}"
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_FILE="$BACKUP_DIR/tracker-$STAMP.db"
@@ -126,6 +134,48 @@ fi
 # the live record. Listed explicitly rather than guessed: each one is a deliberate
 # decision, and a wrong entry here silently reverts real data.
 RUNTIME_DATA_FILES="app/invoice/hsn_master.json"
+
+# ── 0. Is there room to do any of this? ─────────────────────────────────────
+#
+# **Checked BEFORE the backup, because the backup is what fills the disk.** It copies the
+# whole database, so a deploy on a nearly-full box is the thing most likely to run out of
+# space — and a truncated backup is worse than none, because the next step trusts it.
+#
+# This box is an 8 GB EBS volume that has sat at 91% while the app grew. The Ads tab's
+# per-day rows are the first feature here whose storage grows with usage rather than with
+# time, so the margin needs watching rather than assuming.
+#
+# WARN rather than die at the soft limit: a deploy that refuses on a Friday because of 50 MB
+# is its own kind of failure. It only stops when the backup genuinely cannot fit.
+say "Checking disk space"
+DISK_FREE_MB="$(df -Pm / | awk 'NR==2 {print $4}')"
+DISK_PCT="$(df -P / | awk 'NR==2 {print $5}' | tr -d '%')"
+DB_MB=0
+[ -f tracker.db ] && DB_MB="$(du -m tracker.db | cut -f1)"
+
+printf '    %s MB free (%s%% used), database is %s MB\n' "$DISK_FREE_MB" "$DISK_PCT" "$DB_MB"
+
+# The backup needs at least the size of the database, plus headroom for the migration's
+# temporary files. Twice the DB is the honest requirement.
+NEED_MB=$(( DB_MB * 2 + 100 ))
+if [ "$DISK_FREE_MB" -lt "$NEED_MB" ]; then
+  die "only ${DISK_FREE_MB} MB free, and backing up a ${DB_MB} MB database needs about
+    ${NEED_MB} MB. Free space first — the quickest safe wins, in order:
+
+        sudo journalctl --vacuum-size=50M              # systemd logs
+        sudo snap list --all | awk '/disabled/{print \$1, \$3}' \\
+          | while read n r; do sudo snap remove \"\$n\" --revision=\"\$r\"; done
+        sudo apt-get clean && sudo apt-get -y autoremove
+        ls -1t $BACKUP_DIR/tracker-*.db | tail -n +4 | xargs -r rm   # old backups
+
+    Or grow the EBS volume (no downtime): raise it in the AWS console, then
+        sudo growpart /dev/xvda 1 && sudo resize2fs /dev/xvda1"
+fi
+if [ "$DISK_PCT" -ge 90 ]; then
+  warn "disk is ${DISK_PCT}% full — this deploy fits, but the next one may not."
+  warn "  See the 'Disk space' section in CLAUDE.md for what is safe to remove."
+fi
+ok "enough room for the backup and migration"
 
 # ── 1. Back up the database FIRST ───────────────────────────────────────────
 say "Backing up the database"

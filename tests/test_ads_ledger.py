@@ -10,7 +10,7 @@ import pytest
 
 from app.ads import logic, repository
 from app.models import AdsMutation
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 
 def _change(entity_id, *, writer=logic.WRITER_KEYWORD, old=10.0, new=9.0, text="kw"):
@@ -341,3 +341,55 @@ async def test_windows_are_reported_so_the_picker_can_mark_cached_ranges(db):
         {"keywordId": "1", "matchType": "EXACT", "cost": 1.0, "keywordBid": 5.0},
     ])
     assert ("2026-08-21", "2026-08-27") in await repository.windows_available(db)
+
+
+# ─── Retention: the tables that grow with usage ───────────────────────────────
+
+
+async def test_stale_window_row_sets_are_evicted_newest_kept(db):
+    """**`ads_performance` had NO retention, and measurement showed it was the real problem.**
+
+    One row set per window viewed, kept for ever: five windows had already accumulated 97,112 rows
+    and 15.4 MB on production — larger than the per-day table — because every custom range ever
+    typed stayed. Safe to evict now that any range inside the daily coverage is re-derived in
+    milliseconds.
+
+    Keyed on `max(fetched_at)`, i.e. the window most recently LOOKED AT, which is not the same as
+    the one covering the latest dates.
+    """
+    from datetime import datetime, timedelta
+
+    from app.models import AdsPerformance
+
+    base = datetime(2026, 8, 20, 12, 0, 0)
+    # Eight windows, each with one row, fetched at increasing times.
+    for index in range(8):
+        db.add(AdsPerformance(
+            window_start=f"2026-08-{index + 1:02d}", window_end=f"2026-08-{index + 2:02d}",
+            entity_id=f"e{index}", entity_type="keyword", spend=10, sales=20,
+            fetched_at=base + timedelta(hours=index),
+        ))
+    await db.commit()
+
+    removed = await repository.purge_windows(db, keep=3)
+    assert removed == 5, f"expected 5 stale rows removed, got {removed}"
+
+    left = {(w[0], w[1]) for w in (await db.execute(
+        select(AdsPerformance.window_start, AdsPerformance.window_end)
+        .group_by(AdsPerformance.window_start, AdsPerformance.window_end)
+    )).all()}
+    # The three most recently fetched are indexes 5, 6, 7.
+    assert left == {("2026-08-06", "2026-08-07"),
+                    ("2026-08-07", "2026-08-08"),
+                    ("2026-08-08", "2026-08-09")}, left
+
+
+async def test_purging_windows_is_a_noop_when_under_the_limit(db):
+    """Nothing to evict must delete nothing — not "everything but the newest"."""
+    from app.models import AdsPerformance
+
+    db.add(AdsPerformance(window_start="2026-08-01", window_end="2026-08-07",
+                          entity_id="e1", entity_type="keyword", spend=10, sales=20))
+    await db.commit()
+    assert await repository.purge_windows(db, keep=6) == 0
+    assert (await db.execute(select(func.count()).select_from(AdsPerformance))).scalar() == 1

@@ -561,6 +561,59 @@ async def sum_daily(
     return out
 
 
+#: How many WINDOW-grain row sets to keep in `ads_performance`.
+#:
+#: **Measured, and it was the real growth problem.** `ads_performance` holds one row set per window
+#: viewed and nothing ever deleted them: five windows had already accumulated **97,112 rows / 15.4 MB
+#: — larger than the daily table**, on a box that has sat at 91% disk. Every new custom range added
+#: 12,000-27,000 rows permanently.
+#:
+#: Six because the tab offers three presets plus custom ranges, so six covers "the windows I actually
+#: switch between" without hoarding every range ever typed. It is safe to be tight now: since the
+#: daily rows landed, any range inside the 30-day coverage is re-derived in milliseconds, so an
+#: evicted window costs nothing to reproduce.
+WINDOW_RETENTION_COUNT = 6
+
+
+async def purge_windows(db: AsyncSession, *, keep: int = WINDOW_RETENTION_COUNT) -> int:
+    """Drop the least recently fetched window row sets, keeping the newest `keep`. Returns rows gone.
+
+    Keyed on `max(fetched_at)` per window rather than on the window's own dates: the useful window is
+    the one most recently LOOKED AT, which is not the same as the one covering the latest days.
+    """
+    windows = (await db.execute(
+        select(
+            AdsPerformance.window_start,
+            AdsPerformance.window_end,
+            func.max(AdsPerformance.fetched_at).label("seen"),
+        )
+        .group_by(AdsPerformance.window_start, AdsPerformance.window_end)
+        .order_by(func.max(AdsPerformance.fetched_at).desc())
+    )).all()
+
+    stale = windows[keep:]
+    if not stale:
+        return 0
+
+    removed = 0
+    for window_start, window_end, _seen in stale:
+        result = await db.execute(
+            delete(AdsPerformance).where(
+                AdsPerformance.window_start == window_start,
+                AdsPerformance.window_end == window_end,
+            )
+        )
+        removed += int(result.rowcount or 0)
+    await db.commit()
+
+    if removed:
+        logger.info(
+            "ads: purged %d window row(s) across %d stale window(s), keeping the newest %d",
+            removed, len(stale), keep,
+        )
+    return removed
+
+
 async def purge_daily(db: AsyncSession, *, keep_days: int = DAILY_RETENTION_DAYS,
                       today: date | None = None) -> int:
     """Delete per-day rows older than the retention window. Returns the number removed.
