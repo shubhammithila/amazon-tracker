@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (1846 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (1847 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -1581,6 +1581,16 @@ sold 1 unit equally with one that sold 400 and produces a number belonging to no
 **Rating is the one genuine average, and it is weighted by review count** — a 5.0 from 2 reviews is
 not evidence equal to a 3.8 from 400. Measured: plain mean **3.86** against review-weighted **3.95**.
 The 7 unrated products are excluded rather than counted as zero.
+
+> **And the review COUNT has to be deduplicated per family, which the first version was not.** Found
+> on production, after shipping: Amazon pools reviews across a variation family, so every size
+> reports the identical rating and count — 261 rated ASINs carrying exactly 90 distinct pairs. Summed
+> down the 267 SKU rows that counted the same reviews once per size and claimed **16,789 reviews
+> where 4,382 exist**, printed beside the star as though it were evidence.
+>
+> **The average barely moved — 3.955 against 3.954 — and that is what made it shippable.** The
+> visible number looked right while the count beside it was 3.8x out. Keying on `parent_asin` counts
+> each family once, and both grains now agree exactly.
 
 **It totals the FILTERED rows.** A verdict chip, three custom filters and a search box can each
 narrow the grid, so a constant account total there would silently answer a different question from

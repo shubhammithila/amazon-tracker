@@ -845,8 +845,26 @@ function totalsRow(list, isSkus){
   // same reason: 0% TACOS would read as the most ad-efficient set of products on the account.
   const ratio = (part, whole) => whole ? part / whole : null;
 
-  // Rating: only the rows that HAVE one, weighted by how many reviews stand behind it.
-  const rated = list.filter(r => r.rating !== null && r.rating !== undefined);
+  /* Rating: only the rows that HAVE one, weighted by how many reviews stand behind it.
+
+     **Deduplicated per FAMILY, and in the SKU view that is not a nicety.** Amazon pools reviews
+     across a variation family, so every size of one product reports the identical rating and count
+     — measured, the 261 rated ASINs carry exactly 90 distinct (rating, count) pairs. Summing
+     `rating_count` down 267 size rows therefore counts the same reviews once per size: it claimed
+     **16,789 reviews where 4,382 exist**, a 3.8x overstatement printed beside the star as if it
+     were evidence.
+     The average itself barely moves (3.955 against 3.954), which is exactly what makes this the
+     kind of error that ships — the visible number looks right and the count next to it does not.
+     Keying on `parent_asin` counts each family once at either grain. */
+  const seen = new Set();
+  const rated = [];
+  for(const r of list){
+    if(r.rating === null || r.rating === undefined) continue;
+    const family = r.parent_asin || r.asin;
+    if(seen.has(family)) continue;
+    seen.add(family);
+    rated.push(r);
+  }
   const reviews = rated.reduce((a, r) => a + n(r.rating_count), 0);
   const rating = reviews
     ? rated.reduce((a, r) => a + r.rating * n(r.rating_count), 0) / reviews

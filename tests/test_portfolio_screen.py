@@ -260,3 +260,25 @@ def test_the_window_picker_builds_dates_locally_and_never_through_utc():
     body = _function(source, "localDate")
     for getter in ("getFullYear()", "getMonth()", "getDate()"):
         assert getter in body, f"localDate does not use {getter}, so it is not building from local"
+
+
+def test_the_rating_count_is_deduplicated_per_family():
+    """**Amazon pools reviews per variation family, so summing them down the SKU grain triple-counts.**
+
+    Measured on production after the totals row shipped: the SKU view claimed **16,789 reviews where
+    4,382 exist** — a 3.8x overstatement printed beside the star as though it were evidence. Every
+    size of one product reports the identical rating and count (the 261 rated ASINs carry exactly 90
+    distinct pairs), so 267 size rows count the same reviews once per size.
+
+    The average itself barely moves — 3.955 against 3.954 — which is precisely what makes this the
+    kind of error that ships: the visible number looks right and the count beside it does not.
+    Keying on `parent_asin` counts each family once at either grain.
+    """
+    body = _function(_template(), "totalsRow")
+    assert "r.parent_asin || r.asin" in body, (
+        "the rating count is not keyed per family, so the SKU grain counts the same pooled reviews "
+        "once per pack size"
+    )
+    assert "seen.has(family)" in body, "families are not deduplicated before the review count"
+    # And the sum still runs over the deduplicated list, not the raw one.
+    assert "rated.reduce((a, r) => a + n(r.rating_count), 0)" in body
