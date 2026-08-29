@@ -1574,15 +1574,78 @@ reduction, and it is what makes the feature possible on a 951 MB box.
 `ads_performance` is therefore the population a rule considers. `ads_entity` holds only what a
 report or a rule has touched.
 
-### One rule writes to TWO endpoints, and the report hides which
-**The report labels both id columns `keywordId`**, and `matchType` is the only thing that
-distinguishes them:
+### Sponsored Brands is a SEPARATE API, and it was invisible because nothing asked for it
+`spapi_ads` called `/sp/campaigns`, `/sp/adGroups`, `/sp/keywords`, `/sp/targets` and nothing else —
+not a filter, an unimplemented API. Measured: **6 SB campaigns (5 enabled, budgets ₹4,000–₹20,000),
+59 ad groups, 4,888 enabled keywords all carrying editable bids.**
 
-| `matchType` | What it is | Endpoint |
-|---|---|---|
-| `EXACT` · `PHRASE` · `BROAD` | a keyword | `PUT /sp/keywords` `{keywordId, bid}` |
-| `TARGETING_EXPRESSION_PREDEFINED` | an auto target (close-match, complements…) | `PUT /sp/targets` `{targetId, bid}` |
-| `TARGETING_EXPRESSION` | a manual product/category target | `PUT /sp/targets` `{targetId, bid}` |
+`ad_product` (`"sp"` | `"sb"`) is a column on all four ads tables rather than something inferred,
+because **`EXACT` is a legal match type on BOTH products** and they are different endpoints with
+different payloads. A first-class dimension, so Sponsored Display later is a fetch plus a writer
+rather than a redesign.
+
+Five differences, every one of which fails silently:
+
+- **SB writes need `adGroupId`; SP does not.** Sending SP's shape returns `207` with
+  `KEYWORD_MISSING_AD_GROUP_ID` for *every* row — nothing applied, HTTP says success.
+- **Three different 207 shapes.** SP: `{key: {success, error}}`. SB keywords: a bare **array** of
+  `{code}`. SB targets: `{updateTargetSuccessResults, updateTargetErrorResults}` keyed by
+  `targetRequestIndex`. Each has its own parser; feeding SB's array to the SP parser used to raise
+  `AttributeError` **mid-run**, after batches had been sent, and now degrades to reported-unknown.
+- **SB `maxResults` caps at 100, not 500, and REFUSES rather than clamping** — Amazon names the
+  limit in the error (`upperLimit: "100"`). Found by calling the real endpoint *after* every unit
+  test was green; a fake that echoes what it is sent could not have caught it. SB has its own pager.
+- **`sbTargeting` returns 429 then succeeds on retry** (three immediate creates throttled, one after
+  60 s returned 200; `sbCampaigns` was accepted first time, so the limit is per report type). A 429
+  is a WAIT — treating it as failure would fail most SB refreshes.
+- **425 means "duplicate of `<reportId>`"** — Amazon deduplicates identical requests, so the retry
+  above makes hitting this *likely*. The existing report is followed rather than discarded.
+
+> **SB targets and THEMES are 51% of SB spend, and a keyword-only build would have missed them.**
+> The real 2,914-row report holds four match types: `EXACT` (1,361), `PHRASE` (878),
+> `TARGETING_EXPRESSION` (666, ₹45,854) and `THEME` (9, ₹1,044). The last two are product/category
+> targets and brand themes on `/sb/targets` — all 675 carry a bid. Caught by running the tests
+> against the captured report, which reported them as unroutable.
+
+### Campaigns optimised by M19 or Amazon are excluded from rules
+Measured on the live account:
+
+| Managed by | Campaigns | Spend | ROAS | Target rows |
+|---|---|---|---|---|
+| **us** | 16 | **₹318,036** | 1.50 | 4,948 |
+| **m19 autopilot** | 4 | ₹3,975 | 2.27 | **6,915** |
+| **Amazon Adaptive** | 3 | ₹1,713 | 0.74 | 342 |
+
+**59% of the target rows and 1.8% of the money.** Two independent reasons to exclude them, and the
+second is the important one: they clog the working set, and **a bid we set in them gets overwritten**
+— our rule and their optimiser fight, and neither result is what anyone chose.
+
+`logic.manager_of` matches on the campaign NAME (`m19 autopilot`, `Adaptive Campaign`) and is a
+**pure function, never a stored flag**: the name refreshes on every fetch, so a stored flag would go
+stale on a rename, and the failure mode of a stale flag here is a rule editing bids it was told to
+leave alone. **An unrecognised name is `us`** — a campaign the owner just created must appear and be
+tunable; the opposite default would silently hide his own new work.
+
+**The refusal lives in `plan_run`, not the UI.** A screen filter would leave `POST /ads/apply`
+editable by a hand-built request, and this is the one router that spends money. Automated rows are
+counted as MATCHED and skipped with a named reason, so "12 matched but M19 manages them" is visible
+rather than a silently smaller count that reads as the rule not working. Scoping a rule *to* an
+automated campaign still changes nothing.
+
+### One rule writes to FOUR endpoints, and the report hides which
+**The report labels both id columns `keywordId`**, and `matchType` plus the ad product is the only
+thing that distinguishes them:
+
+| `matchType` | Product | What it is | Endpoint |
+|---|---|---|---|
+| `EXACT` · `PHRASE` · `BROAD` | SP | a keyword | `PUT /sp/keywords` `{keywordId, bid}` |
+| `TARGETING_EXPRESSION_PREDEFINED` | SP | an auto target (close-match, complements…) | `PUT /sp/targets` `{targetId, bid}` |
+| `TARGETING_EXPRESSION` | SP | a manual product/category target | `PUT /sp/targets` `{targetId, bid}` |
+| `EXACT` · `PHRASE` | **SB** | an SB keyword | `PUT /sb/keywords` **bare list**, `{keywordId, adGroupId, bid}` |
+| `TARGETING_EXPRESSION` · `THEME` | **SB** | an SB product/category target or brand theme | `PUT /sb/targets` **dict** `{"targets": [{targetId, adGroupId, bid}]}` |
+
+Note that `TARGETING_EXPRESSION` appears twice and routes to different APIs — which is exactly why
+`writer_for` takes the ad product as well as the match type.
 
 **In the full report `TARGETING_EXPRESSION` is the LARGEST type — 6,665 of 12,854 rows.** Routing
 everything to `/sp/keywords` would fail for over half the account *while returning 207 and looking
