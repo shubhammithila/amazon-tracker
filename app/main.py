@@ -101,7 +101,31 @@ async def lifespan(app: FastAPI):
         await engine.dispose()
 
 
-app = FastAPI(title="Amazon Tracker v2", lifespan=lifespan)
+# ── The API docs are OFF, and that closed a real hole ────────────────────────────
+#
+# Asked for as "when someone is not logged in and opens any page or link, it should go to the
+# login page". Every page and all ~110 API routes already did — measured by probing each one
+# signed out — with **four exceptions FastAPI mounts by default and nothing here had gated**:
+# `/docs`, `/redoc`, `/docs/oauth2-redirect` and `/openapi.json`.
+#
+# `/openapi.json` was the one that mattered: it returned 200 to anyone and enumerated **109 route
+# paths** with their parameters, request bodies and full docstrings — including `/ads/apply`, the
+# only route in this app that spends money, complete with the prose explaining its guardrails.
+# That is a map of the attack surface handed out at the front door, and `/docs` rendered it as a
+# form you could click Execute in.
+#
+# `None` REMOVES the routes rather than protecting them, and removing is the right call over
+# gating: a docs page needs no auth if it does not exist, and there is no way to
+# accidentally re-open it later by loosening a dependency. This app has two users and no external
+# API consumers, so the schema has no audience. `/health` stays public deliberately — it is what
+# `deploy/update-ec2.sh` checks over HTTP after a restart, and it returns one word.
+app = FastAPI(
+    title="Amazon Tracker v2",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
