@@ -429,11 +429,13 @@ async def apply(
        *for that reason*, not incidentally rejected by whatever check happens to run first. A test
        caught this the wrong way round, where an over-ceiling bid returned "credentials are not
        configured" and the ceiling was never consulted at all.
-    2. **Re-read the LIVE bid** for every row. The plan came from a report that may be hours old; a
-       bid edited in Seller Central since would otherwise be overwritten with a percentage of a
-       number that no longer exists.
-    3. **Drop rows whose current bid has moved**, reporting them. Silently applying the stale figure
-       is the bug that step exists to prevent.
+    2. **Re-read the LIVE bid AND state** for every row, in one call. The plan came from a report
+       that may be hours old, so a bid edited in Seller Central since would otherwise be overwritten
+       with a percentage of a number that no longer exists — and the `spTargeting` report carries no
+       state column at all, so the plan cannot tell an enabled target from a paused one.
+    3. **Drop rows whose bid has moved, and rows that are not ENABLED**, reporting both separately.
+       Measured: 168 of 12,205 report rows are paused or archived, because Amazon reports whatever had
+       activity in the window regardless of what it is now.
     4. **Write the ledger as `pending`, with `old_bid`, BEFORE sending.** A crash mid-run then
        leaves a knowable, reversible state.
     5. **Split by writer.** Keywords and targeting clauses are different endpoints; the report calls
@@ -489,20 +491,43 @@ async def apply(
 
     try:
         async with httpx.AsyncClient(timeout=settings.ads_timeout) as client:
-            # 1-2. The stale-bid guard.
+            # 1-3. The live re-read: ONE call that answers two questions.
             live = await spapi_ads.fetch_current_bids(client, approved)
-            to_send, moved = [], []
+            to_send, moved, inactive = [], [], []
             for change in approved:
                 identifier = str(change["entity_id"])
-                current = live.get(identifier)
+                current = live.get(identifier) or {}
+                live_bid = current.get("bid")
+                live_state = (current.get("state") or "").upper()
                 expected = change.get("old_bid")
-                if current is None:
+
+                if not current:
+                    moved.append({**change, "live_bid": None,
+                                  "reason": "Amazon no longer reports this row at all."})
+                    continue
+
+                # **Only ENABLED rows are written.** The `spTargeting` report has NO state column —
+                # measured, none of its 15 columns carries one — so a plan built from it cannot tell
+                # an enabled target from a paused one. Amazon reports whatever had activity in the
+                # window, and 168 of 12,205 rows (1.4%) turn out to be PAUSED or ARCHIVED. Editing
+                # the bid of something that is not serving does nothing useful and makes the run's
+                # own count a lie.
+                #
+                # Checked here rather than at preview because this response carries the state
+                # anyway: no extra request, and the state is exactly as fresh as the bid beside it.
+                if live_state and live_state != "ENABLED":
+                    inactive.append({**change, "live_state": live_state,
+                                     "reason": f"it is {live_state.lower()} at Amazon, so it is not "
+                                               f"serving and a bid change would do nothing."})
+                    continue
+
+                if live_bid is None:
                     moved.append({**change, "live_bid": None,
                                   "reason": "Amazon no longer reports a bid for this row."})
                     continue
-                if expected is not None and round(float(expected), 2) != round(current, 2):
-                    moved.append({**change, "live_bid": current,
-                                  "reason": f"The bid is now {current}, not {expected} — someone "
+                if expected is not None and round(float(expected), 2) != round(live_bid, 2):
+                    moved.append({**change, "live_bid": live_bid,
+                                  "reason": f"The bid is now {live_bid}, not {expected} — someone "
                                             f"changed it since this window was fetched."})
                     continue
                 to_send.append(change)
@@ -510,8 +535,9 @@ async def apply(
             if not to_send:
                 return {
                     "run_id": None, "applied": 0, "failed": 0, "pending": 0,
-                    "moved": moved,
-                    "note": "Every approved row had already changed at Amazon, so nothing was sent.",
+                    "moved": moved, "inactive": inactive,
+                    "note": "Nothing was sent: every approved row had either changed at Amazon or "
+                            "is no longer active.",
                 }
 
             # 3. The ledger, before the wire.
@@ -537,6 +563,10 @@ async def apply(
         "run_id": run_id,
         **counts,
         "moved": moved,
+        # Rows skipped because they are paused or archived at Amazon. Reported separately from
+        # `moved`: "someone changed the bid" and "this is not serving" are different facts and lead
+        # to different actions.
+        "inactive": inactive,
         "results": results,
     }
 

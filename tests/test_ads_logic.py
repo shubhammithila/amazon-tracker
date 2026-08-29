@@ -252,13 +252,19 @@ def test_a_new_bid_below_the_floor_is_skipped_before_amazon_can_reject_it():
 
 
 def test_a_run_larger_than_the_row_limit_is_blocked():
-    """The owner's real rule matched 299 rows, so the default limit sits above that at 500."""
+    """Derived from the limit rather than hardcoded.
+
+    A fixed row count silently stops testing anything when the limit is raised — which is exactly
+    what happened when `max_rows` went from 500 to 1000 and this test's 600 rows started fitting
+    under it.
+    """
+    over = logic.DEFAULT_GUARDRAILS["max_rows"] + 1
     rows = [{"keywordId": str(i), "matchType": "EXACT", "cost": 500.0, "sales7d": 1000.0,
              "keywordBid": 10.0, "clicks": 20, "impressions": 900, "purchases7d": 3}
-            for i in range(600)]
+            for i in range(over)]
     plan = logic.plan_run(rows, conditions=[{"field": "spend", "op": "gt", "value": 100}],
                           action=logic.ACTION_DECREASE_PCT, amount=10)
-    assert plan["blocked"] and "600" in plan["blocked"]
+    assert plan["blocked"] and f"{over:,}" in plan["blocked"]
 
 
 def test_a_bid_that_would_not_change_is_skipped_rather_than_written():

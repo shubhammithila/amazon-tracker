@@ -1675,6 +1675,13 @@ because the rule itself is wrong and a preview the owner might approve would be 
 Guardrails live in `portfolio_settings` under `ads_guardrails` (one JSON row, no migration for a
 new limit) and are **range-checked on READ as well as write**, the `good_rating: 99` lesson.
 
+**`max_rows` is 1000, raised from 500 because a legitimate rule hit it.** `spend > 100, roas < 2,
+-10%` matched 729 rows on the real account — real work, not a mistake — and the block forced it to be
+split by campaign for no safety gain. Every one of those rows is still previewed and individually
+ticked before anything is sent. 1000 rather than higher because at 2000 the limit stops
+discriminating: an account-wide `spend > 0` would fit under it. The guards that actually prevent
+damage are `max_bid` and `max_change_pct`; this one only prevents surprise.
+
 ### `207 Multi-Status` makes partial failure the NORMAL response
 `{"keywords": {"success": [...], "error": [...]}}`, with failures identified by **`index` into the
 request array** — so request order is the only link back to a row, and getting it wrong makes the
@@ -1707,11 +1714,32 @@ refused with *"credentials are not configured"* and the ceiling was never consul
 not a trust boundary, and a guard that only runs after an unrelated check is not a guard.
 
 1. guardrails first — row count, then each bid, before any Amazon call
-2. **re-read the LIVE bid** per row; a percentage of a stale bid silently undoes manual work
+2. **re-read the LIVE bid AND state** per row, in one call
 3. drop rows whose bid has moved since the window was fetched, and report them
-4. ledger as `pending` with `old_bid`
-5. split by writer
-6. record each row's own outcome
+4. **drop rows that are not ENABLED**, and report them separately
+5. ledger as `pending` with `old_bid`
+6. split by writer
+7. record each row's own outcome
+
+> **Only ACTIVE targets are written, and the report cannot tell us which those are.** The
+> `spTargeting` report carries **no state column at all** — none of its 15 columns has one — so a plan
+> built from it cannot distinguish an enabled target from a paused one. Amazon reports whatever had
+> activity in the WINDOW regardless of what it is now: measured, **168 of 12,205 rows (1.4%) are
+> PAUSED or ARCHIVED**. Editing the bid of something that is not serving does nothing useful and makes
+> the run's own count a lie.
+>
+> The check lives at APPLY rather than at preview because `fetch_current_bids` already fetches those
+> rows to re-read the bid, and the same response carries the state — **no extra requests**, and the
+> state is exactly as fresh as the bid it is checked beside. Filtering at preview would add a round
+> trip to every preview for a 1.4% correction. Skipped rows are reported separately from `moved`,
+> because "someone changed the bid" and "this is not serving" lead to different actions, and they are
+> **excluded from the ledger** — a row that was never sent must not appear as a change that could
+> later be undone.
+>
+> `fetch_current_bids` also had to be regrouped BY WRITER for this. It previously sent everything that
+> was not an SP keyword to `/sp/targets`, so Sponsored Brands rows were looked up on the wrong API and
+> came back missing — and a missing row is treated as "moved", which would have silently dropped every
+> SB change at apply time.
 
 ### Windows: 7/14/30 are exact, 60 is the ceiling, and TODAY is allowed
 Amazon caps one report at 31 days (`ads.MAX_REPORT_DAYS`), so `reports.py` reuses

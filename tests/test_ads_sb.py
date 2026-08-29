@@ -501,3 +501,113 @@ def test_a_throttled_sb_report_says_what_it_means_and_is_isolated():
     assert refresh_source.index('STATE["daily_rows"] = daily_stored') < refresh_source.index(
         'ad_product="sb"'
     ), "the SB report runs before the SP figures are committed, so a throttle would cost both"
+
+
+# ─── Only ACTIVE targets are written ─────────────────────────────────────────
+
+
+async def test_apply_skips_targets_that_are_paused_or_archived_at_amazon(auth_client, db,
+                                                                        monkeypatch):
+    """**The `spTargeting` report has NO state column**, so a plan cannot tell active from paused.
+
+    Measured on the live account: 168 of 12,205 report rows (1.4%) are PAUSED or ARCHIVED, because
+    Amazon reports whatever had activity in the WINDOW regardless of what it is now. Editing the bid
+    of something that is not serving does nothing useful and makes the run's own count a lie.
+
+    Checked at apply rather than at preview because the live-bid re-read already happens there and
+    its response carries the state — no extra request, and the state is exactly as fresh as the bid.
+
+    The skipped rows are reported SEPARATELY from `moved`: "someone changed the bid" and "this is not
+    serving" are different facts and lead to different actions.
+    """
+    from app.ads import repository as ads_repo
+    from app.ads import spapi_ads as sp
+
+    await ads_repo.save_performance(db, "2026-08-21", "2026-08-27", [
+        {"keywordId": "111", "matchType": "EXACT", "keyword": "live one", "cost": 500.0,
+         "sales7d": 1000.0, "keywordBid": 10.0, "campaignId": "c1", "adGroupId": "g1"},
+    ])
+
+    sent: list[dict] = []
+
+    async def fake_live(_client, changes):
+        return {
+            "111": {"bid": 10.0, "state": "ENABLED"},
+            "222": {"bid": 8.0, "state": "PAUSED"},
+            "333": {"bid": 5.0, "state": "ARCHIVED"},
+        }
+
+    async def fake_apply(_client, rows, *, writer, **_kwargs):
+        sent.extend(rows)
+        return [{"entity_id": str(r["entity_id"]), "ok": True, "error": None} for r in rows]
+
+    monkeypatch.setattr(sp, "fetch_current_bids", fake_live)
+    monkeypatch.setattr(sp, "apply_bids", fake_apply)
+
+    from app.config import Settings, get_settings
+
+    class _Settings(Settings):
+        ads_client_id: str = "id"
+        ads_client_secret: str = "secret"
+        ads_refresh_token: str = "Atzr|test"
+        ads_profile_id: str = "1"
+
+    get_settings.cache_clear()
+    monkeypatch.setattr("app.routers.ads.get_settings", lambda: _Settings())
+
+    response = await auth_client.post("/ads/apply", json={
+        "rule": "spend > 100 -> bid -10%",
+        "changes": [
+            {"entity_id": "111", "writer": "keyword", "text": "live one",
+             "old_bid": 10.0, "new_bid": 9.0},
+            {"entity_id": "222", "writer": "keyword", "text": "paused one",
+             "old_bid": 8.0, "new_bid": 7.2},
+            {"entity_id": "333", "writer": "keyword", "text": "archived one",
+             "old_bid": 5.0, "new_bid": 4.5},
+        ],
+    })
+    body = response.json()
+    assert response.status_code == 200, body
+
+    # ONLY the enabled row reached Amazon.
+    assert [str(r["entity_id"]) for r in sent] == ["111"]
+    assert body["applied"] == 1
+
+    inactive = {r["entity_id"]: r for r in body["inactive"]}
+    assert set(inactive) == {"222", "333"}
+    assert inactive["222"]["live_state"] == "PAUSED"
+    assert inactive["333"]["live_state"] == "ARCHIVED"
+    # Each says WHY, so a shrunken count is explained rather than mysterious.
+    assert "not serving" in inactive["222"]["reason"]
+
+    # And the ledger holds only what was actually sent — a paused row must not appear as a change
+    # that never happened, because that would corrupt the undo chain.
+    runs = await ads_repo.load_runs(db)
+    rows = await ads_repo.load_run(db, runs[0]["run_id"])
+    assert [r["entity_id"] for r in rows] == ["111"]
+
+
+async def test_the_row_limit_allows_the_rule_that_hit_it(auth_client, db):
+    """**Raised from 500 to 1000 because a legitimate rule was blocked.**
+
+    `spend > 100, roas < 2, -10%` matched 729 rows on the real account — real work, not a mistake —
+    and the block forced it to be split by campaign for no safety gain. Every one of those rows is
+    still previewed and individually ticked before anything is sent.
+
+    1000 rather than higher: at 2000 the limit stops discriminating, because an account-wide
+    `spend > 0` would fit under it.
+    """
+    assert logic.DEFAULT_GUARDRAILS["max_rows"] == 1000
+    assert logic.DEFAULT_GUARDRAILS["max_rows"] >= 729, (
+        "the limit still blocks the real 729-row rule that prompted raising it"
+    )
+
+    rows = [{"keywordId": str(i), "matchType": "EXACT", "cost": 500.0, "sales7d": 1000.0,
+             "keywordBid": 10.0, "campaignId": "c1", "adGroupId": "g1"}
+            for i in range(729)]
+    plan = logic.plan_run(
+        rows, conditions=[{"field": "spend", "op": "gt", "value": 100}],
+        action=logic.ACTION_DECREASE_PCT, amount=10,
+    )
+    assert plan["blocked"] is None, "a 729-row rule is still blocked"
+    assert plan["totals"]["changing"] == 729

@@ -463,40 +463,125 @@ async def fetch_sb_keywords(client, *, states=("enabled",)) -> list[dict]:
     return out
 
 
-async def fetch_current_bids(client, changes: Sequence[Mapping]) -> dict[str, float | None]:
-    """Re-read the LIVE bid for the rows a run is about to change.
+async def fetch_current_bids(client, changes: Sequence[Mapping]) -> dict[str, dict]:
+    """Re-read the LIVE bid **and state** for the rows a run is about to change.
 
-    **This is the check that stops a stale percentage.** The plan is computed from a performance
-    report that may be hours old, and a bid edited in Seller Central since then would be
-    overwritten with a percentage of a number that no longer exists. Fetching by id is cheap —
-    one page per 500 rows — and the alternative is silently undoing someone's manual work.
+    Returns `{entity_id: {"bid": float|None, "state": str}}`.
 
-    Returns `{entity_id: bid}`, with `None` for a row Amazon no longer has a bid for (archived, or
-    switched to inheriting the ad group default).
+    **Two guards from one call, which is why the state check lives here.**
+
+    * *The bid* stops a stale percentage. The plan is computed from a performance report that may be
+      hours old, and a bid edited in Seller Central since then would be overwritten with a percentage
+      of a number that no longer exists.
+    * *The state* stops a rule editing something that is not serving. **The `spTargeting` report
+      carries no state column at all** — measured, its 15 columns include none — so a plan built from
+      the report cannot tell an enabled target from a paused one. Measured on the live account: 168 of
+      12,205 report rows (1.4%) are PAUSED or ARCHIVED, because Amazon reports whatever had activity
+      in the window regardless of what it is now.
+
+    Reading both together is deliberate: the entity API returns them in the same response, so the
+    state check costs **no extra requests** and is exactly as fresh as the bid it is checked beside.
+    Fetching state at preview time instead would add a round trip to every preview for a 1.4%
+    correction, and previews are cheap and frequent.
+
+    `bid` is `None` for a row Amazon no longer prices (archived, or switched back to inheriting the
+    ad group default).
     """
-    from app.ads.logic import WRITER_KEYWORD
+    from app.ads.logic import (
+        WRITER_KEYWORD,
+        WRITER_SB_KEYWORD,
+        WRITER_SB_TARGET,
+        WRITER_TARGET,
+    )
 
-    keyword_ids = [str(c["entity_id"]) for c in changes if c.get("writer") == WRITER_KEYWORD]
-    target_ids = [str(c["entity_id"]) for c in changes if c.get("writer") != WRITER_KEYWORD]
+    # Grouped by WRITER, not by a keyword/target guess. The previous version sent everything that was
+    # not an SP keyword to `/sp/targets`, which meant Sponsored Brands rows were looked up on the
+    # wrong API and came back missing — and a missing row is treated as "moved", so every SB change
+    # would have been silently dropped at apply time.
+    by_writer: dict[str, list[str]] = {}
+    for change in changes:
+        writer = change.get("writer") or WRITER_KEYWORD
+        by_writer.setdefault(writer, []).append(str(change["entity_id"]))
 
-    live: dict[str, float | None] = {}
+    live: dict[str, dict] = {}
 
-    for ids, endpoint, id_field, filter_key in (
-        (keyword_ids, KEYWORDS, "keywordId", "keywordIdFilter"),
-        (target_ids, TARGETS, "targetId", "targetIdFilter"),
+    # ── Sponsored Products: filter by id, one page per 500 ──
+    for writer, endpoint, id_field, filter_key in (
+        (WRITER_KEYWORD, KEYWORDS, "keywordId", "keywordIdFilter"),
+        (WRITER_TARGET, TARGETS, "targetId", "targetIdFilter"),
     ):
+        ids = by_writer.get(writer) or []
         for start in range(0, len(ids), PAGE_SIZE):
             chunk = ids[start:start + PAGE_SIZE]
-            if not chunk:
-                continue
             rows = await _list(client, endpoint, filters={filter_key: {"include": chunk}})
             for row in rows:
                 identifier = str(row.get(id_field) or "")
                 if identifier:
                     bid = row.get("bid")
-                    live[identifier] = float(bid) if bid is not None else None
+                    live[identifier] = {
+                        "bid": float(bid) if bid is not None else None,
+                        "state": (row.get("state") or "").upper(),
+                    }
+
+    # ── Sponsored Brands: no id filter on these endpoints, so fetch and match locally ──
+    #
+    # `/sb/keywords` is a plain GET with no filter body at all, and `/sb/targets/list` pages without
+    # one. 4,939 keywords come back in a single response, so filtering here is cheaper than it looks
+    # and there is no alternative anyway.
+    sb_keyword_ids = set(by_writer.get(WRITER_SB_KEYWORD) or [])
+    if sb_keyword_ids:
+        for row in await fetch_sb_keywords(client, states=()):
+            if row["entity_id"] in sb_keyword_ids:
+                live[row["entity_id"]] = {
+                    "bid": float(row["bid"]) if row.get("bid") is not None else None,
+                    "state": row.get("state") or "",
+                }
+
+    sb_target_ids = set(by_writer.get(WRITER_SB_TARGET) or [])
+    if sb_target_ids:
+        for row in await fetch_sb_targets(client, states=()):
+            if row["entity_id"] in sb_target_ids:
+                live[row["entity_id"]] = {
+                    "bid": float(row["bid"]) if row.get("bid") is not None else None,
+                    "state": row.get("state") or "",
+                }
 
     return live
+
+
+async def fetch_sb_targets(client, *, states=("ENABLED",)) -> list[dict]:
+    """Sponsored Brands product/category targets and brand themes, with their bids and states.
+
+    `states=()` means "every state", used by `fetch_current_bids` — it needs to SEE a paused row in
+    order to skip it, so filtering it out at the API would hide the very thing being checked.
+    """
+    raw = await _sb_list(client, (SB_TARGETS_PATH, "", "targets"), {}, "targets")
+    wanted = {str(s).upper() for s in states}
+
+    out = []
+    for t in raw:
+        state = (t.get("state") or "").upper()
+        if wanted and state not in wanted:
+            continue
+        expression_type = (t.get("expressionType") or "").upper()
+        out.append({
+            "entity_type": "target",
+            "ad_product": "sb",
+            "entity_id": str(t.get("targetId") or ""),
+            "parent_id": str(t.get("adGroupId") or ""),
+            "campaign_id": str(t.get("campaignId") or ""),
+            "name": _describe_expression({
+                "resolvedExpression": t.get("resolvedExpressions") or t.get("expressions") or [],
+            }),
+            "state": state,
+            # `THEME` for a brand theme, otherwise a product/category target. Both route to
+            # `/sb/targets` — see `logic.SB_TARGET_MATCH_TYPES`.
+            "match_type": "THEME" if expression_type == "THEME" else "TARGETING_EXPRESSION",
+            "bid": t.get("bid"),
+            "default_bid": None,
+            "daily_budget": None,
+        })
+    return out
 
 
 # ─── Writes ──────────────────────────────────────────────────────────────────
@@ -530,7 +615,12 @@ async def apply_bids(
     `adGroupId` (SP does not), and its 207 body is a bare array rather than
     `{success: [...], error: [...]}`. See `_sb_payload_row` and `_parse_sb_outcome`.
     """
-    from app.ads.logic import WRITER_KEYWORD, WRITER_SB_KEYWORD, WRITER_SB_TARGET
+    from app.ads.logic import (
+        WRITER_KEYWORD,
+        WRITER_SB_KEYWORD,
+        WRITER_SB_TARGET,
+        WRITER_TARGET,
+    )
 
     if not changes:
         return []

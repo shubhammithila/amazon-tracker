@@ -187,9 +187,17 @@ DEFAULT_GUARDRAILS = {
     #: The largest proportional move a single run may make to any bid. 25% catches "10" typed as
     #: "100" while leaving normal optimisation (5-20%) untouched.
     "max_change_pct": 25.0,
-    #: A run touching more than this many rows needs explicit confirmation. The owner's own rule
-    #: matched 299, so the default has to sit above that to be useful rather than obstructive.
-    "max_rows": 500,
+    #: A run touching more than this many rows is refused as probably over-broad.
+    #:
+    #: **Raised from 500 to 1000 because a legitimate rule hit it.** `spend > 100, roas < 2, -10%`
+    #: matched 729 rows on the real account — real work, not a mistake — and the block forced it to
+    #: be split by campaign for no safety gain. The limit exists to catch an over-BROAD rule, and
+    #: every one of those rows is still previewed and individually ticked before anything is sent.
+    #:
+    #: 1000 rather than higher: at 2000 the limit stops discriminating, because an account-wide
+    #: `spend > 0` would fit under it. The guards that actually prevent damage are `max_bid` and
+    #: `max_change_pct` — this one only prevents surprise.
+    "max_rows": 1000,
 }
 
 #: Bounds for each guardrail, so an edited value cannot be absurd. Same lesson as

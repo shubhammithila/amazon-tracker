@@ -279,32 +279,63 @@ async def test_current_bids_are_re_read_by_id_from_both_endpoints(monkeypatch):
     The plan comes from a performance report that may be hours old. If someone edited a bid in
     Seller Central since, applying `-10%` to the reported value overwrites their change with a
     number derived from one that no longer exists. Re-reading by id is one page per 500 rows.
+
+    Returns `{bid, state}` rather than a bare bid, because the SAME response answers the second
+    question too — see `test_the_live_read_also_returns_state_so_paused_rows_can_be_skipped`.
     """
-    fake = _Ads(list_rows=[{"keywordId": "111", "bid": 12.5}, {"targetId": "222", "bid": 7.25}])
+    fake = _Ads(list_rows=[{"keywordId": "111", "bid": 12.5, "state": "ENABLED"},
+                           {"targetId": "222", "bid": 7.25, "state": "ENABLED"}])
     client = _patch(monkeypatch, fake)
 
     live = await spapi_ads.fetch_current_bids(client, [
         _change("111", writer=logic.WRITER_KEYWORD),
         _change("222", writer=logic.WRITER_TARGET),
     ])
-    assert live["111"] == 12.5
-    assert live["222"] == 7.25
+    assert live["111"]["bid"] == 12.5
+    assert live["222"]["bid"] == 7.25
 
     # It must filter BY ID rather than paging the whole account — 148,291 keywords exist.
     assert any("keywordIdFilter" in b for b in fake.list_bodies), "keywords were not filtered by id"
     assert any("targetIdFilter" in b for b in fake.list_bodies), "targets were not filtered by id"
 
 
+async def test_the_live_read_also_returns_state_so_paused_rows_can_be_skipped(monkeypatch):
+    """**The `spTargeting` report carries NO state column** — measured, none of its 15 columns has
+    one — so a plan built from it cannot tell an enabled target from a paused one.
+
+    Amazon reports whatever had activity in the window regardless of what it is now: 168 of 12,205
+    real rows (1.4%) are PAUSED or ARCHIVED. Editing the bid of something that is not serving does
+    nothing useful and makes the run's own count a lie.
+
+    The state comes from the response that was already being fetched for the bid, so the check costs
+    NO extra requests and is exactly as fresh as the bid beside it.
+    """
+    fake = _Ads(list_rows=[
+        {"keywordId": "111", "bid": 12.5, "state": "ENABLED"},
+        {"keywordId": "222", "bid": 8.0, "state": "PAUSED"},
+        {"keywordId": "333", "bid": 5.0, "state": "ARCHIVED"},
+    ])
+    client = _patch(monkeypatch, fake)
+    live = await spapi_ads.fetch_current_bids(client, [
+        _change("111"), _change("222"), _change("333"),
+    ])
+    assert live["111"]["state"] == "ENABLED"
+    assert live["222"]["state"] == "PAUSED"
+    assert live["333"]["state"] == "ARCHIVED"
+
+
 async def test_a_row_with_no_live_bid_is_reported_as_none_not_dropped(monkeypatch):
     """A target that has since switched to inheriting the ad group default has no bid.
 
-    `None` rather than a missing key, so the caller can tell "Amazon says no bid" from "we did not
-    ask" — the same distinction `_ratio` draws for ROAS.
+    The ROW is still present with `bid: None`, rather than absent — so the caller can tell "Amazon
+    says no bid" from "Amazon does not have this row at all", which lead to different messages.
     """
-    fake = _Ads(list_rows=[{"keywordId": "111", "bid": None}])
+    fake = _Ads(list_rows=[{"keywordId": "111", "bid": None, "state": "ENABLED"}])
     client = _patch(monkeypatch, fake)
     live = await spapi_ads.fetch_current_bids(client, [_change("111")])
-    assert live["111"] is None
+    assert "111" in live, "the row vanished instead of reporting a null bid"
+    assert live["111"]["bid"] is None
+    assert live["111"]["state"] == "ENABLED"
 
 
 # ─── Reads: filtering and normalisation ──────────────────────────────────────

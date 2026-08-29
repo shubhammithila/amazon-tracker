@@ -279,14 +279,19 @@ async def test_apply_refuses_a_bid_under_the_floor(auth_client, db):
 
 
 async def test_apply_refuses_more_rows_than_the_limit(auth_client, db):
+    """Derived from the limit, not hardcoded — a fixed count stops testing anything the moment the
+    limit is raised, which is what happened when max_rows went 500 -> 1000."""
+    from app.ads import logic as ads_logic
+
     await _seed(db)
+    over = ads_logic.DEFAULT_GUARDRAILS["max_rows"] + 1
     response = await auth_client.post("/ads/apply", json={
         "rule": "r",
         "changes": [{"entity_id": str(i), "writer": "keyword", "old_bid": 10.0, "new_bid": 9.0}
-                    for i in range(600)],
+                    for i in range(over)],
     })
     assert response.status_code == 400
-    assert "600" in response.json()["error"]
+    assert str(over) in response.json()["error"]
 
 
 # ─── Undo ────────────────────────────────────────────────────────────────────

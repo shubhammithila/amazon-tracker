@@ -948,12 +948,20 @@ async function applyPlan(){
   }
 
   const moved = body.moved || [];
+  const inactive = body.inactive || [];
   const parts = [`<strong>${body.applied} bid(s) changed.</strong>`];
   if(body.failed) parts.push(`${body.failed} refused by Amazon.`);
   if(body.pending) parts.push(`${body.pending} with no answer from Amazon — check the run history.`);
   if(moved.length){
     parts.push(`${moved.length} skipped because the bid had already changed at Amazon since this
       window was fetched.`);
+  }
+  /* Reported separately from `moved`: the report has no state column, so a plan cannot know a
+     target was paused — 1.4% of report rows turn out to be. A shrunken count needs its reason on
+     screen or it reads as rows silently going missing. */
+  if(inactive.length){
+    parts.push(`${inactive.length} skipped because they are paused or archived at Amazon, so a bid
+      change would do nothing.`);
   }
 
   const cls = body.failed || body.pending ? "warn" : "good";
