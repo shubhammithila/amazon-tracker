@@ -17,7 +17,12 @@ from app.ads import logic, reports, spapi_ads
 
 
 def _sb_fixture() -> list[dict]:
-    """2,914 real rows from a live `sbTargeting` report, captured 2026-08-29.
+    """717 real rows from a live `sbTargeting` report, captured 2026-08-29.
+
+    Trimmed from the full 2,914 but **chosen to preserve the result**: it keeps every row a
+    `spend > 50` rule touches, 30+ of each of the four match types, and 20 zero-spend rows. The rule
+    produces identical totals on the fixture and on the full report (623 matched, 611 changing, 338
+    SB keywords + 273 SB targets), which the tests below assert — a blind sample would not have.
 
     Note the column names: SB reports plain `sales`/`purchases` where Sponsored Products reports
     `sales7d`/`purchases7d`. That difference is the reason `metrics_for` reads both.
@@ -368,9 +373,9 @@ def test_a_duplicate_report_response_follows_amazons_existing_report():
 
 
 def test_the_real_sb_report_normalises_and_routes():
-    """2,914 real rows. Every one must produce a usable metric set and route to the SB writer."""
+    """Every real row must produce a usable metric set and route to one of the SB writers."""
     rows = _sb_fixture()
-    assert len(rows) > 1000, "the SB fixture is unexpectedly small"
+    assert len(rows) > 500, "the SB fixture is unexpectedly small"
 
     unroutable = set()
     for raw in rows:
@@ -409,6 +414,11 @@ def test_a_rule_over_the_real_sb_report_produces_sb_writes_only():
     assert plan["totals"]["sb_targets"] > 0, (
         "no SB target changed — product/category targets are 666 rows and Rs 45,854 of real spend"
     )
+    # Pinned against the FULL 2,914-row report: the trimmed fixture was chosen to reproduce these
+    # exactly, so a future trim that changes the answer fails here rather than passing quietly.
+    assert plan["totals"]["changing"] == 611
+    assert plan["totals"]["sb_keywords"] == 338
+    assert plan["totals"]["sb_targets"] == 273
 
 
 def test_sb_and_sp_ids_do_not_collide_in_the_real_data():
