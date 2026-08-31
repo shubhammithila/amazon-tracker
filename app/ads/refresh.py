@@ -262,21 +262,30 @@ async def run(
         # `sbTargeting` in particular returns 429 until it is given room — measured, three immediate
         # creates all throttled while one after a 60-second pause succeeded.
         #
-        # **Stored as SUMMARY only, not daily.** SB is 2,914 rows against SP's 12,205, so the
-        # sub-range machinery matters far less there, and a second daily report would double the
-        # slowest phase of the refresh for a fifth of the data. If SB grows, this is where to change.
+        # **DAILY, exactly like Sponsored Products — and this line is the bug that was fixed.**
+        #
+        # It used to store SB at the window grain ONLY, and the comment here justified it: "SB is
+        # 2,914 rows against SP's 12,205, so the sub-range machinery matters far less there". That
+        # reasoned from ROW COUNT. The figure that decides it is SPEND SHARE — **SB is 28% of the
+        # money** — and the read side sums daily rows for any window nobody fetched exactly, where
+        # SB had no rows at all.
+        #
+        # Measured consequence before the fix: 22-28 Aug reported Rs 4,44,550 and 22-29 Aug, a strict
+        # superset, reported Rs 3,34,300. Rs 1,26,328 of real spend read as zero, and a bid rule
+        # previewed on the derived window found 743 changes with 0 SB rows where the stored window
+        # found 1,005 with 296 — on the one feature in this app that spends money.
         try:
             sb_rows = await reports.fetch_targeting(
-                window_start, window_end, ad_product="sb", sleep=sleep,
+                window_start, window_end, ad_product="sb", daily=True, sleep=sleep,
             )
             async with db_factory() as db:
-                sb_stored = await repository.save_performance(
-                    db, window_start, window_end, reports.aggregate(sb_rows), ad_product="sb",
-                )
+                sb_stored = await repository.save_daily(db, sb_rows, ad_product="sb")
             STATE["sb_rows"] = sb_stored
-            logger.info("ads refresh: %d Sponsored Brands row(s) stored", sb_stored)
+            logger.info("ads refresh: %d Sponsored Brands daily row(s) stored", sb_stored)
         except AdsError as exc:
-            # Isolated: the SP figures above are already committed and current.
+            # Isolated: the SP rows above are already committed and current. A throttled SB report is
+            # "not now", not a failed refresh — `sbTargeting` has been measured returning 429 after
+            # 15 minutes of complete idleness because reports were created earlier that day.
             STATE["sb_error"] = f"The Sponsored Brands report failed: {exc}"
             logger.warning("ads refresh: SB report failed: %s", exc)
 

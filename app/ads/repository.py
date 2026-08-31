@@ -429,9 +429,23 @@ async def save_daily(db: AsyncSession, rows: list[dict], *, ad_product: str = "s
     if not mapped:
         return 0
 
-    # Replace exactly the days present in this payload.
+    # Replace exactly the days present in this payload, FOR THIS AD PRODUCT ONLY.
+    #
+    # **`ad_product` in this scope is load-bearing, and omitting it destroys data.** This function is
+    # delete-then-bulk-insert (the measured 62x deviation from the house upsert), so a second call
+    # for the same days replaces whatever the first one wrote. Sponsored Products and Sponsored
+    # Brands are two separate reports covering the SAME days, so scoped by day alone the SB write
+    # would delete every SP row it had just stored — leaving SB-only days, which is the
+    # "Rs 1,26,328 vanished" bug inverted and worse, because SP is 72% of the spend.
+    #
+    # The docstring above already claims this property one dimension down ("scoped per DAY so
+    # refetching a 7-day window cannot disturb the other 23 days"). Until Sponsored Brands started
+    # being stored daily, only one product ever reached this line.
     await db.execute(
-        delete(AdsPerformanceDaily).where(AdsPerformanceDaily.day.in_(sorted(days)))
+        delete(AdsPerformanceDaily).where(
+            AdsPerformanceDaily.day.in_(sorted(days)),
+            AdsPerformanceDaily.ad_product == ad_product,
+        )
     )
     CHUNK = 5000
     for start in range(0, len(mapped), CHUNK):
