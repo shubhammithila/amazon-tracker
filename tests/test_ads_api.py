@@ -33,6 +33,25 @@ def _code_only(source: str) -> str:
     )
 
 
+def _js_function(source: str, name: str) -> str:
+    """One JS function's body, by matching braces.
+
+    Brace-matched rather than sliced up to the next comment or `function` keyword: both of those are
+    positional accidents, and a slice keyed on one silently starts testing the WRONG function when
+    something is inserted between them. This raises instead of quietly passing.
+    """
+    start = source.index(f"function {name}(")
+    depth = 0
+    for index in range(source.index("{", start), len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:index + 1]
+    raise AssertionError(f"{name} has no closing brace")
+
+
 #: The window every test in this file reads, and every day inside it.
 #:
 #: Seeded as PER-DAY rows because that is now the only grain — `ads_performance` is deleted, and
@@ -681,9 +700,14 @@ def test_the_template_shows_which_endpoint_each_row_writes_to():
 
 
 def test_the_template_requires_a_second_click_before_anything_is_sent():
-    """Preview and Apply are separate, and Apply is styled as the dangerous action."""
+    """Preview and Apply are separate, and Apply is styled as the dangerous action.
+
+    The Apply marker changed from `id="apply-btn"` to `data-apply`, because the controls are now
+    rendered TWICE — above and below a table that can hold 1,005 rows — and an id may appear only once
+    in a document. The requirement is unchanged and is what this asserts.
+    """
     source = _template()
-    assert 'id="preview-btn"' in source and 'id="apply-btn"' in source
+    assert 'id="preview-btn"' in source and "data-apply" in source
     assert "btn-danger" in source, "Apply is not visually distinguished from Preview"
     # The apply handler must read the APPROVED set, not the whole plan.
     body = source[source.index("async function applyPlan("):][:500]
@@ -1026,4 +1050,95 @@ def test_the_table_scrolls_inside_a_wrapper_rather_than_moving_the_page():
     assert "min-width" in rule[:rule.index("}")], (
         "without a min-width the table shrinks to the wrapper and the nowrap cells overflow their "
         "own gridlines, so the wrapper never scrolls"
+    )
+
+
+# ─── The preview controls ─────────────────────────────────────────────────────
+
+
+def test_the_preview_has_apply_controls_at_the_top_as_well_as_the_bottom():
+    """**A real rule matched 1,005 rows**, so the only Apply button sat a screenful below the list.
+
+    Both, not one: the top bar is what gets used on a long list, and the bottom one serves someone who
+    has read to the end. Rendered from ONE builder so the two cannot disagree about the count.
+    """
+    source = _code_only(_template())
+    assert source.count("${applyBarHtml()}") == 2, (
+        "the apply controls are not rendered both above and below the table"
+    )
+    assert source.count("function applyBarHtml(") == 1, (
+        "the apply bar is built twice, so the two copies can drift"
+    )
+
+
+def test_the_apply_controls_use_attributes_rather_than_ids():
+    """An id may appear once per document, and these are deliberately rendered twice.
+
+    **This is also why `applyPlan` had to change.** It read `$("apply-btn").disabled`, which would be
+    `null.disabled` once the id was gone — killing the only money-spending path in the app before it
+    sent anything. Found by a fresh review of the plan, not by a test.
+    """
+    source = _code_only(_template())
+    assert 'id="apply-btn"' not in source and 'id="apply-count"' not in source
+    assert 'id="cancel-preview"' not in source, (
+        "the post-apply card still reuses the old id, whose handler no longer exists"
+    )
+    assert '"[data-apply]"' in source, "applyPlan does not find the buttons by attribute"
+    assert "querySelectorAll(\"[data-apply]\")" in source, (
+        "only one apply button is disabled during a send, so the other stays clickable"
+    )
+
+
+def test_the_preview_can_clear_every_tick_at_once():
+    """1,005 rows arrive all ticked, so the real gesture is "clear all, then pick five".
+
+    A TOGGLE rather than a lone Unselect button — having cleared them, the way back is the same
+    control — with its label derived from the live count so it cannot claim the wrong action.
+    """
+    source = _code_only(_template())
+    assert "data-toggle-all" in source, "there is no select/unselect-all control"
+    assert "Unselect all" in source and "Select all" in source, (
+        "the control does not name both directions, so it is a button rather than a toggle"
+    )
+    assert "approved.clear()" in source, "the toggle cannot clear the selection"
+
+
+def test_the_preview_names_the_ad_group_not_only_the_campaign():
+    """**The same keyword text exists in several ad groups at different bids.**
+
+    So the campaign alone does not identify the row whose live bid is about to change.
+    `attach_names` has always resolved `ad_group_name` in one query; the preview never rendered it.
+    """
+    body = _js_function(_code_only(_template()), "renderPreview")
+    assert "ad_group_name" in body, "the preview does not show which ad group a row belongs to"
+
+
+def test_an_unavailable_suggested_bid_says_why_rather_than_rendering_blank():
+    """**Sponsored Brands has no suggested-bid endpoint — measured, three probed, all 404.**
+
+    ~296 rows in a typical preview have none. A blank cell in a bid column reads as "no suggestion, so
+    bid low"; the honest answer is that Amazon does not offer one. Same three-state discipline as the
+    Portfolio tab's ACOS column.
+    """
+    body = _js_function(_code_only(_template()), "suggestedCell")
+    assert "suggested_unavailable" in body, "the reason is not shown"
+    assert "—" in body, "an unavailable suggestion does not render a dash"
+    assert "suggested_low" in body, "the low-high range is dropped, so three bids became one number"
+
+
+def test_the_suggested_bids_are_fetched_after_the_table_is_rendered():
+    """The preview must not block on Amazon, and must survive Amazon refusing.
+
+    A 1,005-row plan spans a few dozen ad groups. This is the safety mechanism for the only feature
+    that spends money, so a context column cannot be allowed to delay or break it.
+    """
+    source = _code_only(_template())
+    assert "function loadSuggestedBids(" in source
+    assert "/ads/suggested-bids" in source
+    # Not awaited inside the render, and guarded against a re-render loop.
+    assert "if(!options || options.fetchSuggestions !== false) loadSuggestedBids();" in source, (
+        "the suggestion fetch is not guarded, so rendering its own result would loop"
+    )
+    assert "suggestedToken" in source, (
+        "a stale response can overwrite a newer preview's suggestions"
     )

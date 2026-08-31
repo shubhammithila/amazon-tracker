@@ -838,7 +838,82 @@ async function runPreview(){
   }
 }
 
-function renderPreview(){
+/* ONE builder for the apply controls, rendered ABOVE and BELOW the table.
+
+   A real rule on this account matched **1,005 rows**, which put the only Apply button a screenful of
+   scrolling below the thing it applies to. Both positions rather than a move: the top bar is what
+   gets used on a long list, and the bottom one serves someone who has read to the end.
+
+   One function, so the two cannot come to disagree about the count — the same reason `applySort` is
+   shared by the mouse and keyboard paths on the Portfolio tab. Attribute selectors rather than ids,
+   because an id may appear only once in a document and this is deliberately rendered twice. */
+function applyBarHtml(){
+  const total = (plan.changes || []).length;
+  const allTicked = total > 0 && approved.size === total;
+  return `<div class="controls" data-apply-bar style="margin:0 0 10px">
+    <button class="btn-danger" data-apply${approved.size ? "" : " disabled"}>Apply
+      <span data-apply-count>${approved.size}</span> change(s) to Amazon</button>
+    <button class="btn-outline" data-toggle-all>${allTicked ? "Unselect all" : "Select all"}</button>
+    <button class="btn-outline" data-cancel-preview>Cancel</button>
+    <span class="dim" style="font-size:12px">Recorded with the previous bid, so it can be undone.</span>
+  </div>`;
+}
+
+/* Amazon's suggested bid. THREE states, and they must not look alike — the same discipline the
+   Portfolio tab's ACOS column follows:
+
+     a real suggestion   -> the number, with its low-high range beneath
+     none offered        -> a dash, and the reason on hover
+     not fetched yet     -> a dash
+
+   **Sponsored Brands has no suggested-bid endpoint at all** (three probed, all 404), so ~296 rows in
+   a typical preview land in the middle case. A blank cell in a bid column reads as "no suggestion, so
+   bid low", which is a different claim from "Amazon does not offer one here". */
+function suggestedCell(change){
+  if(change.suggested_bid === null || change.suggested_bid === undefined){
+    const why = change.suggested_unavailable || "not fetched";
+    return `<span class="dim" title="${esc(why)}">—</span>`;
+  }
+  const range = (change.suggested_low !== null && change.suggested_low !== undefined)
+    ? `<br/><span class="dim" style="font-size:10.5px">₹${change.suggested_low.toFixed(2)}–${
+        change.suggested_high.toFixed(2)}</span>`
+    : "";
+  return `₹${change.suggested_bid.toFixed(2)}${range}`;
+}
+
+/* Fetch Amazon's suggestions AFTER the table is on screen, then re-render.
+
+   Deliberately not awaited before the first render: the preview is the safety mechanism for the only
+   feature in this app that spends money, and a 1,005-row plan spans a few dozen ad groups. Making the
+   owner wait on Amazon — or lose the preview when Amazon refuses — to see a context column would be
+   the wrong trade. `token` guards against a stale response overwriting a newer preview. */
+let suggestedToken = 0;
+async function loadSuggestedBids(){
+  const changes = (plan && plan.changes) || [];
+  if(!changes.length) return;
+  const token = ++suggestedToken;
+  try{
+    const response = await fetch("/ads/suggested-bids", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({rows: changes}),
+    });
+    const body = await response.json();
+    if(token !== suggestedToken || !plan) return;      // a newer preview has replaced this one
+    const found = body.suggestions || {};
+    for(const change of plan.changes || []){
+      const hit = found[String(change.entity_id)] || {};
+      change.suggested_bid = hit.suggested_bid ?? null;
+      change.suggested_low = hit.suggested_low ?? hit.low ?? null;
+      change.suggested_high = hit.suggested_high ?? hit.high ?? null;
+      change.suggested_unavailable = hit.unavailable || body.error || "";
+    }
+    renderPreview({fetchSuggestions: false});
+  }catch(err){
+    // Silent by design: the column stays as dashes and the preview is untouched.
+  }
+}
+
+function renderPreview(options){
   if(!plan){ $("preview-area").innerHTML = ""; return; }
 
   if(plan.blocked){
@@ -867,16 +942,21 @@ function renderPreview(){
 
   const rows = changes.map(c => {
     const ticked = approved.has(c.entity_id);
+    /* The AD GROUP as well as the campaign. **The same keyword text exists in several ad groups at
+       different bids**, so the campaign alone does not identify the row whose live bid is about to
+       change. `attach_names` has always resolved this in one query; the preview never rendered it. */
     return `<tr>
       <td><input type="checkbox" data-ptick="${esc(c.entity_id)}"${ticked ? " checked" : ""}
             aria-label="Apply to ${esc(c.text)}"/></td>
-      <td>${esc(c.text)}<br/><span class="mono">${esc(c.campaign_name || c.campaign_id)}</span></td>
+      <td>${esc(c.text)}<br/><span class="mono">${esc(c.campaign_name || c.campaign_id)}</span>${
+        c.ad_group_name ? `<br/><span class="mono dim">${esc(c.ad_group_name)}</span>` : ""}</td>
       <td>${writerTag(c)}</td>
       <td class="num">${money(c.spend)}</td>
       <td class="num">${roas(c.roas)}</td>
       <td class="num">${ratio(c.acos, 0)}</td>
       <td class="num"><span class="bid-old">₹${c.old_bid.toFixed(2)}</span>
         → <span class="bid-new">₹${c.new_bid.toFixed(2)}</span></td>
+      <td class="num">${suggestedCell(c)}</td>
     </tr>`;
   }).join("");
 
@@ -890,20 +970,22 @@ function renderPreview(){
       shows. <strong>Nothing has been sent yet.</strong>
     </div>
     ${skippedHtml()}
+    ${applyBarHtml()}
     <div class="table-wrap"><table>
       <thead><tr>
         <th scope="col"></th><th scope="col">Keyword / target</th><th scope="col">Type</th>
         <th scope="col" class="num">Spend</th><th scope="col" class="num">ROAS</th>
         <th scope="col" class="num">ACOS</th><th scope="col" class="num">Bid</th>
+        <th scope="col" class="num" title="Amazon's own suggested bid for this target">Suggested</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
-    <div class="controls" style="margin-top:10px;margin-bottom:0">
-      <button class="btn-danger" id="apply-btn">Apply <span id="apply-count">${approved.size}</span> change(s) to Amazon</button>
-      <button class="btn-outline" id="cancel-preview">Cancel</button>
-      <span class="dim" style="font-size:12px">Recorded with the previous bid, so it can be undone.</span>
-    </div>
+    ${applyBarHtml()}
   </div>`;
+
+  // Fill the Suggested column in once Amazon answers. Skipped when this render IS that answer, or
+  // the two would call each other for ever.
+  if(!options || options.fetchSuggestions !== false) loadSuggestedBids();
 }
 
 /* The endpoint the row will be written to. A COLUMN rather than a detail: keywords and targeting
@@ -934,9 +1016,14 @@ async function applyPlan(){
   const changes = (plan.changes || []).filter(c => approved.has(c.entity_id));
   if(!changes.length) return;
 
-  const button = $("apply-btn");
-  button.disabled = true;
-  button.textContent = "Sending to Amazon…";
+  /* Both bars, because there are two. This used to look the single Apply button up by id and set
+     `.disabled` on it; with the id gone that would be a property access on null, which would kill the
+     only money-spending path in the app before it sent anything. */
+  const buttons = [...document.querySelectorAll("[data-apply]")];
+  buttons.forEach(button => {
+    button.disabled = true;
+    button.textContent = "Sending to Amazon…";
+  });
 
   const response = await fetch("/ads/apply", {
     method: "POST", headers: {"Content-Type": "application/json"},
@@ -975,7 +1062,7 @@ async function applyPlan(){
       ${body.run_id
         ? `<button class="btn-outline" data-undo="${esc(body.run_id)}">↩ Undo this run</button>`
         : ""}
-      <button class="btn-outline" id="cancel-preview">Close</button>
+      <button class="btn-outline" data-cancel-preview>Close</button>
     </div>
   </div>`;
   plan = null;
@@ -1206,15 +1293,34 @@ $("preview-area").addEventListener("change", e => {
   if(!tick) return;
   const id = tick.dataset.ptick;
   if(tick.checked) approved.add(id); else approved.delete(id);
-  const count = $("apply-count");
-  if(count) count.textContent = approved.size;
-  const button = $("apply-btn");
-  if(button) button.disabled = approved.size === 0;
+  /* Updated in place rather than by re-rendering, because a re-render would rebuild every one of
+     1,005 checkboxes and lose the scroll position mid-review. BOTH bars are updated — querySelectorAll
+     rather than an id, since the controls are deliberately rendered twice. */
+  const total = (plan && plan.changes || []).length;
+  document.querySelectorAll("[data-apply-count]").forEach(node => {
+    node.textContent = approved.size;
+  });
+  document.querySelectorAll("[data-apply]").forEach(node => {
+    node.disabled = approved.size === 0;
+  });
+  document.querySelectorAll("[data-toggle-all]").forEach(node => {
+    node.textContent = (total > 0 && approved.size === total) ? "Unselect all" : "Select all";
+  });
 });
 
 $("preview-area").addEventListener("click", e => {
-  if(e.target.closest("#apply-btn")){ applyPlan(); return; }
-  if(e.target.closest("#cancel-preview")){
+  /* **A TOGGLE, not a lone Unselect button.** 1,005 rows arrive all ticked, so the real gesture is
+     "clear everything, then pick the five I want" — and having cleared them, the way back is the same
+     control. Its label is derived from the live count, so it cannot name the wrong action. */
+  if(e.target.closest("[data-toggle-all]")){
+    const changes = (plan && plan.changes) || [];
+    if(approved.size === changes.length) approved.clear();
+    else approved = new Set(changes.map(c => c.entity_id));
+    renderPreview({fetchSuggestions: false});
+    return;
+  }
+  if(e.target.closest("[data-apply]")){ applyPlan(); return; }
+  if(e.target.closest("[data-cancel-preview]")){
     plan = null; $("preview-area").innerHTML = ""; return;
   }
   const undo = e.target.closest("[data-undo]");
