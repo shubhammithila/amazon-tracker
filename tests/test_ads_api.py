@@ -1169,3 +1169,37 @@ def test_the_suggested_bids_are_fetched_after_the_table_is_rendered():
     assert "suggestedToken" in source, (
         "a stale response can overwrite a newer preview's suggestions"
     )
+
+
+def test_the_preview_shows_the_match_type_as_well_as_the_writer():
+    """**EXACT, PHRASE and BROAD were one "keyword" tag**, so 1,418 broad rows looked exact.
+
+    Both columns stay: Match is how the row competes, Type is which Amazon API its bid is written to.
+    `TARGETING_EXPRESSION` exists under both ad products and routes differently, so a screen showing
+    only one of them cannot reveal a misrouted write.
+    """
+    source = _code_only(_template())
+    assert "function matchTag(" in source, "there is no match-type column"
+    assert "function writerTag(" in source, "the writer column was replaced rather than joined"
+    body = _js_function(source, "renderPreview")
+    assert "matchTag(c)" in body and "writerTag(c)" in body, (
+        "the preview renders one of the two columns but not both"
+    )
+    assert ">Match<" in body, "the Match column has no header"
+
+
+def test_the_match_vocabulary_comes_from_the_server():
+    """Hardcoding the labels in the template would let it drift from `logic.MATCH_LABELS`.
+
+    A new match type would then render "?" on screen while the server knew its name.
+    """
+    source = _template()
+    assert "match_labels | tojson" in source, "the labels are hardcoded in the template"
+
+    from app.ads import logic as ads_logic
+
+    main = (Path(__file__).parent.parent / "app" / "main.py").read_text(encoding="utf-8")
+    assert "match_labels" in main, "the page route does not pass the vocabulary"
+    # Every label the template can render must have a style, or a real match type shows unstyled.
+    for label in ads_logic.MATCH_LABELS.values():
+        assert f".tag.m-{label}{{" in source, f"the {label} tag has no style"

@@ -77,6 +77,41 @@ SB_KEYWORD_MATCH_TYPES = frozenset({"EXACT", "PHRASE", "BROAD"})
 #: `/sb/targets` and both carry an editable bid — measured, all 675 such rows have one.
 SB_TARGET_MATCH_TYPES = frozenset({"TARGETING_EXPRESSION", "THEME"})
 
+#: How a row COMPETES, for the screen — as distinct from `writer_for`, which is where its bid is
+#: written. **Both are shown, and that is not redundancy:** `TARGETING_EXPRESSION` occurs under both
+#: ad products and routes to different APIs, so a single column cannot reveal a misrouted write.
+#:
+#: The template used to render EXACT, PHRASE and BROAD as one "keyword" tag, which made **1,418
+#: broad-match rows indistinguishable from 14,435 exact ones** — and they compete completely
+#: differently, so a bid decision on one is not a bid decision on the other.
+#:
+#: Every label below occurs in the live data; none of these branches is hypothetical.
+MATCH_LABELS = {
+    "EXACT": "exact",
+    "PHRASE": "phrase",
+    "BROAD": "broad",
+    "TARGETING_EXPRESSION_PREDEFINED": "auto",
+    "TARGETING_EXPRESSION": "product",
+    "THEME": "theme",
+}
+
+#: Shown for a match type we have no name for. A question mark rather than a guess, matching
+#: `writer_for` returning None: an unrecognised type is a new Amazon feature or our own typo, and a
+#: plausible-looking label would hide it. A row that `writer_for` excludes still has to be
+#: describable, or the skipped list cannot say what it skipped.
+MATCH_UNKNOWN = "?"
+
+
+def match_label(match_type, ad_product: str = AD_PRODUCT_SP) -> str:
+    """A short human label for how a row competes: `exact`, `phrase`, `broad`, `auto`, `product`,
+    `theme`, or `?`.
+
+    `ad_product` is accepted but not currently consulted — the labels happen to agree across
+    products. It is in the signature because `writer_for` needs it for the same input, and a caller
+    holding one row should not have to remember which of the two functions cares.
+    """
+    return MATCH_LABELS.get(str(match_type or "").upper(), MATCH_UNKNOWN)
+
 
 def writer_for(match_type, ad_product: str = AD_PRODUCT_SP) -> str | None:
     """Which endpoint owns a row: `"keyword"`, `"target"`, `"sb_keyword"`, or `None` if unrecognised.

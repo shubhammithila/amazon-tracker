@@ -472,3 +472,48 @@ def test_a_plan_can_be_fed_its_own_metrics_without_recomputing():
     twice = logic.plan_run([row], conditions=[{"field": "spend", "op": "gt", "value": 100}],
                            action=logic.ACTION_DECREASE_PCT, amount=10)
     assert once["changes"] == twice["changes"]
+
+
+# ─── Match type: how a row competes, as distinct from where its bid is written ─
+
+
+def test_every_match_type_in_the_live_data_has_a_label():
+    """**All six labels occur on the real account**, so none of these branches is hypothetical.
+
+    Measured row counts: SP TARGETING_EXPRESSION 27,708 / PHRASE 15,951 / EXACT 14,435 /
+    TARGETING_EXPRESSION_PREDEFINED 2,889 / BROAD 1,418; SB EXACT 6,679 / TARGETING_EXPRESSION 4,189 /
+    PHRASE 3,521 / THEME 56.
+
+    `broad` matters particularly: `writerTag` collapsed EXACT, PHRASE and BROAD into one "keyword"
+    tag, so 1,418 broad-match rows were indistinguishable from 14,435 exact ones on screen — and they
+    compete completely differently, so a bid decision on one is not a bid decision on the other.
+    """
+    assert logic.match_label("EXACT") == "exact"
+    assert logic.match_label("PHRASE") == "phrase"
+    assert logic.match_label("BROAD") == "broad"
+    assert logic.match_label("TARGETING_EXPRESSION_PREDEFINED") == "auto"
+    assert logic.match_label("TARGETING_EXPRESSION") == "product"
+    assert logic.match_label("THEME", logic.AD_PRODUCT_SB) == "theme"
+
+
+def test_an_unknown_match_type_is_labelled_not_guessed():
+    """The same rule `writer_for` follows: unrecognised is named, never inferred.
+
+    A row `writer_for` excludes must still be describable on screen, or the skipped list cannot say
+    what it skipped.
+    """
+    assert logic.match_label("SOMETHING_NEW") == "?"
+    assert logic.match_label("") == "?"
+    assert logic.match_label(None) == "?"
+
+
+def test_the_match_label_is_not_the_writer():
+    """**Two different questions, and TARGETING_EXPRESSION is why.**
+
+    It exists under BOTH ad products and routes to different APIs — `/sp/targets` versus
+    `/sb/targets` — so a screen showing only one of the two columns cannot reveal a misrouted write.
+    """
+    assert logic.match_label("TARGETING_EXPRESSION", logic.AD_PRODUCT_SP) == "product"
+    assert logic.match_label("TARGETING_EXPRESSION", logic.AD_PRODUCT_SB) == "product"
+    assert logic.writer_for("TARGETING_EXPRESSION", logic.AD_PRODUCT_SP) == logic.WRITER_TARGET
+    assert logic.writer_for("TARGETING_EXPRESSION", logic.AD_PRODUCT_SB) == logic.WRITER_SB_TARGET

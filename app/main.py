@@ -206,7 +206,14 @@ async def portfolio_page(request: Request, grant=Depends(require_area(permission
 
 @app.get("/ads-page", response_class=HTMLResponse)
 async def ads_page(request: Request, grant=Depends(require_area(permissions.ADS))):
-    return templates.TemplateResponse(request, "ads.html", {"active": "ads", "grant": grant})
+    from app.ads import logic as ads_logic
+
+    return templates.TemplateResponse(request, "ads.html", {
+        "active": "ads", "grant": grant,
+        # The match-type vocabulary, sent rather than hardcoded in the template — otherwise adding a
+        # match type on the server would silently render "?" on screen while the server knew its name.
+        "match_labels": ads_logic.MATCH_LABELS,
+    })
 
 
 @app.get("/projections-page", response_class=HTMLResponse)

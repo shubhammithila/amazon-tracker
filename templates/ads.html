@@ -135,6 +135,17 @@ tr.child td:first-child{padding-left:30px}
 .tag.auto{background:var(--yellow-soft);color:var(--yellow)}
 .tag.product{background:var(--green-soft);color:var(--green)}
 .tag.paused{background:var(--surface2);color:var(--text-dim)}
+/* Match types — how a row COMPETES, which is a different question from which API its bid is written
+   to (the .kw/.auto/.product tags above). The three keyword matches share a hue and the three target
+   kinds another, so the shape of a 1,005-row preview is readable without reading every row.
+   `broad` is deliberately the odd one out: it was invisible while EXACT, PHRASE and BROAD were all
+   rendered as one tag, and it is the match type most likely to be spending on the wrong query. */
+.tag.m-exact{background:var(--blue-soft);color:var(--blue)}
+.tag.m-phrase{background:var(--blue-soft);color:var(--blue)}
+.tag.m-broad{background:var(--orange-soft);color:var(--orange)}
+.tag.m-auto{background:var(--yellow-soft);color:var(--yellow)}
+.tag.m-product{background:var(--green-soft);color:var(--green)}
+.tag.m-theme{background:var(--green-soft);color:var(--green)}
 /* Which Amazon ad product. Not decoration: SP and SB are different APIs with
    different write payloads, so the row's product decides where a bid change goes. */
 .tag.sp{background:var(--surface2);color:var(--text-muted)}
@@ -240,6 +251,10 @@ tr.child td:first-child{padding-left:30px}
 <script>
 /* ── State ─────────────────────────────────────────────────────────────────── */
 const $ = id => document.getElementById(id);
+
+/* Mirrors `logic.MATCH_LABELS`, sent by the server rather than hardcoded here — otherwise adding a
+   match type on the server would silently render "?" on screen while the server knew its name. */
+const MATCH_LABELS = {{ match_labels | tojson }};
 let data = {campaigns: [], totals: {}, window: ["", ""], guardrails: {}, runs: []};
 let conditions = remembered("conditions", [{field: "spend", op: "gt", value: 100}]);
 let selected = new Set();          // campaign ids
@@ -951,6 +966,7 @@ function renderPreview(options){
       <td>${esc(c.text)}<br/><span class="mono">${esc(c.campaign_name || c.campaign_id)}</span>${
         c.ad_group_name ? `<br/><span class="mono dim">${esc(c.ad_group_name)}</span>` : ""}</td>
       <td>${writerTag(c)}</td>
+      <td>${matchTag(c)}</td>
       <td class="num">${money(c.spend)}</td>
       <td class="num">${roas(c.roas)}</td>
       <td class="num">${ratio(c.acos, 0)}</td>
@@ -974,6 +990,7 @@ function renderPreview(options){
     <div class="table-wrap"><table>
       <thead><tr>
         <th scope="col"></th><th scope="col">Keyword / target</th><th scope="col">Type</th>
+        <th scope="col" title="How this row competes: exact, phrase, broad, or a target">Match</th>
         <th scope="col" class="num">Spend</th><th scope="col" class="num">ROAS</th>
         <th scope="col" class="num">ACOS</th><th scope="col" class="num">Bid</th>
         <th scope="col" class="num" title="Amazon's own suggested bid for this target">Suggested</th>
@@ -991,6 +1008,19 @@ function renderPreview(options){
 /* The endpoint the row will be written to. A COLUMN rather than a detail: keywords and targeting
    clauses are different Amazon APIs and the report labels both ids `keywordId`, so showing the
    split is how a routing bug becomes visible instead of silent. */
+/* How the row COMPETES — exact, phrase, broad, auto, product, theme.
+
+   A SEPARATE column from `writerTag`, which says which Amazon API the bid is written to. Both are
+   shown because `TARGETING_EXPRESSION` exists under both ad products and routes to different
+   endpoints, so one column cannot reveal a misrouted write.
+
+   Asked for because EXACT, PHRASE and BROAD were all rendered as a single "keyword" tag: measured,
+   1,418 broad rows looked identical to 14,435 exact ones, and they compete completely differently. */
+function matchTag(row){
+  const label = MATCH_LABELS[String(row.match_type || "").toUpperCase()] || "?";
+  return `<span class="tag m-${esc(label)}">${esc(label)}</span>`;
+}
+
 function writerTag(row){
   if(row.writer === "keyword") return '<span class="tag kw">keyword</span>';
   if(row.match_type === "TARGETING_EXPRESSION_PREDEFINED") return '<span class="tag auto">auto</span>';
