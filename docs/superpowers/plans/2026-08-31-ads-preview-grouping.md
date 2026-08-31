@@ -655,7 +655,7 @@ re-enable a row the once-per-day guard unticked."
 
 ## Task 3: Docs
 
-- [ ] **Step 1: Run the mutations**
+- [x] **Step 1: Run the mutations** — 11 written, all caught. One survivor first time round (a campaign total recomputed run-wide) because the fixture had a single campaign; fixed by adding a second whose movement has the opposite sign. Harness: `scripts/mutate_grouping.py`.
 
 | Mutation | Must fail |
 |---|---|
@@ -667,7 +667,7 @@ re-enable a row the once-per-day guard unticked."
 | bulk tick drops the `changed_today` check | `test_bulk_ticking_cannot_re_enable_a_row_changed_today` |
 | `runPreview` keeps the previous expansion | `test_a_new_preview_starts_collapsed` |
 
-- [ ] **Step 2: CLAUDE.md**
+- [x] **Step 2: CLAUDE.md**
 
 Record: the 1,700 / 13 / 118 measurement and why two levels rather than one; that group sums are
 computed in the pure module and why; that bulk ticking cannot override the once-per-day guard; the

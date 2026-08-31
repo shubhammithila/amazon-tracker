@@ -1837,6 +1837,34 @@ ticked before anything is sent. 1000 rather than higher because at 2000 the limi
 discriminating: an account-wide `spend > 0` would fit under it. The guards that actually prevent
 damage are `max_bid` and `max_change_pct`; this one only prevents surprise.
 
+> **And it counts the rows that can actually be SENT, not every match.** Measured on the owner's own
+> rule: **109 changing, 105 already changed today, 4 appliable.** Counting all 109 refuses a run that
+> could only ever send 4 — and at scale, 1,100 matches with 1,050 already moved would be blocked by a
+> 1,000-row limit while 50 rows went to Amazon. So the ceiling is measured on `approved_ids`, which is
+> also why that list is now computed **above** the `blocked` check rather than below it.
+>
+> Nothing is loosened: `/ads/apply` re-checks the same ceiling against the rows actually approved, so
+> every row that reaches Amazon is still under it. The **message still names the full match count**,
+> because that is the number on screen — a refusal citing a smaller figure than the table shows would
+> read as a different bug. A genuinely broad rule is still refused, and a test asserts both halves.
+
+### A zero-ROAS warning was proposed and REJECTED, and the reason generalises
+I noticed that **96% of the 1,425 rows** in a real `spend < 50, bid < 40 → +10%` preview had ROAS
+`0.00x`, and proposed warning that the rule was about to raise bids on keywords with no sales. The
+owner's answer: *"the rule is designed to bring out the 0 roas and low spend keywords so on which we
+can increase the spends"*.
+
+**Then I measured clicks, which is the number that settles it: 1,107 of the rows have ZERO clicks, and
+not one has more than 10.** A keyword with 0 clicks has not failed — it has never been *tested*. ROAS
+is undefined there, not bad, and `0.00x` is the display of a missing denominator rather than a
+measurement. Raising the bid is exactly how you find out.
+
+The warning would have fired on 96% of a deliberate rule, which makes it noise that trains the owner
+to dismiss banners — and the one banner that matters here is the guardrail block. **The same
+misreading is available on the Portfolio tab**, where `_ratio` returns `None` rather than 0 for
+precisely this reason, and where ACOS has three states because "spend, no attributed sales" is not a
+percentage. Recorded because a future reader will see the same 96% and reach the same wrong conclusion.
+
 ### `207 Multi-Status` makes partial failure the NORMAL response
 `{"keywords": {"success": [...], "error": [...]}}`, with failures identified by **`index` into the
 request array** — so request order is the only link back to a row, and getting it wrong makes the
@@ -1900,6 +1928,58 @@ the same reason `build_undo` excludes them: Amazon never held those values.
 ledger stores `datetime.utcnow()`; a change applied at 04:00 IST is 22:30 UTC the previous day, so a
 UTC-day guard would silently not hold for 5½ hours out of every 24. `logic.ist_day` is one named
 function with its own test, alongside `localDate` in the templates.
+
+### 1,700 rows open as 7 lines: campaign → ad group → rows
+Asked for as *"when there are so many matches 1700. better to sort it campaign wise and ad group
+wise."* Measured on the live account for `spend < 50, bid < 40 → +10%`: **1,425 changing rows across 7
+campaigns and 87 ad groups**, which the grouped view opens as **7 lines**.
+
+**Two levels, not one, and the data is why.** `MF_SP_keywords` alone holds **886 of the 1,425 rows** —
+grouping by campaign only would have replaced one unreviewable list with a slightly shorter one. It
+expands to 30 ad groups, and one of those (`makhana`) to 121 keywords, which is a reviewable number.
+
+**The totals are computed in `logic.group_changes`, not in the template.** A campaign header carrying
+row count, spend and net bid movement is a *claim about its own rows*; computed in JavaScript it can
+drift from the table beneath it, and this codebase has shipped that exact defect twice — the Orders
+tab's "86 orders beside 87 lines", and the Portfolio parent rows that exist to prevent it. Here the
+number gates a live bid change.
+
+- **A campaign is rolled up from its ad groups, which are rolled up from the rows**, never recomputed
+  from `changes`. Verified in a browser: `886 rows · ₹8,058.73 · +₹2,441.19` equals the sum of its 30
+  ad groups exactly.
+- **A re-arrangement, never a filter.** `sum(group["rows"]) == len(changes)`, asserted over 50 rows
+  across 3 campaigns and 7 ad groups — a collapsed header that hid rows would hide bid changes.
+- **`movement` is the NET rupee change**, signed, because a rule that moves some bids up and others
+  down nets out and that is worth seeing before approving it.
+- **A row with no ad group is grouped under `(no ad group)`, not dropped** — the rule the whole preview
+  follows: excluded and named, never silently absent.
+- **Ordered by spend descending at both levels**, because "where is the money" is what a 1,700-row
+  preview is being triaged for. `changes` itself is untouched, so `/ads/apply`, the ledger and every
+  existing test are unaffected by the grouping.
+- **Every new preview starts collapsed.** Carrying the previous expansion over would re-open groups
+  belonging to a rule that no longer exists.
+
+> **Grouping added two bulk-selection paths, and reading all three together found a live bug in the
+> OLDEST one.** `Select all` selected `plan.changes` wholesale — and `changes` deliberately INCLUDES
+> the rows the once-per-day guard unticked, since they stay visible with their reason. So one click on
+> the single widest control in the preview undid the guard for every one of them, and a −10% rule could
+> compound to **−19%** on live bids. The campaign and ad-group boxes were written with the guard; this
+> button predates them.
+>
+> **Nothing on screen would have looked wrong.** The run that prompted the grouping had **0**
+> changed-today rows, so the count would not have moved. Found by reading the three paths side by side,
+> not by using the feature.
+>
+> The "all ticked" comparison had to move to the same basis in all three places (`applyBarHtml`, the
+> per-row handler, the toggle itself) — counting `changes.length` would pin the label to "Select all"
+> for ever on any run holding a guarded row, since the toggle can never reach that count.
+
+> **A one-campaign fixture cannot test a per-campaign total, and a mutation is what said so.**
+> `test_a_group_total_is_exactly_the_sum_of_its_own_rows` was built with three rows in one campaign, so
+> "its own rows" and "the whole run" were the same number and substituting `len(changes)` for the
+> rolled-up sum **passed** — a mutation that on the real plan would print `1,425 rows` and `₹12,835`
+> against all 7 campaign headers. The fixture now has a second campaign whose movement has the opposite
+> sign, so a run-wide sum flips the sign rather than merely enlarging the number.
 
 ### The bid log: what happened to THIS keyword
 Asked for as *"lets maintain a history of all the bid changes which I can view"*.

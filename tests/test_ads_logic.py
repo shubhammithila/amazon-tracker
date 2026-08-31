@@ -566,6 +566,12 @@ def test_a_group_total_is_exactly_the_sum_of_its_own_rows():
     This codebase has shipped that defect twice — the Orders tab's "86 orders beside 87 lines", and the
     Portfolio parent rows that exist to prevent it. Here the number gates a live bid change, so the
     sums are computed in the pure module rather than in JavaScript.
+
+    **There is a SECOND campaign in this fixture, and it is what makes the test discriminate.** Built
+    with one campaign it could not: every "its own rows" total then equals the whole run's, so
+    substituting `len(changes)` for the rolled-up sum passed — a mutation that on the real 1,425-row
+    plan would print 1,425 rows and ₹12,835 of spend against EVERY one of the 7 campaign headers.
+    Caught by mutation, not by reading.
     """
     changes = [
         _change("A", campaign="c1", campaign_name="C1", ad_group="g1", ad_group_name="G1",
@@ -574,14 +580,24 @@ def test_a_group_total_is_exactly_the_sum_of_its_own_rows():
                 spend=200.5, old_bid=20.0, new_bid=18.0),
         _change("C", campaign="c1", campaign_name="C1", ad_group="g2", ad_group_name="G2",
                 spend=100.25, old_bid=5.0, new_bid=5.5),
+        # A second campaign, deliberately: its rows must not appear in c1's totals.
+        _change("D", campaign="c2", campaign_name="C2", ad_group="g3", ad_group_name="G3",
+                spend=7.0, old_bid=4.0, new_bid=9.0),
     ]
     group = logic.group_changes(changes)[0]
+    assert group["campaign_name"] == "C1", "the biggest spender is not first"
 
-    assert group["spend"] == pytest.approx(600.75)
-    assert group["spend"] == pytest.approx(sum(a["spend"] for a in group["ad_groups"]))
-    assert group["rows"] == sum(a["rows"] for a in group["ad_groups"])
-    # Movement is the NET change to the bids, which is what the header is claiming.
+    assert group["rows"] == 3, f"the header counts rows outside its own campaign: {group['rows']}"
+    assert group["spend"] == pytest.approx(600.75), (
+        f"the header sums spend outside its own campaign: {group['spend']}"
+    )
+    # Movement is the NET change to the bids, which is what the header is claiming. c2 moves +5.0, so
+    # a run-wide sum would read +4.5 here rather than -0.5 — a sign flip, not merely a bigger number.
     assert group["movement"] == pytest.approx(1.0 - 2.0 + 0.5)
+
+    # And each figure equals the roll-up of its own ad groups, which is how it is computed.
+    assert group["rows"] == sum(a["rows"] for a in group["ad_groups"])
+    assert group["spend"] == pytest.approx(sum(a["spend"] for a in group["ad_groups"]))
     assert group["movement"] == pytest.approx(sum(a["movement"] for a in group["ad_groups"]))
 
 
