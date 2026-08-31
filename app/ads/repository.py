@@ -664,6 +664,52 @@ async def record_results(db: AsyncSession, run_id: str, results: list[dict]) -> 
     return counts
 
 
+async def last_applied_bids(db: AsyncSession, entity_ids: Sequence[str]) -> dict[str, dict]:
+    """`{entity_id: {"bid", "at", "rule", "day"}}` — the newest APPLIED bid change per entity.
+
+    **This is where the true current bid comes from, and it needs no Amazon call.** A performance
+    report does not re-issue because we changed a bid, so the figure a preview shows is stale the
+    moment a rule runs — measured on production, the report held 13.86 for a keyword we had just set
+    to 15.25. The ledger already records what we set it to.
+
+    **Only `applied` rows.** A `failed` row never changed anything at Amazon and a `pending` one is
+    unknown; treating either as the current bid would compute the next change from a value Amazon
+    never held. The same rule `build_undo` follows when it reverses only applied rows.
+
+    `day` is the IST calendar day (`logic.ist_day`), because "not twice on the same day" is an IST
+    decision while this column stores UTC.
+
+    Chunked, because a real rule matched 1,005 rows and SQLite caps the length of an `IN (...)` list.
+    """
+    wanted = [str(e) for e in entity_ids if e]
+    if not wanted:
+        return {}
+
+    out: dict[str, dict] = {}
+    CHUNK = 500
+    for start in range(0, len(wanted), CHUNK):
+        rows = (await db.execute(
+            select(AdsMutation)
+            .where(
+                AdsMutation.entity_id.in_(wanted[start:start + CHUNK]),
+                AdsMutation.status == "applied",
+                AdsMutation.new_bid.is_not(None),
+            )
+            # ASCENDING, so the last write per entity wins as the dict is filled. Descending with a
+            # `setdefault` would work too; this way the newest row simply overwrites, which is one
+            # fewer thing to get backwards.
+            .order_by(AdsMutation.created_at, AdsMutation.id)
+        )).scalars().all()
+        for row in rows:
+            out[row.entity_id] = {
+                "bid": _f(row.new_bid),
+                "at": row.created_at.isoformat() if row.created_at else "",
+                "rule": row.rule_summary or "",
+                "day": logic.ist_day(row.created_at),
+            }
+    return out
+
+
 async def load_runs(db: AsyncSession, limit: int = 25) -> list[dict]:
     """Recent runs, newest first, each with its counts — the history panel and the undo list."""
     run_ids = (await db.execute(

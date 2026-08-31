@@ -1203,3 +1203,64 @@ def test_the_match_vocabulary_comes_from_the_server():
     # Every label the template can render must have a style, or a real match type shows unstyled.
     for label in ads_logic.MATCH_LABELS.values():
         assert f".tag.m-{label}{{" in source, f"the {label} tag has no style"
+
+
+def test_the_preview_trusts_the_servers_default_selection():
+    """**The guard is in the DATA, not the screen.**
+
+    `plan_run` computes `approved_ids`, excluding rows already changed today, and `POST /ads/apply`
+    re-checks the same rule. A template that ticked everything would put the compounding change one
+    click away.
+    """
+    source = _code_only(_template())
+    assert "body.approved_ids" in source, (
+        "the screen ticks every row rather than honouring the server's selection"
+    )
+
+
+def test_a_row_changed_today_says_so_on_the_row():
+    """The reason has to be ON the row: with 1,005 rows a summary line alone cannot explain why one
+    is unticked."""
+    body = _js_function(_code_only(_template()), "renderPreview")
+    assert "changed_today" in body, "the badge is missing"
+    assert "report_bid" in body, (
+        "the stale report figure is hidden rather than shown, so the owner cannot see why the "
+        "current bid differs from what the last preview said"
+    )
+    assert ".tag.changed{" in _template(), "the badge has no style"
+
+
+def test_the_apply_summary_names_rows_refused_for_being_changed_today():
+    """A shrunken count with no reason reads as rows silently going missing — the rule `moved` and
+    `inactive` already follow."""
+    source = _code_only(_template())
+    assert "body.repeated" in source, "the refusal is never surfaced on screen"
+
+
+async def test_apply_refuses_a_row_already_changed_today(auth_client, db):
+    """**Re-checked server-side, because a preview can sit open while another run happens.**
+
+    The screen is not a trust boundary and this is the only route in the app that spends money.
+    Applying the same percentage to an already-moved bid compounds it: -10% twice is -19%.
+    """
+    from datetime import datetime
+
+    from app.models import AdsMutation
+
+    await _seed(db)
+    db.add(AdsMutation(run_id="earlier", entity_id="111", entity_type="keyword", writer="keyword",
+                       old_bid=18.75, new_bid=16.88, status="applied", rule_summary="earlier rule",
+                       created_at=datetime.utcnow()))
+    await db.commit()
+
+    response = await auth_client.post("/ads/apply", json={
+        "rule": "spend > 100 -> bid -10%",
+        "changes": [{"entity_id": "111", "writer": "keyword", "text": "makhana",
+                     "old_bid": 16.88, "new_bid": 15.19, "match_type": "PHRASE",
+                     "campaign_id": "c1", "ad_group_id": "g1"}],
+    })
+    body = response.json()
+    assert response.status_code == 200, body
+    assert body.get("applied", 0) == 0, "a row already changed today was sent to Amazon"
+    assert body.get("repeated"), "the refusal is not reported, so the row vanishes silently"
+    assert "already changed today" in body["repeated"][0]["reason"]

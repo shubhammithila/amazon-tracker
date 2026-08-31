@@ -27,6 +27,28 @@ Three facts drive the design, all measured:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timedelta
+
+#: India is UTC+5:30, and the ledger stores naive `datetime.utcnow()`.
+#:
+#: **This offset is written once, here.** CLAUDE.md records FOUR separate bugs in this codebase from
+#: exactly this boundary — the Ads date picker, the Orders ship-by column, the Portfolio window, and a
+#: GST invoice that came out dated a day early — so the conversion is a named function with its own
+#: test rather than arithmetic inlined at a call site.
+IST_OFFSET = timedelta(hours=5, minutes=30)
+
+
+def ist_day(when) -> str:
+    """The IST calendar date of a naive UTC datetime, as ``YYYY-MM-DD``. ``""`` for None.
+
+    "Not twice on the same day" is a decision taken in IST, and the ledger records UTC. A change
+    applied at 04:00 IST is 22:30 UTC the PREVIOUS day, so a UTC-day comparison would call it
+    yesterday and allow a second run that morning — 5.5 hours out of every 24 in which the guard
+    silently would not hold.
+    """
+    if when is None:
+        return ""
+    return (when + IST_OFFSET).date().isoformat()
 
 # ─── Routing: which endpoint owns this row ───────────────────────────────────
 #
@@ -515,6 +537,14 @@ SKIP_AUTOMATED = (
     "this campaign is optimised by M19 or Amazon, so a bid we set would be overwritten"
 )
 
+#: A row whose bid we already changed today. **Not a refusal — the row stays visible and is merely
+#: left UNTICKED**, because there are legitimate reasons to move a bid twice (a big spender mid-sale)
+#: and a row silently missing from a 1,005-row preview is indistinguishable from a bug.
+#:
+#: What it prevents is compounding: applying the same percentage to an already-moved bid. Measured,
+#: a -10% rule run twice is **-19%**.
+SKIP_CHANGED_TODAY = "the bid was already changed today, so applying again would compound it"
+
 
 def plan_run(
     rows: Sequence[Mapping],
@@ -525,10 +555,37 @@ def plan_run(
     guardrails: Mapping | None = None,
     scope_campaign_ids: Sequence[str] | None = None,
     scope_ad_group_ids: Sequence[str] | None = None,
+    applied_today: Mapping | None = None,
+    today: str | None = None,
 ) -> dict:
     """Turn a rule plus a report into an auditable, un-sent PLAN.
 
-    Returns `{"changes": [...], "skipped": [...], "blocked": str|None, "totals": {...}}`.
+    Returns `{"changes": [...], "skipped": [...], "blocked": str|None, "totals": {...},
+    "approved_ids": [...]}`.
+
+    ``applied_today`` is ``{entity_id: {"bid", "at", "rule", "day"}}`` from
+    `repository.last_applied_bids` — the newest APPLIED ledger row per entity. It does two jobs that
+    must not be confused:
+
+    * **The bid.** A performance report does not re-issue because we changed a bid, so after a run the
+      screen showed a stale one — measured on production, the report said 13.86 for a keyword Amazon
+      held at 15.25. The ledger knows, so this needs no Amazon call.
+    * **The guard.** Where that change happened TODAY in IST, the row is flagged and left out of
+      ``approved_ids``, because applying the same percentage again compounds it: a -10% rule run twice
+      is -19%.
+
+    **The two are separate on purpose.** Yesterday's change is still the true current bid — the report
+    stays stale until someone refetches — but it must not block a run today, or a rule could never
+    touch the same keyword twice in its life.
+
+    > **These two behaviours had to ship together, and the order is the whole point.** While the
+    > preview computed from the stale report figure, a repeat run was accidentally idempotent
+    > (13.86 x 1.10 = 15.25 both times). Correcting the displayed bid is what CREATES the compounding,
+    > so a version of this function with the true bid and no guard is more dangerous than the bug it
+    > fixes.
+
+    ``today`` is the IST day to compare against, defaulting to now. A parameter so a test can pin the
+    boundary without freezing the clock.
 
     **Nothing here contacts Amazon.** The plan is what the preview renders and what the apply
     step consumes, so what the owner approves is exactly what gets sent — the two cannot drift
@@ -571,6 +628,10 @@ def plan_run(
 
     changes: list[dict] = []
     skipped: list[dict] = []
+    # The IST day, resolved once: comparing against a value computed per row would let a run that
+    # straddles midnight classify its own rows differently.
+    this_day = today or ist_day(datetime.utcnow())
+    ledger_bids = applied_today or {}
 
     for row in rows:
         m = row if "spend" in row and "roas" in row else metrics_for(row)
@@ -601,7 +662,24 @@ def plan_run(
             skipped.append({**m, "reason": SKIP_NO_BID})
             continue
 
-        proposed = new_bid(m["bid"], action, amount)
+        # ── The TRUE current bid ──
+        #
+        # The report figure is stale the moment a rule runs: Amazon does not re-issue a report because
+        # we changed a bid. Measured on production, the report held 13.86 for a keyword we had just
+        # set to 15.25 — so a percentage applied to the report figure is a percentage of the wrong
+        # number.
+        #
+        # **Every guard below reads `old_bid`, not `m["bid"]`.** `SKIP_NO_CHANGE` is the one that
+        # would fail quietly: computed from the true bid but compared against the stale one, a row
+        # already sitting at the rule's target would be reported as changing and then sent to Amazon
+        # as a pointless write.
+        ledger = ledger_bids.get(str(m.get("entity_id"))) or {}
+        report_bid = round(_as_float(m["bid"]), 2)
+        old_bid = (round(_as_float(ledger.get("bid")), 2)
+                   if ledger.get("bid") is not None else report_bid)
+        changed_today = bool(ledger) and ledger.get("day") == this_day
+
+        proposed = new_bid(old_bid, action, amount)
         if proposed is None:
             skipped.append({**m, "reason": SKIP_NO_BID})
             continue
@@ -611,11 +689,21 @@ def plan_run(
         if proposed > limits["max_bid"]:
             skipped.append({**m, "new_bid": proposed, "reason": SKIP_ABOVE_CEILING})
             continue
-        if round(proposed, 2) == round(_as_float(m["bid"]), 2):
+        if round(proposed, 2) == round(old_bid, 2):
             skipped.append({**m, "new_bid": proposed, "reason": SKIP_NO_CHANGE})
             continue
 
-        changes.append({**m, "old_bid": round(_as_float(m["bid"]), 2), "new_bid": proposed})
+        changes.append({
+            **m,
+            "old_bid": old_bid,
+            "new_bid": proposed,
+            # What the REPORT said, kept so the screen can show that it was stale rather than
+            # silently correcting it — the owner should be able to see why the number moved.
+            "report_bid": report_bid,
+            "changed_today": changed_today,
+            "changed_at": ledger.get("at") or "",
+            "changed_rule": ledger.get("rule") or "",
+        })
 
     blocked = None
     if len(changes) > limits["max_rows"]:
@@ -625,10 +713,19 @@ def plan_run(
             f"fewer campaigns."
         )
 
+    # **The default selection, computed HERE rather than in the template.**
+    #
+    # `POST /ads/apply` must be able to make the same judgement: a screen-level untick would leave the
+    # route re-appliable from a hand-built request, and it is the only route in this app that spends
+    # money. The rows are still returned — unticked and visible with their reason — because a row
+    # silently missing from a 1,005-row preview is indistinguishable from a bug.
+    approved_ids = [c["entity_id"] for c in changes if not c["changed_today"]]
+
     return {
         "changes": changes,
         "skipped": skipped,
         "blocked": blocked,
+        "approved_ids": approved_ids,
         "totals": {
             "matched": len(changes) + len(skipped),
             "changing": len(changes),
@@ -641,6 +738,8 @@ def plan_run(
             # How many matched rows belong to a campaign somebody else optimises, so the preview can
             # say "12 more matched but M19 manages them" rather than leaving them unexplained.
             "automated": sum(1 for s in skipped if s.get("reason") == SKIP_AUTOMATED),
+            # How many arrive unticked because their bid already moved today.
+            "changed_today": sum(1 for c in changes if c["changed_today"]),
         },
     }
 

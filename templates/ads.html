@@ -146,6 +146,9 @@ tr.child td:first-child{padding-left:30px}
 .tag.m-auto{background:var(--yellow-soft);color:var(--yellow)}
 .tag.m-product{background:var(--green-soft);color:var(--green)}
 .tag.m-theme{background:var(--green-soft);color:var(--green)}
+/* "changed today" — why a row arrives unticked. Orange rather than red: it is a caution the owner may
+   deliberately override, not a refusal. */
+.tag.changed{background:var(--orange-soft);color:var(--orange)}
 /* Which Amazon ad product. Not decoration: SP and SB are different APIs with
    different write payloads, so the row's product decides where a bid change goes. */
 .tag.sp{background:var(--surface2);color:var(--text-muted)}
@@ -845,7 +848,10 @@ async function runPreview(){
       return;
     }
     plan = body;
-    approved = new Set((body.changes || []).map(c => c.entity_id));
+    /* **The SERVER decides the default selection**, because `POST /ads/apply` re-checks the same rule.
+       Rows whose bid we already changed today arrive UNTICKED: applying the same percentage again
+       compounds it, and a -10% rule run twice is -19%. The fallback covers an older payload only. */
+    approved = new Set(body.approved_ids || (body.changes || []).map(c => c.entity_id));
     renderPreview();
   } finally {
     button.disabled = false;
@@ -970,8 +976,17 @@ function renderPreview(options){
       <td class="num">${money(c.spend)}</td>
       <td class="num">${roas(c.roas)}</td>
       <td class="num">${ratio(c.acos, 0)}</td>
+      ${/* The bid shown is the TRUE current one — from our ledger where a rule has already moved it,
+            because Amazon's report does not re-issue when we change a bid. Measured on production, the
+            report held 13.86 for a keyword we had just set to 15.25. The badge says so rather than
+            silently correcting the number, and the tooltip carries the stale figure. */""}
       <td class="num"><span class="bid-old">₹${c.old_bid.toFixed(2)}</span>
-        → <span class="bid-new">₹${c.new_bid.toFixed(2)}</span></td>
+        → <span class="bid-new">₹${c.new_bid.toFixed(2)}</span>${
+        c.changed_today
+          ? `<br/><span class="tag changed" title="Changed at ${esc((c.changed_at || '').slice(11, 16))
+              } by: ${esc(c.changed_rule || 'a rule')}. The report still says ₹${
+              (c.report_bid || 0).toFixed(2)}.">changed today</span>`
+          : ""}</td>
       <td class="num">${suggestedCell(c)}</td>
     </tr>`;
   }).join("");
@@ -984,6 +999,12 @@ function renderPreview(options){
       ${money(totals.spend)} of spend in this window.
       Amazon writes these through two different endpoints, which is what the kw/auto/product column
       shows. <strong>Nothing has been sent yet.</strong>
+      ${(totals.changed_today || 0) > 0
+        ? `<br/><strong>${totals.changed_today} row(s) had their bid changed earlier today</strong> and
+           arrive unticked — applying the same rule again would compound it. Their current bid is what
+           we set it to, not what the report says. Re-tick deliberately if you mean to move them
+           again.`
+        : ""}
     </div>
     ${skippedHtml()}
     ${applyBarHtml()}
@@ -1082,6 +1103,14 @@ async function applyPlan(){
   if(inactive.length){
     parts.push(`${inactive.length} skipped because they are paused or archived at Amazon, so a bid
       change would do nothing.`);
+  }
+  /* Refused because their bid already moved today. Reported apart from `moved` — "somebody changed
+     this" and "we changed this an hour ago" are different facts — and reported at all because a
+     shrunken count with no reason reads as rows silently going missing. */
+  const repeated = body.repeated || [];
+  if(repeated.length){
+    parts.push(`${repeated.length} skipped because their bid was already changed today — applying the
+      same rule again would compound it.`);
   }
 
   const cls = body.failed || body.pending ? "warn" : "good";

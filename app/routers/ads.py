@@ -398,6 +398,12 @@ async def preview(
         )
     rows = await repository.attach_names(db, rows)
 
+    # The TRUE current bid and the once-per-day guard, both from our own ledger — **no Amazon call.**
+    # One query serves two purposes; see `logic.plan_run`'s docstring for why they are separate facts.
+    applied_today = await repository.last_applied_bids(
+        db, [r["entity_id"] for r in rows]
+    )
+
     plan = logic.plan_run(
         rows,
         conditions=body.get("conditions") or [],
@@ -406,6 +412,7 @@ async def preview(
         guardrails=await repository.load_guardrails(db),
         scope_campaign_ids=body.get("campaign_ids") or None,
         scope_ad_group_ids=body.get("ad_group_ids") or None,
+        applied_today=applied_today,
     )
 
     return {
@@ -520,6 +527,45 @@ async def apply(
                 status_code=400,
             )
 
+    # **The once-per-day guard, re-checked server-side.**
+    #
+    # The preview already leaves these rows unticked, but a preview can sit open while another run
+    # happens and the browser sends the list back — a client is not a trust boundary, and this is the
+    # only route in the app that spends money. Applying the same percentage to an already-moved bid
+    # compounds it: measured, a -10% rule run twice is -19%.
+    #
+    # Reported like `moved` and `inactive` rather than silently dropped, and it costs no Amazon call —
+    # the ledger already knows what we set today.
+    repeated = []
+    if approved:
+        ledger = await repository.last_applied_bids(
+            db, [str(c.get("entity_id")) for c in approved]
+        )
+        today_ist = logic.ist_day(datetime.utcnow())
+        still = []
+        for change in approved:
+            entry = ledger.get(str(change.get("entity_id"))) or {}
+            if entry.get("day") == today_ist:
+                repeated.append({
+                    **change,
+                    "live_bid": entry.get("bid"),
+                    "reason": (
+                        f"the bid was already changed today at "
+                        f"{str(entry.get('at') or '')[11:16]} by: {entry.get('rule') or 'a rule'}"
+                    ),
+                })
+            else:
+                still.append(change)
+        approved = still
+
+    if not approved:
+        # Everything was refused. Reported as a normal response with the reasons rather than a 400:
+        # nothing is wrong, the rows simply already moved today.
+        return {
+            "run_id": None, "applied": 0, "failed": 0, "pending": 0,
+            "moved": [], "inactive": [], "repeated": repeated, "results": [],
+        }
+
     # Only now: the request is well-formed and within every limit, so a missing credential is the
     # real obstacle rather than a coincidence.
     settings = get_settings()
@@ -576,7 +622,7 @@ async def apply(
             if not to_send:
                 return {
                     "run_id": None, "applied": 0, "failed": 0, "pending": 0,
-                    "moved": moved, "inactive": inactive,
+                    "moved": moved, "inactive": inactive, "repeated": repeated,
                     "note": "Nothing was sent: every approved row had either changed at Amazon or "
                             "is no longer active.",
                 }
@@ -604,6 +650,10 @@ async def apply(
         "run_id": run_id,
         **counts,
         "moved": moved,
+        # Rows refused because their bid already moved today. Named rather than dropped, and reported
+        # apart from `moved`: "somebody changed this" and "we changed this an hour ago" are different
+        # facts. Applying the same percentage again compounds it — a -10% rule twice is -19%.
+        "repeated": repeated,
         # Rows skipped because they are paused or archived at Amazon. Reported separately from
         # `moved`: "someone changed the bid" and "this is not serving" are different facts and lead
         # to different actions.
