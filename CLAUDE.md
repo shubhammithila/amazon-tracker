@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (1847 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (1869 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -1688,8 +1688,8 @@ activity — and a bid rule can only act on something with spend or impressions.
 report and calls the entity API only for the rows it matched: **299, not 11,000.** A ~40×
 reduction, and it is what makes the feature possible on a 951 MB box.
 
-`ads_performance` is therefore the population a rule considers. `ads_entity` holds only what a
-report or a rule has touched.
+`ads_performance_daily` is therefore the population a rule considers, summed to the window being
+looked at. `ads_entity` holds only what a report or a rule has touched.
 
 ### Sponsored Brands is a SEPARATE API, and it was invisible because nothing asked for it
 `spapi_ads` called `/sp/campaigns`, `/sp/adGroups`, `/sp/keywords`, `/sp/targets` and nothing else —
@@ -1823,6 +1823,38 @@ Three undo rules, each protecting against a write nobody asked for:
 - **A partly-failed undo leaves the remainder `applied`**, so a second attempt can still reach it.
   Marking the whole run reverted would strand those rows for good.
 
+### Amazon's suggested bid: one endpoint of seven works, and SB has none
+Asked for as *"if possible show the current suggested bid also supplied by amazon"*. It was possible,
+but the endpoint had to be found by probing — every candidate was called against the live account:
+
+| Endpoint | Result |
+|---|---|
+| `/v2/sp/adGroups/{id}/bidRecommendations` | **404** "Method Not Found" |
+| `/v2/sp/keywords/{id}/bidRecommendations` | **404** |
+| `/sp/keywords/bid/recommendations` | **403**, twice, with a spurious SigV4 error |
+| **`/sp/targets/bid/recommendations`** | **200 — real bids** |
+| `/sb/recommendations/bids/keyword` | **404** |
+| `/sb/recommendations/bids/targets` | **404** |
+| `/sb/targets/bid/recommendations` | **404** |
+
+The working one takes `targetingExpressions` (keywords included, via `KEYWORD_EXACT_MATCH`) and is
+**batched per AD GROUP** — so a 1,005-row preview costs a few dozen calls, not 1,005. Media type
+`application/vnd.spthemebasedbidrecommendation.v3+json`.
+
+- **Amazon returns THREE bids per expression**, measured `[140.33, 182.83, 225.33]`. The middle is the
+  suggestion and the outer two its range; both are shown, because picking one of three silently is the
+  kind of choice that later reads as a fact.
+- **Sponsored Brands has NO suggested bid** — all three candidates 404 — so ~296 rows in a typical
+  preview show a dash *with the reason on hover*. A blank cell in a bid column reads as "no suggestion,
+  bid low", which is a different claim from "Amazon does not offer one here". Same three-state
+  discipline as the Portfolio tab's ACOS column.
+- **Its own endpoint (`POST /ads/suggested-bids`), fetched AFTER the table renders.** Two reasons: the
+  preview is the safety mechanism for the only feature that spends money and must not get slower or
+  fail for a context column; and `ads_configured` is TRUE in this repo, so a fetch inside `/preview`
+  would have every preview TEST authenticate against LWA and call Amazon for real. A test pins that
+  `/preview` does not fetch, because that cost is invisible in a passing test.
+- **A suggestion is never applied by a rule.** It sits beside the bid as context for a human.
+
 ### Preview and Apply are two endpoints, never one
 `POST /ads/preview` computes and stores nothing; `POST /ads/apply` sends only the rows still
 ticked. `/ads/apply`'s order of operations is the design, and **a test caught a real bug in it**:
@@ -1930,17 +1962,77 @@ refetch of that day, so there is no earlier value to preserve. Scoped **per day*
 7-day window cannot disturb the other 23 days.
 
 - **Every day in a range is checked before summing** (`daily_range_complete`), not just the
-  endpoints. A missing Tuesday would make the total quietly short, and an understated spend is what
-  a bid rule would then act on — so a partial range counts as absent and asks for a refresh.
+  endpoints — **and for every ad product**, not just the union of days. See below.
 - **The bid is the LATEST day's, never a sum.** A bid is a rate; 10 + 11 + 12 is not "the bid over
   three days".
-- **`derived` is reported separately from `cached`**, because "fetched as this window" and "summed
-  from daily rows" are different claims. The screen says which, and names the coverage before you
-  click rather than after.
-- **Retention is 30 days, purged nightly, and the bound is DISK rather than preference.** Production
-  sits at **91% full with 670 MB free** and `update-ec2.sh` copies the whole database before every
-  deploy, so an unbounded daily table would break both SQLite writes and the deploy itself. 30 days
-  is also the longest range Amazon answers in one report.
+- **Retention is 60 days, purged nightly**, matching what the nightly scrape fetches so every range
+  the tab offers is answerable from stored rows. ~503,000 rows / ~93 MB at July's density.
+
+### The per-day rows are the ONLY grain, and holding two cost ₹1,26,328
+Reported as *"22-28 is showing 4.44 lakh spend and 22-29 is showing 3.3 lakh"* — **a superset
+reporting less than its subset.**
+
+`refresh.run` stored one payload at two grains, but wrote Sponsored Brands to the per-window table
+**only**. The read side preferred that table when the exact range had been fetched and summed the
+daily rows otherwise — where SB had no rows at all:
+
+| Window | Provenance | Total | SP | SB |
+|---|---|---|---|---|
+| 22–28 | stored window | ₹4,44,550 | ₹3,18,222 | **₹1,26,328** |
+| 22–29 | summed daily | ₹3,34,300 | ₹3,34,300 | **₹0** |
+
+**The code said why, and the reasoning was the bug:** *"SB is 2,914 rows against SP's 12,205, so the
+sub-range machinery matters far less there."* That reasoned from ROW COUNT. The figure that decides
+it is SPEND SHARE — **SB is 28% of the money**.
+
+> **The serious half was `/ads/preview`.** It used the same fallback, so a bid rule on a derived
+> window was Sponsored-Brands-blind: the same rule found **1,005 changes including 296 SB rows** on a
+> fetched window and **743 with none** on a derived one. 296 live SB bids invisible to a rule meant to
+> act on them, on the only route in this app that spends money.
+
+`ads_performance` is **deleted** (105,755 rows / 17.1 MB — the largest table in the database) and
+every window is now a `GROUP BY` over daily rows. That also removed `purge_windows` and the
+"6 most recently viewed windows" eviction policy, a retention rule that existed only because the same
+figures were cached twice.
+
+**Three things this change had to get right, and each was found by review or mutation rather than by
+writing the obvious code:**
+
+- **`save_daily`'s DELETE is scoped by `(day, ad_product)`.** It is delete-then-bulk-insert, so
+  scoped by day alone the SB write would have deleted every SP row it had just stored — this bug
+  inverted, and worse, since SP is 72% of spend.
+- **`daily_range_complete` asks per PRODUCT.** A night is four reports (Amazon caps one at 31 days)
+  and any can throttle. If the SP chunk fails while SB lands, those days hold SB rows only — and a
+  range that called itself complete would sum 28% of the spend and a rule would preview against it.
+  The product list is derived from the data, so Sponsored Display needs no change here.
+- **`sum_daily` groups by `(entity_id, ad_product)`.** SP and SB are separate id spaces; grouped by id
+  alone a collision merges into one row whose product comes from `max(ad_product)` — and
+  `max('sb','sp')` is `'sp'`, so a live SB bid change would be routed to `/sp/keywords`. Measured 0
+  collisions across 29,360 ids, which is luck, not a guarantee. The unique index widened to
+  `(day, entity_id, ad_product)` for the same reason.
+
+> **Four of ten mutations survived the first pass — including the original bug.** Removing `daily=True`
+> from the SB fetch passed the entire suite, because a fake `fetch_targeting` does not care which grain
+> was asked for. Three of the four are now pinned as SOURCE assertions, which is the honest way to
+> assert a property no runtime test can observe.
+
+### The nightly scrape is 60 days, committed chunk by chunk
+Asked for as *"every day lets scrape just last 60 days data once, and all the results can be shown as
+per that"*.
+
+**Measured before agreeing to it:** one real 31-day DAILY report on this account is **259,900 rows in
+19.5 minutes**, so 60 days is 2 SP chunks + 2 SB chunks ≈ **50–60 minutes** at 03:50. July also runs
+8,384 rows/day against August's 6,107, so an August-only projection under-counts storage by 1.4× —
+60 days is ~93 MB, not the 67 MB first estimated.
+
+`fetch_targeting` gained `on_chunk`, awaited as each chunk lands. It used to accumulate every chunk
+and return once, so **a single 429 discarded up to 40 minutes of successfully fetched data** — and
+`sbTargeting` has been measured returning 429 after 15 minutes of complete idleness, so a throttled
+chunk is the expected case. A partial night now leaves real days stored, and `daily_range_complete`
+makes any range touching the gap decline to answer rather than sum short.
+
+`KEEP_BACKUPS` dropped 5 → 3 in the same change: the database roughly doubles, and five copies of it
+would make the backups the largest thing on an 8 GB disk. Net free space ~835 MB.
 
 ## Disk space — the app now grows with USAGE, not just time
 
@@ -1954,15 +2046,15 @@ production after two days of use:
 | their indexes | — | 9.7 MB |
 | everything else in the app | ~35,000 | ~3 MB |
 
-> **`ads_performance` was the real growth problem, and it had NO retention at all.** One row set per
-> window viewed, kept for ever — five windows had already accumulated 97,112 rows, *larger than the
-> per-day table*, and every new custom range added another 12,000–27,000 rows permanently. Now
-> `purge_windows` keeps the **6 most recently viewed** windows, keyed on `max(fetched_at)` rather
-> than on the window dates: the useful window is the one most recently looked at. Safe to be tight
-> because any range inside the daily coverage is re-derived in milliseconds, so an evicted window
-> costs nothing to reproduce.
+> **`ads_performance` was the real growth problem, and it is now DELETED.** One row set per window
+> viewed, kept for ever — five windows had accumulated 97,112 rows (105,755 by the end), *larger than
+> the per-day table*, and every new custom range added another 12,000–27,000 permanently. It first
+> gained a `purge_windows` retention rule keeping the 6 most recently viewed windows; the table then
+> turned out to be the cause of the ₹1,26,328 Sponsored Brands loss, and deleting it removed the
+> growth, the retention rule and the need for either. **The most reliable way to bound a table is not
+> to have it.**
 
-**Both purges run in the nightly sweep AND in the refresh**, and that redundancy is deliberate: the
+**The purge runs in the nightly sweep AND in the refresh**, and that redundancy is deliberate: the
 refresh only purges on its success path, so a week of failed ad reports would leave the
 fastest-growing table in the app unpruned. A retention sweep that only runs when a fetch succeeds is
 a side effect, not a policy.

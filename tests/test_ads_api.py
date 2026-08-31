@@ -1083,10 +1083,37 @@ def test_the_apply_controls_use_attributes_rather_than_ids():
     assert 'id="cancel-preview"' not in source, (
         "the post-apply card still reuses the old id, whose handler no longer exists"
     )
-    assert '"[data-apply]"' in source, "applyPlan does not find the buttons by attribute"
-    assert "querySelectorAll(\"[data-apply]\")" in source, (
-        "only one apply button is disabled during a send, so the other stays clickable"
+
+    # **Every attribute the script SELECTS on must be one the markup EMITS.**
+    #
+    # A weaker version of this test asserted only that `querySelectorAll("[data-apply]")` appeared,
+    # and a mutation renaming it to `[data-apply-nope]` survived — applyPlan would silently disable
+    # nothing and the send button would stay live during a send. The two halves have to be checked
+    # against each other, because a selector is only correct relative to the markup.
+    import re
+
+    # The boundary is anything that is not a name character: a bare boolean attribute can be followed
+    # by whitespace, `>`, `=`, or a `${...}` template expression — `data-apply${cond ? ... }` is how
+    # the disabled state is set, and a `[\s=>]`-only boundary missed exactly that one.
+    emitted = set(re.findall(r"\b(data-[a-z]+(?:-[a-z]+)*)(?![a-z-])", source))
+    for attribute in ("data-apply", "data-apply-count", "data-toggle-all", "data-cancel-preview",
+                      "data-apply-bar"):
+        assert attribute in emitted, f"{attribute} is selected on but never rendered"
+
+    # `emitted` is derived from the whole file, so an attribute that appears ONLY in a selector would
+    # count itself as rendered. So the emitted set is narrowed to attributes that appear inside a tag,
+    # which is the only place markup can declare one.
+    in_markup = set(re.findall(r"<[a-z][^>]*?\b(data-[a-z]+(?:-[a-z]+)*)", source, flags=re.S))
+
+    selected = set(re.findall(r'querySelectorAll\("\[(data-[a-z-]+)\]"\)', source))
+    selected |= set(re.findall(r'closest\("\[(data-[a-z-]+)\]"\)', source))
+    unknown = selected - in_markup
+    assert not unknown, (
+        f"the script selects on attribute(s) no tag ever renders: {sorted(unknown)} — the handler "
+        f"would silently match nothing, and for [data-apply] that means the Apply buttons stay live "
+        f"during a send"
     )
+    assert "data-apply" in selected, "applyPlan does not find the buttons by attribute"
 
 
 def test_the_preview_can_clear_every_tick_at_once():

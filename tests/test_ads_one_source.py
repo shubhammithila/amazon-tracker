@@ -199,3 +199,88 @@ def test_the_window_grain_table_is_gone():
         "the per-window table still exists, so two paths can answer the same question again"
     )
     assert hasattr(models, "AdsPerformanceDaily")
+
+
+# ─── The four mutations that survived the first pass ─────────────────────────
+#
+# Every test above passed while these four defects were reintroduced, including **the original bug**.
+# That is the same failure the whole change is about — a test asserting a conclusion rather than the
+# reason for it — so each of these names the mechanism instead.
+
+
+def test_the_refresh_stores_sponsored_brands_at_the_DAILY_grain():
+    """**The original bug, and nothing pinned it.**
+
+    A mutation removing `daily=True` from the SB fetch — restoring exactly the code that made
+    Rs 1,26,328 vanish — passed the entire suite. Nothing could catch it at runtime, because a fake
+    `fetch_targeting` in a test does not care which grain was asked for, and the real one is never
+    called. So this is asserted as SOURCE: the SB fetch must ask for daily rows and store them with
+    `save_daily`, never `save_performance`.
+    """
+    from pathlib import Path
+
+    source = (Path(__file__).parent.parent / "app" / "ads" / "refresh.py").read_text(
+        encoding="utf-8")
+    sb = source[source.index("# ── Sponsored Brands performance ──"):]
+    assert 'ad_product="sb", daily=True' in sb, (
+        "the Sponsored Brands report is fetched at the WINDOW grain — the exact defect that made "
+        "Rs 1,26,328 of spend vanish from every window nobody had fetched exactly"
+    )
+    assert 'save_daily(chunk_db, chunk_rows, ad_product="sb")' in sb, (
+        "the SB rows are not written to the daily table"
+    )
+    assert "save_performance" not in source, (
+        "the window-grain write is back, so two grains can disagree again"
+    )
+
+
+async def test_a_day_held_for_only_one_product_is_not_complete(db):
+    """**The product-blind `daily_range_complete`, which re-broke the bug by a new route.**
+
+    A 60-day night is four reports and any can throttle. If the SP chunk fails while SB lands, those
+    days exist with SB rows ONLY — and a range that calls itself complete then sums 28% of the spend
+    and a bid rule previews against it.
+
+    The earlier interior-gap test could not catch this: every day IS present, just not for every
+    product. Mutating the check back to product-blindness passed the whole suite.
+    """
+    # Two days of SP, but only ONE of them also has SB.
+    for day in ("2026-08-22", "2026-08-23"):
+        await repository.save_daily(db, [_report_row("SP1", day, spend=100.0)], ad_product="sp")
+    await repository.save_daily(
+        db, [_report_row("SB1", "2026-08-22", spend=50.0, product="sb")], ad_product="sb")
+
+    assert await repository.daily_range_complete(db, "2026-08-22", "2026-08-22") is True
+    assert await repository.daily_range_complete(db, "2026-08-22", "2026-08-23") is False, (
+        "a range whose second day has no Sponsored Brands rows claimed to be complete — summing it "
+        "would report Sponsored Products only, which is the original 28% error"
+    )
+
+
+async def test_two_products_sharing_an_entity_id_stay_separate_rows(db):
+    """**A colliding id would be merged, relabelled SP, and its bid written to the wrong API.**
+
+    `sum_daily` groups by `(entity_id, ad_product)`. Grouped by id alone the two rows merge and the
+    product comes from `max(ad_product)` — and `max('sb','sp')` is `'sp'`, so `logic.writer_for` would
+    route a live Sponsored Brands bid change to `/sp/keywords`.
+
+    Measured: 0 collisions across 29,360 ids today, which is luck rather than a guarantee — so the
+    test constructs one, because the consequence is a bid written to the wrong endpoint.
+    """
+    shared = "999888777"
+    await repository.save_daily(db, [_report_row(shared, "2026-08-22", spend=100.0)],
+                                ad_product="sp")
+    await repository.save_daily(
+        db, [_report_row(shared, "2026-08-22", spend=40.0, product="sb")], ad_product="sb")
+
+    rows = await repository.sum_daily(db, "2026-08-22", "2026-08-22")
+    assert len(rows) == 2, (
+        f"the two products' rows were merged into {len(rows)} — one product's bid would be written "
+        f"to the other's API"
+    )
+    by_product = {r["ad_product"]: r for r in rows}
+    assert by_product["sp"]["spend"] == 100.0
+    assert by_product["sb"]["spend"] == 40.0
+    # And each keeps its own writer, which is the thing that decides the endpoint.
+    assert by_product["sp"]["writer"] == "keyword"
+    assert by_product["sb"]["writer"] == "sb_keyword"
