@@ -74,6 +74,16 @@ SB_AD_GROUPS = ("/sb/v4/adGroups/list", "application/vnd.sbadgroupresource.v4+js
 SB_KEYWORDS_PATH = "/sb/keywords"
 SB_TARGETS_PATH = "/sb/targets/list"
 
+#: **`/sb/targets/list` takes NO vendor media type, and that is measured rather than assumed.** It is
+#: its own case, not a missing value: sending `application/json` returns
+#: `406 "No match for accept header"`, and all four plausible `vnd.sbtarget*.v4+json` spellings return
+#: `415 "Cannot consume content type"`. Only sending neither header answers 200.
+#:
+#: Named rather than left as a bare `""` at the call site, because `""` reads as "not filled in yet"
+#: and was in fact threaded straight into `Content-Type: ""` / `Accept: ""` — which produced a live
+#: `406 Not Acceptable` on page 1 of every SB target fetch. `_media` now treats it as "omit both".
+SB_NO_MEDIA_TYPE = ""
+
 #: Writing an SB target bid. Note it is `/sb/targets` (no `/list`) and the payload is a DICT under
 #: `targets` — where SB KEYWORDS take a bare list. Measured: the list form here returns
 #: `422 "A JSON parsing error was encountered"`; the dict form returns 200.
@@ -116,7 +126,28 @@ WRITE_INTERVAL = 1.0
 
 def _media(vnd: str, token: str) -> dict:
     """Headers for one entity call. `Accept` matters as much as `Content-Type`: omitting it returns
-    a 406 that looks like a routing error."""
+    a 406 that looks like a routing error.
+
+    **An EMPTY `vnd` means send neither header, not send them empty** — and that distinction was a
+    live 406. `/sb/targets/list` takes no vendor media type, which was expressed by threading `""`
+    through here; the result was literal `Content-Type: ""` and `Accept: ""`, which Amazon rejects
+    with `{"code":"406","details":"HTTP 406 Not Acceptable"}`.
+
+    Measured against the live endpoint, and the answer is not the obvious one:
+
+        (no Content-Type or Accept at all)              200  <- what it wants
+        application/json                               406  "No match for accept header"
+        application/vnd.sbtargetingresource.v4+json    415  "Cannot consume content type"
+        application/vnd.sbtargetresource.v4+json       415
+        application/vnd.sbtargeting.v4+json            415
+        application/vnd.sbtargetingclause.v4+json      415
+
+    So "no type" is a real, distinct case from "this type" — not a value to be defaulted — and even
+    `application/json` is refused. httpx also sets `Content-Type: application/json` itself when
+    given `json=`, which is fine here because the 406 came from `Accept`.
+    """
+    if not vnd:
+        return dict(_headers(token))
     return {**_headers(token), "Content-Type": vnd, "Accept": vnd}
 
 
@@ -718,7 +749,9 @@ async def fetch_sb_targets(client, *, states=("ENABLED",)) -> list[dict]:
     `states=()` means "every state", used by `fetch_current_bids` — it needs to SEE a paused row in
     order to skip it, so filtering it out at the API would hide the very thing being checked.
     """
-    raw = await _sb_list(client, (SB_TARGETS_PATH, "", "targets"), {}, "targets")
+    raw = await _sb_list(
+        client, (SB_TARGETS_PATH, SB_NO_MEDIA_TYPE, "targets"), {}, "targets",
+    )
     wanted = {str(s).upper() for s in states}
 
     out = []

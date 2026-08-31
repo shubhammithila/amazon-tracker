@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (1869 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (1871 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -1721,10 +1721,28 @@ because **`EXACT` is a legal match type on BOTH products** and they are differen
 different payloads. A first-class dimension, so Sponsored Display later is a fetch plus a writer
 rather than a redesign.
 
-Five differences, every one of which fails silently:
+Six differences, every one of which fails silently:
 
 - **SB writes need `adGroupId`; SP does not.** Sending SP's shape returns `207` with
   `KEYWORD_MISSING_AD_GROUP_ID` for *every* row — nothing applied, HTTP says success.
+- **`/sb/targets/list` wants NO `Content-Type` and NO `Accept`, and "no type" is a distinct case
+  from "some type".** Reported as *"Listing Sponsored Brands targets failed on page 1: HTTP 406 Not
+  Acceptable"*. The endpoint's lack of a vendor media type was expressed by threading `""` into
+  `_media`, which duly set `Content-Type: ""` and `Accept: ""` — and Amazon rejects literally empty
+  headers. Measured, and the answer is not the obvious one:
+
+  | Headers sent | Result |
+  |---|---|
+  | **neither** | **200** |
+  | `application/json` | 406 "No match for accept header" |
+  | `vnd.sbtargetingresource.v4+json` (+3 other spellings) | 415 "Cannot consume content type" |
+
+  So even `application/json` is refused. `_media("")` now omits both headers, and the empty string is
+  named `SB_NO_MEDIA_TYPE` — as a bare `""` it read as "not filled in yet", which is exactly how it
+  became a live 406. **This broke APPLY, not just a list:** `fetch_current_bids` calls
+  `fetch_sb_targets` to re-read live bids, so any run containing an SB target failed before sending.
+  The tests assert the headers are ABSENT rather than empty, because a fake client that ignores
+  headers — which every other test in that file uses — cannot see the difference.
 - **Three different 207 shapes.** SP: `{key: {success, error}}`. SB keywords: a bare **array** of
   `{code}`. SB targets: `{updateTargetSuccessResults, updateTargetErrorResults}` keyed by
   `targetRequestIndex`. Each has its own parser; feeding SB's array to the SP parser used to raise

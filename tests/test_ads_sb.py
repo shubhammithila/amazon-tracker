@@ -623,3 +623,81 @@ async def test_the_row_limit_allows_the_rule_that_hit_it(auth_client, db):
     )
     assert plan["blocked"] is None, "a 729-row rule is still blocked"
     assert plan["totals"]["changing"] == 729
+
+
+# ─── The 406 on /sb/targets/list ──────────────────────────────────────────────
+
+
+async def test_sb_targets_are_listed_with_no_media_type_headers_at_all(monkeypatch):
+    """**"Listing Sponsored Brands targets failed on page 1: HTTP 406 Not Acceptable."**
+
+    `/sb/targets/list` takes no vendor media type, which was expressed by threading `""` through
+    `_media` — and `_media` set `Content-Type: ""` and `Accept: ""` from it. Amazon rejects literally
+    empty headers with a 406, so **every** SB target fetch failed on its first page.
+
+    "No type" is a distinct case from "this type", not a value to be defaulted, and the right answer is
+    not the obvious one. Measured against the live endpoint:
+
+        (neither header)                               200  <- what it wants
+        application/json                               406  "No match for accept header"
+        application/vnd.sbtargetingresource.v4+json    415  "Cannot consume content type"
+        ... and three other plausible vnd spellings    415
+
+    So this asserts the headers are ABSENT rather than empty. A fake client that ignores headers — as
+    the other tests in this file use — cannot catch it, which is why the assertion is on what was sent.
+    """
+    from app.ads import spapi_ads as sp
+
+    sent: list[dict] = []
+
+    class Recorder:
+        async def post(self, url, json=None, headers=None):
+            sent.append({"url": url, "headers": dict(headers or {})})
+
+            class R:
+                status_code = 200
+
+                @staticmethod
+                def json():
+                    return {"targets": [], "nextToken": None}
+            return R()
+
+    async def fake_token(_client):
+        return "token"
+
+    monkeypatch.setattr(sp, "_access_token", fake_token)
+    await sp.fetch_sb_targets(Recorder())
+
+    assert sent, "no request was made"
+    headers = sent[0]["headers"]
+    assert "Content-Type" not in headers, (
+        f"Content-Type was sent as {headers.get('Content-Type')!r} — an empty value is a 406, and "
+        f"this endpoint wants the header omitted entirely"
+    )
+    assert "Accept" not in headers, (
+        f"Accept was sent as {headers.get('Accept')!r} — Amazon answers "
+        f'{{"code":"406","details":"HTTP 406 Not Acceptable"}}'
+    )
+    # The auth headers must still be there — omitting the media type must not omit everything.
+    assert headers.get("Authorization"), "the bearer token was dropped along with the media type"
+    assert headers.get("Amazon-Advertising-API-ClientId")
+    assert headers.get("Amazon-Advertising-API-Scope")
+
+
+def test_an_empty_media_type_means_omit_rather_than_send_empty():
+    """The unit behind the 406, asserted directly on `_media`.
+
+    Pinned separately from the fetch because this helper is shared: SP campaigns, ad groups and the SB
+    v4 lists all route through it, and a future endpoint that also wants no type will pass the same
+    empty string.
+    """
+    from app.ads import spapi_ads as sp
+
+    omitted = sp._media(sp.SB_NO_MEDIA_TYPE, "tok")
+    assert "Content-Type" not in omitted and "Accept" not in omitted
+    assert omitted.get("Authorization")
+
+    # And a real type is still set on both, which is what the SP and SB v4 list endpoints need.
+    typed = sp._media("application/vnd.sbcampaignresource.v4+json", "tok")
+    assert typed["Content-Type"] == "application/vnd.sbcampaignresource.v4+json"
+    assert typed["Accept"] == typed["Content-Type"]
