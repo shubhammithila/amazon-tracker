@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (1871 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (1915 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -1860,6 +1860,88 @@ Three undo rules, each protecting against a write nobody asked for:
   write nobody asked for. The count is surfaced instead.
 - **A partly-failed undo leaves the remainder `applied`**, so a second attempt can still reach it.
   Marking the whole run reverted would strand those rows for good.
+
+### The ledger is also the TRUE current bid, and the once-per-day guard
+Reported as *"if the rule has been run on a particular keyword, the current bid showing on our platform
+is stale"*, with *"it should not run twice on the same day"*.
+
+**Amazon's report does not re-issue because we changed a bid.** Measured on production against the 105
+real changes applied on 31 Aug:
+
+| | report *(what the preview showed)* | Amazon live | ledger |
+|---|---|---|---|
+| govind bhog chawal | 13.86 | **15.25** | 15.25 |
+| kulthi dal 500g | 22.44 | **24.68** | 24.68 |
+| roast chana | 26.21 | **28.83** | 28.83 |
+
+So `repository.last_applied_bids` reads the newest **`applied`** ledger row per entity —
+no Amazon call, because we already recorded what we set. `failed` and `pending` rows are excluded for
+the same reason `build_undo` excludes them: Amazon never held those values.
+
+> **The two halves had to ship in ONE commit, and the order is the whole point.** While the preview
+> computed from the stale figure a repeat run was *accidentally idempotent* — `13.86 × 1.10 = 15.25`
+> both times. **Correcting the displayed bid is what CREATES the compounding**: `15.25 × 1.10 = 16.78`,
+> so a −10% rule run twice is **−19%** on live bids. A version with the true bid and no guard is more
+> dangerous than the bug it fixes.
+
+- **A row changed today arrives UNTICKED, not dropped.** It stays visible with the reason and the
+  owner can deliberately re-tick it — there are legitimate reasons to move a bid twice, and a row
+  silently missing from a 1,005-row preview is indistinguishable from a bug.
+- **`approved_ids` is computed in `plan_run`, not the template**, and `/ads/apply` re-checks. A
+  screen-level untick would leave the route re-appliable from a hand-built request.
+- **Yesterday's change gives the bid but NOT the guard.** The report stays stale until someone
+  refetches, so the true bid is still the ledger's — but blocking on it would mean a rule could never
+  touch the same keyword twice in its life.
+- **`SKIP_NO_CHANGE` had to move too.** Five sites downstream of the substitution read the bid;
+  computed from the true one but compared against the stale one, a row already at its target would
+  report as changing and be sent to Amazon as a no-op write.
+
+**The day is the IST calendar day, and this is the FIFTH instance of that defect class here.** The
+ledger stores `datetime.utcnow()`; a change applied at 04:00 IST is 22:30 UTC the previous day, so a
+UTC-day guard would silently not hold for 5½ hours out of every 24. `logic.ist_day` is one named
+function with its own test, alongside `localDate` in the templates.
+
+### The bid log: what happened to THIS keyword
+Asked for as *"lets maintain a history of all the bid changes which I can view"*.
+
+A per-**run** history already existed (`load_runs`, the history panel, undo). `load_bid_log` answers the
+other question — one row per change, ungrouped — over the same `ads_mutation` rows, so there is no
+second source of truth. Search by keyword text **or entity id** (a support question arrives as an id),
+filter by date and outcome, and `ascending=True` reads the **bid path** forwards: `13.86 → 15.25 →
+16.78 → 15.10`, each change starting where the last ended. A compounding mistake is a *shape*, and a
+shape only reads in order.
+
+- **`end=2026-08-31` includes changes made during the 31st.** The obvious `<= end` reads as inclusive
+  and silently drops a whole day, which makes a log look like it is missing data.
+- **`build_portfolio_xlsx`, not `build_simple_xlsx`.** The simple builder appends a totals row that
+  `int()`s every trailing column, and these hold a status word, a rule sentence and Amazon's error
+  text. Summing bids would be meaningless anyway — a bid is a rate, not a quantity.
+- Amazon's refusal is surfaced **verbatim** on a failed row: their messages name the cause, and they
+  are how the bid floor and the 31-day report cap were both found.
+
+**Retention is 12 MONTHS, and that is a decision against the first instinct.** Monthly deletion was
+asked for; measured, ~0.34 KB a row is 37 MB/year at real usage (~365 MB at three 1,000-row runs a
+day). This table is the **undo chain**, the **audit trail** for the only feature that spends money, and
+now the source of the **true current bid** — and unlike `ads_performance_daily` it is **not
+refetchable**: Amazon will not say what we set a bid to in July. So it is kept long and bounded rather
+than kept short, purged nightly.
+
+`idx_ads_mutation_created` exists because the log filters by date and the guard reads it on every
+preview, on a table now expected to hold a year of runs. **It is also the first revision that adds no
+COLUMN**, so `update-ec2.sh`'s detector gained an `indexes()` helper — a column-only detector would
+have seen a migrated database, decided it was older, and stamped it backwards.
+
+### The match type is its own column
+Asked for as *"we need to add what target match type it is. phrase exact or broad"*. It was already on
+every preview row; `writerTag` collapsed `EXACT`, `PHRASE` and `BROAD` into a single "keyword" tag, so
+**1,418 broad-match rows were indistinguishable from 14,435 exact ones** — and they compete completely
+differently.
+
+**Both columns stay, and that is not redundancy.** Match is how the row competes; Type is which Amazon
+API its bid is written to. `TARGETING_EXPRESSION` exists under **both** ad products and routes to
+different endpoints, so a single column cannot reveal a misrouted write. The vocabulary is sent from
+the server (`logic.MATCH_LABELS`) rather than hardcoded, or adding a match type would render "?" on
+screen while the server knew its name.
 
 ### Amazon's suggested bid: one endpoint of seven works, and SB has none
 Asked for as *"if possible show the current suggested bid also supplied by amazon"*. It was possible,
