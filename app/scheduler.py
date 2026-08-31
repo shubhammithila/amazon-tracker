@@ -206,6 +206,19 @@ async def scheduled_purge_old_history():
             f"(kept {ads_repo.DAILY_RETENTION_DAYS} days)"
         )
 
+    # The bid-change LEDGER, kept 12 months rather than 30 days. It is the undo chain, the audit trail
+    # for the only feature in this app that spends money, and the source of the true current bid — and
+    # unlike the report rows above it cannot be refetched from Amazon, which is why it is kept long.
+    # Bounded at all because ~0.34 KB a row is ~365 MB/year at a heavy usage rate.
+    async with async_session() as db:
+        ledger_gone = await ads_repo.purge_mutations(db)
+    if ledger_gone:
+        deleted_total += ledger_gone
+        logger.info(
+            f"Retention: deleted {ledger_gone} rows from ads_mutation "
+            f"(kept {ads_repo.MUTATION_RETENTION_DAYS} days)"
+        )
+
     # **There is no second ads sweep any more, because there is no second table.** `ads_performance`
     # held one row set per window viewed and had grown to 105,755 rows / 17.1 MB — the largest table
     # in the database — which is why it needed a retention rule of its own. It is deleted: it cached

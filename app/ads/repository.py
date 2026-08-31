@@ -541,6 +541,128 @@ async def reclaim_space(db: AsyncSession) -> None:
         logger.warning("ads: VACUUM skipped (%s)", exc)
 
 
+#: How long the bid-change ledger is kept. **365 days, and this is deliberately long.**
+#:
+#: Measured: ~0.34 KB per row, so 37 MB/year at one 300-row run a day and ~365 MB/year at three
+#: 1,000-row runs. Monthly deletion was the first instinct and is wrong here on three counts — this
+#: table is the **undo chain**, it is the **audit trail** for the only feature in this app that spends
+#: money, and it is now the source of the **true current bid**. Unlike `ads_performance_daily` it is
+#: also **not refetchable**: Amazon will not tell us what we set a bid to in July.
+#:
+#: So it is kept long and bounded rather than kept short. The bound exists at all because a box that
+#: has sat at 89% disk copies the whole database before every deploy.
+MUTATION_RETENTION_DAYS = 365
+
+
+async def load_bid_log(
+    db: AsyncSession,
+    *,
+    search: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    status: str | None = None,
+    ascending: bool = False,
+    limit: int = 500,
+    offset: int = 0,
+) -> dict:
+    """Individual bid changes for the log view: `{"rows": [...], "total": int}`.
+
+    **A sibling of `load_runs`, not a replacement.** That one answers "what did that run do"; this one
+    answers **"what has happened to this keyword"**, which needs the rows ungrouped.
+
+    `ascending=True` reads the BID PATH forwards — 13.86 -> 15.25 -> 16.78 — because a compounding
+    mistake or an oscillation is a shape rather than a row, and a shape only reads in order.
+
+    Paged because at three 1,000-row runs a day this table holds a million rows a year, and `total`
+    counts every match rather than the page so the screen can say what it is showing part of.
+    """
+    query = select(AdsMutation)
+    count_query = select(func.count()).select_from(AdsMutation)
+
+    filters = []
+    if search:
+        like = f"%{search.strip()}%"
+        # Text OR entity id: the owner searches for a keyword he remembers, but a support question
+        # arrives as an id ("why did 155301615480093 move?").
+        #
+        # `ilike` rather than `like`, and it is portable — verified, SQLAlchemy compiles it to
+        # `lower(col) LIKE lower(?)` on SQLite, so it is genuinely case-insensitive on both dialects
+        # rather than relying on SQLite's ASCII-only LIKE.
+        filters.append(AdsMutation.text.ilike(like) | AdsMutation.entity_id.ilike(like))
+    if status:
+        filters.append(AdsMutation.status == status)
+    if start:
+        filters.append(AdsMutation.created_at >= datetime.fromisoformat(start))
+    if end:
+        # **Inclusive of the whole END day.** The obvious `<= end` reads as inclusive and silently
+        # drops every change made during that day, which makes the log look like it is missing data.
+        filters.append(
+            AdsMutation.created_at < datetime.fromisoformat(end) + timedelta(days=1)
+        )
+    for condition in filters:
+        query = query.where(condition)
+        count_query = count_query.where(condition)
+
+    if ascending:
+        query = query.order_by(AdsMutation.created_at.asc(), AdsMutation.id.asc())
+    else:
+        query = query.order_by(AdsMutation.created_at.desc(), AdsMutation.id.desc())
+
+    rows = (await db.execute(
+        query.limit(max(1, min(limit, 5000))).offset(max(0, offset))
+    )).scalars().all()
+    total = int((await db.execute(count_query)).scalar() or 0)
+
+    return {
+        "total": total,
+        "rows": [
+            {
+                "entity_id": r.entity_id,
+                "text": r.text or "",
+                "writer": r.writer,
+                "ad_product": r.ad_product or "sp",
+                "campaign_id": r.campaign_id or "",
+                "ad_group_id": r.ad_group_id or "",
+                "old_bid": _f(r.old_bid),
+                "new_bid": _f(r.new_bid),
+                "status": r.status,
+                # Amazon's own refusal, verbatim: their messages name the cause, and they are how the
+                # bid floor and the 31-day report cap were both found.
+                "error": r.error or "",
+                "rule": r.rule_summary or "",
+                "run_id": r.run_id,
+                "reverts_run_id": r.reverts_run_id or "",
+                "at": r.created_at.isoformat() if r.created_at else "",
+                # The IST day, because that is the day the owner thinks in and the column stores UTC.
+                "day": logic.ist_day(r.created_at),
+            }
+            for r in rows
+        ],
+    }
+
+
+async def purge_mutations(db: AsyncSession, *, keep_days: int = MUTATION_RETENTION_DAYS,
+                          today: date | None = None) -> int:
+    """Delete ledger rows older than the retention window. Returns the number removed.
+
+    **Bounded but long** — see `MUTATION_RETENTION_DAYS` for why 12 months rather than 1.
+
+    The cutoff is a whole day back, not a timestamp: an off-by-one here silently deletes a day of
+    audit trail every night, and the boundary day is pinned by a test.
+    """
+    cutoff = (today or date.today()) - timedelta(days=keep_days)
+    result = await db.execute(
+        delete(AdsMutation).where(
+            AdsMutation.created_at < datetime.combine(cutoff, datetime.min.time())
+        )
+    )
+    await db.commit()
+    removed = int(result.rowcount or 0)
+    if removed:
+        logger.info("ads: purged %d ledger row(s) older than %s", removed, cutoff.isoformat())
+    return removed
+
+
 async def purge_daily(db: AsyncSession, *, keep_days: int = DAILY_RETENTION_DAYS,
                       today: date | None = None) -> int:
     """Delete per-day rows older than the retention window. Returns the number removed.

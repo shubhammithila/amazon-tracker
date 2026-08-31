@@ -21,7 +21,7 @@ from datetime import date, datetime, timedelta
 
 import httpx
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import permissions
@@ -30,6 +30,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.portfolio.ads import AdsError, AdsNotConfigured
 from app.routers.auth import require_area
+from app.shipment import documents
 
 router = APIRouter(prefix="/ads")
 logger = logging.getLogger(__name__)
@@ -707,6 +708,91 @@ async def undo(
         return JSONResponse({"error": str(exc)}, status_code=502)
 
     return {"run_id": undo_run, "reverts": run_id, **counts}
+
+
+@router.get("/bid-log")
+async def bid_log(
+    request: Request,
+    search: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    status: str | None = None,
+    ascending: bool = False,
+    limit: int = 200,
+    offset: int = 0,
+    db: AsyncSession = Depends(get_db),
+    grant=Depends(require_area(permissions.ADS)),
+):
+    """Every individual bid change, searchable. The log beside the per-run history.
+
+    Two different questions: `/ads/runs` answers "what did that run do", this answers **"what has
+    happened to this keyword"** — and only the second needs the rows ungrouped. Both read the same
+    `ads_mutation` rows, so there is no second source of truth.
+
+    `ascending=true` reads the bid PATH forwards, which is how a compounding mistake becomes visible
+    as a shape rather than as separate rows.
+
+    Reads the ledger only — no Amazon call, and nothing is written.
+    """
+    try:
+        log = await repository.load_bid_log(
+            db, search=search, start=start, end=end, status=status,
+            ascending=ascending, limit=limit, offset=offset,
+        )
+    except ValueError as exc:
+        # The dates arrive from a query string, so a typo is a 400 with the reason rather than a 500.
+        return JSONResponse({"error": f"Bad date: {exc}"}, status_code=400)
+    # `retention_days` travels so the screen can say how far back the log goes rather than implying
+    # for ever.
+    return {**log, "retention_days": repository.MUTATION_RETENTION_DAYS}
+
+
+@router.get("/bid-log.xlsx")
+async def bid_log_xlsx(
+    request: Request,
+    search: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    status: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    grant=Depends(require_area(permissions.ADS)),
+):
+    """The same rows as a spreadsheet — for reconciling against Seller Central, and for keeping a copy
+    beyond the 12-month retention.
+
+    Built through the same `load_bid_log` the screen uses, so the file cannot disagree with it.
+    """
+    try:
+        log = await repository.load_bid_log(
+            db, search=search, start=start, end=end, status=status, limit=5000,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": f"Bad date: {exc}"}, status_code=400)
+
+    rows = [
+        [r["day"], (r["at"] or "")[11:19], r["text"], r["entity_id"], r["ad_product"], r["writer"],
+         r["campaign_id"], r["old_bid"], r["new_bid"], r["status"], r["rule"], r["error"]]
+        for r in log["rows"]
+    ]
+    # **`build_portfolio_xlsx`, NOT `build_simple_xlsx`.** The simple builder appends a totals row that
+    # sums every trailing column with `int(...)`, and these trailing columns hold a status word, a rule
+    # sentence and Amazon's error text — it would raise `ValueError`. Summing bids would be meaningless
+    # anyway: a bid is a rate, not a quantity.
+    stream = documents.build_portfolio_xlsx(
+        "Ads bid changes",
+        f"{log['total']} change(s)"
+        + (f" matching {search!r}" if search else "")
+        + f" · bids in Rs · kept {repository.MUTATION_RETENTION_DAYS} days",
+        ["Day (IST)", "Time", "Keyword / target", "Id", "Product", "Endpoint", "Campaign",
+         "Old bid", "New bid", "Status", "Rule", "Amazon's error"],
+        rows,
+        [12, 9, 30, 18, 9, 12, 14, 10, 10, 10, 40, 40],
+    )
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="ads-bid-changes.xlsx"'},
+    )
 
 
 @router.get("/runs")

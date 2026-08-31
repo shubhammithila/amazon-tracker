@@ -355,10 +355,21 @@ def cols(table):
     return {r[1] for r in con.execute(f'PRAGMA table_info("{table}")')}
 
 
+def indexes(table):
+    """Index names on a table. Needed because not every revision adds a COLUMN — b4d8f27ac913 adds
+    only an index, and a detector that can only see columns would mistake a migrated database for an
+    older one and stamp it backwards."""
+    if table not in tables:
+        return set()
+    return {r[1] for r in con.execute(f'PRAGMA index_list("{table}")')}
+
+
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "idx_ads_mutation_created" in indexes("ads_mutation"):
+    print("b4d8f27ac913")                           # head: bid-log index on ads_mutation
 elif "ads_performance_daily" in tables and "ads_performance" not in tables:
-    print("a1c7e93f24b8")                           # head: daily rows are the only ads grain
+    print("a1c7e93f24b8")                           # daily rows are the only ads grain
 elif "ads_entity" in tables and "ad_product" in cols("ads_entity"):
     print("e2b7d94c15af")                           # Sponsored Brands (ad_product column)
 elif "ads_performance_daily" in tables:

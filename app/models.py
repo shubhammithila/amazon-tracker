@@ -1144,6 +1144,11 @@ class AdsMutation(Base):
         Index("idx_ads_mutation_run", "run_id"),
         Index("idx_ads_mutation_entity", "entity_id"),
         Index("idx_ads_mutation_run_entity", "run_id", "entity_id", unique=True),
+        # The bid log filters by date and the once-per-day guard asks "what did we change today", so
+        # both scan this column. The table is now expected to hold a YEAR of runs — at three 1,000-row
+        # runs a day that is ~1,000,000 rows, where an unindexed range scan is what turns a page that
+        # loads into a page that times out.
+        Index("idx_ads_mutation_created", "created_at"),
     )
 
     id = Column(Integer, primary_key=True)
