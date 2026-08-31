@@ -272,6 +272,12 @@ let data = {campaigns: [], totals: {}, window: ["", ""], guardrails: {}, runs: [
 let conditions = remembered("conditions", [{field: "spend", op: "gt", value: 100}]);
 let selected = new Set();          // campaign ids
 let openCampaigns = new Set();
+/* Which PREVIEW groups are expanded. Separate from `openCampaigns`, which belongs to the campaign
+   table: the same campaign can be open in one and closed in the other, and they are different
+   questions. Two sets rather than one because a campaign and an ad group share neither id space nor
+   meaning. */
+let openPreviewCampaigns = new Set();
+let openPreviewGroups = new Set();
 let adGroupCache = {};             // campaign_id -> [ad groups]
 let selectedAdGroups = new Set();  // ad group ids, when drilling into one campaign
 let plan = null;                   // the previewed plan; null until Preview runs
@@ -862,6 +868,11 @@ async function runPreview(){
        Rows whose bid we already changed today arrive UNTICKED: applying the same percentage again
        compounds it, and a -10% rule run twice is -19%. The fallback covers an older payload only. */
     approved = new Set(body.approved_ids || (body.changes || []).map(c => c.entity_id));
+    /* Every new preview starts COLLAPSED: the point of grouping is that 1,700 rows open as 13 lines.
+       Carrying the previous expansion over would re-open groups belonging to a rule that no longer
+       exists. */
+    openPreviewCampaigns = new Set();
+    openPreviewGroups = new Set();
     renderPreview();
   } finally {
     button.disabled = false;
@@ -879,8 +890,11 @@ async function runPreview(){
    shared by the mouse and keyboard paths on the Portfolio tab. Attribute selectors rather than ids,
    because an id may appear only once in a document and this is deliberately rendered twice. */
 function applyBarHtml(){
-  const total = (plan.changes || []).length;
-  const allTicked = total > 0 && approved.size === total;
+  /* APPLIABLE rows, not every changing row — the toggle deliberately leaves the once-per-day rows out,
+     so a `changes.length` basis would pin this label to "Select all" permanently on any run holding
+     one. The same total is recomputed in the per-row change handler; both read this rule. */
+  const total = (plan.changes || []).filter(c => !c.changed_today).length;
+  const allTicked = total > 0 && approved.size >= total;
   return `<div class="controls" data-apply-bar style="margin:0 0 10px">
     <button class="btn-danger" data-apply${approved.size ? "" : " disabled"}>Apply
       <span data-apply-count>${approved.size}</span> change(s) to Amazon</button>
@@ -971,34 +985,40 @@ function renderPreview(options){
     return;
   }
 
-  const rows = changes.map(c => {
-    const ticked = approved.has(c.entity_id);
-    /* The AD GROUP as well as the campaign. **The same keyword text exists in several ad groups at
-       different bids**, so the campaign alone does not identify the row whose live bid is about to
-       change. `attach_names` has always resolved this in one query; the preview never rendered it. */
-    return `<tr>
-      <td><input type="checkbox" data-ptick="${esc(c.entity_id)}"${ticked ? " checked" : ""}
-            aria-label="Apply to ${esc(c.text)}"/></td>
-      <td>${esc(c.text)}<br/><span class="mono">${esc(c.campaign_name || c.campaign_id)}</span>${
-        c.ad_group_name ? `<br/><span class="mono dim">${esc(c.ad_group_name)}</span>` : ""}</td>
-      <td>${writerTag(c)}</td>
-      <td>${matchTag(c)}</td>
-      <td class="num">${money(c.spend)}</td>
-      <td class="num">${roas(c.roas)}</td>
-      <td class="num">${ratio(c.acos, 0)}</td>
-      ${/* The bid shown is the TRUE current one — from our ledger where a rule has already moved it,
-            because Amazon's report does not re-issue when we change a bid. Measured on production, the
-            report held 13.86 for a keyword we had just set to 15.25. The badge says so rather than
-            silently correcting the number, and the tooltip carries the stale figure. */""}
-      <td class="num"><span class="bid-old">₹${c.old_bid.toFixed(2)}</span>
-        → <span class="bid-new">₹${c.new_bid.toFixed(2)}</span>${
-        c.changed_today
-          ? `<br/><span class="tag changed" title="Changed at ${esc((c.changed_at || '').slice(11, 16))
-              } by: ${esc(c.changed_rule || 'a rule')}. The report still says ₹${
-              (c.report_bid || 0).toFixed(2)}.">changed today</span>`
-          : ""}</td>
-      <td class="num">${suggestedCell(c)}</td>
-    </tr>`;
+  /* **Grouped campaign -> ad group -> rows, collapsed.**
+
+     A real rule matched 1,700 rows across 13 campaigns and 118 ad groups, which cannot be reviewed as
+     a flat list — and grouping by campaign alone would not have helped, since MF_SP_keywords held 941
+     of them. Opening at 13 lines is the point.
+
+     The GROUP TOTALS come from the server (`plan.groups`, built by `logic.group_changes`), not from
+     arithmetic here: a header claiming spend and net bid movement is a claim about its own rows, and
+     this codebase has shipped a header disagreeing with its table twice. */
+  const byId = {};
+  changes.forEach(c => { byId[c.entity_id] = c; });
+  const rows = (plan.groups || []).map(campaign => {
+    const campaignIds = campaign.ad_groups.flatMap(a => a.entity_ids);
+    const open = openPreviewCampaigns.has(campaign.campaign_id);
+    let html = groupRowHtml({
+      level: "campaign", id: campaign.campaign_id, name: campaign.campaign_name,
+      group: campaign, ids: campaignIds, open,
+    });
+    if(!open) return html;
+
+    campaign.ad_groups.forEach(adGroup => {
+      const groupOpen = openPreviewGroups.has(adGroup.ad_group_id);
+      html += groupRowHtml({
+        level: "group", id: adGroup.ad_group_id, name: adGroup.ad_group_name,
+        group: adGroup, ids: adGroup.entity_ids, open: groupOpen,
+      });
+      if(groupOpen){
+        adGroup.entity_ids.forEach(entityId => {
+          const change = byId[entityId];
+          if(change) html += previewRowHtml(change);
+        });
+      }
+    });
+    return html;
   }).join("");
 
   $("preview-area").innerHTML = `<div class="card">
@@ -1031,6 +1051,9 @@ function renderPreview(options){
     ${applyBarHtml()}
   </div>`;
 
+  // The tri-state on partly-selected group boxes, which cannot be expressed in markup.
+  applyIndeterminate();
+
   // Fill the Suggested column in once Amazon answers. Skipped when this render IS that answer, or
   // the two would call each other for ever.
   if(!options || options.fetchSuggestions !== false) loadSuggestedBids();
@@ -1056,6 +1079,134 @@ function writerTag(row){
   if(row.writer === "keyword") return '<span class="tag kw">keyword</span>';
   if(row.match_type === "TARGETING_EXPRESSION_PREDEFINED") return '<span class="tag auto">auto</span>';
   return '<span class="tag product">product</span>';
+}
+
+/* One campaign or ad group header line.
+
+   Its numbers come from `plan.groups` — computed by `logic.group_changes` — rather than being summed
+   here. A header claiming spend and net bid movement is a claim about the rows beneath it, and this
+   codebase has shipped a header disagreeing with its table twice (the Orders tab's "86 orders beside
+   87 lines"; the Portfolio parent rows exist to prevent it). Here the number gates a live bid change.
+
+   `data-partial` carries the tri-state, because `indeterminate` is a PROPERTY with no markup form —
+   see `applyIndeterminate`. */
+function groupRowHtml({level, id, name, group, ids, open}){
+  const tickedCount = ids.filter(entityId => approved.has(entityId)).length;
+  const allTicked = ids.length > 0 && tickedCount === ids.length;
+  const partial = tickedCount > 0 && !allTicked;
+  const isCampaign = level === "campaign";
+  const movement = group.movement || 0;
+  /* The row and tick attributes are written out LITERALLY on each branch rather than interpolating
+     their names. An interpolated attribute name (`data-${which}=`) is invisible to grep, to the
+     cross-check test that every selected attribute is really rendered, and to anyone reading the
+     markup — and that test is the one that catches a handler silently matching nothing. */
+  const rowAttribute = isCampaign
+    ? `data-pcampaign="${esc(id)}"`
+    : `data-pgroup="${esc(id)}"`;
+  const tickAttribute = isCampaign
+    ? `data-ptick-campaign="${esc(id)}"`
+    : `data-ptick-group="${esc(id)}"`;
+
+  return `<tr class="${isCampaign ? "parent" : "child"}" ${rowAttribute}>
+    <td><input type="checkbox" ${tickAttribute}
+          data-partial="${partial ? "1" : "0"}"${allTicked ? " checked" : ""}
+          aria-label="Select every row in ${esc(name)}"/></td>
+    <td colspan="3"${isCampaign ? "" : ' style="padding-left:26px"'}>
+      <span class="${isCampaign ? "p-name" : ""}">${open ? "▾" : "▸"} ${esc(name)}</span>
+      <span class="tag">${n(group.rows)} row${group.rows === 1 ? "" : "s"}</span>
+      ${group.changed_today
+        ? `<span class="tag changed" title="already changed today, so unticked">${
+            n(group.changed_today)} changed today</span>`
+        : ""}
+      ${tickedCount && !allTicked
+        ? `<span class="dim" style="font-size:11.5px">${n(tickedCount)} of ${n(ids.length)}
+           selected</span>`
+        : ""}</td>
+    <td class="num">${money(group.spend)}</td>
+    <td class="num dim" colspan="2">—</td>
+    ${/* The NET rupee movement of the bids in this group: what the header is claiming. Signed, because
+          a rule that moves some bids up and others down nets out, and that is worth seeing. */""}
+    <td class="num"><span class="${movement < 0 ? "neg" : "pos"}">${
+      movement < 0 ? "−" : "+"}₹${Math.abs(movement).toFixed(2)}</span></td>
+    <td class="num dim">—</td>
+  </tr>`;
+}
+
+/* One keyword or target row. Extracted so the grouped render and any future flat one cannot drift
+   about a column — the same reason `applyBarHtml` is one builder rendered twice. */
+function previewRowHtml(c){
+  const ticked = approved.has(c.entity_id);
+  return `<tr>
+    <td style="padding-left:44px"><input type="checkbox" data-ptick="${esc(c.entity_id)}"${
+      ticked ? " checked" : ""} aria-label="Apply to ${esc(c.text)}"/></td>
+    ${/* The campaign and ad group are HEADERS above this row now, so repeating them on every one of
+          941 rows would be noise. The keyword alone identifies it within its group. */""}
+    <td>${esc(c.text)}</td>
+    <td>${writerTag(c)}</td>
+    <td>${matchTag(c)}</td>
+    <td class="num">${money(c.spend)}</td>
+    <td class="num">${roas(c.roas)}</td>
+    <td class="num">${ratio(c.acos, 0)}</td>
+    ${/* The bid shown is the TRUE current one — from our ledger where a rule has already moved it,
+          because Amazon's report does not re-issue when we change a bid. Measured on production, the
+          report held 13.86 for a keyword we had just set to 15.25. The badge says so rather than
+          silently correcting the number, and the tooltip carries the stale figure. */""}
+    <td class="num"><span class="bid-old">₹${c.old_bid.toFixed(2)}</span>
+      → <span class="bid-new">₹${c.new_bid.toFixed(2)}</span>${
+      c.changed_today
+        ? `<br/><span class="tag changed" title="Changed at ${esc((c.changed_at || '').slice(11, 16))
+            } by: ${esc(c.changed_rule || 'a rule')}. The report still says ₹${
+            (c.report_bid || 0).toFixed(2)}.">changed today</span>`
+        : ""}</td>
+    <td class="num">${suggestedCell(c)}</td>
+  </tr>`;
+}
+
+/* The entity ids under one campaign or ad group, read from the SERVER's grouping so the screen and the
+   plan cannot disagree about which rows a header covers. */
+function previewEntityIds(id, isCampaign){
+  const groups = (plan && plan.groups) || [];
+  if(isCampaign){
+    const campaign = groups.find(g => g.campaign_id === id);
+    return campaign ? campaign.ad_groups.flatMap(a => a.entity_ids) : [];
+  }
+  for(const campaign of groups){
+    const group = campaign.ad_groups.find(a => a.ad_group_id === id);
+    if(group) return group.entity_ids;
+  }
+  return [];
+}
+
+/* `indeterminate` is a PROPERTY, not an attribute — there is no way to express it in markup, so it has
+   to be applied after the table is inserted. Without it a campaign with 3 of 941 rows ticked renders as
+   completely unticked, which invites ticking the whole thing. */
+function applyIndeterminate(){
+  document.querySelectorAll("#preview-area [data-partial]").forEach(box => {
+    box.indeterminate = box.dataset.partial === "1";
+  });
+}
+
+
+/* Re-derive every group checkbox from `approved`, IN PLACE.
+
+   Needed because ticking one row does not re-render — with 941 rows a re-render would rebuild every
+   checkbox and lose the scroll position mid-review — but its campaign header must still follow it.
+   Unticking one of 941 has to turn the campaign from checked to indeterminate, or the header claims a
+   selection that is no longer true. */
+function refreshGroupBoxes(){
+  document.querySelectorAll(
+    "#preview-area [data-ptick-campaign], #preview-area [data-ptick-group]"
+  ).forEach(box => {
+    const isCampaign = box.hasAttribute("data-ptick-campaign");
+    const id = isCampaign
+      ? box.getAttribute("data-ptick-campaign")
+      : box.getAttribute("data-ptick-group");
+    const ids = previewEntityIds(id, isCampaign);
+    const ticked = ids.filter(entityId => approved.has(entityId)).length;
+    box.checked = ids.length > 0 && ticked === ids.length;
+    box.indeterminate = ticked > 0 && !box.checked;
+    box.dataset.partial = box.indeterminate ? "1" : "0";
+  });
 }
 
 /* Every skipped row is NAMED with its reason. A row missing from a 299-row run is otherwise
@@ -1447,6 +1598,36 @@ $("action").addEventListener("change", () => {
 $("preview-btn").addEventListener("click", runPreview);
 
 $("preview-area").addEventListener("change", e => {
+  /* Ticking a campaign or ad group edits the SAME `approved` set the rows use. One source of truth:
+     two selections that could disagree is how a row gets sent that nobody ticked.
+
+     **A row the once-per-day guard unticked stays unticked.** Bulk selection must not silently
+     re-enable the compounding the guard exists to prevent — the owner can still tick such a row
+     individually, which is a deliberate act on one visible row rather than a side effect of a gesture
+     covering 941 of them. */
+  const bulk = e.target.closest("[data-ptick-campaign], [data-ptick-group]");
+  if(bulk){
+    const isCampaign = bulk.hasAttribute("data-ptick-campaign");
+    const groupId = isCampaign
+      ? bulk.getAttribute("data-ptick-campaign")
+      : bulk.getAttribute("data-ptick-group");
+    const byId = {};
+    ((plan && plan.changes) || []).forEach(c => { byId[c.entity_id] = c; });
+    previewEntityIds(groupId, isCampaign).forEach(entityId => {
+      if(bulk.checked){
+        const change = byId[entityId];
+        if(change && !change.changed_today) approved.add(entityId);
+      } else {
+        approved.delete(entityId);
+      }
+    });
+    /* A full re-render here, unlike the per-row path below: the parent checkboxes and the "N of M
+       selected" labels all change state, so patching them in place would mean reimplementing the
+       render. */
+    renderPreview({fetchSuggestions: false});
+    return;
+  }
+
   const tick = e.target.closest("[data-ptick]");
   if(!tick) return;
   const id = tick.dataset.ptick;
@@ -1454,7 +1635,10 @@ $("preview-area").addEventListener("change", e => {
   /* Updated in place rather than by re-rendering, because a re-render would rebuild every one of
      1,005 checkboxes and lose the scroll position mid-review. BOTH bars are updated — querySelectorAll
      rather than an id, since the controls are deliberately rendered twice. */
-  const total = (plan && plan.changes || []).length;
+  /* Counted over the APPLIABLE rows, matching what the toggle itself selects — see the handler. A
+     total of `changes.length` would leave the label stuck on "Select all" for ever on any run holding
+     a row the guard unticked, since the toggle can never reach that count. */
+  const total = ((plan && plan.changes) || []).filter(c => !c.changed_today).length;
   document.querySelectorAll("[data-apply-count]").forEach(node => {
     node.textContent = approved.size;
   });
@@ -1462,18 +1646,49 @@ $("preview-area").addEventListener("change", e => {
     node.disabled = approved.size === 0;
   });
   document.querySelectorAll("[data-toggle-all]").forEach(node => {
-    node.textContent = (total > 0 && approved.size === total) ? "Unselect all" : "Select all";
+    node.textContent = (total > 0 && approved.size >= total) ? "Unselect all" : "Select all";
   });
+  /* The GROUP boxes above this row must follow it: unticking one of 941 rows has to turn its campaign
+     from checked to indeterminate, or the header claims a selection that is no longer true. Patched in
+     place rather than re-rendered, for the same reason the counts above are — a re-render would rebuild
+     every checkbox and lose the scroll position mid-review. */
+  refreshGroupBoxes();
 });
 
 $("preview-area").addEventListener("click", e => {
+  /* Expand / collapse. Checked BEFORE the tick handlers and guarded on `input`, because clicking a
+     checkbox must not also open the group and clicking the name must not change what will be sent. */
+  const campaignRow = e.target.closest("[data-pcampaign]");
+  if(campaignRow && !e.target.closest("input")){
+    const id = campaignRow.getAttribute("data-pcampaign");
+    if(openPreviewCampaigns.has(id)) openPreviewCampaigns.delete(id);
+    else openPreviewCampaigns.add(id);
+    renderPreview({fetchSuggestions: false});
+    return;
+  }
+  const groupRow = e.target.closest("[data-pgroup]");
+  if(groupRow && !e.target.closest("input")){
+    const id = groupRow.getAttribute("data-pgroup");
+    if(openPreviewGroups.has(id)) openPreviewGroups.delete(id);
+    else openPreviewGroups.add(id);
+    renderPreview({fetchSuggestions: false});
+    return;
+  }
+
   /* **A TOGGLE, not a lone Unselect button.** 1,005 rows arrive all ticked, so the real gesture is
      "clear everything, then pick the five I want" — and having cleared them, the way back is the same
-     control. Its label is derived from the live count, so it cannot name the wrong action. */
+     control. Its label is derived from the live count, so it cannot name the wrong action.
+
+     **It selects the APPLIABLE rows, exactly like the campaign and ad-group boxes**, so a row the
+     once-per-day guard unticked stays unticked here too. `changes` includes those rows on purpose —
+     they stay visible with their reason — so selecting every id in it is what would re-enable the
+     compounding the guard exists to prevent, from the one control that covers all 1,425 rows at once.
+     The "all ticked" comparison therefore counts appliable rows, or the label would read "Unselect
+     all" while some rows are deliberately out and the toggle could never reach a full selection. */
   if(e.target.closest("[data-toggle-all]")){
-    const changes = (plan && plan.changes) || [];
-    if(approved.size === changes.length) approved.clear();
-    else approved = new Set(changes.map(c => c.entity_id));
+    const appliable = ((plan && plan.changes) || []).filter(c => !c.changed_today);
+    if(approved.size >= appliable.length) approved.clear();
+    else approved = new Set(appliable.map(c => c.entity_id));
     renderPreview({fetchSuggestions: false});
     return;
   }

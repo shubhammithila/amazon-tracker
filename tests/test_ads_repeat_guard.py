@@ -238,3 +238,45 @@ async def test_an_empty_id_list_asks_the_database_nothing(db):
     """The preview calls this on every run, including ones that matched nothing."""
     assert await repository.last_applied_bids(db, []) == {}
     assert await repository.last_applied_bids(db, [None, ""]) == {}
+
+
+# ─── The row limit measures what will actually be sent ───────────────────────
+
+
+def test_the_row_limit_counts_only_rows_that_can_actually_be_sent():
+    """**A rule was blocked for a size it would never send.**
+
+    Measured on the owner's real rule: 109 changing, 105 already changed today, 4 appliable. Scaled up,
+    1,100 matches with 1,050 already moved today would be refused for exceeding a 1,000-row limit while
+    only 50 rows could go to Amazon.
+
+    The limit exists to bound what reaches Amazon — `/ads/apply` enforces it again on what is actually
+    approved — so counting rows the guard has already unticked measures the wrong thing.
+    """
+    ledger = {}
+    rows = []
+    for index in range(30):
+        rows.append(_row(f"K{index}", bid=10.0))
+        if index >= 5:                       # 25 of the 30 already moved today
+            ledger[f"K{index}"] = {"bid": 10.0, "at": "x", "rule": "r", "day": "2026-08-31"}
+
+    plan = logic.plan_run(
+        rows, **RULE, applied_today=ledger, today="2026-08-31",
+        guardrails={"max_rows": 10, "max_bid": 60.0, "min_bid": 1.0, "max_change_pct": 25.0},
+    )
+    assert plan["blocked"] is None, (
+        f"blocked at a 10-row limit while only 5 rows are appliable: {plan['blocked']}"
+    )
+    assert plan["totals"]["changing"] == 30, "the full match count must still be reported"
+    assert len(plan["approved_ids"]) == 5
+
+
+def test_the_row_limit_still_blocks_a_genuinely_broad_rule():
+    """The other half: the guard must still fire when the rows really would be sent."""
+    rows = [_row(f"K{index}", bid=10.0) for index in range(30)]
+    plan = logic.plan_run(
+        rows, **RULE, applied_today={}, today="2026-08-31",
+        guardrails={"max_rows": 10, "max_bid": 60.0, "min_bid": 1.0, "max_change_pct": 25.0},
+    )
+    assert plan["blocked"], "a 30-row run under a 10-row limit was allowed"
+    assert "30" in plan["blocked"], "the message does not name the size that was refused"

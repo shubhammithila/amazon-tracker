@@ -41,8 +41,13 @@ def _js_function(source: str, name: str) -> str:
     something is inserted between them. This raises instead of quietly passing.
     """
     start = source.index(f"function {name}(")
+    # **Skip the PARAMETER list before counting braces.** A destructured parameter — `function f({a, b})`
+    # — puts a `{` before the body, so a naive matcher closes at the end of the signature and returns
+    # the parameters instead of the function. It then reports "not found" for everything in the body,
+    # which reads as a missing feature rather than a broken helper.
+    body_starts = source.index(")", start)
     depth = 0
-    for index in range(source.index("{", start), len(source)):
+    for index in range(source.index("{", body_starts), len(source)):
         if source[index] == "{":
             depth += 1
         elif source[index] == "}":
@@ -1101,9 +1106,13 @@ def test_the_apply_controls_use_attributes_rather_than_ids():
         assert attribute in emitted, f"{attribute} is selected on but never rendered"
 
     # `emitted` is derived from the whole file, so an attribute that appears ONLY in a selector would
-    # count itself as rendered. So the emitted set is narrowed to attributes that appear inside a tag,
-    # which is the only place markup can declare one.
+    # count itself as rendered. So the emitted set is narrowed to places markup can actually declare
+    # one: inside a `<tag ...>`, or as an `attr="value"` fragment built in a template literal and then
+    # interpolated into a tag — which is how the group rows build theirs, keeping the attribute NAME a
+    # literal. An interpolated name (`data-${which}=`) would be invisible to grep, to this test and to
+    # a reader, which is the exact failure this test exists to catch.
     in_markup = set(re.findall(r"<[a-z][^>]*?\b(data-[a-z]+(?:-[a-z]+)*)", source, flags=re.S))
+    in_markup |= set(re.findall(r"`\s*(data-[a-z]+(?:-[a-z]+)*)=", source))
 
     selected = set(re.findall(r'querySelectorAll\("\[(data-[a-z-]+)\]"\)', source))
     selected |= set(re.findall(r'closest\("\[(data-[a-z-]+)\]"\)', source))
@@ -1181,11 +1190,14 @@ def test_the_preview_shows_the_match_type_as_well_as_the_writer():
     source = _code_only(_template())
     assert "function matchTag(" in source, "there is no match-type column"
     assert "function writerTag(" in source, "the writer column was replaced rather than joined"
-    body = _js_function(source, "renderPreview")
-    assert "matchTag(c)" in body and "writerTag(c)" in body, (
+    # The two tag columns live in `previewRowHtml` since the preview was grouped — extracted so the
+    # grouped render and any future flat one cannot drift about a column. The HEADER is still in
+    # `renderPreview`, which is where the table is built.
+    row = _js_function(source, "previewRowHtml")
+    assert "matchTag(c)" in row and "writerTag(c)" in row, (
         "the preview renders one of the two columns but not both"
     )
-    assert ">Match<" in body, "the Match column has no header"
+    assert ">Match<" in _js_function(source, "renderPreview"), "the Match column has no header"
 
 
 def test_the_match_vocabulary_comes_from_the_server():
@@ -1221,7 +1233,9 @@ def test_the_preview_trusts_the_servers_default_selection():
 def test_a_row_changed_today_says_so_on_the_row():
     """The reason has to be ON the row: with 1,005 rows a summary line alone cannot explain why one
     is unticked."""
-    body = _js_function(_code_only(_template()), "renderPreview")
+    # In `previewRowHtml` since the preview was grouped: the badge is per ROW, and that is where a row
+    # is now built.
+    body = _js_function(_code_only(_template()), "previewRowHtml")
     assert "changed_today" in body, "the badge is missing"
     assert "report_bid" in body, (
         "the stale report figure is hidden rather than shown, so the owner cannot see why the "
@@ -1264,3 +1278,109 @@ async def test_apply_refuses_a_row_already_changed_today(auth_client, db):
     assert body.get("applied", 0) == 0, "a row already changed today was sent to Amazon"
     assert body.get("repeated"), "the refusal is not reported, so the row vanishes silently"
     assert "already changed today" in body["repeated"][0]["reason"]
+
+
+# ─── Grouping a large preview ─────────────────────────────────────────────────
+
+
+def test_the_preview_groups_by_campaign_and_ad_group():
+    """**1,700 rows across 13 campaigns and 118 ad groups is not reviewable flat.**
+
+    Measured on the live account. The grouped view opens at 13 lines, and grouping by campaign alone
+    would not have been enough — MF_SP_keywords alone holds 941 rows.
+    """
+    source = _code_only(_template())
+    assert "plan.groups" in source, "the preview ignores the server's grouping"
+    assert "data-pcampaign" in source and "data-pgroup" in source, "there are no group rows"
+    assert "openPreviewCampaigns" in source and "openPreviewGroups" in source
+
+
+def test_the_group_totals_come_from_the_server_not_from_the_dom():
+    """A header claiming spend and net bid movement is a claim about its own rows.
+
+    Computed in JavaScript it can drift from the table beneath it, and this codebase has shipped that
+    twice. `logic.group_changes` owns the arithmetic.
+    """
+    body = _js_function(_code_only(_template()), "groupRowHtml")
+    assert "group.spend" in body and "group.movement" in body, (
+        "the header sums its own rows rather than reading the server's totals"
+    )
+    # No arithmetic over the rows in the header builder.
+    assert "reduce(" not in body, "the header is summing rows in the browser"
+
+
+def test_a_new_preview_starts_collapsed():
+    """The whole point is that 1,700 rows open as 13 lines. Carrying expansion over from a previous
+    rule would re-open groups belonging to a rule that no longer exists."""
+    body = _js_function(_code_only(_template()), "runPreview")
+    assert "openPreviewCampaigns = new Set()" in body, "the previous expansion is carried over"
+
+
+def test_bulk_ticking_edits_the_same_approved_set():
+    """ONE source of truth for what will be sent. Two selections that can disagree is how a row gets
+    sent that nobody ticked."""
+    source = _code_only(_template())
+    assert "function previewEntityIds(" in source, "the ids come from somewhere other than the plan"
+    assert "approved.add(entityId)" in source and "approved.delete(entityId)" in source
+
+
+def test_bulk_ticking_cannot_re_enable_a_row_changed_today():
+    """**The guard must survive a bulk gesture.**
+
+    Ticking a campaign of 941 rows must not silently re-enable the compounding for the ones that
+    already moved today. The owner can still tick such a row individually — that is deliberate.
+    """
+    source = _code_only(_template())
+    assert "!change.changed_today" in source, (
+        "ticking a campaign re-enables rows the once-per-day guard unticked"
+    )
+
+
+def test_select_all_cannot_re_enable_a_row_changed_today_either():
+    """**The same hole, one control away — and grouping is what exposed it.**
+
+    `data-toggle-all` covers every row on the run at once, so it is the WIDEST way to re-enable the
+    compounding the once-per-day guard prevents. The campaign and ad-group boxes were written with the
+    guard; this button predates them and still selected `plan.changes` wholesale, which deliberately
+    INCLUDES the rows the guard unticked (they stay visible with their reason). One click on "Select
+    all" therefore undid the guard for all of them, silently.
+
+    Found by reading the three selection paths together after grouping added two of them, not by using
+    the screen — on the account's real data the run that prompted the grouping had 0 changed-today
+    rows, so nothing would have looked wrong.
+    """
+    source = _code_only(_template())
+    toggle = source[source.index('closest("[data-toggle-all]")'):][:600]
+    assert "changed_today" in toggle, (
+        "Select all re-ticks every row on the run, including the ones the once-per-day guard "
+        "unticked — a -10% rule applied twice is -19%"
+    )
+    # And the label must count the same population, or it can never read "Unselect all" on such a run.
+    for body in (_js_function(source, "applyBarHtml"), source):
+        assert "changed_today" in body
+
+
+def test_a_partly_ticked_group_shows_as_indeterminate():
+    """A campaign with 3 of 941 rows ticked must not look unticked — that invites ticking all 941.
+
+    `indeterminate` is a property with no markup form, so it has to be applied after insertion, and
+    re-derived when a single row changes without a re-render.
+    """
+    source = _code_only(_template())
+    assert "function applyIndeterminate(" in source
+    assert "function refreshGroupBoxes(" in source, (
+        "unticking one row leaves its campaign header claiming a selection that is no longer true"
+    )
+    assert ".indeterminate = " in source, "the tri-state is never actually set"
+    assert "data-partial" in source
+
+
+def test_expanding_a_group_does_not_change_the_selection():
+    """Clicking a name must not tick anything, and clicking a checkbox must not expand anything.
+
+    Two gestures on one row; conflating them would make reviewing a group alter what is sent.
+    """
+    source = _code_only(_template())
+    assert 'e.target.closest("input")' in source, (
+        "the expand handler does not exclude clicks on the checkbox"
+    )

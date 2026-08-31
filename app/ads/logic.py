@@ -705,14 +705,6 @@ def plan_run(
             "changed_rule": ledger.get("rule") or "",
         })
 
-    blocked = None
-    if len(changes) > limits["max_rows"]:
-        blocked = (
-            f"This rule matches {len(changes):,} rows and the limit is "
-            f"{limits['max_rows']:,} per run. Narrow it with another condition, or scope it to "
-            f"fewer campaigns."
-        )
-
     # **The default selection, computed HERE rather than in the template.**
     #
     # `POST /ads/apply` must be able to make the same judgement: a screen-level untick would leave the
@@ -721,11 +713,36 @@ def plan_run(
     # silently missing from a 1,005-row preview is indistinguishable from a bug.
     approved_ids = [c["entity_id"] for c in changes if not c["changed_today"]]
 
+    # **The row limit counts what will actually be SENT**, so it is measured on the appliable rows
+    # rather than on every match.
+    #
+    # Measured on a real rule: 109 changing, 105 of them already moved today, **4 appliable**. Counting
+    # all 109 would refuse a run that could only ever send 4 — and at scale, 1,100 matches with 1,050
+    # already moved would be blocked by a 1,000-row limit while 50 rows went to Amazon. The limit
+    # exists to bound what reaches Amazon and to prevent surprise; a refusal naming a number that
+    # corresponds to nothing that would happen does neither.
+    #
+    # Nothing is loosened: `POST /ads/apply` re-checks the same ceiling against the rows actually
+    # approved, so every row that reaches Amazon is still under it.
+    #
+    # The MESSAGE still names the full match count, because that is the number on screen — a refusal
+    # citing a smaller figure than the table shows would read as a different bug.
+    blocked = None
+    if len(approved_ids) > limits["max_rows"]:
+        blocked = (
+            f"This rule matches {len(changes):,} rows and the limit is "
+            f"{limits['max_rows']:,} per run. Narrow it with another condition, or scope it to "
+            f"fewer campaigns."
+        )
+
     return {
         "changes": changes,
         "skipped": skipped,
         "blocked": blocked,
         "approved_ids": approved_ids,
+        # The same rows arranged for review. `changes` is unchanged, so every existing consumer —
+        # `/ads/apply`, the ledger, the tests — is untouched by the grouping.
+        "groups": group_changes(changes),
         "totals": {
             "matched": len(changes) + len(skipped),
             "changing": len(changes),
@@ -742,6 +759,76 @@ def plan_run(
             "changed_today": sum(1 for c in changes if c["changed_today"]),
         },
     }
+
+
+#: Shown for a row whose campaign or ad group Amazon did not name. Labelled rather than dropped: a
+#: change nobody can see is a change nobody can review, which is the rule the whole preview follows.
+UNGROUPED_LABEL = "(no ad group)"
+
+
+def group_changes(changes: Sequence[Mapping]) -> list[dict]:
+    """`changes` arranged campaign -> ad group -> rows, with each level's own totals.
+
+    **A re-arrangement, never a filter.** Every row appears exactly once and
+    `sum(group["rows"]) == len(changes)`, which is what makes the grouped view trustworthy — a
+    collapsed header that hid rows would hide bid changes.
+
+    **The totals are computed HERE, not in the template.** A campaign header showing spend and total
+    bid movement is a claim about its own rows; computed in JavaScript it can drift from the table
+    beneath it, and this codebase has shipped that defect twice (the Orders tab's "86 orders beside 87
+    lines", and the Portfolio parent rows that exist to prevent it). Here the number gates a live bid
+    change.
+
+    Ordered by spend descending at both levels, because "where is the money" is the question a
+    1,700-row preview is being triaged for. Measured on the live account: one such rule spans **13
+    campaigns and 118 ad groups**, and its largest campaign alone holds **941 rows** — which is why the
+    second level exists at all rather than grouping by campaign only.
+
+    `movement` is the NET rupee change to the bids in that group: what the header is actually claiming.
+    """
+    by_campaign: dict[str, dict] = {}
+
+    for change in changes:
+        campaign_id = str(change.get("campaign_id") or "")
+        campaign = by_campaign.setdefault(campaign_id, {
+            "campaign_id": campaign_id,
+            "campaign_name": change.get("campaign_name") or campaign_id or UNGROUPED_LABEL,
+            "_groups": {},
+        })
+        group_id = str(change.get("ad_group_id") or "")
+        group = campaign["_groups"].setdefault(group_id, {
+            "ad_group_id": group_id,
+            "ad_group_name": change.get("ad_group_name") or group_id or UNGROUPED_LABEL,
+            "entity_ids": [],
+            "spend": 0.0,
+            "movement": 0.0,
+            "changed_today": 0,
+        })
+        group["entity_ids"].append(change["entity_id"])
+        group["spend"] += _as_float(change.get("spend"))
+        group["movement"] += _as_float(change.get("new_bid")) - _as_float(change.get("old_bid"))
+        if change.get("changed_today"):
+            group["changed_today"] += 1
+
+    out = []
+    for campaign in by_campaign.values():
+        groups = sorted(campaign.pop("_groups").values(), key=lambda g: -g["spend"])
+        for group in groups:
+            group["rows"] = len(group["entity_ids"])
+            group["spend"] = round(group["spend"], 2)
+            group["movement"] = round(group["movement"], 2)
+        out.append({
+            **campaign,
+            "ad_groups": groups,
+            # Rolled up from the ad groups, which are rolled up from the rows — so the two levels
+            # cannot disagree with each other or with the table.
+            "rows": sum(g["rows"] for g in groups),
+            "spend": round(sum(g["spend"] for g in groups), 2),
+            "movement": round(sum(g["movement"] for g in groups), 2),
+            "changed_today": sum(g["changed_today"] for g in groups),
+        })
+    out.sort(key=lambda c: -c["spend"])
+    return out
 
 
 def split_by_writer(changes: Sequence[Mapping]) -> dict[str, list[dict]]:

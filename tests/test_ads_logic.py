@@ -517,3 +517,126 @@ def test_the_match_label_is_not_the_writer():
     assert logic.match_label("TARGETING_EXPRESSION", logic.AD_PRODUCT_SB) == "product"
     assert logic.writer_for("TARGETING_EXPRESSION", logic.AD_PRODUCT_SP) == logic.WRITER_TARGET
     assert logic.writer_for("TARGETING_EXPRESSION", logic.AD_PRODUCT_SB) == logic.WRITER_SB_TARGET
+
+
+# ─── Grouping a large preview ────────────────────────────────────────────────
+
+
+def _change(entity_id, *, campaign, campaign_name, ad_group, ad_group_name,
+            spend, old_bid, new_bid, changed_today=False):
+    return {
+        "entity_id": entity_id, "campaign_id": campaign, "campaign_name": campaign_name,
+        "ad_group_id": ad_group, "ad_group_name": ad_group_name,
+        "spend": spend, "old_bid": old_bid, "new_bid": new_bid,
+        "changed_today": changed_today, "writer": logic.WRITER_KEYWORD, "match_type": "EXACT",
+    }
+
+
+def test_changes_group_by_campaign_then_ad_group():
+    """**1,700 rows across 13 campaigns and 118 ad groups is not reviewable flat.**
+
+    Measured on the live account for `spend < 50, bid < 40 -> +10%`. The grouped view opens at 13 lines
+    instead of 1,700, and MF_SP_keywords alone holds 941 rows — which is why grouping by campaign ALONE
+    would not have been enough either.
+    """
+    changes = [
+        _change("A", campaign="c1", campaign_name="MF_SP_keywords", ad_group="g1",
+                ad_group_name="Sattu", spend=300.0, old_bid=10.0, new_bid=11.0),
+        _change("B", campaign="c1", campaign_name="MF_SP_keywords", ad_group="g1",
+                ad_group_name="Sattu", spend=200.0, old_bid=20.0, new_bid=22.0),
+        _change("C", campaign="c1", campaign_name="MF_SP_keywords", ad_group="g2",
+                ad_group_name="Chana", spend=100.0, old_bid=5.0, new_bid=5.5),
+        _change("D", campaign="c2", campaign_name="HF_SP_Keywords", ad_group="g3",
+                ad_group_name="Rice", spend=50.0, old_bid=8.0, new_bid=8.8),
+    ]
+    groups = logic.group_changes(changes)
+
+    assert [g["campaign_name"] for g in groups] == ["MF_SP_keywords", "HF_SP_Keywords"], (
+        "campaigns are not ordered by spend, so the biggest is not first"
+    )
+    first = groups[0]
+    assert first["rows"] == 3
+    assert [a["ad_group_name"] for a in first["ad_groups"]] == ["Sattu", "Chana"]
+    assert first["ad_groups"][0]["entity_ids"] == ["A", "B"]
+
+
+def test_a_group_total_is_exactly_the_sum_of_its_own_rows():
+    """**The invariant that stops a header contradicting its table.**
+
+    This codebase has shipped that defect twice — the Orders tab's "86 orders beside 87 lines", and the
+    Portfolio parent rows that exist to prevent it. Here the number gates a live bid change, so the
+    sums are computed in the pure module rather than in JavaScript.
+    """
+    changes = [
+        _change("A", campaign="c1", campaign_name="C1", ad_group="g1", ad_group_name="G1",
+                spend=300.0, old_bid=10.0, new_bid=11.0),
+        _change("B", campaign="c1", campaign_name="C1", ad_group="g1", ad_group_name="G1",
+                spend=200.5, old_bid=20.0, new_bid=18.0),
+        _change("C", campaign="c1", campaign_name="C1", ad_group="g2", ad_group_name="G2",
+                spend=100.25, old_bid=5.0, new_bid=5.5),
+    ]
+    group = logic.group_changes(changes)[0]
+
+    assert group["spend"] == pytest.approx(600.75)
+    assert group["spend"] == pytest.approx(sum(a["spend"] for a in group["ad_groups"]))
+    assert group["rows"] == sum(a["rows"] for a in group["ad_groups"])
+    # Movement is the NET change to the bids, which is what the header is claiming.
+    assert group["movement"] == pytest.approx(1.0 - 2.0 + 0.5)
+    assert group["movement"] == pytest.approx(sum(a["movement"] for a in group["ad_groups"]))
+
+
+def test_a_group_counts_its_rows_changed_today():
+    """So a campaign header can say why some of its rows arrive unticked, without expanding it."""
+    changes = [
+        _change("A", campaign="c1", campaign_name="C1", ad_group="g1", ad_group_name="G1",
+                spend=10.0, old_bid=10.0, new_bid=11.0, changed_today=True),
+        _change("B", campaign="c1", campaign_name="C1", ad_group="g1", ad_group_name="G1",
+                spend=10.0, old_bid=10.0, new_bid=11.0),
+    ]
+    group = logic.group_changes(changes)[0]
+    assert group["changed_today"] == 1
+    assert group["ad_groups"][0]["changed_today"] == 1
+
+
+def test_a_row_with_no_ad_group_is_grouped_rather_than_dropped():
+    """A report row can arrive without an ad group id, and a dropped row is an unreviewable change.
+
+    The same rule the whole preview follows: excluded and named, never silently absent.
+    """
+    changes = [
+        _change("A", campaign="c1", campaign_name="C1", ad_group="", ad_group_name="",
+                spend=10.0, old_bid=10.0, new_bid=11.0),
+    ]
+    groups = logic.group_changes(changes)
+    assert groups[0]["rows"] == 1
+    assert groups[0]["ad_groups"][0]["rows"] == 1
+    assert groups[0]["ad_groups"][0]["ad_group_name"], "the group has no label at all"
+
+
+def test_grouping_never_loses_or_duplicates_a_row():
+    """The property that makes the grouped view trustworthy: it is a re-arrangement, not a filter.
+
+    A collapsed header that hid rows would hide bid changes.
+    """
+    changes = [
+        _change(f"K{i}", campaign=f"c{i % 3}", campaign_name=f"C{i % 3}",
+                ad_group=f"g{i % 7}", ad_group_name=f"G{i % 7}",
+                spend=float(i), old_bid=10.0, new_bid=11.0)
+        for i in range(50)
+    ]
+    groups = logic.group_changes(changes)
+    seen = [e for g in groups for a in g["ad_groups"] for e in a["entity_ids"]]
+    assert sorted(seen) == sorted(c["entity_id"] for c in changes)
+    assert len(seen) == len(set(seen)), "a row appears in two groups"
+    assert sum(g["rows"] for g in groups) == len(changes)
+
+
+def test_the_plan_carries_the_grouping_beside_the_flat_changes():
+    """`changes` is unchanged, so `/ads/apply`, the ledger and every existing test are untouched."""
+    rows = [{"keywordId": "K1", "matchType": "EXACT", "keyword": "kw", "campaignName": "MF_SP_kw",
+             "campaignId": "c1", "adGroupId": "g1", "cost": 500.0, "sales7d": 100.0,
+             "keywordBid": 10.0}]
+    plan = logic.plan_run(rows, conditions=[{"field": "spend", "op": "gt", "value": 100}],
+                          action=logic.ACTION_DECREASE_PCT, amount=10)
+    assert plan["groups"], "the plan does not carry a grouping"
+    assert plan["groups"][0]["rows"] == len(plan["changes"])
