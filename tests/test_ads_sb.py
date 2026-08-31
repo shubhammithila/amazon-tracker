@@ -523,9 +523,12 @@ async def test_apply_skips_targets_that_are_paused_or_archived_at_amazon(auth_cl
     from app.ads import repository as ads_repo
     from app.ads import spapi_ads as sp
 
-    await ads_repo.save_performance(db, "2026-08-21", "2026-08-27", [
-        {"keywordId": "111", "matchType": "EXACT", "keyword": "live one", "cost": 500.0,
-         "sales7d": 1000.0, "keywordBid": 10.0, "campaignId": "c1", "adGroupId": "g1"},
+    # A DAILY row — `save_performance` and its per-window table are deleted, because holding the same
+    # figures at two grains is what made Sponsored Brands vanish from whichever path lacked them.
+    await ads_repo.save_daily(db, [
+        {"keywordId": "111", "matchType": "EXACT", "keyword": "live one", "date": "2026-08-27",
+         "cost": 500.0, "sales7d": 1000.0, "keywordBid": 10.0,
+         "campaignId": "c1", "adGroupId": "g1"},
     ])
 
     sent: list[dict] = []

@@ -362,12 +362,15 @@ function renderBanners(){
     out.push(`<div class="banner error"><strong>Advertising credentials are not configured.</strong>
       This tab needs its own Amazon Advertising application — separate from the SP-API one — so
       there is nothing to show until those keys are in the environment.</div>`);
-  } else if(data.derived){
-    /* Same numbers, different provenance — and the owner should be able to tell. */
-    out.push(`<div class="banner good">These figures were <strong>summed from the daily rows</strong>
-      for ${esc(data.window[0])} → ${esc(data.window[1])} — no Amazon call was needed. Any range
-      inside the stored days is instant like this.</div>`);
-  } else if(!data.cached){
+  } else if(data.cached){
+    /* **One source now: the per-day rows.** This used to distinguish "summed from daily rows" from
+       "read from a window fetched as such", which was worth saying while both existed — and they
+       disagreed by 28% of spend, because Sponsored Brands was written to the window table and not
+       to the daily one. Every figure is summed now, so there is one claim to make. */
+    out.push(`<div class="banner good">Summed from the <strong>stored daily rows</strong> for
+      ${esc(data.window[0])} → ${esc(data.window[1])} — no Amazon call was needed. Any range inside
+      the stored days is instant like this.</div>`);
+  } else {
     out.push(`<div class="banner info">Nothing fetched for
       <strong>${esc(data.window[0])} → ${esc(data.window[1])}</strong> yet. Press
       <strong>Refresh from Amazon</strong> — Amazon takes about 6 minutes per 31 days to build the
@@ -393,7 +396,6 @@ function renderBanners(){
 }
 
 function renderWindow(){
-  const have = new Set((data.windows_available || []).map(w => w[0] + ".." + w[1]));
   const current = data.window ? data.window[0] + ".." + data.window[1] : "";
   const today = new Date();
 
@@ -408,9 +410,14 @@ function renderWindow(){
   const buttons = (data.preset_days || [7, 14, 30]).map(days => {
     const r = presetRange(days);
     const key = r.start + ".." + r.end;
-    const cached = have.has(key);
-    /* The dot means "cached, instant" versus "a ~6-minute report per 31 days". Not decoration, so
-       it goes into the accessible name in words and is aria-hidden as a glyph. */
+    /* **Instant means "the daily rows cover it", not "somebody fetched these exact endpoints".**
+       That distinction used to matter because a fetched window was read from its own table; that
+       table is gone, and with it a second answer that disagreed by 28% of spend. So a preset is
+       marked instant exactly when it is summable, which is also what the server checks.
+
+       The dot is not decoration — instant versus a ~20-minute report per 31 days — so it goes into
+       the accessible name in words and is aria-hidden as a glyph. */
+    const cached = insideDailyCoverage(r.start, r.end);
     return `<button class="win-btn ${key === current ? "on" : ""}"
       data-start="${r.start}" data-end="${r.end}" aria-pressed="${key === current}"
       aria-label="Last ${days} days, ${r.start} to ${r.end}${cached
@@ -444,15 +451,16 @@ function renderWindowNote(){
   if(!from || !to){ note.textContent = ""; return; }
 
   const bits = [];
-  if(exactlyCached(from, to)){
-    bits.push(`<strong>cached</strong> — loads instantly`);
-  } else if(insideDailyCoverage(from, to)){
-    /* The answer to "why must it refetch?" — it does not, for anything inside the daily rows. */
+  if(insideDailyCoverage(from, to)){
+    /* The answer to "why must it refetch?" — it does not, for anything inside the daily rows.
+       There is no longer an "exactly cached" case to check first: the per-window table is gone, and
+       with it the distinction between a range someone fetched as such and one summed from the days.
+       Those two used to disagree by 28% of spend. */
     const cover = data.daily_coverage;
     bits.push(`<strong>inside the ${esc(cover[0])} → ${esc(cover[1])} daily data</strong>`
       + ` — no fetch needed, summed instantly`);
   } else {
-    bits.push(`not held yet — <strong>press Refresh</strong> (~6 min per 31 days)`);
+    bits.push(`not held yet — <strong>press Refresh</strong> (~20 min per 31 days)`);
   }
 
   /* Today is selectable AND caveated. Amazon answers for it (verified live), but a click costs
@@ -475,11 +483,6 @@ function insideDailyCoverage(from, to){
   const cover = data.daily_coverage || [];
   if(cover.length !== 2) return false;
   return cover[0] <= from && cover[1] >= to;
-}
-
-/* An exact window someone fetched as such. */
-function exactlyCached(from, to){
-  return (data.windows_available || []).some(w => w[0] === from && w[1] === to);
 }
 
 /* A local YYYY-MM-DD, built from the local date parts.

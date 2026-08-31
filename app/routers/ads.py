@@ -149,31 +149,29 @@ async def ads_dashboard(
         return JSONResponse({"error": str(exc)}, status_code=400)
 
     settings = get_settings()
-    available = await repository.windows_available(db)
-    exact = (window_start, window_end) in available
 
-    # **Any range covered by the per-day rows is INSTANT, even if nobody fetched that exact window.**
-    # This is the answer to "I already have 30 days — why must I refetch to see 20 of them?". The
-    # daily rows are summed locally: no Amazon call, no ~6-minute report. `derived` tells the screen
-    # which of the two it is looking at, because "cached" and "computed from cached" are different
-    # claims and the owner should be able to tell.
-    derived = False
+    # **ONE source: the per-day rows.**
+    #
+    # There used to be two — a per-window table read when that exact range had been fetched, and this
+    # sum otherwise — and they disagreed by **28% of spend**, because Sponsored Brands was only ever
+    # written to the window table. Which figure you got depended on whether somebody had happened to
+    # fetch that exact range: 22-28 Aug reported Rs 4,44,550 and 22-29 Aug, a strict superset,
+    # reported Rs 3,34,300.
+    #
+    # Any range inside the daily coverage is instant and needs no Amazon call, which was always the
+    # point of the per-day grain; what has gone is the second path that could disagree with it.
+    # `daily_range_complete` checks EVERY day rather than the endpoints, so a range with an interior
+    # gap declines to answer instead of summing short.
+    complete = await repository.daily_range_complete(db, window_start, window_end)
     rows = []
-    if exact:
-        rows = await repository.load_performance(
-            db, window_start, window_end,
-            campaign_ids=[campaign_id] if campaign_id else None,
-        )
-    elif await repository.daily_range_complete(db, window_start, window_end):
+    if complete:
         rows = await repository.sum_daily(
             db, window_start, window_end,
             campaign_ids=[campaign_id] if campaign_id else None,
         )
-        derived = True
-
     if rows:
         rows = await repository.attach_names(db, rows)
-    cached = exact or derived
+    cached = complete
 
     campaigns = await repository.load_campaigns(db, include_paused=include_paused)
     automated_total = sum(1 for c in campaigns if c.get("automated"))
@@ -217,12 +215,14 @@ async def ads_dashboard(
     return {
         "window": [window_start, window_end],
         "cached": cached,
-        # True when the figures were SUMMED from per-day rows rather than read from a window that
-        # was fetched as such. Same numbers, different provenance, and the screen says which.
-        "derived": derived,
-        "windows_available": [list(w) for w in available],
-        # The span of per-day rows held, so the picker can mark ANY range inside it as instant
-        # rather than only the exact windows someone happened to fetch.
+        # **`derived` and `windows_available` are gone with the table they described.**
+        # `derived` distinguished "read from a fetched window" from "summed from daily rows" — a
+        # distinction worth drawing while both existed and meaningless now that every figure is
+        # summed. `windows_available` listed the exact ranges somebody had fetched; the daily
+        # coverage below supersedes it, because what makes a range instant is the days held, not
+        # whether anyone happened to request those endpoints.
+        #
+        # The span of per-day rows held, so the picker can mark ANY range inside it as instant.
         "daily_coverage": list(await repository.daily_coverage(db) or ()),
         "preset_days": list(PRESET_DAYS),
         "max_window_days": MAX_WINDOW_DAYS,
@@ -306,11 +306,15 @@ async def targets(
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
-    rows = await repository.load_performance(
-        db, window_start, window_end,
-        campaign_ids=[campaign_id] if campaign_id else None,
-        ad_group_ids=[ad_group_id] if ad_group_id else None,
-    )
+    # Summed from the per-day rows, the one source. See `GET /ads` for why there is no longer a
+    # per-window table to prefer.
+    rows = []
+    if await repository.daily_range_complete(db, window_start, window_end):
+        rows = await repository.sum_daily(
+            db, window_start, window_end,
+            campaign_ids=[campaign_id] if campaign_id else None,
+            ad_group_ids=[ad_group_id] if ad_group_id else None,
+        )
     rows = await repository.attach_names(db, rows)
     return {"window": [window_start, window_end], "rows": rows, "count": len(rows)}
 
@@ -374,16 +378,13 @@ async def preview(
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
-    # Reads the window rows if that exact window was fetched, otherwise SUMS the per-day rows —
-    # so a rule runs on any range inside the daily coverage without a fresh report. Both paths
-    # return the identical shape, which is deliberate: a preview must not behave differently
-    # depending on where its figures came from, because the apply step consumes what it produces.
-    rows = await repository.load_performance(
-        db, window_start, window_end,
-        campaign_ids=body.get("campaign_ids") or None,
-        ad_group_ids=body.get("ad_group_ids") or None,
-    )
-    if not rows and await repository.daily_range_complete(db, window_start, window_end):
+    # Summed from the per-day rows, which is now the ONLY source — and on this route that mattered
+    # most. It used to prefer a per-window table that held Sponsored Brands while the daily rows did
+    # not, so the same rule found **1,005 changes including 296 SB rows** on a fetched window and
+    # **743 with none** on a derived one. 296 live Sponsored Brands bids were invisible to a rule
+    # meant to act on them, on the one route in this app that spends money.
+    rows = []
+    if await repository.daily_range_complete(db, window_start, window_end):
         rows = await repository.sum_daily(
             db, window_start, window_end,
             campaign_ids=body.get("campaign_ids") or None,

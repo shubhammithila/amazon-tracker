@@ -5,8 +5,10 @@ locally and PostgreSQL in production — the reasoning `shipment/repository.py` 
 
 **Three kinds of row live here and the boundary is the design:**
 
-* `AdsEntity` / `AdsPerformance` are a CACHE of Amazon's numbers. The refresh writes them, nothing
-  edits them, and a wrong value is fixed by refreshing.
+* `AdsEntity` / `AdsPerformanceDaily` are a CACHE of Amazon's numbers. The refresh writes them,
+  nothing edits them, and a wrong value is fixed by refreshing. **Per-day rows are the ONLY grain**
+  — there used to be a per-window table beside them and the two disagreed by 28% of spend, because
+  Sponsored Brands was written to one and not the other.
 * `AdsRule` is the owner's saved rule. Amazon has no opinion about it.
 * **`AdsMutation` is the audit trail and the undo**, and it is the only table here that must never
   be treated as disposable. It records what we asked Amazon to change and what the value was
@@ -31,7 +33,6 @@ from app.ads import logic
 from app.models import (
     AdsEntity,
     AdsMutation,
-    AdsPerformance,
     AdsPerformanceDaily,
     AdsRule,
     PortfolioSettings,
@@ -171,44 +172,30 @@ async def load_ad_groups(
 
     totals: dict[str, dict] = {}
     if window:
+        # **Summed from the per-day rows, the one source.**
+        #
+        # This used to query the per-window table first and fall back to these daily rows only when
+        # that exact window had never been fetched — the SAME two-path arrangement that made
+        # Rs 1,26,328 of Sponsored Brands vanish one level up, and with the identical failure mode:
+        # the window table held SB rows and the daily table did not, so an ad group's spend depended
+        # on which branch ran. Now there is one branch, so a campaign row and the ad groups beneath
+        # it are summed from the same rows by construction.
         grouped = (await db.execute(
             select(
-                AdsPerformance.ad_group_id,
-                func.count().label("targets"),
-                func.sum(AdsPerformance.spend).label("spend"),
-                func.sum(AdsPerformance.sales).label("sales"),
-                func.sum(AdsPerformance.clicks).label("clicks"),
-                func.sum(AdsPerformance.impressions).label("impressions"),
-                func.sum(AdsPerformance.orders).label("orders"),
+                AdsPerformanceDaily.ad_group_id,
+                func.count(func.distinct(AdsPerformanceDaily.entity_id)).label("targets"),
+                func.sum(AdsPerformanceDaily.spend).label("spend"),
+                func.sum(AdsPerformanceDaily.sales).label("sales"),
+                func.sum(AdsPerformanceDaily.clicks).label("clicks"),
+                func.sum(AdsPerformanceDaily.impressions).label("impressions"),
+                func.sum(AdsPerformanceDaily.orders).label("orders"),
             )
             .where(
-                AdsPerformance.window_start == window[0],
-                AdsPerformance.window_end == window[1],
+                AdsPerformanceDaily.day >= window[0],
+                AdsPerformanceDaily.day <= window[1],
             )
-            .group_by(AdsPerformance.ad_group_id)
+            .group_by(AdsPerformanceDaily.ad_group_id)
         )).all()
-
-        # **Fall back to the per-day rows when that exact window was never fetched.** Without this,
-        # expanding a campaign on a DERIVED window would show every ad group at zero while the
-        # campaign row above it showed real spend — two numbers for one thing, which is the defect
-        # class this whole hierarchy is arranged to avoid.
-        if not grouped:
-            grouped = (await db.execute(
-                select(
-                    AdsPerformanceDaily.ad_group_id,
-                    func.count(func.distinct(AdsPerformanceDaily.entity_id)).label("targets"),
-                    func.sum(AdsPerformanceDaily.spend).label("spend"),
-                    func.sum(AdsPerformanceDaily.sales).label("sales"),
-                    func.sum(AdsPerformanceDaily.clicks).label("clicks"),
-                    func.sum(AdsPerformanceDaily.impressions).label("impressions"),
-                    func.sum(AdsPerformanceDaily.orders).label("orders"),
-                )
-                .where(
-                    AdsPerformanceDaily.day >= window[0],
-                    AdsPerformanceDaily.day <= window[1],
-                )
-                .group_by(AdsPerformanceDaily.ad_group_id)
-            )).all()
 
         for row in grouped:
             totals[str(row[0] or "")] = {
@@ -248,130 +235,6 @@ async def load_ad_groups(
 # ─── Performance ─────────────────────────────────────────────────────────────
 
 
-async def save_performance(
-    db: AsyncSession, window_start: str, window_end: str, rows: list[dict],
-    *, ad_product: str = "sp",
-) -> int:
-    """Store report rows for one window. Keyed on `(window, entity_id)`.
-
-    Takes RAW report rows and normalises through `logic.metrics_for`, so the stored shape and the
-    rule engine's view of a row cannot disagree — one parser, not two.
-    """
-    if not rows:
-        return 0
-
-    written = 0
-    for raw in rows:
-        m = logic.metrics_for(raw, ad_product)
-        entity_id = m["entity_id"]
-        if not entity_id:
-            continue
-
-        existing = (await db.execute(
-            select(AdsPerformance).where(
-                AdsPerformance.window_start == window_start,
-                AdsPerformance.window_end == window_end,
-                AdsPerformance.entity_id == entity_id,
-            )
-        )).scalar_one_or_none()
-
-        values = {
-            "entity_type": "target" if m["writer"] == logic.WRITER_TARGET else "keyword",
-            "ad_product": m["ad_product"],
-            "campaign_id": m["campaign_id"] or None,
-            "ad_group_id": m["ad_group_id"] or None,
-            "text": (m["text"] or "")[:500],
-            "match_type": m["match_type"],
-            "reported_bid": m["bid"],
-            "impressions": m["impressions"],
-            "clicks": m["clicks"],
-            "spend": m["spend"],
-            "orders": m["orders"],
-            "sales": m["sales"],
-            "fetched_at": datetime.utcnow(),
-        }
-        if existing:
-            for field, value in values.items():
-                setattr(existing, field, value)
-        else:
-            db.add(AdsPerformance(
-                window_start=window_start, window_end=window_end,
-                entity_id=entity_id, **values,
-            ))
-        written += 1
-
-    await db.commit()
-    return written
-
-
-async def load_performance(
-    db: AsyncSession,
-    window_start: str,
-    window_end: str,
-    *,
-    campaign_ids: list[str] | None = None,
-    ad_group_ids: list[str] | None = None,
-) -> list[dict]:
-    """Stored rows for one window, shaped exactly as `logic.metrics_for` returns them.
-
-    **Returned in the rule engine's own shape, not the database's.** A rule preview and an apply
-    both read this, so a mismatch between what is stored and what a rule expects would be a bug
-    that only appears at apply time — with a live bid on the other end of it.
-    """
-    query = select(AdsPerformance).where(
-        AdsPerformance.window_start == window_start,
-        AdsPerformance.window_end == window_end,
-    )
-    if campaign_ids:
-        query = query.where(AdsPerformance.campaign_id.in_([str(c) for c in campaign_ids]))
-    if ad_group_ids:
-        query = query.where(AdsPerformance.ad_group_id.in_([str(a) for a in ad_group_ids]))
-
-    rows = (await db.execute(query.order_by(AdsPerformance.spend.desc()))).scalars().all()
-
-    out = []
-    for r in rows:
-        spend = _f(r.spend) or 0.0
-        sales = _f(r.sales) or 0.0
-        product = r.ad_product or "sp"
-        out.append({
-            "entity_id": r.entity_id,
-            "ad_product": product,
-            # Routing needs the ad product: `EXACT` is legal on both, and they are different
-            # endpoints with different payloads.
-            "writer": logic.writer_for(r.match_type, product),
-            "match_type": r.match_type,
-            "text": r.text or "",
-            "campaign_id": r.campaign_id or "",
-            "campaign_name": "",
-            "ad_group_id": r.ad_group_id or "",
-            "ad_group_name": "",
-            "bid": _f(r.reported_bid),
-            "spend": spend,
-            "sales": sales,
-            "clicks": int(r.clicks or 0),
-            "impressions": int(r.impressions or 0),
-            "orders": int(r.orders or 0),
-            # Recomputed here rather than stored, so a ratio can never disagree with its own
-            # numerator. `None` when there is no denominator — never 0.0.
-            "roas": (sales / spend) if spend else None,
-            "acos": (spend / sales) if sales else None,
-            "ctr": (r.clicks / r.impressions) if r.impressions else None,
-            "cvr": (r.orders / r.clicks) if r.clicks else None,
-            "cpc": (spend / r.clicks) if r.clicks else None,
-        })
-    return out
-
-
-# ─── Per-day rows: what makes any sub-range instant ──────────────────────────
-#
-# `AdsPerformance` is per WINDOW, so a range nobody fetched has no row to read. These rows are per
-# DAY and therefore summable: any range inside what we hold is a GROUP BY away, with no Amazon call.
-
-#: How many days of per-day rows to keep. **30, and the bound is disk rather than preference:**
-#: production sits at 91% full with 670 MB free, `update-ec2.sh` copies the whole database before
-#: every deploy, and 30 days of daily rows is ~195,000 rows / ~56 MB. It is also the longest range
-#: Amazon answers in a single report, so it is the natural boundary.
 DAILY_RETENTION_DAYS = 30
 
 
@@ -470,11 +333,17 @@ async def daily_coverage(db: AsyncSession) -> tuple[str, str] | None:
     return (row[0], row[1])
 
 
-async def daily_days_held(db: AsyncSession) -> set[str]:
-    """Exactly which days we hold. Used to prove a requested range is complete before summing it."""
-    rows = (await db.execute(
-        select(AdsPerformanceDaily.day).group_by(AdsPerformanceDaily.day)
-    )).all()
+async def daily_days_held(db: AsyncSession, *, ad_product: str | None = None) -> set[str]:
+    """Exactly which days we hold, optionally for one ad product.
+
+    `ad_product` matters because a night is FOUR reports (two per product, since Amazon caps one at
+    31 days) and any of them can be throttled — `sbTargeting` has been measured returning 429 after
+    15 minutes of complete idleness. So "we hold this day" is not one fact, it is one per product.
+    """
+    query = select(AdsPerformanceDaily.day).group_by(AdsPerformanceDaily.day)
+    if ad_product:
+        query = query.where(AdsPerformanceDaily.ad_product == ad_product)
+    rows = (await db.execute(query)).all()
     return {r[0] for r in rows}
 
 
@@ -489,14 +358,38 @@ def expected_days(start: str, end: str) -> list[str]:
 
 
 async def daily_range_complete(db: AsyncSession, start: str, end: str) -> bool:
-    """Do we hold EVERY day in this range?
+    """Do we hold every day in this range, **for every ad product we advertise on**?
 
-    **Every day, not merely the endpoints.** A missing Tuesday would make the sum quietly understate
-    spend, and an understated spend is what a bid rule would then act on — so a partial range is
-    treated as absent and the owner is told to refresh.
+    Two dimensions, and each was a real defect:
+
+    * **Every DAY, not merely the endpoints.** A missing Tuesday would make the sum quietly
+      understate spend, and an understated spend is what a bid rule would then act on.
+    * **Every PRODUCT, not merely the union of days.** This is the one that re-broke the bug this
+      module was just fixed for. A night is four reports — Amazon caps one at 31 days, so 60 days is
+      two chunks per product — and any of them can be throttled. If the Sponsored Products chunk
+      fails while Sponsored Brands lands, those days exist with SB rows only; asking "do we hold this
+      day" without naming the product answers yes, `sum_daily` then reports 28% of the spend, and a
+      rule previews against it. That is precisely the Rs 1,26,328 failure, arriving by a new route.
+
+    So a day counts as held only when every product that has EVER reported rows has rows for it.
+    Deriving the product list from the data rather than hardcoding `("sp", "sb")` means Sponsored
+    Display needs no change here — and an empty table yields no products, so an empty range is
+    already incomplete by the day check.
     """
-    held = await daily_days_held(db)
-    return all(day in held for day in expected_days(start, end))
+    products = {
+        row[0] for row in (await db.execute(
+            select(AdsPerformanceDaily.ad_product).group_by(AdsPerformanceDaily.ad_product)
+        )).all() if row[0]
+    }
+    if not products:
+        return False
+
+    wanted = expected_days(start, end)
+    for product in products:
+        held = await daily_days_held(db, ad_product=product)
+        if not all(day in held for day in wanted):
+            return False
+    return True
 
 
 async def sum_daily(
@@ -509,13 +402,20 @@ async def sum_daily(
 ) -> list[dict]:
     """Sum per-day rows into one row per entity for an arbitrary range. **No Amazon call.**
 
-    This is the answer to "I already have 30 days — why must I refetch to see 20 of them?". Returned
-    in the same shape `load_performance` produces, so a rule preview cannot tell the difference
-    between a fetched window and a derived one.
+    This is the answer to "I already have 60 days — why must I refetch to see 20 of them?", and since
+    the per-window table was deleted it is the ONLY way any figure on the tab is produced.
+
+    **Grouped by `(entity_id, ad_product)`, not by `entity_id` alone**, and that is a correctness
+    requirement rather than tidiness. Sponsored Products and Sponsored Brands are two separate APIs
+    with two separate id spaces; nothing guarantees they never collide. Grouped by id alone, a
+    colliding pair would be merged into one row whose product came from `max(ad_product)` — and
+    `max('sb', 'sp')` is `'sp'`, so the row would be silently relabelled Sponsored Products and
+    `logic.writer_for` would route a live bid change to `/sp/keywords` for a Sponsored Brands
+    keyword. Measured today: 0 collisions across 29,360 ids, which is luck rather than a guarantee,
+    and the cost of not relying on it is one column in a GROUP BY.
 
     `reported_bid` takes the LATEST day's value rather than a sum — adding bids across days would
-    produce a number that means nothing. Done with a correlated max(day) rather than a second query
-    per entity.
+    produce a number that means nothing.
     """
     query = (
         select(
@@ -531,10 +431,10 @@ async def sum_daily(
             func.sum(AdsPerformanceDaily.orders),
             func.sum(AdsPerformanceDaily.sales),
             func.max(AdsPerformanceDaily.day),
-            func.max(AdsPerformanceDaily.ad_product),
+            AdsPerformanceDaily.ad_product,
         )
         .where(AdsPerformanceDaily.day >= start, AdsPerformanceDaily.day <= end)
-        .group_by(AdsPerformanceDaily.entity_id)
+        .group_by(AdsPerformanceDaily.entity_id, AdsPerformanceDaily.ad_product)
     )
     if campaign_ids:
         query = query.where(AdsPerformanceDaily.campaign_id.in_([str(c) for c in campaign_ids]))
@@ -547,15 +447,27 @@ async def sum_daily(
 
     # The bid as at the last day each entity appears — one extra query for the whole set rather
     # than one per entity.
-    latest = dict((await db.execute(
-        select(AdsPerformanceDaily.entity_id, AdsPerformanceDaily.reported_bid)
-        .where(
-            AdsPerformanceDaily.day >= start,
-            AdsPerformanceDaily.day <= end,
-            AdsPerformanceDaily.reported_bid.is_not(None),
-        )
-        .order_by(AdsPerformanceDaily.day)
-    )).all())
+    #
+    # **Keyed `(entity_id, ad_product)` to match the grouping above.** Keyed on the id alone, a
+    # colliding pair from the two id spaces would take whichever row happened to sort last and hand
+    # one product's bid to the other — and this value becomes `old_bid` in the mutation ledger, which
+    # is what an undo restores. A wrong bid here is a wrong bid written back to Amazon later.
+    latest = {
+        (row[0], row[1]): row[2]
+        for row in (await db.execute(
+            select(
+                AdsPerformanceDaily.entity_id,
+                AdsPerformanceDaily.ad_product,
+                AdsPerformanceDaily.reported_bid,
+            )
+            .where(
+                AdsPerformanceDaily.day >= start,
+                AdsPerformanceDaily.day <= end,
+                AdsPerformanceDaily.reported_bid.is_not(None),
+            )
+            .order_by(AdsPerformanceDaily.day)
+        )).all()
+    }
 
     out = []
     for row in grouped:
@@ -575,7 +487,7 @@ async def sum_daily(
             "campaign_name": "",
             "ad_group_id": row[3] or "",
             "ad_group_name": "",
-            "bid": _f(latest.get(row[0])),
+            "bid": _f(latest.get((row[0], product))),
             "spend": spend,
             "sales": sales,
             "clicks": clicks,
@@ -589,59 +501,6 @@ async def sum_daily(
         })
     out.sort(key=lambda r: -r["spend"])
     return out
-
-
-#: How many WINDOW-grain row sets to keep in `ads_performance`.
-#:
-#: **Measured, and it was the real growth problem.** `ads_performance` holds one row set per window
-#: viewed and nothing ever deleted them: five windows had already accumulated **97,112 rows / 15.4 MB
-#: — larger than the daily table**, on a box that has sat at 91% disk. Every new custom range added
-#: 12,000-27,000 rows permanently.
-#:
-#: Six because the tab offers three presets plus custom ranges, so six covers "the windows I actually
-#: switch between" without hoarding every range ever typed. It is safe to be tight now: since the
-#: daily rows landed, any range inside the 30-day coverage is re-derived in milliseconds, so an
-#: evicted window costs nothing to reproduce.
-WINDOW_RETENTION_COUNT = 6
-
-
-async def purge_windows(db: AsyncSession, *, keep: int = WINDOW_RETENTION_COUNT) -> int:
-    """Drop the least recently fetched window row sets, keeping the newest `keep`. Returns rows gone.
-
-    Keyed on `max(fetched_at)` per window rather than on the window's own dates: the useful window is
-    the one most recently LOOKED AT, which is not the same as the one covering the latest days.
-    """
-    windows = (await db.execute(
-        select(
-            AdsPerformance.window_start,
-            AdsPerformance.window_end,
-            func.max(AdsPerformance.fetched_at).label("seen"),
-        )
-        .group_by(AdsPerformance.window_start, AdsPerformance.window_end)
-        .order_by(func.max(AdsPerformance.fetched_at).desc())
-    )).all()
-
-    stale = windows[keep:]
-    if not stale:
-        return 0
-
-    removed = 0
-    for window_start, window_end, _seen in stale:
-        result = await db.execute(
-            delete(AdsPerformance).where(
-                AdsPerformance.window_start == window_start,
-                AdsPerformance.window_end == window_end,
-            )
-        )
-        removed += int(result.rowcount or 0)
-    await db.commit()
-
-    if removed:
-        logger.info(
-            "ads: purged %d window row(s) across %d stale window(s), keeping the newest %d",
-            removed, len(stale), keep,
-        )
-    return removed
 
 
 async def reclaim_space(db: AsyncSession) -> None:
@@ -687,20 +546,6 @@ async def purge_daily(db: AsyncSession, *, keep_days: int = DAILY_RETENTION_DAYS
     if removed:
         logger.info("ads: purged %d daily row(s) older than %s", removed, cutoff)
     return removed
-
-
-async def windows_available(db: AsyncSession) -> list[tuple[str, str]]:
-    """Cached windows, newest first, so the picker can mark which ranges load instantly.
-
-    A cached window is immediate; an uncached one is a ~5.5-minute report per 31 days, and the cost
-    of a click should be visible before clicking it.
-    """
-    rows = (await db.execute(
-        select(AdsPerformance.window_start, AdsPerformance.window_end)
-        .group_by(AdsPerformance.window_start, AdsPerformance.window_end)
-        .order_by(AdsPerformance.window_end.desc(), AdsPerformance.window_start.desc())
-    )).all()
-    return [(r[0], r[1]) for r in rows]
 
 
 async def attach_names(db: AsyncSession, rows: list[dict]) -> list[dict]:

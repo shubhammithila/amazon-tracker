@@ -237,22 +237,20 @@ async def run(
 
         # ── Store ──
         #
-        # BOTH grains, from the SAME payload, so they cannot disagree:
-        #   * the daily rows, which any sub-range is summed from
-        #   * the window-grain rows, which is what a rule preview reads for THIS window
+        # ONE grain: the per-day rows, which every window is summed from.
+        #
+        # There used to be a second, window-grain write here — and keeping both is what let two code
+        # paths answer the same question differently. Sponsored Brands was written to the window
+        # table and not to the daily one, so a window nobody had fetched exactly under-reported by
+        # 28% of spend. Now every figure on the tab comes from these rows.
         _progress("store", 0, 2)
         async with db_factory() as db:
             daily_stored = await repository.save_daily(db, rows)
             _progress("store", 1, 2)
-            # Collapse the daily rows to the window grain locally rather than asking Amazon twice.
-            stored = await repository.save_performance(
-                db, window_start, window_end, reports.aggregate(rows)
-            )
-            # Keep the daily table bounded — production is at 91% disk and every deploy copies the
+            # Keep the daily table bounded — production is at 87% disk and every deploy copies the
             # whole database.
             purged = await repository.purge_daily(db)
-            purged += await repository.purge_windows(db)
-        STATE["rows"] = stored
+        STATE["rows"] = daily_stored
         STATE["daily_rows"] = daily_stored
         STATE["purged"] = purged
 

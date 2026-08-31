@@ -85,3 +85,81 @@ async def test_refetching_one_product_replaces_only_its_own_rows(db):
     rows = await repository.sum_daily(db, "2026-08-22", "2026-08-22")
     assert len(rows) == 1, f"the refetch accumulated instead of replacing: {rows}"
     assert rows[0]["spend"] == 140.0
+
+
+async def test_a_superset_window_never_reports_less_than_its_subset(db):
+    """**The reported bug, as an invariant.**
+
+    22-28 showed Rs 4,44,550 and 22-29 showed Rs 3,34,300 — adding a day REDUCED the total, because
+    the first was a stored window (SP + SB) and the second was summed from daily rows (SP only).
+
+    Stated as monotonicity rather than as "SB is stored daily": a test phrased the second way would
+    pass again the next time a third ad product is added.
+    """
+    for day, spend in (("2026-08-22", 100.0), ("2026-08-23", 120.0)):
+        await repository.save_daily(db, [_report_row("SP1", day, spend=spend)], ad_product="sp")
+        await repository.save_daily(
+            db, [_report_row("SB1", day, spend=spend / 2, product="sb")], ad_product="sb")
+
+    subset = await repository.sum_daily(db, "2026-08-22", "2026-08-22")
+    superset = await repository.sum_daily(db, "2026-08-22", "2026-08-23")
+
+    subset_spend = sum(r["spend"] for r in subset)
+    superset_spend = sum(r["spend"] for r in superset)
+    assert superset_spend >= subset_spend, (
+        f"a superset window reported LESS ({superset_spend}) than its subset ({subset_spend})"
+    )
+    assert superset_spend == pytest.approx(330.0), superset_spend
+
+
+async def test_every_derived_window_carries_the_sponsored_brands_spend(db):
+    """Rs 1,26,328 was 28% of the account and read as zero.
+
+    Asserted on the summed rows because that is the one path left after this task — there is no
+    longer a second path that could be the one that happens to be right.
+    """
+    await repository.save_daily(db, [_report_row("SP1", "2026-08-22", spend=318222.0)],
+                                ad_product="sp")
+    await repository.save_daily(
+        db, [_report_row("SB1", "2026-08-22", spend=126328.0, product="sb")], ad_product="sb")
+
+    rows = await repository.sum_daily(db, "2026-08-22", "2026-08-22")
+    sb = [r for r in rows if r["ad_product"] == "sb"]
+    assert sb, "the Sponsored Brands rows are missing from a derived window"
+    assert sum(r["spend"] for r in sb) == pytest.approx(126328.0)
+    assert sum(r["spend"] for r in rows) == pytest.approx(444550.0)
+
+
+async def test_a_range_with_an_interior_gap_declines_to_answer(db):
+    """**This is what makes a partial nightly scrape safe rather than silently wrong.**
+
+    A 60-day scrape is four reports and `sbTargeting` throttles for hours, so a missing chunk is the
+    expected case. `daily_range_complete` already checks EVERY day rather than the endpoints — a
+    missing Tuesday must make the window refuse to answer, because a sum that is quietly short is
+    what a bid rule would then act on.
+
+    Pinned here because Task 3 depends on it and nothing else asserts the interior case: a test using
+    only the endpoints would pass against a version that checks just `min` and `max`.
+    """
+    for day in ("2026-08-22", "2026-08-24"):          # 23rd deliberately absent
+        await repository.save_daily(db, [_report_row("SP1", day, spend=10.0)], ad_product="sp")
+
+    assert await repository.daily_range_complete(db, "2026-08-22", "2026-08-22") is True
+    assert await repository.daily_range_complete(db, "2026-08-22", "2026-08-24") is False, (
+        "a range with a missing interior day claimed to be complete, so its sum would be short"
+    )
+
+
+def test_the_window_grain_table_is_gone():
+    """One source of truth, enforced structurally.
+
+    While two tables answered the same question, WHICH ONE you got depended on whether somebody had
+    fetched that exact range — and they disagreed by 28%. Deleting the model is what makes a
+    regression impossible rather than merely unlikely.
+    """
+    import app.models as models
+
+    assert not hasattr(models, "AdsPerformance"), (
+        "the per-window table still exists, so two paths can answer the same question again"
+    )
+    assert hasattr(models, "AdsPerformanceDaily")

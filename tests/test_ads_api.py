@@ -33,8 +33,28 @@ def _code_only(source: str) -> str:
     )
 
 
-async def _seed(db, rows=None):
-    """One window of performance data, so preview has something to read."""
+#: The window every test in this file reads, and every day inside it.
+#:
+#: Seeded as PER-DAY rows because that is now the only grain — `ads_performance` is deleted, and
+#: `daily_range_complete` requires every day of a requested range to be held before anything sums it.
+SEED_START, SEED_END = "2026-08-21", "2026-08-27"
+SEED_DAYS = ("2026-08-21", "2026-08-22", "2026-08-23", "2026-08-24",
+             "2026-08-25", "2026-08-26", "2026-08-27")
+
+
+async def _seed(db, rows=None, *, ad_product="sp"):
+    """One window of performance data, so preview has something to read.
+
+    **Writes DAILY rows, one set per day of the window.** This used to call `save_performance` with a
+    single window-grain set; that table is gone, because holding the same figures at two grains is
+    what made Rs 1,26,328 of Sponsored Brands spend vanish from any window nobody had fetched
+    exactly.
+
+    **Each row's totals are put on ONE day, not on every day.** Spreading them would multiply every
+    asserted figure in this file by seven; the other six days carry a zero-value filler row purely so
+    `daily_range_complete` sees a complete range. The filler uses its own entity id so it cannot be
+    mistaken for a real row by a test that counts them.
+    """
     rows = rows or [
         {"keywordId": "111", "matchType": "PHRASE", "keyword": "makhana",
          "cost": 2620.0, "sales7d": 3589.4, "keywordBid": 18.75, "clicks": 120,
@@ -47,7 +67,22 @@ async def _seed(db, rows=None):
          "cost": 0.0, "sales7d": 0.0, "keywordBid": 7.0, "clicks": 0,
          "impressions": 12, "purchases7d": 0, "campaignId": "c2", "adGroupId": "g2"},
     ]
-    await repository.save_performance(db, "2026-08-21", "2026-08-27", rows)
+    # The real rows land on the window's LAST day, so `sum_daily` over the window returns exactly
+    # these figures and every pre-existing assertion in this file still means what it meant.
+    await repository.save_daily(
+        db, [{**row, "date": SEED_END} for row in rows], ad_product=ad_product,
+    )
+    # Filler for the remaining days, so the range is complete. Zero-valued, on its own entity id AND
+    # its own campaign/ad group — otherwise it counts as an extra target under c1/g1 and the "2
+    # targets" assertions become 3. It belongs to no cached entity, so no campaign row claims it.
+    filler = [
+        {"keywordId": "__filler__", "matchType": "EXACT", "keyword": "filler", "date": day,
+         "cost": 0.0, "sales7d": 0.0, "sales": 0.0, "purchases7d": 0, "purchases": 0,
+         "keywordBid": None, "clicks": 0, "impressions": 0,
+         "campaignId": "__filler_c__", "adGroupId": "__filler_g__"}
+        for day in SEED_DAYS if day != SEED_END
+    ]
+    await repository.save_daily(db, filler, ad_product=ad_product)
     await repository.save_entities(db, [
         {"entity_type": "campaign", "entity_id": "c1", "campaign_id": "c1",
          "name": "MF_SP_keywords", "state": "ENABLED", "daily_budget": 5000.0},
@@ -501,11 +536,18 @@ async def test_old_daily_rows_are_purged_to_keep_the_disk_bounded(db):
     assert recent in held and ancient not in held
 
 
-async def test_the_dashboard_derives_a_sub_range_and_says_that_it_did(auth_client, db):
-    """The route path, end to end: no exact window stored, but the daily rows cover it.
+async def test_any_sub_range_of_the_daily_rows_is_answered_without_a_fetch(auth_client, db):
+    """The route path, end to end: a range nobody fetched as such, summed from the days it covers.
 
-    `derived` is reported separately from `cached` because "fetched as this window" and "summed from
-    daily rows" are different claims, and the screen should be able to say which.
+    **This assertion CHANGED, and the reason is the point.** It used to also require
+    `body["derived"] is True`, distinguishing "summed from daily rows" from "read from a window
+    fetched as such" — a real distinction while both existed, and the source of a 28% error: the
+    per-window table held Sponsored Brands rows and the daily table did not, so which path ran
+    decided whether Rs 1,26,328 appeared. That table is deleted and `derived` with it, because every
+    figure is now summed and a flag that is always true says nothing.
+
+    What survives is the requirement the flag existed to serve: any range inside the coverage is
+    answered instantly and correctly.
     """
     days = ["2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04"]
     await repository.save_daily(db, _daily_rows(days, spend=100.0, sales=250.0))
@@ -516,7 +558,10 @@ async def test_the_dashboard_derives_a_sub_range_and_says_that_it_did(auth_clien
 
     body = (await auth_client.get("/ads?start=2026-08-02&end=2026-08-03")).json()
     assert body["cached"] is True, "a range inside the daily rows should not read as uncached"
-    assert body["derived"] is True, "the screen cannot tell this was summed rather than fetched"
+    assert "derived" not in body, (
+        "`derived` is back — it can only ever be True now, and a flag that is always true invites "
+        "a reader to believe there is another case"
+    )
     assert body["daily_coverage"] == ["2026-08-01", "2026-08-04"]
 
     campaign = next(c for c in body["campaigns"] if c["campaign_id"] == "c1")
@@ -733,18 +778,24 @@ def test_clicking_anywhere_in_a_date_box_opens_the_calendar():
     )
 
 
-def test_the_window_note_distinguishes_cached_derived_and_unfetched():
-    """Three genuinely different costs, so the screen should not call them all "cached".
+def test_the_window_note_says_whether_a_range_costs_a_fetch():
+    """TWO genuinely different costs, and the screen must not present them alike.
 
-    Instant from an exact hit, instant because the range sits inside the daily rows, or a real
-    ~6-minute Amazon report. The owner should know which before clicking, not after.
+    **This test previously asserted THREE, and that assertion has flipped.** It required
+    `exactlyCached()` — a range someone had fetched as such, read from its own per-window table —
+    beside `insideDailyCoverage()`. Those two were only ever different in provenance, never in cost,
+    and holding the same figures at both grains is what let Rs 1,26,328 of Sponsored Brands spend
+    disappear from whichever path did not have it. The window table is gone, so the honest question
+    is the one that remains: is this range summable from the days we hold, or does it cost a report?
     """
     source = _template()
     assert "function insideDailyCoverage(" in source
-    assert "function exactlyCached(" in source
+    assert "function exactlyCached(" not in source, (
+        "the per-window path is back; it was deleted because two grains disagreed by 28% of spend"
+    )
     note = source[source.index("function renderWindowNote("):][:1400]
-    assert "exactlyCached(" in note and "insideDailyCoverage(" in note
-    assert "no fetch needed" in note, "a derived range is not distinguished from a fetched one"
+    assert "insideDailyCoverage(" in note
+    assert "no fetch needed" in note, "a summable range does not say that it is instant"
     assert "press Refresh" in note, "an unfetched range does not say what it will cost"
 
 

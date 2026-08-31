@@ -271,33 +271,47 @@ async def test_guardrails_stored_out_of_range_fall_back_on_read(db):
 
 
 # ─── Performance cache ───────────────────────────────────────────────────────
+#
+# **These read DAILY rows, because that is the only grain.**
+#
+# They used to call `save_performance`/`load_performance` for a WINDOW. That table is deleted: holding
+# the same figures at two grains is what made Rs 1,26,328 of Sponsored Brands spend vanish from any
+# window nobody had fetched exactly, since SB was written to the window table and not the daily one.
+# What these tests were actually about — the round trip, the None-not-zero rule, no Decimal reaching
+# JSON — is unchanged, so they were converted rather than deleted.
+
+#: One day, so a single-day sum returns exactly the seeded figures.
+DAY = "2026-08-27"
 
 
-async def test_performance_rows_upsert_rather_than_doubling(db):
-    """Keyed on `(window, entity_id)`, so re-running a refresh corrects rather than duplicates —
-    the same repeated-save safety the shipment plan needed."""
-    rows = [{"keywordId": "1", "matchType": "EXACT", "cost": 100.0, "sales7d": 200.0,
+async def test_a_days_rows_are_replaced_rather_than_doubled(db):
+    """Re-running a refresh corrects rather than duplicates — repeated-save safety.
+
+    Delete-then-bulk-insert per `(day, ad_product)` rather than the house upsert, which is the one
+    measured deviation in this codebase: 30,921 rows/sec against 498.
+    """
+    rows = [{"keywordId": "1", "matchType": "EXACT", "date": DAY, "cost": 100.0, "sales7d": 200.0,
              "clicks": 5, "impressions": 50, "purchases7d": 1, "keywordBid": 10.0,
              "keyword": "kw", "campaignId": "c1", "adGroupId": "g1"}]
 
-    assert await repository.save_performance(db, "2026-08-21", "2026-08-27", rows) == 1
+    assert await repository.save_daily(db, rows) == 1
     rows[0]["cost"] = 150.0
-    assert await repository.save_performance(db, "2026-08-21", "2026-08-27", rows) == 1
+    assert await repository.save_daily(db, rows) == 1
 
-    stored = await repository.load_performance(db, "2026-08-21", "2026-08-27")
-    assert len(stored) == 1, "the same entity was stored twice for one window"
+    stored = await repository.sum_daily(db, DAY, DAY)
+    assert len(stored) == 1, "the same entity was stored twice for one day"
     assert stored[0]["spend"] == 150.0, "the second save did not correct the first"
 
 
 async def test_stored_rows_come_back_in_the_rule_engines_own_shape(db):
     """A preview and an apply both read this. A mismatch between the stored shape and what a rule
     expects is a bug that only appears at apply time — with a live bid on the other end."""
-    await repository.save_performance(db, "2026-08-21", "2026-08-27", [
-        {"keywordId": "1", "matchType": "PHRASE", "cost": 500.0, "sales7d": 1000.0,
+    await repository.save_daily(db, [
+        {"keywordId": "1", "matchType": "PHRASE", "date": DAY, "cost": 500.0, "sales7d": 1000.0,
          "clicks": 20, "impressions": 900, "purchases7d": 3, "keywordBid": 12.0,
          "keyword": "makhana", "campaignId": "c1", "adGroupId": "g1"},
     ])
-    stored = await repository.load_performance(db, "2026-08-21", "2026-08-27")
+    stored = await repository.sum_daily(db, DAY, DAY)
 
     plan = logic.plan_run(stored, conditions=[{"field": "spend", "op": "gt", "value": 100}],
                           action=logic.ACTION_DECREASE_PCT, amount=10)
@@ -309,12 +323,12 @@ async def test_stored_rows_come_back_in_the_rule_engines_own_shape(db):
 async def test_a_zero_spend_stored_row_has_no_roas(db):
     """The None-not-zero rule has to survive the round trip through the database, where a
     `Numeric` column returns `Decimal` and a naive division would produce 0."""
-    await repository.save_performance(db, "2026-08-21", "2026-08-27", [
-        {"keywordId": "1", "matchType": "EXACT", "cost": 0.0, "sales7d": 0.0,
+    await repository.save_daily(db, [
+        {"keywordId": "1", "matchType": "EXACT", "date": DAY, "cost": 0.0, "sales7d": 0.0,
          "clicks": 0, "impressions": 12, "purchases7d": 0, "keywordBid": 7.0,
          "keyword": "dormant", "campaignId": "c1", "adGroupId": "g1"},
     ])
-    stored = await repository.load_performance(db, "2026-08-21", "2026-08-27")
+    stored = await repository.sum_daily(db, DAY, DAY)
     assert stored[0]["roas"] is None
     assert stored[0]["acos"] is None
 
@@ -322,12 +336,12 @@ async def test_a_zero_spend_stored_row_has_no_roas(db):
 async def test_no_decimal_reaches_json_from_the_stored_rows(db):
     """`JSONResponse` cannot serialise `Decimal`, and this app has shipped that defect twice."""
     import json as _json
-    await repository.save_performance(db, "2026-08-21", "2026-08-27", [
-        {"keywordId": "1", "matchType": "EXACT", "cost": 12.34, "sales7d": 56.78,
+    await repository.save_daily(db, [
+        {"keywordId": "1", "matchType": "EXACT", "date": DAY, "cost": 12.34, "sales7d": 56.78,
          "clicks": 2, "impressions": 20, "purchases7d": 1, "keywordBid": 9.99,
          "keyword": "kw", "campaignId": "c1", "adGroupId": "g1"},
     ])
-    stored = await repository.load_performance(db, "2026-08-21", "2026-08-27")
+    stored = await repository.sum_daily(db, DAY, DAY)
     _json.dumps(stored)   # raises TypeError on a Decimal
 
     runs = await repository.load_runs(db)
@@ -335,61 +349,13 @@ async def test_no_decimal_reaches_json_from_the_stored_rows(db):
     assert (await repository.load_guardrails(db))["max_bid"] is not None
 
 
-async def test_windows_are_reported_so_the_picker_can_mark_cached_ranges(db):
-    """A cached window is instant; an uncached one is ~5.5 minutes per 31 days."""
-    await repository.save_performance(db, "2026-08-21", "2026-08-27", [
-        {"keywordId": "1", "matchType": "EXACT", "cost": 1.0, "keywordBid": 5.0},
-    ])
-    assert ("2026-08-21", "2026-08-27") in await repository.windows_available(db)
-
-
-# ─── Retention: the tables that grow with usage ───────────────────────────────
-
-
-async def test_stale_window_row_sets_are_evicted_newest_kept(db):
-    """**`ads_performance` had NO retention, and measurement showed it was the real problem.**
-
-    One row set per window viewed, kept for ever: five windows had already accumulated 97,112 rows
-    and 15.4 MB on production — larger than the per-day table — because every custom range ever
-    typed stayed. Safe to evict now that any range inside the daily coverage is re-derived in
-    milliseconds.
-
-    Keyed on `max(fetched_at)`, i.e. the window most recently LOOKED AT, which is not the same as
-    the one covering the latest dates.
-    """
-    from datetime import datetime, timedelta
-
-    from app.models import AdsPerformance
-
-    base = datetime(2026, 8, 20, 12, 0, 0)
-    # Eight windows, each with one row, fetched at increasing times.
-    for index in range(8):
-        db.add(AdsPerformance(
-            window_start=f"2026-08-{index + 1:02d}", window_end=f"2026-08-{index + 2:02d}",
-            entity_id=f"e{index}", entity_type="keyword", spend=10, sales=20,
-            fetched_at=base + timedelta(hours=index),
-        ))
-    await db.commit()
-
-    removed = await repository.purge_windows(db, keep=3)
-    assert removed == 5, f"expected 5 stale rows removed, got {removed}"
-
-    left = {(w[0], w[1]) for w in (await db.execute(
-        select(AdsPerformance.window_start, AdsPerformance.window_end)
-        .group_by(AdsPerformance.window_start, AdsPerformance.window_end)
-    )).all()}
-    # The three most recently fetched are indexes 5, 6, 7.
-    assert left == {("2026-08-06", "2026-08-07"),
-                    ("2026-08-07", "2026-08-08"),
-                    ("2026-08-08", "2026-08-09")}, left
-
-
-async def test_purging_windows_is_a_noop_when_under_the_limit(db):
-    """Nothing to evict must delete nothing — not "everything but the newest"."""
-    from app.models import AdsPerformance
-
-    db.add(AdsPerformance(window_start="2026-08-01", window_end="2026-08-07",
-                          entity_id="e1", entity_type="keyword", spend=10, sales=20))
-    await db.commit()
-    assert await repository.purge_windows(db, keep=6) == 0
-    assert (await db.execute(select(func.count()).select_from(AdsPerformance))).scalar() == 1
+# ─── Retention ────────────────────────────────────────────────────────────────
+#
+# **The two window-eviction tests are GONE with the table they tested.**
+#
+# `test_stale_window_row_sets_are_evicted_newest_kept` and
+# `test_purging_windows_is_a_noop_when_under_the_limit` covered `purge_windows`, which existed only
+# because `ads_performance` cached one row set per window viewed and nothing ever deleted them
+# (105,755 rows / 17.1 MB on production — the largest table in the database). Deleting the table
+# removes the growth, the retention rule and the need to test it. `purge_daily` is still covered in
+# `tests/test_ads_api.py`.

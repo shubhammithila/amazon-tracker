@@ -265,6 +265,24 @@ written. Scoped by (day, ad_product) before anything calls it twice."
 - Consumes: `repository.sum_daily(db, start, end, *, campaign_ids=None, ad_group_ids=None) -> list[dict]`, `repository.daily_range_complete(db, start, end) -> bool`, `repository.daily_coverage(db) -> tuple[str, str] | None`.
 - Produces: `GET /ads` and `POST /ads/preview` read only `sum_daily`. `GET /ads` no longer returns `windows_available`; the screen uses `daily_coverage`.
 
+**Every reference, swept before starting** — the plan originally named only the template sites, and
+a grep found three more files. Missing any of these is an `ImportError` at startup or a red suite:
+
+| File | Holds |
+|---|---|
+| `app/ads/repository.py` | the functions themselves (34 `AdsPerformance` mentions) |
+| `app/models.py` | the model |
+| `app/routers/ads.py` | 3 × `load_performance`, 2 × `windows_available` |
+| `app/ads/refresh.py` | `save_performance`, `purge_windows` |
+| **`app/scheduler.py:214-219`** | **`purge_windows` + `WINDOW_RETENTION_COUNT` in the nightly sweep** |
+| **`tests/test_ads_ledger.py:283-395`** | **~13 uses across 6 tests — the largest single consumer** |
+| `tests/test_ads_sb.py`, `tests/test_ads_api.py` | one `save_performance` each |
+| `deploy/update-ec2.sh` | required-tables check |
+
+> **`windows_available` also exists in `app/portfolio/repository.py` and is a DIFFERENT function.**
+> The Portfolio tab keeps its window cache; only the ads one goes. Deleting both because they share a
+> name would break a working tab.
+
 - [ ] **Step 1: Write the failing tests**
 
 Append to `tests/test_ads_one_source.py`:

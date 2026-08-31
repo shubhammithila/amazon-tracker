@@ -206,18 +206,11 @@ async def scheduled_purge_old_history():
             f"(kept {ads_repo.DAILY_RETENTION_DAYS} days)"
         )
 
-    # And the WINDOW-grain rows, which had no retention at all and were the larger problem:
-    # measured, five windows had accumulated 97,112 rows / 15.4 MB because every range ever
-    # viewed was kept for ever. Safe to evict now that any range inside the daily coverage is
-    # re-derived in milliseconds.
-    async with async_session() as db:
-        windows_gone = await ads_repo.purge_windows(db)
-    if windows_gone:
-        deleted_total += windows_gone
-        logger.info(
-            f"Retention: deleted {windows_gone} rows from ads_performance "
-            f"(kept the {ads_repo.WINDOW_RETENTION_COUNT} most recently viewed windows)"
-        )
+    # **There is no second ads sweep any more, because there is no second table.** `ads_performance`
+    # held one row set per window viewed and had grown to 105,755 rows / 17.1 MB — the largest table
+    # in the database — which is why it needed a retention rule of its own. It is deleted: it cached
+    # figures the daily rows already hold, and keeping both is what let a window nobody had fetched
+    # exactly under-report Sponsored Brands spend by Rs 1,26,328. One grain needs one sweep.
 
     # **A DELETE does not shrink the file** — SQLite marks the pages free for reuse inside the
     # database, so a sweep that removes 40,000 rows leaves `df` unchanged and the disk as full as

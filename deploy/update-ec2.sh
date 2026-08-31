@@ -36,13 +36,15 @@ BACKUP_DIR="${BACKUP_DIR:-$HOME/tracker-backups}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8000/health}"
 # How many pre-deploy database copies to keep.
 #
-# **Was 10, and that was sized when the database was 3 MB.** It is 45 MB now and the Ads
-# tab's per-day rows grow it with usage, so ten copies is ~450 MB of an 8 GB disk — more
-# than the app itself. Five still covers "the last few deploys went wrong", which is the
-# only window a pre-deploy backup is actually used in.
+# **Was 10, then 5, now 3 — and each cut followed a measurement, not a preference.** 10 was
+# sized when the database was 3 MB. It is 48 MB now, and the nightly ads scrape moving from
+# 7 days to 60 takes it to roughly 90 MB, so five copies would be ~450 MB of an 8 GB disk
+# with 912 MB free — the backups becoming the largest thing on the box. Three still covers
+# "the last few deploys went wrong", which is the only window a pre-deploy backup is used in,
+# and it returns ~180 MB against the ~42 MB the extra history costs.
 #
 # Raise it with `KEEP_BACKUPS=10 bash deploy/update-ec2.sh` before a risky deploy.
-KEEP_BACKUPS="${KEEP_BACKUPS:-5}"
+KEEP_BACKUPS="${KEEP_BACKUPS:-3}"
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_FILE="$BACKUP_DIR/tracker-$STAMP.db"
@@ -355,8 +357,10 @@ def cols(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "ads_performance_daily" in tables and "ads_performance" not in tables:
+    print("a1c7e93f24b8")                           # head: daily rows are the only ads grain
 elif "ads_entity" in tables and "ad_product" in cols("ads_entity"):
-    print("e2b7d94c15af")                           # head: Sponsored Brands (ad_product column)
+    print("e2b7d94c15af")                           # Sponsored Brands (ad_product column)
 elif "ads_performance_daily" in tables:
     print("d1a5c83b76e2")                           # per-day ads rows (instant sub-ranges)
 elif "ads_mutation" in tables:
@@ -434,11 +438,20 @@ need = {"shipment_plans", "shipment_plan_items", "shipment_packing_days",
         # The Ads tab. `ads_mutation` is the one that matters most here: it is the audit trail and
         # the undo for live bid changes, so a deploy that left it missing would make the tab
         # unsafe rather than merely broken.
-        "ads_entity", "ads_performance", "ads_rule", "ads_mutation",
+        #
+        # `ads_performance` is deliberately ABSENT from this list — revision a1c7e93f24b8 drops it,
+        # because two grains answering the same question is what made Rs 1,26,328 of Sponsored
+        # Brands spend vanish from any window nobody had fetched exactly.
+        "ads_entity", "ads_rule", "ads_mutation",
         "ads_performance_daily"}
 missing = sorted(need - have)
 if missing:
     print("    missing tables:", missing)
+    sys.exit(1)
+# And prove the DELETED table is really gone: a leftover ads_performance means the migration did
+# not run, and the app would still be reading two grains.
+if "ads_performance" in have:
+    print("    ads_performance still exists — revision a1c7e93f24b8 did not run")
     sys.exit(1)
 print("    all shipment and user tables present")
 PY

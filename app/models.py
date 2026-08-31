@@ -1010,63 +1010,18 @@ class AdsEntity(Base):
     fetched_at = Column(DateTime, default=datetime.utcnow)
 
 
-class AdsPerformance(Base):
-    """Spend and sales for one entity over one window. **Amazon's, cached.**
-
-    Separate from `AdsEntity` because it is per WINDOW: the same keyword has a 7-day figure and a
-    30-day figure and both are valid at once. Metrics on the entity row would force one window to
-    be "the" window and make switching ranges a refetch of everything.
-
-    **These rows ARE the working set for a rule.** The report returns only entities with activity
-    in the window — measured, 12,854 rows against 148,291+ keywords and targets — and a bid rule
-    can only act on something with spend or impressions. So a run reads this table instead of
-    paging the entity API, which is what makes the feature possible at this scale.
-
-    `sales`/`orders` are Amazon's `sales7d`/`purchases7d`, the 14-day same-SKU attribution window.
-    **ROAS and ACOS are DERIVED in `logic`, never stored** — a stored ratio disagrees with its own
-    numerator the moment either input is corrected.
-    """
-    __tablename__ = "ads_performance"
-    __table_args__ = (
-        Index(
-            "idx_ads_perf_window_entity",
-            "window_start", "window_end", "entity_id",
-            unique=True,
-        ),
-        Index("idx_ads_perf_window_campaign", "window_start", "window_end", "campaign_id"),
-    )
-
-    id = Column(Integer, primary_key=True)
-    window_start = Column(String(10), nullable=False)
-    window_end = Column(String(10), nullable=False)
-    entity_id = Column(String(32), nullable=False)
-    entity_type = Column(String(12), nullable=False, default="target")
-    #: "sp" | "sb" — which Amazon ad product, and therefore which writer a bid change goes to.
-    ad_product = Column(String(4), nullable=False, default="sp", server_default="sp")
-    campaign_id = Column(String(32))
-    ad_group_id = Column(String(32))
-    #: The keyword text or resolved target expression. Stored rather than joined so a rule preview
-    #: can name a row even for an entity the cache has not seen — the report carries it anyway.
-    text = Column(String(500))
-    match_type = Column(String(40))
-    #: The bid AS REPORTED for the window. **Not authoritative for a write** — see `AdsEntity.bid`.
-    reported_bid = Column(Numeric(12, 2))
-    impressions = Column(Integer, default=0)
-    clicks = Column(Integer, default=0)
-    spend = Column(Numeric(12, 2), default=0)
-    orders = Column(Integer, default=0)
-    sales = Column(Numeric(12, 2), default=0)
-    fetched_at = Column(DateTime, default=datetime.utcnow)
-
-
 class AdsPerformanceDaily(Base):
     """Spend and sales per entity **per DAY**. Amazon's, cached — and the reason any date range is
     instant.
 
-    **This is what makes "I have 30 days, show me 20 of them" free.** `AdsPerformance` stores one
-    row per entity per WINDOW, so a 20-day range that nobody fetched has no row to read. Daily rows
-    are summable: any range inside what we hold is a `GROUP BY entity_id` away, with no Amazon call
-    and no ~6-minute report.
+    **The ONLY grain, and that is the point.** There used to be an `ads_performance` table beside
+    this one holding a row per entity per WINDOW, and the two disagreed by **28% of spend**: the
+    refresh wrote Sponsored Brands to the window table and not to this one, so any range nobody had
+    fetched exactly under-reported by Rs 1,26,328 and a bid rule on it silently omitted 296 live SB
+    keywords. Deleting that table is what makes one answer possible rather than two.
+
+    Daily rows are summable, which is what makes "I have 60 days, show me 20 of them" free: any range
+    inside what we hold is a `GROUP BY entity_id` away, with no Amazon call and no ~20-minute report.
 
     Measured before choosing this over prefetching fixed presets:
 
@@ -1080,21 +1035,32 @@ class AdsPerformanceDaily(Base):
     a day's rows are wholly replaced by a refetch, never merged, so there is nothing an upsert would
     preserve.
 
-    **Kept to a 30-DAY rolling window, purged nightly.** Production sits at 91% disk with 670 MB
-    free, and `update-ec2.sh` copies the whole database before every deploy — so an unbounded daily
-    table would eventually fill the disk and break both SQLite writes and the deploy. 30 days is
-    also the longest range that is a single Amazon report, so it is the natural boundary.
+    **Kept to a 60-DAY rolling window, purged nightly**, matching what the nightly scrape fetches so
+    every range the tab offers is answerable from stored rows. Measured at 8,384 rows/day in July
+    (August is quieter at 6,107), so 60 days is ~503,000 rows and ~93 MB. Production sits at 87%
+    disk and `update-ec2.sh` copies the whole database before every deploy, which is why the bound
+    exists at all — and why `KEEP_BACKUPS` dropped from 5 to 3 in the same change.
 
-    Keyed `(day, entity_id)`: one row per entity per day, and `day` is a plain `String(10)` date in
-    the marketplace's own reporting timezone — never a `DateTime`, because a timezone conversion on
-    a bare date is how the Orders tab once rendered a date as 05:30 the following morning.
+    Keyed `(day, entity_id, ad_product)`: one row per entity per day per ad product. `day` is a
+    plain `String(10)` date in the marketplace's own reporting timezone — never a `DateTime`,
+    because a timezone conversion on a bare date is how the Orders tab once rendered a date as
+    05:30 the following morning.
+
+    **`ad_product` is in the unique key, and it has to be.** The key was `(day, entity_id)` while
+    only Sponsored Products was ever stored here. Sponsored Brands is a separate API with a separate
+    id space, so a colliding id would make the two products' rows for one day mutually exclusive —
+    the second insert would fail, or worse, be the only one kept. 0 collisions across 29,360 ids
+    today is luck, not a guarantee.
     """
     __tablename__ = "ads_performance_daily"
     __table_args__ = (
-        Index("idx_ads_daily_day_entity", "day", "entity_id", unique=True),
+        Index("idx_ads_daily_day_entity", "day", "entity_id", "ad_product", unique=True),
         # The index the sub-range sum reads: bounded by day, grouped by entity.
         Index("idx_ads_daily_day", "day"),
         Index("idx_ads_daily_campaign", "day", "campaign_id"),
+        # Every write deletes by (day, ad_product) and `daily_range_complete` asks which days a
+        # product holds, so both paths want this.
+        Index("idx_ads_daily_day_product", "day", "ad_product"),
     )
 
     id = Column(Integer, primary_key=True)
