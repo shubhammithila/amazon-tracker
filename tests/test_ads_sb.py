@@ -497,10 +497,19 @@ def test_a_throttled_sb_report_says_what_it_means_and_is_isolated():
         "an SB failure is not isolated, so it would mark the whole refresh failed and hide the fact "
         "that the Sponsored Products figures are current"
     )
-    # And the SP data must be stored BEFORE the SB report is attempted.
-    assert refresh_source.index('STATE["daily_rows"] = daily_stored') < refresh_source.index(
+    # And the SP data must be COMMITTED before the SB report is attempted.
+    #
+    # The marker changed with the code: the SP figures used to be assigned once after a single
+    # `fetch_targeting` returned, and are now written per chunk by `store_sp_chunk`, because a 60-day
+    # window is two reports per product and one 429 used to discard up to 40 minutes of good data.
+    # The REQUIREMENT is unchanged and is what this asserts — the SP store happens first, so a
+    # Sponsored Brands throttle cannot cost the Sponsored Products figures too.
+    assert refresh_source.index("async def store_sp_chunk(") < refresh_source.index(
         'ad_product="sb"'
     ), "the SB report runs before the SP figures are committed, so a throttle would cost both"
+    assert refresh_source.index("on_chunk=store_sp_chunk") < refresh_source.index(
+        'ad_product="sb"'
+    ), "the SP report is not actually wired to store per chunk before SB is attempted"
 
 
 # ─── Only ACTIVE targets are written ─────────────────────────────────────────

@@ -226,32 +226,47 @@ async def run(
         def on_report_progress(done, total):
             _progress("report", done, total)
 
+        # ── The report, stored CHUNK BY CHUNK ──
+        #
         # **DAILY, not SUMMARY.** Per-day rows are what make an arbitrary sub-range instant: with
-        # them, "I have 30 days, show me 20" is a GROUP BY rather than another 6-minute report.
+        # them, "I have 60 days, show me 20" is a GROUP BY rather than another ~20-minute report.
         # Measured: DAILY returns 3.6x the rows (45,650 vs 12,854 for 7 days) and bulk-inserts at
-        # 30,921 rows/sec, so 30 days stores in ~6 seconds.
-        rows = await reports.fetch_targeting(
-            window_start, window_end, daily=True,
-            sleep=sleep, on_progress=on_report_progress,
-        )
-
-        # ── Store ──
+        # 30,921 rows/sec.
         #
-        # ONE grain: the per-day rows, which every window is summed from.
+        # **Each chunk commits as it lands**, because Amazon caps one report at 31 days and the
+        # nightly window is 60 — two chunks per ad product, four reports a night, any of which can be
+        # throttled for hours. Accumulating them all before the first write meant one 429 discarded
+        # up to 40 minutes of successfully fetched data. A partial night now leaves real days stored,
+        # and `repository.daily_range_complete` makes any range touching the gap decline to answer
+        # rather than sum short.
         #
-        # There used to be a second, window-grain write here — and keeping both is what let two code
-        # paths answer the same question differently. Sponsored Brands was written to the window
-        # table and not to the daily one, so a window nobody had fetched exactly under-reported by
-        # 28% of spend. Now every figure on the tab comes from these rows.
+        # ONE grain: the per-day rows, which every window is summed from. There used to be a second,
+        # window-grain write here, and keeping both is what let two code paths answer the same
+        # question differently — Sponsored Brands went to the window table and not to the daily one,
+        # so a window nobody had fetched exactly under-reported by 28% of spend.
         _progress("store", 0, 2)
+        STATE["daily_rows"] = 0
+
+        async def store_sp_chunk(chunk_rows, chunk_start, chunk_end):
+            async with db_factory() as chunk_db:
+                stored = await repository.save_daily(chunk_db, chunk_rows, ad_product="sp")
+            STATE["daily_rows"] = STATE.get("daily_rows", 0) + stored
+            STATE["rows"] = STATE["daily_rows"]
+            logger.info(
+                "ads refresh: stored %d daily row(s) for %s..%s", stored, chunk_start, chunk_end
+            )
+
+        await reports.fetch_targeting(
+            window_start, window_end, daily=True,
+            sleep=sleep, on_progress=on_report_progress, on_chunk=store_sp_chunk,
+        )
+        daily_stored = STATE["daily_rows"]
+
         async with db_factory() as db:
-            daily_stored = await repository.save_daily(db, rows)
             _progress("store", 1, 2)
             # Keep the daily table bounded — production is at 87% disk and every deploy copies the
             # whole database.
             purged = await repository.purge_daily(db)
-        STATE["rows"] = daily_stored
-        STATE["daily_rows"] = daily_stored
         STATE["purged"] = purged
 
         # ── Sponsored Brands performance ──
@@ -272,14 +287,27 @@ async def run(
         # superset, reported Rs 3,34,300. Rs 1,26,328 of real spend read as zero, and a bid rule
         # previewed on the derived window found 743 changes with 0 SB rows where the stored window
         # found 1,005 with 296 — on the one feature in this app that spends money.
-        try:
-            sb_rows = await reports.fetch_targeting(
-                window_start, window_end, ad_product="sb", daily=True, sleep=sleep,
+        STATE["sb_rows"] = 0
+
+        async def store_sb_chunk(chunk_rows, chunk_start, chunk_end):
+            """Per chunk, like Sponsored Products — and it matters MORE here, because `sbTargeting`
+            is the report that throttles for hours."""
+            async with db_factory() as chunk_db:
+                stored = await repository.save_daily(chunk_db, chunk_rows, ad_product="sb")
+            STATE["sb_rows"] = STATE.get("sb_rows", 0) + stored
+            logger.info(
+                "ads refresh: stored %d Sponsored Brands daily row(s) for %s..%s",
+                stored, chunk_start, chunk_end,
             )
-            async with db_factory() as db:
-                sb_stored = await repository.save_daily(db, sb_rows, ad_product="sb")
-            STATE["sb_rows"] = sb_stored
-            logger.info("ads refresh: %d Sponsored Brands daily row(s) stored", sb_stored)
+
+        try:
+            await reports.fetch_targeting(
+                window_start, window_end, ad_product="sb", daily=True, sleep=sleep,
+                on_chunk=store_sb_chunk,
+            )
+            logger.info(
+                "ads refresh: %d Sponsored Brands daily row(s) stored", STATE["sb_rows"]
+            )
         except AdsError as exc:
             # Isolated: the SP rows above are already committed and current. A throttled SB report is
             # "not now", not a failed refresh — `sbTargeting` has been measured returning 429 after
@@ -291,9 +319,9 @@ async def run(
 
         STATE.update({"phase": "done", "percent": 100})
         logger.info(
-            "ads refresh: %d campaign(s), %d ad group(s), %d window row(s), %d daily row(s) "
+            "ads refresh: %d campaign(s), %d ad group(s), %d SP daily row(s), %d SB daily row(s) "
             "for %s..%s (purged %d old daily row(s))",
-            len(campaigns), len(ad_groups), stored, daily_stored,
+            len(campaigns), len(ad_groups), daily_stored, STATE.get("sb_rows", 0),
             window_start, window_end, purged,
         )
 

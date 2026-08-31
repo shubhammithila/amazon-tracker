@@ -280,8 +280,19 @@ ADS_REFRESH_MINUTE = 50
 async def scheduled_ads_refresh():
     """Pull campaign, ad group and per-target performance once a night.
 
-    **The 7-day window**, because that is what a bid decision is taken on and it is a SINGLE report:
-    attribution-exact and ~6 minutes, against three chained reports for 60 days.
+    **A 60-DAY window**, so every range the tab offers is answerable from stored rows with no fetch.
+    Asked for as "every day lets scrape just last 60 days data once, and all the results can be shown
+    as per that".
+
+    Amazon caps one report at 31 days, so this is two chunks per ad product — **four reports, ~50-60
+    minutes**, measured from one real 31-day daily report at 259,900 rows in 19.5 minutes. That is
+    affordable at 03:50 because nothing else runs then, and **each chunk commits as it lands**: a
+    throttled fourth report leaves the first three stored rather than losing the night, and
+    `daily_range_complete` makes any range touching the gap decline to answer rather than sum short.
+
+    It was 7 days, chosen because that is what a bid decision is taken on and it was a single report.
+    The cost of the longer window is paid once a night by a machine; the benefit is that no window the
+    owner picks costs him a 20-minute wait.
 
     **This job never edits a bid.** It refreshes the figures a rule is evaluated against; applying a
     rule stays a human pressing Preview and then Apply. A scheduled job that could move 299 live
@@ -297,7 +308,7 @@ async def scheduled_ads_refresh():
 
     from app.ads import refresh as ads_refresh
 
-    result = await ads_refresh.run(days=7)
+    result = await ads_refresh.run(days=60)
     if result.get("refused"):
         logger.info("Ads refresh skipped: one is already running")
     elif result.get("error"):

@@ -181,16 +181,26 @@ async def fetch_targeting(
     ad_product: str = "sp",
     sleep=None,
     on_progress=None,
+    on_chunk=None,
 ) -> list[dict]:
     """Run the targeting report for a window and return aggregated rows.
 
-    A window longer than 31 days becomes several reports, summed — `split_window` is shared with
+    A window longer than 31 days becomes several reports — `split_window` is shared with
     `portfolio.ads` rather than reimplemented, because that cap was learned the hard way there and
     one copy cannot drift from the other.
 
-    **A failed chunk fails the whole window.** Two chunks of spend against three chunks of sales is
-    not a smaller ROAS, it is a wrong one — and here it would drive a bid change, so a partial
-    answer is worse than none.
+    ``on_chunk`` is awaited with ``(rows, chunk_start, chunk_end)`` as each chunk lands, before the
+    next one is requested, and an exception from it propagates. **This exists because a 60-day
+    nightly scrape is four reports and any of them can be throttled** — `sbTargeting` has been
+    measured returning 429 after 15 minutes of complete idleness, because reports were created
+    earlier the same day. Accumulating everything before returning meant one 429 discarded up to 40
+    minutes of successfully fetched data; a caller that stores per chunk keeps the days it got.
+
+    **A failed chunk still fails the WINDOW**, and that has not changed: two chunks of spend against
+    three of sales is not a smaller ROAS, it is a wrong one, and here it would drive a bid change.
+    What `on_chunk` changes is the blast radius — the stored days survive, and
+    `repository.daily_range_complete` then makes any range touching the missing chunk decline to
+    answer rather than sum short.
     """
     import asyncio
 
@@ -216,10 +226,16 @@ async def fetch_targeting(
                 if on_progress:
                     on_progress(_i * total + done, total * len(chunks))
 
-            raw.extend(await _one_report(
+            chunk_rows = await _one_report(
                 client, chunk_start, chunk_end, daily=daily, ad_product=ad_product,
                 sleep=sleep, on_progress=chunk_progress,
-            ))
+            )
+            # **Hand each chunk over as it lands.** See the docstring: a 60-day window is two reports
+            # per ad product, `sbTargeting` throttles for HOURS, and accumulating everything before
+            # returning meant one 429 discarded up to 40 minutes of successfully fetched data.
+            if on_chunk is not None:
+                await on_chunk(chunk_rows, chunk_start, chunk_end)
+            raw.extend(chunk_rows)
 
     # **Daily rows are NOT aggregated.** Collapsing them to one row per entity is exactly what this
     # mode exists to avoid — the per-day grain is the whole point, and `aggregate` keys on entity id

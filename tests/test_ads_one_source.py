@@ -150,6 +150,42 @@ async def test_a_range_with_an_interior_gap_declines_to_answer(db):
     )
 
 
+async def test_a_failed_chunk_keeps_the_days_already_stored(db, monkeypatch):
+    """**A 60-day scrape is 4 reports; losing the night because the last one failed is not tolerable.**
+
+    Amazon caps a report at 31 days, so 60 days is 2 SP chunks + 2 SB chunks — and `sbTargeting` has
+    been measured returning 429 after 15 minutes of complete idleness. So a chunk failing is the
+    expected case, not the exceptional one, and each must commit as it lands.
+
+    Asserted through `on_chunk` because that is the mechanism: `fetch_targeting` used to accumulate
+    every chunk and return once, so a failure in the last one discarded up to 40 minutes of work.
+    """
+    from app.ads import reports
+    from app.portfolio.ads import AdsError
+
+    stored: list[str] = []
+
+    async def fake_one_report(client, start, end, **kwargs):
+        if start >= "2026-08-01":
+            raise AdsError("Amazon throttled this report (429).")
+        return [_report_row("SP1", start, spend=10.0)]
+
+    monkeypatch.setattr(reports, "_one_report", fake_one_report)
+
+    async def on_chunk(rows, chunk_start, chunk_end):
+        await repository.save_daily(db, rows, ad_product="sp")
+        stored.append(chunk_start)
+
+    with pytest.raises(AdsError):
+        await reports.fetch_targeting(
+            "2026-07-02", "2026-08-30", daily=True, on_chunk=on_chunk, sleep=_no_sleep,
+        )
+
+    assert stored, "the first chunk was not committed before the second failed"
+    rows = await repository.sum_daily(db, "2026-07-02", "2026-07-02")
+    assert rows, "the successfully fetched chunk was discarded when a later one failed"
+
+
 def test_the_window_grain_table_is_gone():
     """One source of truth, enforced structurally.
 

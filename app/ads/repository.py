@@ -235,7 +235,19 @@ async def load_ad_groups(
 # ─── Performance ─────────────────────────────────────────────────────────────
 
 
-DAILY_RETENTION_DAYS = 30
+#: How many days of per-day rows to keep. **60, matching what the nightly scrape fetches**, so every
+#: range the tab offers is answerable from stored rows without an Amazon call.
+#:
+#: Measured at 8,384 rows/day in July (August is quieter at 6,107), so 60 days is ~503,000 rows and
+#: ~93 MB. That fits on a box with 912 MB free because two other things were given back in the same
+#: change: deleting the per-window table returned 17.1 MB, and `KEEP_BACKUPS` dropping from 5 to 3
+#: returned ~180 MB. The bound exists at all because `update-ec2.sh` copies the whole database before
+#: every deploy, so an unbounded table breaks the deploy before it breaks a query.
+#:
+#: It was 30, chosen as "the longest range Amazon answers in one report". That is no longer the
+#: binding constraint: `split_window` chunks anything longer, so the number is now simply how much
+#: history the owner asked to keep.
+DAILY_RETENTION_DAYS = 60
 
 
 async def save_daily(db: AsyncSession, rows: list[dict], *, ad_product: str = "sp") -> int:
