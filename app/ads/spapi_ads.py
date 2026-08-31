@@ -463,6 +463,169 @@ async def fetch_sb_keywords(client, *, states=("enabled",)) -> list[dict]:
     return out
 
 
+# ─── Amazon's suggested bid ──────────────────────────────────────────────────
+#
+# **The endpoint had to be found by probing, and three of four candidates do not work.** Called for
+# real against the live account:
+#
+#   /v2/sp/adGroups/{id}/bidRecommendations   404  "Method Not Found"
+#   /v2/sp/keywords/{id}/bidRecommendations   404
+#   /sp/keywords/bid/recommendations          403  with a spurious SigV4 error, twice
+#   /sp/targets/bid/recommendations           200  real bids
+#
+# The last one takes `targetingExpressions` and handles keywords too, batched per AD GROUP — which is
+# what makes this affordable: the owner's real rule matched 1,005 rows across a few dozen ad groups.
+
+BID_RECS_PATH = "/sp/targets/bid/recommendations"
+BID_RECS_VND = "application/vnd.spthemebasedbidrecommendation.v3+json"
+
+#: Match type -> the `targetingExpression.type` the recommendation endpoint expects.
+KEYWORD_EXPRESSION_TYPES = {
+    "EXACT": "KEYWORD_EXACT_MATCH",
+    "PHRASE": "KEYWORD_PHRASE_MATCH",
+    "BROAD": "KEYWORD_BROAD_MATCH",
+}
+
+#: Why a row has no suggestion. Shown on screen, because a blank cell in a bid column reads as "no
+#: suggestion, so bid low" — a different claim from "Amazon does not offer one here".
+SB_UNAVAILABLE = "Amazon offers no suggested bid for Sponsored Brands"
+NO_MATCH_UNAVAILABLE = "Amazon returned no suggestion for this target"
+
+
+async def fetch_bid_recommendations(client, rows: Sequence[Mapping]) -> dict[str, dict]:
+    """`{entity_id: {suggested_bid, low, high, unavailable}}` for the rows Amazon will answer for.
+
+    **Amazon returns THREE bids per expression** — measured `[140.33, 182.83, 225.33]`. The middle
+    value is the suggestion and the outer two are its range; both travel, because picking one of three
+    silently is exactly the kind of choice that later reads as a fact.
+
+    **Sponsored Brands rows are excluded and LABELLED, never guessed.** Three SB endpoints were probed
+    (`/sb/recommendations/bids/keyword`, `/sb/recommendations/bids/targets`,
+    `/sb/targets/bid/recommendations`) and all three 404. Borrowing an SP figure for an SB row would
+    put a number next to a bid Amazon never suggested for it.
+
+    **Never raises.** A suggestion is context beside the bid; losing it must not lose the preview that
+    is the safety mechanism for the only feature in this app that spends money. Every failure path
+    returns a per-row reason instead.
+    """
+    # Imported here rather than at module scope, matching `fetch_current_bids` and `apply_bids` —
+    # `app.ads.logic` is pure and this module is its caller, so the import stays inside the functions
+    # that need it.
+    from app.ads.logic import AD_PRODUCT_SP
+
+    out: dict[str, dict] = {}
+    by_ad_group: dict[str, list] = {}
+
+    for row in rows:
+        entity_id = str(row.get("entity_id") or "")
+        if not entity_id:
+            continue
+        if (row.get("ad_product") or AD_PRODUCT_SP) != AD_PRODUCT_SP:
+            out[entity_id] = {"suggested_bid": None, "low": None, "high": None,
+                              "unavailable": SB_UNAVAILABLE}
+            continue
+        expression = _expression_for(row)
+        if expression is None:
+            out[entity_id] = {"suggested_bid": None, "low": None, "high": None,
+                              "unavailable": NO_MATCH_UNAVAILABLE}
+            continue
+        by_ad_group.setdefault(str(row.get("ad_group_id") or ""), []).append((row, expression))
+
+    if not by_ad_group:
+        return out
+
+    def _unavailable(group, reason):
+        for row, _ in group:
+            out[str(row["entity_id"])] = {"suggested_bid": None, "low": None, "high": None,
+                                          "unavailable": reason}
+
+    try:
+        token = await _access_token(client)
+    except Exception as exc:                      # noqa: BLE001 - context, never fatal
+        logger.warning("ads: no token for bid recommendations: %s", exc)
+        for group in by_ad_group.values():
+            _unavailable(group, f"Could not ask Amazon: {exc}")
+        return out
+
+    settings = get_settings()
+    headers = {**_headers(token), "Content-Type": BID_RECS_VND, "Accept": BID_RECS_VND}
+
+    for ad_group_id, group in by_ad_group.items():
+        if not ad_group_id:
+            _unavailable(group, NO_MATCH_UNAVAILABLE)
+            continue
+        body = {
+            "campaignId": str(group[0][0].get("campaign_id") or ""),
+            "adGroupId": ad_group_id,
+            "recommendationType": "BIDS_FOR_EXISTING_AD_GROUP",
+            "targetingExpressions": [expression for _, expression in group],
+        }
+        try:
+            response = await client.request(
+                "POST", settings.ads_endpoint + BID_RECS_PATH, json=body, headers=headers,
+            )
+            if response.status_code == 200:
+                payload, reason = response.json(), ""
+            else:
+                payload = {}
+                reason = f"Amazon returned {response.status_code} for this ad group"
+        except Exception as exc:                  # noqa: BLE001 - context, never fatal
+            payload, reason = {}, f"Could not ask Amazon: {exc}"
+
+        suggestions = _parse_bid_recommendations(payload)
+        for row, expression in group:
+            key = (expression.get("value") or "").casefold()
+            out[str(row["entity_id"])] = suggestions.get(key) or {
+                "suggested_bid": None, "low": None, "high": None,
+                "unavailable": reason or NO_MATCH_UNAVAILABLE,
+            }
+    return out
+
+
+def _expression_for(row: Mapping) -> dict | None:
+    """The `targetingExpression` for one row, or None when Amazon has no expression type for it.
+
+    None rather than a guess: an expression built from a match type Amazon does not price would
+    return a suggestion for a DIFFERENT target, and that number would sit beside a live bid. The same
+    rule `logic.writer_for` follows — excluded and named, never inferred.
+    """
+    match_type = (row.get("match_type") or "").upper()
+    text = (row.get("text") or "").strip()
+    kind = KEYWORD_EXPRESSION_TYPES.get(match_type)
+    if kind and text:
+        return {"type": kind, "value": text}
+    if match_type == "TARGETING_EXPRESSION_PREDEFINED" and text:
+        # An auto target names its own type in the report text ("close-match", "loose-match" ...).
+        return {"type": text.replace("-", "_").upper(), "value": None}
+    return None
+
+
+def _parse_bid_recommendations(payload: Mapping) -> dict[str, dict]:
+    """`{expression value casefolded: {suggested_bid, low, high, unavailable}}`.
+
+    Amazon nests these three deep — themes, then expressions, then a LIST of bid values — and returns
+    three bids per expression. The middle one is the suggestion.
+    """
+    out: dict[str, dict] = {}
+    for theme in payload.get("bidRecommendations") or []:
+        for entry in theme.get("bidRecommendationsForTargetingExpressions") or []:
+            expression = entry.get("targetingExpression") or {}
+            bids = sorted(
+                float(value["suggestedBid"])
+                for value in (entry.get("bidValues") or [])
+                if value.get("suggestedBid") is not None
+            )
+            if not bids:
+                continue
+            out[(expression.get("value") or "").casefold()] = {
+                "suggested_bid": round(bids[len(bids) // 2], 2),
+                "low": round(bids[0], 2),
+                "high": round(bids[-1], 2),
+                "unavailable": "",
+            }
+    return out
+
+
 async def fetch_current_bids(client, changes: Sequence[Mapping]) -> dict[str, dict]:
     """Re-read the LIVE bid **and state** for the rows a run is about to change.
 

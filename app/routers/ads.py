@@ -415,6 +415,46 @@ async def preview(
     }
 
 
+@router.post("/suggested-bids")
+async def suggested_bids(
+    request: Request,
+    grant=Depends(require_area(permissions.ADS)),
+):
+    """Amazon's suggested bid for the rows a preview is showing. `{"rows": [...]}`.
+
+    **A SEPARATE endpoint from `/preview`, and deliberately so.** Putting it inside the preview would
+    make every preview wait on N live Amazon calls before rendering anything — and a 1,005-row plan
+    spans a few dozen ad groups. The preview is the safety mechanism for the only feature in this app
+    that spends money, so it must not get slower, or fail, because a nice-to-have column is
+    unavailable. The screen renders the table first and fills this column in when it arrives.
+
+    It also keeps the tests honest: `ads_configured` is TRUE in this repo, so a fetch inside `/preview`
+    would have every preview test authenticate against LWA and call Amazon for real.
+
+    **Reads nothing and writes nothing.** No database, no ledger, no bid. A suggestion is context
+    beside the bid and is never applied by a rule.
+    """
+    settings = get_settings()
+    if not settings.ads_configured:
+        return {"suggestions": {}, "error": "Advertising credentials are not configured."}
+
+    try:
+        body = await request.json()
+    except Exception:                             # noqa: BLE001 - an empty body means no rows
+        body = {}
+    rows = (body or {}).get("rows") or []
+    if not rows:
+        return {"suggestions": {}}
+
+    try:
+        async with httpx.AsyncClient(timeout=settings.ads_timeout) as client:
+            suggestions = await spapi_ads.fetch_bid_recommendations(client, rows)
+    except Exception as exc:                      # noqa: BLE001 - context, never fatal
+        logger.warning("ads: suggested bids unavailable: %s", exc)
+        return {"suggestions": {}, "error": f"Amazon could not be asked: {exc}"}
+    return {"suggestions": suggestions}
+
+
 @router.post("/apply")
 async def apply(
     request: Request,
