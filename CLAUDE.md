@@ -773,6 +773,26 @@ any failure. Four things it knows that cost two failed deploys to learn:
 > `git fetch origin <branch> && git checkout origin/<branch> -- deploy/update-ec2.sh`,
 > then deploy normally.
 
+6. **DELETING a table breaks the deploy in a way the detector note does not cover, and it
+   cost a rollback.** The post-migration check asserts a hardcoded set of tables exists.
+   Dropping `ads_performance` updated that set in the commit — but the script had *already
+   been read into memory* from the OLD checkout when the migration ran, so production
+   applied the new migration and then failed the OLD required-tables check on the table it
+   had just correctly dropped.
+   >
+   > The failure mode is the dangerous one: **the schema migrates forward and the code rolls
+   > back**, so the app runs old code against a table that no longer exists. Measured
+   > immediately after: `/ads?days=7` returned **500** while every other tab stayed 200,
+   > because only that router touched the dropped table. The rollback is not a safe state
+   > when a migration deletes something.
+   >
+   > Same remedy as the detector, and for the same reason — check the script out first, then
+   > deploy:
+   > `git fetch origin <branch> && git checkout origin/<branch> -- deploy/update-ec2.sh`
+   >
+   > The required-tables check now also asserts `ads_performance` is **absent**, so a deploy
+   > that silently skipped the migration fails loudly rather than leaving two grains live.
+
 **The shared logins are EMPTY by default, and that is what makes "not set" safe.**
 
 This section used to say `OPS_PASSWORD` was not set in the server's `.env` "so the shared
