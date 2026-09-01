@@ -108,8 +108,10 @@ app/
 ├── main.py              # FastAPI app entry point
 ├── config.py            # Settings (pydantic-settings, .env)
 ├── database.py          # Async SQLAlchemy engine
-├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry, AmazonOrder/AmazonOrderItem/OrderPackedEntry/OrderPackedState/ProductRawStock, EconomicsSnapshot/EconomicsRefresh/ProductDecision/AdsSnapshot/PortfolioSettings)
-├── scheduler.py         # APScheduler (scrape 06:00, keywords 07:30, orders every 30m, portfolio 03:20)
+├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry, AmazonOrder/AmazonOrderItem/OrderPackedEntry/OrderPackedState/ProductRawStock, EconomicsSnapshot/EconomicsRefresh/ProductDecision/AdsSnapshot/PortfolioSettings/AdsRefresh)
+├── scheduler.py         # APScheduler. Times STATED IN IST via app/ist.py (the box is UTC):
+│                        # portfolio 07:30 IST, ads 08:00 IST, orders every 30m, scrape 06:00 server
+├── ist.py               # THE offset and THE definition of "today". Six bugs came from not having this.
 ├── utils.py             # Date parsing helpers
 ├── routers/
 │   ├── auth.py          # Login/logout, get_current_role, require_admin / require_ops_or_admin
@@ -2216,6 +2218,99 @@ writing the obvious code:**
 > was asked for. Three of the four are now pinned as SOURCE assertions, which is the honest way to
 > assert a property no runtime test can observe.
 
+### A partial night is NOT "nothing fetched", and conflating them cost a morning
+Reported as the Ads tab showing **₹0 for every window**, with the page contradicting itself: a green
+*"inside the 2026-07-04 → 2026-08-31 daily data — no fetch needed, summed instantly"* directly above
+*"Nothing fetched for 2026-08-25 → 2026-08-31"* and five zeroed KPIs.
+
+**The nightly fetch had worked.** From the production log, 1 Sep:
+
+```
+03:50:00  Running job "scheduled_ads_refresh"
+04:06:50  stored 256396 daily row(s) for 2026-07-03..2026-08-02
+04:20:23  stored 226182 daily row(s) for 2026-08-03..2026-08-31
+04:22:50  WARNING SB report failed: Amazon is rate-limiting report creation for this report type
+04:22:50  29 campaign(s), 482578 SP daily row(s), 0 SB daily row(s) (purged 9409 old daily row(s))
+```
+
+Both SP chunks landed; the SB report was throttled and stored **zero**, and the 60-day purge then
+removed 9,409 SB rows that aged out with no replacement. Measured after: `sp` = 59 days
+(04 Jul–31 Aug), `sb` = **7 days** (24–30 Aug). `daily_range_complete` therefore refused every window
+outside those 7 days, **correctly** — that guard is what stops the ₹1,26,328 loss. Three defects sat
+around it:
+
+- **The screen contradicted the server on every preset.** `daily_coverage` returns min/max **merged
+  across products**, and the template's `insideDailyCoverage()` trusted that span for the "instant"
+  dot. Measured: `7d dot=True server=False`, `14d dot=True server=False`, `30d dot=True server=False`.
+  One rule computed twice — the third time this codebase has shipped that defect (Orders' "86 orders
+  beside 87 lines"; the Portfolio parent rows that exist to prevent it).
+
+  **`daily_range_complete` is now a thin wrapper over `range_completeness`**, and the screen reads
+  that same answer per preset. `insideDailyCoverage` is **deleted; the deletion is the fix.**
+  `daily_coverage` survives for prose and gates nothing. The **server sends the preset ranges** too,
+  so the browser clock cannot disagree about which 7 days "7d" means.
+
+- **The reason did not survive a restart.** `GET /ads` already returned `sb_error` and the banner
+  already rendered it — from `refresh.STATE`, a module-level dict. A deploy restarted the app at
+  06:19, two hours after the 04:22 failure, so it was `None`. The new **`ads_refresh` table** records
+  every run: window, `status` (`done`/`partial`/`failed`), `sp_rows` and `sb_rows` **separately** (a
+  single total of 482,578 reads as a completely successful night), `error` and `sb_error` apart.
+  Written in `refresh.run`'s **`finally`**, beside the `running = False` a mutation already proved
+  load-bearing: a cancelled run is the case that most needs explaining afterwards.
+
+- **482,578 current rows were unreadable.** `sum_daily` gained an `ad_product` filter and `GET /ads`
+  an opt-in `?ad_product=sp`, banded on screen with what it excludes. **`POST /ads/preview` refuses
+  it outright** — a rule blind to 28% of spend is the exact failure the guard exists to prevent, on
+  the one route that spends money. In a one-product view only THAT product's days gate the answer,
+  or the view that exists to show the current half would refuse itself.
+
+> **A range's completeness is per DAY, not per span — and per PRODUCT.** Per-product spans would have
+> fixed this symptom and missed the normal one: a four-report night (Amazon caps a report at 31 days,
+> so 60 days is two chunks per product) usually loses a MIDDLE chunk, which no span can see.
+
+> **The "not summable" note then contradicted its own fix, three lines away.** In a one-product view
+> `cached` is true while the all-product completeness is false; the note read the latter and printed
+> *"not summable — Sponsored Brands is missing 1 of these days"* above a banner reading *"Summed from
+> the stored daily rows"* and ₹35,000 of real spend. Found in a browser, not by a test, while
+> verifying the fix for the same class of defect.
+
+### The nightly jobs ran at 09:20 IST, and that is the SIXTH instance of this bug
+`CronTrigger(hour=3)` takes **no timezone** and evaluates in the server's local time, which is UTC on
+this box — so the ads refresh fired at **09:20 IST** and the portfolio one at 08:50 IST. The comment
+above it read *"03:20 IST-ish (the box is UTC, so this is wall-clock server time)"*: the misreading
+written down as a fact, saying IST and meaning UTC in one sentence. It is also why the ₹0 was reported
+at 12:59 IST — the "nightly" job had run three hours earlier and would not run again for 21 hours.
+
+**Ads is now 08:00 IST (asked for), portfolio 07:30 IST**, keeping its documented 30-minute lead so
+two multi-minute reporting jobs never overlap on a 951 MB box.
+
+**`app/ist.py` owns the offset and the definition of "today".** The previous five instances were each
+fixed in the file that broke, which is precisely why there was a sixth — an offset that lives in
+whichever module needed it first cannot reach the scheduler. `ads.logic.ist_day` and
+`orders.logic.IST`/`to_ist` now delegate; both keep their names and docstrings, because those record
+facts about the bid ledger and Amazon's orders feed rather than about timezones.
+
+- **`ist.utc_hhmm(8, 0) == (2, 30)`** is the whole conversion, tested including the midnight wrap
+  (02:00 IST is 20:30 UTC the *previous* day — the case hand-conversion gets wrong).
+- **The tests assert the IST value, never the UTC one.** `hour == 2` would pin the arithmetic instead
+  of the intent, which is how the original comment came to be wrong.
+- **The startup log states both** (`ads at 08:00 IST (02:30 UTC)`), because `journalctl` stamps UTC.
+- **`default_window` and the window validator moved onto the IST day too.** That matters beyond
+  tidiness: `default_window` decides both what the nightly job fetches AND what "last 7 days" means
+  on screen, so a UTC day put the stored coverage and the presets a day apart for 5.5 hours out of 24
+  — and the validator would have refused the owner's real today as "in the future" in the same window.
+
+> **A fixture whose pretend date equals the real one proves nothing, and two mutations survived on
+> it.** `test_the_ads_window_asks_ist_for_its_yesterday` first patched `ist.today` to a hardcoded
+> `2026-09-01` — which *was* that day's real date, so `date.today()` and the patched value agreed and
+> a mutation swapping them passed. The pretend date is now derived from the real one (`today - 365`),
+> so no calendar day can make it vacuous. Same mistake as testing a per-campaign total with one
+> campaign.
+
+> **Still on the server clock, deliberately:** `date.today()` in `shipment.py`, `documents.py` and
+> `economics.py`. Those reach filenames and printed footers rather than decisions, but they are the
+> same latent bug.
+
 ### The nightly scrape is 60 days, committed chunk by chunk
 Asked for as *"every day lets scrape just last 60 days data once, and all the results can be shown as
 per that"*.
@@ -2398,11 +2493,20 @@ substituting a plausible-looking ASIN) instead of being swallowed by a bare
 `logic.round_to_step` takes the step as an argument precisely so
 round-to-carton-multiple is a one-function change when you want it.
 
-### No timezone handling
-`datetime.utcnow` throughout while the business runs in IST, so audit timestamps
-(`submitted_at`, `verified_at`) read up to 5½ hours early. Packing itself is
-unaffected: `pack_date` is an explicit `String(10)` from a date picker for exactly
-this reason.
+### Timezone handling is partial — `app/ist.py` exists but not everything uses it
+`datetime.utcnow` is still what gets STORED throughout, which is correct: UTC is the right thing to
+put in a column. What matters is that every place *deciding which day it is* converts, and after six
+separate bugs (see "The nightly jobs ran at 09:20 IST") that now runs through `app/ist.py`.
+
+Still outstanding, and known rather than overlooked:
+
+- **Audit timestamps render as stored.** `submitted_at` / `verified_at` read up to 5½ hours early on
+  screen. They are evidence of an order of events, not decisions, so no number moves because of it.
+- **`date.today()` in `shipment.py`, `documents.py`, `economics.py`** — download filenames and printed
+  PDF footers. Same latent bug, no decision behind it.
+
+Packing itself was never affected: `pack_date` is an explicit `String(10)` from a date picker for
+exactly this reason, and `order_packed_entries` keys on the IST date the SERVER decides.
 
 ### `projections.py` still uses an unversioned JSON blob
 The same design the shipment plan was moved out of, and it will hit the same wall

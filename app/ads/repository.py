@@ -34,6 +34,7 @@ from app.models import (
     AdsEntity,
     AdsMutation,
     AdsPerformanceDaily,
+    AdsRefresh,
     AdsRule,
     PortfolioSettings,
 )
@@ -369,39 +370,112 @@ def expected_days(start: str, end: str) -> list[str]:
     return out
 
 
-async def daily_range_complete(db: AsyncSession, start: str, end: str) -> bool:
-    """Do we hold every day in this range, **for every ad product we advertise on**?
+#: How many missing days a completeness answer names individually. A 60-day range can be short 53
+#: days and the screen needs a sentence rather than a list; `missing_count` stays exact.
+MISSING_DAYS_SHOWN = 5
+
+
+async def daily_products(db: AsyncSession) -> list[str]:
+    """Every ad product that has ever reported rows, sorted.
+
+    **Derived from the data, never hardcoded `("sp", "sb")`.** Sponsored Display is a plausible third
+    and adding it should be a fetch plus a writer, not an edit here.
+    """
+    return sorted(
+        row[0] for row in (await db.execute(
+            select(AdsPerformanceDaily.ad_product).group_by(AdsPerformanceDaily.ad_product)
+        )).all() if row[0]
+    )
+
+
+async def range_completeness(db: AsyncSession, start: str, end: str) -> dict:
+    """Is this range summable, and if not, **which product is missing which days**?
+
+    ``{"complete": bool, "products": [...], "missing": {product: [day, ...]},
+       "missing_count": {product: int}, "held": {product: [first, last]}}``
 
     Two dimensions, and each was a real defect:
 
     * **Every DAY, not merely the endpoints.** A missing Tuesday would make the sum quietly
       understate spend, and an understated spend is what a bid rule would then act on.
-    * **Every PRODUCT, not merely the union of days.** This is the one that re-broke the bug this
-      module was just fixed for. A night is four reports — Amazon caps one at 31 days, so 60 days is
-      two chunks per product — and any of them can be throttled. If the Sponsored Products chunk
-      fails while Sponsored Brands lands, those days exist with SB rows only; asking "do we hold this
-      day" without naming the product answers yes, `sum_daily` then reports 28% of the spend, and a
-      rule previews against it. That is precisely the Rs 1,26,328 failure, arriving by a new route.
+    * **Every PRODUCT, not merely the union of days.** A night is four reports — Amazon caps one at
+      31 days, so 60 days is two chunks per product — and any of them can be throttled. If the
+      Sponsored Products chunk fails while Sponsored Brands lands, those days exist with SB rows
+      only; asking "do we hold this day" without naming the product answers yes, `sum_daily` then
+      reports 28% of the spend, and a rule previews against it. That is the Rs 1,26,328 failure.
 
-    So a day counts as held only when every product that has EVER reported rows has rows for it.
-    Deriving the product list from the data rather than hardcoding `("sp", "sb")` means Sponsored
-    Display needs no change here — and an empty table yields no products, so an empty range is
-    already incomplete by the day check.
+    **A boolean was not enough, and that cost a morning.** On 1 Sep the nightly run stored 482,578
+    Sponsored Products rows across 59 days and then Amazon rate-limited the Sponsored Brands report,
+    storing **0** — so `sb` held 7 days against `sp`'s 59, every window outside those 7 days was
+    correctly refused, and the screen could only say "nothing fetched" while half a million current
+    rows sat in the table. Naming the product and the gap is the difference between a dashboard that
+    is empty and one that is empty *for a reason the owner can act on*.
+
+    `missing` is capped at `MISSING_DAYS_SHOWN`; `missing_count` is always exact, because "missing 25
+    days" and "missing 5 days" call for different actions.
     """
-    products = {
-        row[0] for row in (await db.execute(
-            select(AdsPerformanceDaily.ad_product).group_by(AdsPerformanceDaily.ad_product)
-        )).all() if row[0]
+    products = await daily_products(db)
+    answer: dict = {
+        "complete": bool(products),
+        "products": products,
+        "missing": {},
+        "missing_count": {},
+        "held": {},
     }
     if not products:
-        return False
+        return answer
 
     wanted = expected_days(start, end)
     for product in products:
         held = await daily_days_held(db, ad_product=product)
-        if not all(day in held for day in wanted):
-            return False
-    return True
+        if held:
+            answer["held"][product] = [min(held), max(held)]
+        absent = [day for day in wanted if day not in held]
+        if absent:
+            answer["complete"] = False
+            answer["missing_count"][product] = len(absent)
+            answer["missing"][product] = absent[:MISSING_DAYS_SHOWN]
+    return answer
+
+
+async def daily_coverage_by_product(db: AsyncSession) -> dict[str, tuple[str, str]]:
+    """Per-product spans: `{"sp": (first, last), "sb": (first, last)}`.
+
+    **For PROSE only — this must never gate a decision.** A span cannot see an interior gap, which is
+    exactly how the merged `daily_coverage` came to promise "summed instantly" for windows the server
+    refused. What it is for is a sentence the owner can act on: "Sponsored Brands holds 2026-08-24 →
+    2026-08-30" says which report is behind and by how much, where one merged span says nothing.
+    `range_completeness` answers whether a range is summable.
+    """
+    rows = (await db.execute(
+        select(
+            AdsPerformanceDaily.ad_product,
+            func.min(AdsPerformanceDaily.day),
+            func.max(AdsPerformanceDaily.day),
+        ).group_by(AdsPerformanceDaily.ad_product)
+    )).all()
+    return {r[0]: (r[1], r[2]) for r in rows if r[0] and r[1]}
+
+
+async def daily_range_complete(db: AsyncSession, start: str, end: str) -> bool:
+    """Do we hold every day in this range, for every ad product we advertise on?
+
+    **A thin wrapper over `range_completeness`, deliberately.** The screen has to reach the same
+    conclusion this returns — it marks each preset instant-or-not — and while the two were computed
+    separately they disagreed: the template trusted `daily_coverage`, a span MERGED across products,
+    so all three presets rendered "inside the daily data, summed instantly" beside a "Nothing
+    fetched" banner and five zeroed KPIs. Measured on production, 1 Sep:
+
+        7d 2026-08-25..2026-08-31  dot=True  server=False
+       14d 2026-08-18..2026-08-31  dot=True  server=False
+       30d 2026-08-02..2026-08-31  dot=True  server=False
+
+    One rule computed twice is the defect class this codebase already records twice over (the Orders
+    tab's "86 orders beside 87 lines"; the Portfolio parent rows that exist to prevent it). Keeping
+    this name leaves its three callers untouched; moving the body is what makes the screen and the
+    server one computation.
+    """
+    return (await range_completeness(db, start, end))["complete"]
 
 
 async def sum_daily(
@@ -411,11 +485,20 @@ async def sum_daily(
     *,
     campaign_ids: list[str] | None = None,
     ad_group_ids: list[str] | None = None,
+    ad_product: str | None = None,
 ) -> list[dict]:
     """Sum per-day rows into one row per entity for an arbitrary range. **No Amazon call.**
 
     This is the answer to "I already have 60 days — why must I refetch to see 20 of them?", and since
     the per-window table was deleted it is the ONLY way any figure on the tab is produced.
+
+    **`ad_product` narrows to one product, and it is an opt-in for LOOKING, never for a rule.** It
+    exists because a throttled Sponsored Brands report left `sb` 24 days behind `sp` while 482,578
+    current Sponsored Products rows sat unreadable — the guard was right to refuse the mixed window,
+    and there was no way to see the half that was fine. Every caller that passes it must label the
+    result as excluding the other product's spend (28% of this account's), and `POST /ads/preview`
+    must not accept it at all: a bid rule blind to a quarter of the spend is the exact failure the
+    guard exists to prevent, on the one route in this app that spends money.
 
     **Grouped by `(entity_id, ad_product)`, not by `entity_id` alone**, and that is a correctness
     requirement rather than tidiness. Sponsored Products and Sponsored Brands are two separate APIs
@@ -452,6 +535,8 @@ async def sum_daily(
         query = query.where(AdsPerformanceDaily.campaign_id.in_([str(c) for c in campaign_ids]))
     if ad_group_ids:
         query = query.where(AdsPerformanceDaily.ad_group_id.in_([str(a) for a in ad_group_ids]))
+    if ad_product:
+        query = query.where(AdsPerformanceDaily.ad_product == ad_product)
 
     grouped = (await db.execute(query)).all()
     if not grouped:
@@ -1079,3 +1164,85 @@ async def reset_guardrails(db: AsyncSession) -> dict:
         await db.delete(row)
         await db.commit()
     return dict(logic.DEFAULT_GUARDRAILS)
+
+
+# ─── Refresh history ─────────────────────────────────────────────────────────
+#
+# **This section exists because the equivalent state was in memory and a deploy erased it.**
+# On 1 Sep the nightly run stored 482,578 Sponsored Products rows and Amazon throttled the Sponsored
+# Brands report, storing 0. `refresh.STATE` recorded that faithfully — and the app restarted, so the
+# Ads tab said "nothing fetched" with no way to learn which half was missing or why.
+
+
+async def record_refresh(
+    db: AsyncSession,
+    *,
+    window_start: str | None,
+    window_end: str | None,
+    sp_rows: int = 0,
+    sb_rows: int = 0,
+    campaigns: int = 0,
+    ad_groups: int = 0,
+    error: str | None = None,
+    sb_error: str | None = None,
+    started_at: datetime | None = None,
+) -> None:
+    """Log one refresh attempt: succeeded, partly succeeded, or failed.
+
+    **A FAILED run is recorded too**, which is the point — a tab showing four-day-old figures should
+    be able to say "the last three refreshes were throttled" rather than merely looking stale. Named
+    after `portfolio.repository.record_refresh`, which does the same job for the Economics feed.
+
+    `status` is derived here rather than at the call site so every writer agrees what "partial" means:
+    a run that stored something but could not store everything.
+    """
+    if error:
+        status = "failed"
+    elif sb_error:
+        status = "partial"
+    else:
+        status = "done"
+    db.add(AdsRefresh(
+        window_start=window_start,
+        window_end=window_end,
+        status=status,
+        sp_rows=int(sp_rows or 0),
+        sb_rows=int(sb_rows or 0),
+        campaigns=int(campaigns or 0),
+        ad_groups=int(ad_groups or 0),
+        error=error,
+        sb_error=sb_error,
+        started_at=started_at or datetime.utcnow(),
+        finished_at=datetime.utcnow(),
+    ))
+    await db.commit()
+
+
+async def last_refresh(db: AsyncSession) -> dict | None:
+    """The newest refresh attempt, JSON-safe, or None if it has never run.
+
+    What makes the Ads tab able to explain an empty window **after a restart**, which is the entire
+    reason this table exists.
+    """
+    row = (await db.execute(
+        select(AdsRefresh)
+        .order_by(AdsRefresh.started_at.desc(), AdsRefresh.id.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+    if row is None:
+        return None
+    return {
+        "window_start": row.window_start,
+        "window_end": row.window_end,
+        "status": row.status or "done",
+        "sp_rows": int(row.sp_rows or 0),
+        "sb_rows": int(row.sb_rows or 0),
+        "campaigns": int(row.campaigns or 0),
+        "ad_groups": int(row.ad_groups or 0),
+        "error": row.error or "",
+        "sb_error": row.sb_error or "",
+        # isoformat HERE, not in the route: a datetime reaching JSONResponse is a 500, and that exact
+        # defect has already shipped once on this project.
+        "started_at": row.started_at.isoformat() if row.started_at else None,
+        "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+    }

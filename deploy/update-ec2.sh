@@ -366,8 +366,10 @@ def indexes(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "ads_refresh" in tables:
+    print("c5e91a3d47b6")                           # head: per-run ads refresh record
 elif "idx_ads_mutation_created" in indexes("ads_mutation"):
-    print("b4d8f27ac913")                           # head: bid-log index on ads_mutation
+    print("b4d8f27ac913")                           # bid-log index on ads_mutation
 elif "ads_performance_daily" in tables and "ads_performance" not in tables:
     print("a1c7e93f24b8")                           # daily rows are the only ads grain
 elif "ads_entity" in tables and "ad_product" in cols("ads_entity"):
@@ -454,7 +456,11 @@ need = {"shipment_plans", "shipment_plan_items", "shipment_packing_days",
         # because two grains answering the same question is what made Rs 1,26,328 of Sponsored
         # Brands spend vanish from any window nobody had fetched exactly.
         "ads_entity", "ads_rule", "ads_mutation",
-        "ads_performance_daily"}
+        "ads_performance_daily",
+        # Why a refresh only partly worked, surviving a restart. Without it the Ads tab cannot tell
+        # "nothing was fetched" from "Sponsored Products is current and the Sponsored Brands report
+        # was throttled" — which is exactly the state that read as Rs 0 on 1 Sep.
+        "ads_refresh"}
 missing = sorted(need - have)
 if missing:
     print("    missing tables:", missing)

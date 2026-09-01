@@ -341,18 +341,28 @@ function roas(v){
 }
 
 /* ── Load ──────────────────────────────────────────────────────────────────── */
+/* **Deliberately NOT remembered across sessions.** Every other view preference here is (`showPaused`,
+   `sort`), but a sticky "Sponsored Products only" would silently persist after Sponsored Brands
+   recovered, leaving the owner reading 72% of his spend as though it were the total — a wrong number
+   that looks entirely plausible. It resets on reload, which is the safe direction. */
+let adProduct = null;
+
+function productQuery(){
+  return adProduct ? `&ad_product=${encodeURIComponent(adProduct)}` : "";
+}
+
 function windowQuery(){
   const w = data.window && data.window[0] ? data.window : remembered("window", null);
   const base = w ? `start=${encodeURIComponent(w[0])}&end=${encodeURIComponent(w[1])}` : "days=7";
   return `${base}&include_paused=${showPaused ? "true" : "false"}`
-       + `&show_automated=${showAutomated ? "true" : "false"}`;
+       + `&show_automated=${showAutomated ? "true" : "false"}` + productQuery();
 }
 
 async function load(){
   const w = remembered("window", null);
   const base = w ? `start=${encodeURIComponent(w[0])}&end=${encodeURIComponent(w[1])}` : "days=7";
   const response = await fetch(`/ads?${base}&include_paused=${showPaused ? "true" : "false"}`
-    + `&show_automated=${showAutomated ? "true" : "false"}`);
+    + `&show_automated=${showAutomated ? "true" : "false"}` + productQuery());
   const body = await response.json();
   if(!response.ok){
     $("messages").innerHTML = `<div class="banner error">${esc(body.error || "Could not load.")}</div>`;
@@ -404,11 +414,52 @@ function renderBanners(){
     out.push(`<div class="banner good">Summed from the <strong>stored daily rows</strong> for
       ${esc(data.window[0])} → ${esc(data.window[1])} — no Amazon call was needed. Any range inside
       the stored days is instant like this.</div>`);
+  } else if((data.window_completeness || {}).missing_count
+            && Object.keys(data.window_completeness.missing_count).length
+            /* Not in a one-product view: `data.cached` is already false there only when THAT product
+               is short, and the SP-only band above says what is excluded. Showing "this window cannot
+               be summed" beside figures that were summed is the contradiction this change removes. */
+            && !data.ad_product){
+    /* **A partial night is not "nothing fetched", and conflating them cost a morning.** On 1 Sep the
+       nightly run stored 482,578 Sponsored Products rows for 59 days and Amazon rate-limited the
+       Sponsored Brands report, storing 0 — so the guard correctly refused every mixed window and this
+       banner said "nothing fetched" while half a million current rows sat in the table. It now names
+       the product, the gap, and the way to see the half that IS current. */
+    const held = data.daily_coverage_by_product || {};
+    const names = data.product_names || {};
+    const lines = Object.keys(held).sort().map(product => {
+      const short = (data.window_completeness.missing_count || {})[product];
+      return `<li><strong>${esc(names[product] || product)}</strong> holds
+        ${esc(held[product][0])} → ${esc(held[product][1])}${short
+          ? ` — <span class="warn-inline">short ${n(short)} day(s) of this window</span>`
+          : " — covers this window"}</li>`;
+    }).join("");
+    out.push(`<div class="banner warn"><strong>This window cannot be summed yet.</strong>
+      ${esc(data.gap_sentence || "")}
+      <ul style="margin:6px 0 0 18px;line-height:1.6">${lines}</ul>
+      <div style="margin-top:6px">Mixing a complete product with an incomplete one would understate
+        spend, and a bid rule would act on the short figure — so nothing is shown rather than a
+        number that is wrong.</div>
+      ${completeProducts().map(product =>
+        `<button class="btn-outline" style="margin-top:8px"
+           data-ad-product="${esc(product)}">Show ${esc(names[product] || product)} only</button>`
+      ).join(" ")}</div>`);
   } else {
     out.push(`<div class="banner info">Nothing fetched for
       <strong>${esc(data.window[0])} → ${esc(data.window[1])}</strong> yet. Press
       <strong>Refresh from Amazon</strong> — Amazon takes about 6 minutes per 31 days to build the
       report, and the figures are then cached so this page loads instantly.</div>`);
+  }
+  /* The opt-in view, stated as an exclusion rather than as a total. A figure that silently omits
+     28% of spend is worse than no figure, so the band travels with the numbers. */
+  if(data.ad_product){
+    const names = data.product_names || {};
+    out.push(`<div class="banner info"><strong>${
+      esc(names[data.ad_product] || data.ad_product)} only.</strong>
+      Every figure below excludes ${esc((data.excludes || [])
+        .map(p => names[p] || p).join(" and ") || "the other ad products")} — on this account
+      Sponsored Brands is <strong>28% of spend</strong>, so this is not the account total.
+      <button class="link-btn" data-ad-product="">Show every product</button></div>`);
   }
   /* Stated on screen, not just in the code: this is the one tab that writes to Amazon. */
   out.push(`<div class="banner warn"><strong>This tab changes live bids.</strong>
@@ -431,32 +482,36 @@ function renderBanners(){
 
 function renderWindow(){
   const current = data.window ? data.window[0] + ".." + data.window[1] : "";
-  const today = new Date();
 
-  /* Ends YESTERDAY, so a preset is attribution-settled. `localDate`, never `toISOString` — the
-     latter converts to UTC and shifted every preset a day early between midnight and 05:30 IST. */
-  function presetRange(days){
-    const end = new Date(today); end.setDate(end.getDate() - 1);
-    const start = new Date(end); start.setDate(start.getDate() - (days - 1));
-    return {start: localDate(start), end: localDate(end)};
-  }
+  /* **Both the RANGE and the "is it instant" answer come from the server.**
 
+     Neither used to. The range was computed here from the browser's clock, and the dot came from
+     `insideDailyCoverage()` reading `data.daily_coverage` — a span MERGED across ad products. On
+     1 Sep that span was 2026-07-04 → 2026-08-31 because Sponsored Products held 59 days, while
+     Sponsored Brands held 7, so all three presets rendered "already fetched, loads instantly"
+     beside a "Nothing fetched" banner and five zeroed KPIs. Measured:
+
+         7d 2026-08-25..2026-08-31  dot=true  server=false
+        14d 2026-08-18..2026-08-31  dot=true  server=false
+        30d 2026-08-02..2026-08-31  dot=true  server=false
+
+     One rule computed in two places, disagreeing — the defect this codebase already records twice
+     (the Orders tab's "86 orders beside 87 lines"). `preset_completeness` IS the server's answer,
+     from the same function it gates on, and it carries the range so the box's clock cannot disagree
+     about which 7 days "7d" means either. */
+  const presets = data.preset_completeness || {};
   const buttons = (data.preset_days || [7, 14, 30]).map(days => {
-    const r = presetRange(days);
-    const key = r.start + ".." + r.end;
-    /* **Instant means "the daily rows cover it", not "somebody fetched these exact endpoints".**
-       That distinction used to matter because a fetched window was read from its own table; that
-       table is gone, and with it a second answer that disagreed by 28% of spend. So a preset is
-       marked instant exactly when it is summable, which is also what the server checks.
-
-       The dot is not decoration — instant versus a ~20-minute report per 31 days — so it goes into
+    const entry = presets[String(days)] || {};
+    if(!entry.start) return "";
+    const key = entry.start + ".." + entry.end;
+    /* The dot is not decoration — instant versus a ~20-minute report per 31 days — so it goes into
        the accessible name in words and is aria-hidden as a glyph. */
-    const cached = insideDailyCoverage(r.start, r.end);
+    const cached = !!entry.complete;
     return `<button class="win-btn ${key === current ? "on" : ""}"
-      data-start="${r.start}" data-end="${r.end}" aria-pressed="${key === current}"
-      aria-label="Last ${days} days, ${r.start} to ${r.end}${cached
-        ? " — already fetched, loads instantly" : " — not fetched yet"}"
-      title="${r.start} to ${r.end}">${days}d${
+      data-start="${entry.start}" data-end="${entry.end}" aria-pressed="${key === current}"
+      aria-label="Last ${days} days, ${entry.start} to ${entry.end}${cached
+        ? " — already fetched, loads instantly" : " — " + esc(gapShort(entry))}"
+      title="${entry.start} to ${entry.end}${cached ? "" : " — " + esc(gapShort(entry))}">${days}d${
       cached ? '<span class="dot" aria-hidden="true"></span>' : ""}</button>`;
   }).join("");
 
@@ -474,10 +529,35 @@ function renderWindow(){
   renderWindowNote();
 }
 
+/* Which ad products cover the window on screen — the ones that CAN honestly be shown alone.
+
+   Offered rather than assumed: the point of the opt-in is that the owner chooses to read a partial
+   view knowing what it leaves out. A product that is itself short is not offered, because "Sponsored
+   Products only" would be as wrong as the mixed total if `sp` were the throttled one. */
+function completeProducts(){
+  const missing = (data.window_completeness || {}).missing_count || {};
+  return (data.known_products || []).filter(product => !(product in missing));
+}
+
+/* A short "why not" for a preset button's tooltip: "Sponsored Brands short 25 days".
+
+   Terse on purpose — it goes in a `title` and an `aria-label`, where the full sentence would be
+   unreadable. `gap_sentence` is the long form, and both are derived from the same server answer. */
+function gapShort(entry){
+  const counts = (entry && entry.missing_count) || {};
+  const names = data.product_names || {};
+  const parts = Object.keys(counts).sort().map(product =>
+    `${names[product] || product} short ${counts[product]} day${counts[product] === 1 ? "" : "s"}`);
+  return parts.length ? parts.join(", ") : "not fetched yet";
+}
+
 /* What picking this window will cost, said before the click rather than after.
 
-   Three cases, and they are genuinely different: instant from an exact cache hit, instant because
-   the range sits INSIDE a cached window (so it can be re-summed locally), or a real Amazon report. */
+   **The incomplete case now names WHICH ad product is short and by how much.** It used to say
+   "not held yet — press Refresh", which was true and unactionable: on 1 Sep the server held 482,578
+   current Sponsored Products rows and the single problem was one throttled Sponsored Brands report,
+   and nothing on screen could say so. The sentence comes from the SERVER (`gap_sentence`) so this
+   note and `/ads/preview`'s refusal are the same words rather than two descriptions that drift. */
 function renderWindowNote(){
   const note = $("win-note");
   if(!note) return;
@@ -485,16 +565,38 @@ function renderWindowNote(){
   if(!from || !to){ note.textContent = ""; return; }
 
   const bits = [];
-  if(insideDailyCoverage(from, to)){
-    /* The answer to "why must it refetch?" — it does not, for anything inside the daily rows.
-       There is no longer an "exactly cached" case to check first: the per-window table is gone, and
-       with it the distinction between a range someone fetched as such and one summed from the days.
-       Those two used to disagree by 28% of spend. */
-    const cover = data.daily_coverage;
-    bits.push(`<strong>inside the ${esc(cover[0])} → ${esc(cover[1])} daily data</strong>`
-      + ` — no fetch needed, summed instantly`);
+  const shown = data.window || ["", ""];
+  const isShownWindow = from === shown[0] && to === shown[1];
+  const presetMatch = Object.values(data.preset_completeness || {})
+    .find(entry => entry.start === from && entry.end === to);
+
+  if(isShownWindow || presetMatch){
+    /* **Only ever the server's own answer, for a range the server has actually judged.** This is
+       where the bug lived: the old code tested any range against `data.daily_coverage`, a span
+       merged across ad products, and so promised "summed instantly" for three windows the server
+       was refusing.
+
+       **For the window ON SCREEN the answer is `data.cached`, not `window_completeness.complete`.**
+       Those differ in exactly one case and it is a case the owner is looking at: in a one-product
+       view the server gates on that product's days alone, so `cached` is true while the all-product
+       completeness is false. Reading the latter printed "not summable" directly above a banner
+       reading "summed from the stored daily rows" — two claims about one window, which is the defect
+       this whole change is about, reintroduced three lines from its own fix. Found in a browser. */
+    const answer = isShownWindow ? (data.window_completeness || {}) : presetMatch;
+    const summable = isShownWindow ? !!data.cached : !!answer.complete;
+    if(summable){
+      const names = data.product_names || {};
+      const only = data.ad_product ? ` for ${esc(names[data.ad_product] || data.ad_product)}` : "";
+      bits.push(`<strong>summed from the stored daily rows</strong>${only} — no fetch needed`);
+    } else {
+      const why = isShownWindow ? (data.gap_sentence || gapShort(answer)) : gapShort(presetMatch);
+      bits.push(`<span class="warn-inline">not summable — ${esc(why)}</span>`);
+    }
   } else {
-    bits.push(`not held yet — <strong>press Refresh</strong> (~20 min per 31 days)`);
+    /* A range nobody has asked the server about. **Saying less rather than guessing**: the only
+       honest client-side answer is that the server decides, and a note that cannot lie beats one
+       that is usually right. Guessing from a span is precisely what went wrong. */
+    bits.push(`press <strong>Show</strong> to check whether this range is summable`);
   }
 
   /* Today is selectable AND caveated. Amazon answers for it (verified live), but a click costs
@@ -505,18 +607,6 @@ function renderWindowNote(){
       + ` land hours after the click, so ROAS reads low until tomorrow</span>`);
   }
   note.innerHTML = bits.join(" · ");
-}
-
-/* Is this range covered by the per-day rows we hold?
-
-   **This is what makes "I have 30 days, now show me 20 of them" instant.** The daily rows are
-   summable, so any range inside the coverage is a GROUP BY rather than a fresh ~6-minute report.
-   `data.daily_coverage` is the span the server holds; the server re-checks EVERY day in the range
-   before summing, because a gap in the middle would make the total quietly short. */
-function insideDailyCoverage(from, to){
-  const cover = data.daily_coverage || [];
-  if(cover.length !== 2) return false;
-  return cover[0] <= from && cover[1] >= to;
 }
 
 /* A local YYYY-MM-DD, built from the local date parts.
@@ -1760,6 +1850,17 @@ $("window-bar").addEventListener("click", async e => {
    pressing Show rather than after. */
 $("window-bar").addEventListener("change", e => {
   if(e.target.closest(".win-date")) renderWindowNote();
+});
+
+/* The one-product view, in and out. Delegated on `#messages` because the buttons live inside a
+   banner that `renderBanners` rebuilds — the same reason nothing on this page uses inline handlers.
+   An EMPTY `data-ad-product` means "every product", so one attribute serves both directions and
+   there is no second control that could disagree about which view is showing. */
+$("messages").addEventListener("click", e => {
+  const pick = e.target.closest("[data-ad-product]");
+  if(!pick) return;
+  adProduct = pick.getAttribute("data-ad-product") || null;
+  load();
 });
 
 $("refresh-btn").addEventListener("click", startRefresh);

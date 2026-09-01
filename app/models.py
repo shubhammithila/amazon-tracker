@@ -1181,3 +1181,43 @@ class AdsMutation(Base):
     reverts_run_id = Column(String(36))
     created_at = Column(DateTime, default=datetime.utcnow)
     sent_at = Column(DateTime)
+
+
+class AdsRefresh(Base):
+    """When the ads figures were last pulled, what they covered, and **what only PARTLY worked**.
+
+    A sibling of `EconomicsRefresh`, and it exists because that table's absence here cost a morning.
+
+    On 1 Sep the nightly run stored 482,578 Sponsored Products rows across 59 days and Amazon then
+    rate-limited the Sponsored Brands report, storing **0**. `refresh.run` recorded that correctly —
+    in a module-level `STATE` dict. The app was then restarted by a deploy, the dict reset, and the
+    Ads tab reported "nothing fetched" with no way to learn that half a million current rows were
+    sitting in the table and one throttled report was the whole problem. The reason a screen is empty
+    must outlive the process that discovered it.
+
+    **`sp_rows` and `sb_rows` are separate columns, not one total.** `0 SB` beside `482,578 SP` IS the
+    finding; a single `rows_stored` of 482,578 reads as a completely successful night. Same reasoning
+    as `fees` being a JSON map on `EconomicsSnapshot` — the shape has to be able to express the
+    failure that actually happens.
+    """
+    __tablename__ = "ads_refresh"
+
+    id = Column(Integer, primary_key=True)
+    window_start = Column(String(10))
+    window_end = Column(String(10))
+    #: `done` · `partial` · `failed`. **`partial` is the state this table was added for**: a run where
+    #: one ad product's report landed and another's was throttled. Recorded as its own word rather
+    #: than inferred from `sb_error` being set, so a future product cannot make the inference wrong.
+    status = Column(String(10), nullable=False, default="done")
+    sp_rows = Column(Integer, default=0)
+    sb_rows = Column(Integer, default=0)
+    campaigns = Column(Integer, default=0)
+    ad_groups = Column(Integer, default=0)
+    #: The whole run failed — no figures moved.
+    error = Column(Text)
+    #: **Sponsored Brands alone failed, and Sponsored Products is current.** Kept apart from `error`
+    #: because the two call for different sentences on screen: "the refresh failed" is wrong when 72%
+    #: of the spend was updated successfully.
+    sb_error = Column(Text)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    finished_at = Column(DateTime)

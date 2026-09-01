@@ -249,6 +249,129 @@ async def test_preview_computes_changes_and_sends_nothing(auth_client, db):
     assert await repository.load_runs(db) == []
 
 
+async def test_preview_refuses_a_single_ad_product_view(auth_client, db):
+    """**A rule may not run on a view that omits an ad product.** The one route that spends money.
+
+    `GET /ads` accepts `ad_product` so the owner can read the Sponsored Products figures while a
+    throttled Sponsored Brands report leaves `sb` days behind. A RULE must not: the same rule found
+    1,005 changes including 296 SB rows on one window and 743 with none on another, which is the
+    Rs 1,26,328 failure. Refused with a reason rather than ignored, because a parameter silently
+    dropped here would look like it worked.
+    """
+    await _seed(db)
+    response = await auth_client.post("/ads/preview", json={
+        "start": SEED_START, "end": SEED_END, "ad_product": "sp",
+        "conditions": [{"field": "spend", "op": "gt", "value": 100}],
+        "action": "decrease_pct", "amount": 10,
+    })
+    assert response.status_code == 400, "a rule was previewed against one ad product only"
+    assert "28%" in response.json()["error"], "the refusal does not say what would be missing"
+
+
+async def test_preview_names_which_product_is_short_when_it_refuses(auth_client, db):
+    """"Refresh that window first" was true and unhelpful — it read as "nobody has fetched this"
+    while 482,578 current Sponsored Products rows sat in the table and one throttled report was the
+    whole problem. The owner cannot act on the generic form."""
+    await _seed(db)                                   # sp only, for SEED_START..SEED_END
+    await repository.save_daily(db, [{
+        "keywordId": "9", "date": SEED_END, "campaignId": "c1", "adGroupId": "g1",
+        "keyword": "sb-kw", "matchType": "EXACT", "keywordBid": 10.0,
+        "impressions": 1, "clicks": 1, "cost": 1.0, "sales": 2.0, "purchases": 1,
+    }], ad_product="sb")                              # sb holds ONE day of the seven
+
+    response = await auth_client.post("/ads/preview", json={
+        "start": SEED_START, "end": SEED_END,
+        "conditions": [{"field": "spend", "op": "gt", "value": 100}],
+        "action": "decrease_pct", "amount": 10,
+    })
+    assert response.status_code == 400
+    body = response.json()
+    assert "Sponsored Brands" in body["error"], (
+        f"the refusal does not name the product that is short: {body['error']}"
+    )
+    assert "6" in body["error"], "the refusal does not say how many days are missing"
+    assert body["completeness"]["missing_count"] == {"sb": 6}
+
+
+async def test_the_dashboard_explains_a_partial_night_after_a_restart(auth_client, db):
+    """**The bug, end to end: the reason must outlive the process.**
+
+    `refresh.STATE` is a module-level dict. On 1 Sep it correctly held the Sponsored Brands throttle
+    message, a deploy restarted the app, and the Ads tab reported "nothing fetched" with no way to
+    learn that 482,578 current rows were stored. `STATE` is explicitly reset here to simulate exactly
+    that restart — without the reset the test would pass on the in-memory value and prove nothing.
+    """
+    from app.ads import refresh as ads_refresh
+
+    await _seed(db)
+    await repository.record_refresh(
+        db, window_start=SEED_START, window_end=SEED_END,
+        sp_rows=482578, sb_rows=0,
+        sb_error="Amazon is rate-limiting report creation for this report type (Sponsored Brands).",
+    )
+    ads_refresh.reset_state()                        # the restart
+
+    body = (await auth_client.get(f"/ads?start={SEED_START}&end={SEED_END}")).json()
+    assert body["sb_error"], (
+        "after a restart the screen cannot say why Sponsored Brands is stale — which is the whole "
+        "reason ads_refresh exists"
+    )
+    assert body["last_refresh"]["status"] == "partial"
+    assert body["last_refresh"]["sp_rows"] == 482578
+
+
+async def test_a_running_refresh_reports_its_own_state_not_the_stored_one(auth_client, db):
+    """The live fact wins while a refresh is running; the stored row answers afterwards. Preferring
+    the stored row would show the previous run's error over a running one's progress."""
+    from app.ads import refresh as ads_refresh
+
+    await _seed(db)
+    await repository.record_refresh(db, window_start=SEED_START, window_end=SEED_END,
+                                   sp_rows=1, sb_error="yesterday's throttle")
+    ads_refresh.reset_state()
+    ads_refresh.STATE.update({"running": True, "phase": "report"})
+    try:
+        body = (await auth_client.get(f"/ads?start={SEED_START}&end={SEED_END}")).json()
+        assert body["sb_error"] == "", (
+            "a stale error is shown over a refresh that is currently running"
+        )
+        assert body["refresh"]["running"] is True
+    finally:
+        ads_refresh.reset_state()
+
+
+async def test_the_dashboard_can_show_one_ad_product_and_says_what_it_excludes(auth_client, db):
+    """The opt-in that makes 482,578 current rows readable while the other product is behind.
+
+    Labelled, never silent: a figure that omits 28% of spend is worse than no figure.
+    """
+    await _seed(db)
+    await repository.save_daily(db, [{
+        "keywordId": "9", "date": SEED_END, "campaignId": "c9", "adGroupId": "g9",
+        "keyword": "sb-kw", "matchType": "EXACT", "keywordBid": 10.0,
+        "impressions": 1, "clicks": 1, "cost": 1.0, "sales": 2.0, "purchases": 1,
+    }], ad_product="sb")
+
+    mixed = (await auth_client.get(f"/ads?start={SEED_START}&end={SEED_END}")).json()
+    assert mixed["cached"] is False, "the mixed window should be refused: sb holds 1 of 7 days"
+    assert mixed["totals"]["spend"] == 0
+
+    sp_only = (await auth_client.get(
+        f"/ads?start={SEED_START}&end={SEED_END}&ad_product=sp")).json()
+    assert sp_only["cached"] is True, "the complete Sponsored Products half was still refused"
+    assert sp_only["totals"]["spend"] > 0, "the SP figures are current and must be readable"
+    assert sp_only["ad_product"] == "sp"
+    assert sp_only["excludes"] == ["sb"], "the response does not say what it leaves out"
+
+
+async def test_an_unknown_ad_product_is_refused_rather_than_answered_with_zero(auth_client, db):
+    """A typo would otherwise read as "no Sponsored Brands spend" rather than "no such product"."""
+    await _seed(db)
+    response = await auth_client.get(f"/ads?start={SEED_START}&end={SEED_END}&ad_product=spp")
+    assert response.status_code == 400
+    assert "spp" in response.json()["error"]
+
+
 async def test_preview_names_the_rule_in_words(auth_client, db):
     """Stored on every ledger row, so the history reads without joining to a rule that may since
     have been edited."""
@@ -785,7 +908,10 @@ def test_the_picker_allows_today_and_labels_it():
     settled = source[start:start + 300]
     assert "getDate() - 1" in settled, "settledDate must be yesterday"
 
-    note = source[source.index("function renderWindowNote("):][:1400]
+    # Brace-matched, not a fixed slice: the note grew when it started naming which ad product is
+    # short, and a 1,400-character window silently stopped covering the end of the function — which
+    # would report the today-caveat as missing while it sat just past the cut.
+    note = _js_function(_code_only(source), "renderWindowNote")
     assert "settledDate()" in note and "today" in note.lower(), (
         "nothing warns that a window ending today reads a low ROAS"
     )
@@ -810,22 +936,36 @@ def test_clicking_anywhere_in_a_date_box_opens_the_calendar():
 def test_the_window_note_says_whether_a_range_costs_a_fetch():
     """TWO genuinely different costs, and the screen must not present them alike.
 
-    **This test previously asserted THREE, and that assertion has flipped.** It required
-    `exactlyCached()` — a range someone had fetched as such, read from its own per-window table —
-    beside `insideDailyCoverage()`. Those two were only ever different in provenance, never in cost,
-    and holding the same figures at both grains is what let Rs 1,26,328 of Sponsored Brands spend
-    disappear from whichever path did not have it. The window table is gone, so the honest question
-    is the one that remains: is this range summable from the days we hold, or does it cost a report?
+    **This test's assertion has now flipped TWICE, and each version was right when written.**
+
+    It first required `exactlyCached()` — a range someone had fetched as such, read from its own
+    per-window table — beside `insideDailyCoverage()`. Those two differed in provenance, never in
+    cost, and holding the same figures at both grains is what let Rs 1,26,328 of Sponsored Brands
+    spend disappear from whichever path lacked it. The window table went, and with it that assertion.
+
+    Now `insideDailyCoverage` itself is **required to be ABSENT**. It tested a range against
+    `daily_coverage`, a span MERGED across ad products, so with Sponsored Products holding 59 days and
+    Sponsored Brands 7 it promised "summed instantly" for three presets the server was refusing. The
+    honest question is unchanged — is this range summable? — but only the server can answer it, so the
+    screen reads that answer instead of recomputing it. See
+    `test_ads_coverage_agreement.py` for the pair that can no longer disagree.
     """
     source = _template()
-    assert "function insideDailyCoverage(" in source
+    assert "function insideDailyCoverage(" not in source, (
+        "the screen computes summability from a product-MERGED span again — it promised three "
+        "presets were instant while the server refused all three"
+    )
     assert "function exactlyCached(" not in source, (
         "the per-window path is back; it was deleted because two grains disagreed by 28% of spend"
     )
-    note = source[source.index("function renderWindowNote("):][:1400]
-    assert "insideDailyCoverage(" in note
+    note = _js_function(_code_only(source), "renderWindowNote")
+    assert "window_completeness" in note, "the note does not read the server's own answer"
     assert "no fetch needed" in note, "a summable range does not say that it is instant"
-    assert "press Refresh" in note, "an unfetched range does not say what it will cost"
+    assert "not summable" in note, "an unsummable range does not say so"
+    # And it must name WHICH product is short rather than only that something is.
+    assert "gap_sentence" in note or "gapShort" in note, (
+        "the note cannot say which ad product is behind, which is the whole finding"
+    )
 
 
 def test_changing_a_conditions_field_does_not_rebuild_the_row_being_edited():

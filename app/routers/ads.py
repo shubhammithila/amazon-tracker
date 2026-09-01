@@ -46,6 +46,42 @@ PRESET_DAYS = (7, 14, 30)
 MAX_WINDOW_DAYS = 60
 
 
+#: How each ad product is named to a person. `sp`/`sb` are Amazon's own tokens and mean nothing to
+#: the owner, and a refusal that says "sb is missing 25 days" is a refusal he cannot act on.
+PRODUCT_NAMES = {"sp": "Sponsored Products", "sb": "Sponsored Brands", "sd": "Sponsored Display"}
+
+
+def product_name(product: str) -> str:
+    """A readable name for an ad product, falling back to the raw token.
+
+    Falls back rather than raising: a product Amazon adds tomorrow should appear in a message by its
+    own name, not crash the sentence explaining why the screen is empty.
+    """
+    return PRODUCT_NAMES.get(product, product)
+
+
+def _gap_sentence(completeness: dict) -> str:
+    """Why a window is not summable, in words the owner can act on.
+
+    **Built here rather than in the template because two places need the identical sentence** — this
+    module's `/ads/preview` refusal and the screen's window note — and a refusal that disagrees with
+    the note above it is the defect this whole change is about.
+
+    Empty string when the range is complete, so a caller can append it unconditionally.
+    """
+    if completeness.get("complete"):
+        return ""
+    if not completeness.get("products"):
+        return "Nothing has been fetched yet — press Refresh from Amazon."
+
+    parts = []
+    for product, count in sorted(completeness.get("missing_count", {}).items()):
+        held = (completeness.get("held") or {}).get(product)
+        span = f", holds {held[0]} to {held[1]}" if held else ", holds nothing yet"
+        parts.append(f"{product_name(product)} is missing {count} of these days{span}")
+    return "; ".join(parts) + ". Press Refresh from Amazon."
+
+
 def _window(start: str | None, end: str | None, days: int | None,
             *, today: date | None = None) -> tuple[str, str]:
     """Resolve and VALIDATE a requested window. Raises `ValueError` with a readable reason.
@@ -127,6 +163,7 @@ async def ads_dashboard(
     campaign_id: str | None = None,
     include_paused: bool = False,
     show_automated: bool = False,
+    ad_product: str | None = None,
     db: AsyncSession = Depends(get_db),
     grant=Depends(require_area(permissions.ADS)),
 ):
@@ -147,6 +184,13 @@ async def ads_dashboard(
     **An uncached window returns EMPTY rather than fetching**, with `cached: false` so the screen can
     offer the button. A GET that started a 6-minute report would hold the connection open, and a
     second page load would start a second report.
+
+    **`ad_product` narrows to one product and is opt-in.** It exists for the case that produced this
+    parameter: a throttled Sponsored Brands report left `sb` 24 days behind `sp`, so the mixed window
+    was correctly refused while 482,578 current Sponsored Products rows sat unreadable. When it is
+    set the response says so (`ad_product`, `excludes`) and the screen bands the whole table, because
+    a figure that silently omits 28% of spend is worse than no figure. `POST /ads/preview` does NOT
+    accept it — see there.
     """
     try:
         window_start, window_end = _window(start, end, days)
@@ -154,6 +198,16 @@ async def ads_dashboard(
         return JSONResponse({"error": str(exc)}, status_code=400)
 
     settings = get_settings()
+
+    # A product we have never held rows for is a typo, not an empty account. Answering with zeroes
+    # would read as "no Sponsored Brands spend" rather than "there is no such product".
+    known_products = await repository.daily_products(db)
+    if ad_product and ad_product not in known_products:
+        return JSONResponse(
+            {"error": f"Unknown ad product {ad_product!r}. Held: "
+                      f"{', '.join(known_products) or 'none yet'}."},
+            status_code=400,
+        )
 
     # **ONE source: the per-day rows.**
     #
@@ -167,12 +221,22 @@ async def ads_dashboard(
     # point of the per-day grain; what has gone is the second path that could disagree with it.
     # `daily_range_complete` checks EVERY day rather than the endpoints, so a range with an interior
     # gap declines to answer instead of summing short.
-    complete = await repository.daily_range_complete(db, window_start, window_end)
+    completeness = await repository.range_completeness(db, window_start, window_end)
+
+    # **When one product is asked for, only THAT product's days gate the answer.** The whole point of
+    # the opt-in: `sp` is complete for this window and `sb` is 24 days behind, so requiring both would
+    # refuse the very view that exists to show the half that is current.
+    if ad_product:
+        complete = ad_product not in completeness["missing_count"]
+    else:
+        complete = completeness["complete"]
+
     rows = []
     if complete:
         rows = await repository.sum_daily(
             db, window_start, window_end,
             campaign_ids=[campaign_id] if campaign_id else None,
+            ad_product=ad_product,
         )
     if rows:
         rows = await repository.attach_names(db, rows)
@@ -182,6 +246,11 @@ async def ads_dashboard(
     automated_total = sum(1 for c in campaigns if c.get("automated"))
     if not show_automated:
         campaigns = [c for c in campaigns if not c.get("automated")]
+    # The other product's campaigns are REMOVED, not shown at zero. Left in, six Sponsored Brands
+    # campaigns would read "Rs 0 spend" beside a total that excludes them by design — which is the
+    # same "0 means no spend" misreading the Portfolio tab's three-state ACOS exists to avoid.
+    if ad_product:
+        campaigns = [c for c in campaigns if (c.get("ad_product") or "sp") == ad_product]
 
     # Roll the report rows up per campaign. Summed from the SAME rows the table shows, never a
     # second query — the Orders tab's "86 orders beside 87 lines" was exactly that mistake.
@@ -217,6 +286,11 @@ async def ads_dashboard(
     total_spend = round(sum(c["spend"] for c in campaigns), 2)
     total_sales = round(sum(c["sales"] for c in campaigns), 2)
 
+    # Read once each: `refresh.status()` was being called twice, so a refresh finishing between the
+    # two calls could return a running bar beside a finished error.
+    live_refresh = refresh.status()
+    stored_refresh = await repository.last_refresh(db) or {}
+
     return {
         "window": [window_start, window_end],
         "cached": cached,
@@ -227,13 +301,46 @@ async def ads_dashboard(
         # coverage below supersedes it, because what makes a range instant is the days held, not
         # whether anyone happened to request those endpoints.
         #
-        # The span of per-day rows held, so the picker can mark ANY range inside it as instant.
+        # The span of per-day rows held. **Kept for the prose "we hold X to Y", and it GATES
+        # NOTHING** — it is merged across products, and the screen trusting it to mark a preset
+        # "instant" is the bug being fixed here: it promised summed-instantly for three windows the
+        # server refused, because `sp` spanned 59 days while `sb` held 7.
         "daily_coverage": list(await repository.daily_coverage(db) or ()),
+        # Per product, so a note can say WHICH report is behind and by how much.
+        "daily_coverage_by_product": {
+            product: list(span)
+            for product, span in (await repository.daily_coverage_by_product(db)).items()
+        },
+        # **The same computation the server gates on**, for the window on screen and for each preset
+        # button. One rule, one answer — see `repository.daily_range_complete`.
+        "window_completeness": completeness,
+        # The gap in words, built SERVER-side so the screen's note and `/ads/preview`'s refusal are
+        # the same sentence rather than two descriptions that can drift apart.
+        "gap_sentence": _gap_sentence(completeness),
+        # Readable product names, sent rather than hardcoded in the template — a product Amazon adds
+        # would otherwise render as "sd" on screen while the server knew its name.
+        "product_names": dict(PRODUCT_NAMES),
+        # Keyed by STRING because JSON object keys are strings, and the RANGE travels with it so the
+        # browser's clock cannot disagree with the server about which 7 days "7d" means.
+        "preset_completeness": {
+            str(preset): {
+                "start": preset_start,
+                "end": preset_end,
+                **await repository.range_completeness(db, preset_start, preset_end),
+            }
+            for preset in PRESET_DAYS
+            for preset_start, preset_end in (refresh.default_window(preset),)
+        },
         "preset_days": list(PRESET_DAYS),
         "max_window_days": MAX_WINDOW_DAYS,
         "configured": settings.ads_configured,
         "include_paused": include_paused,
         "show_automated": show_automated,
+        # Which product this answer covers, and what it therefore leaves out. `excludes` is a LIST of
+        # the other products rather than a boolean, so a Sponsored Display view would name both.
+        "ad_product": ad_product,
+        "excludes": [p for p in known_products if p != ad_product] if ad_product else [],
+        "known_products": known_products,
         # How many were hidden, so the screen can offer the toggle with a number rather than
         # leaving their absence unexplained.
         "automated_hidden": 0 if show_automated else automated_total,
@@ -255,11 +362,20 @@ async def ads_dashboard(
         "guardrails": await repository.load_guardrails(db),
         "rules": await repository.load_rules(db),
         "runs": await repository.load_runs(db, limit=10),
-        "refresh": refresh.status(),
+        "refresh": live_refresh,
+        # **The stored record, so the reason survives a restart.** `refresh.status()` is a module-level
+        # dict; a deploy between the failure and the page load is exactly how the SB throttle came to
+        # be invisible on 1 Sep, and the app cannot depend on nobody restarting it.
+        "last_refresh": stored_refresh,
         # Reported separately from `error`: an SB failure leaves the Sponsored Products figures
         # entirely current, so the screen must be able to say "SP is fine, SB is stale" rather than
         # "the refresh failed".
-        "sb_error": refresh.status().get("sb_error"),
+        #
+        # **The LIVE state wins while a refresh is running**, because it is the fresher fact; the
+        # stored row answers afterwards. Preferring the stored row would show the previous run's
+        # error over a running one's progress.
+        "sb_error": (live_refresh.get("sb_error")
+                     or ("" if live_refresh.get("running") else stored_refresh.get("sb_error", ""))),
         "grant": grant.areas if hasattr(grant, "areas") else [],
     }
 
@@ -302,26 +418,37 @@ async def targets(
     end: str | None = None,
     campaign_id: str | None = None,
     ad_group_id: str | None = None,
+    ad_product: str | None = None,
     db: AsyncSession = Depends(get_db),
     grant=Depends(require_area(permissions.ADS)),
 ):
-    """Keyword and target rows for one campaign or ad group, for the deepest level."""
+    """Keyword and target rows for one campaign or ad group, for the deepest level.
+
+    Takes `ad_product` for the same reason `GET /ads` does: expanding a campaign inside a Sponsored
+    Products-only view must show that campaign's rows rather than an empty table. Reads only.
+    """
     try:
         window_start, window_end = _window(start, end, days)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
     # Summed from the per-day rows, the one source. See `GET /ads` for why there is no longer a
-    # per-window table to prefer.
+    # per-window table to prefer. When one product is asked for, only that product's days gate it —
+    # the same rule as the dashboard, or drilling into a visible campaign would come back empty.
+    completeness = await repository.range_completeness(db, window_start, window_end)
+    complete = (ad_product not in completeness["missing_count"]
+                if ad_product else completeness["complete"])
     rows = []
-    if await repository.daily_range_complete(db, window_start, window_end):
+    if complete:
         rows = await repository.sum_daily(
             db, window_start, window_end,
             campaign_ids=[campaign_id] if campaign_id else None,
             ad_group_ids=[ad_group_id] if ad_group_id else None,
+            ad_product=ad_product,
         )
     rows = await repository.attach_names(db, rows)
-    return {"window": [window_start, window_end], "rows": rows, "count": len(rows)}
+    return {"window": [window_start, window_end], "rows": rows, "count": len(rows),
+            "ad_product": ad_product}
 
 
 @router.get("/refresh-status")
@@ -375,8 +502,24 @@ async def preview(
     deselect rows. `blocked` refuses the whole rule (a guardrail breach); `skipped` lists individual
     rows that cannot be written, each with its reason — a row silently missing from a 299-row run is
     indistinguishable from a bug.
+
+    **This route does NOT accept `ad_product`, and that omission is deliberate.** `GET /ads` takes it
+    so the owner can read the Sponsored Products figures while a throttled Sponsored Brands report
+    leaves `sb` behind. A RULE may not run on that view: a rule blind to 28% of spend is exactly the
+    Rs 1,26,328 failure — the same rule found 1,005 changes including 296 SB rows on one window and
+    743 with none on another — and this is the one route in this app that spends money. Refused
+    explicitly rather than ignored, because a parameter silently dropped here would read as working.
     """
     body = await request.json()
+
+    if body.get("ad_product"):
+        return JSONResponse(
+            {"error": "A rule cannot be previewed for one ad product only. The Sponsored "
+                      "Products-only view is for reading; a rule needs every product's spend, "
+                      "because a bid change decided without 28% of the data is the mistake this "
+                      "guard exists to prevent. Refresh the window instead."},
+            status_code=400,
+        )
 
     try:
         window_start, window_end = _window(body.get("start"), body.get("end"), body.get("days"))
@@ -388,17 +531,22 @@ async def preview(
     # not, so the same rule found **1,005 changes including 296 SB rows** on a fetched window and
     # **743 with none** on a derived one. 296 live Sponsored Brands bids were invisible to a rule
     # meant to act on them, on the one route in this app that spends money.
+    completeness = await repository.range_completeness(db, window_start, window_end)
     rows = []
-    if await repository.daily_range_complete(db, window_start, window_end):
+    if completeness["complete"]:
         rows = await repository.sum_daily(
             db, window_start, window_end,
             campaign_ids=body.get("campaign_ids") or None,
             ad_group_ids=body.get("ad_group_ids") or None,
         )
     if not rows:
+        # **Name the product and the gap.** "Refresh that window first" was true and unhelpful: it
+        # read as "nobody has fetched this" when in fact 482,578 Sponsored Products rows were stored
+        # and one throttled report was the whole problem. The owner cannot act on the generic form.
         return JSONResponse(
             {"error": f"No performance data for {window_start}..{window_end}. "
-                      f"Refresh that window first."},
+                      f"{_gap_sentence(completeness)}",
+             "completeness": completeness},
             status_code=400,
         )
     rows = await repository.attach_names(db, rows)

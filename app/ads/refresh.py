@@ -352,6 +352,32 @@ async def run(
         STATE["running"] = False
         STATE["finished_at"] = datetime.utcnow()
 
+        # **The run record is written HERE, in the `finally`, for the same reason the flag is.**
+        # A cancelled or crashed run is the case that most needs explaining afterwards, and it is
+        # exactly the case a write on the success path would skip. The whole reason this table exists
+        # is that the equivalent state lived in `STATE` and a deploy erased it: on 1 Sep the run stored
+        # 482,578 SP rows, Amazon throttled the SB report, the app restarted, and the Ads tab could
+        # only say "nothing fetched" while half a million current rows sat in the table.
+        #
+        # Its own session and its own try: this must not convert a completed refresh into a failed one
+        # because the bookkeeping could not be written.
+        try:
+            async with db_factory() as db:
+                await repository.record_refresh(
+                    db,
+                    window_start=STATE.get("window_start"),
+                    window_end=STATE.get("window_end"),
+                    sp_rows=STATE.get("daily_rows") or 0,
+                    sb_rows=STATE.get("sb_rows") or 0,
+                    campaigns=STATE.get("campaigns") or 0,
+                    ad_groups=STATE.get("ad_groups") or 0,
+                    error=STATE.get("error"),
+                    sb_error=STATE.get("sb_error"),
+                    started_at=STATE.get("started_at"),
+                )
+        except Exception:  # noqa: BLE001 - bookkeeping must never fail the run it describes
+            logger.exception("ads refresh: could not record the run")
+
     return status()
 
 
