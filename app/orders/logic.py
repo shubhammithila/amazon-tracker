@@ -15,11 +15,18 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
 
+from app import ist
 from app.shipment.logic import weight_label
 
 #: India Standard Time. A fixed offset — India has no DST, so a full tzdata lookup would
 #: add a dependency for no behaviour.
-IST = timezone(timedelta(hours=5, minutes=30))
+#:
+#: **Re-exported from `app.ist` rather than defined here.** This definition was correct and was the
+#: first one in the codebase; it is aliased because two more grew up beside it (the ads bid guard's
+#: `IST_OFFSET`, and the scheduler's absent one — which fired the nightly jobs at 09:20 IST). Three
+#: statements of one fact is how they drift, and this file is imported by `orders/refresh.py` on a
+#: path where a wrong offset moves a ship-by deadline into the wrong day.
+IST = ist.IST
 
 #: Amazon sends 1995-01-01T00:00:00Z as "no Easy Ship ship-by". Three real `S02-…`
 #: orders carry it. Rendered as a date it reads as 31 years overdue and sorts to the top
@@ -108,12 +115,12 @@ def to_ist(value: datetime | None) -> datetime | None:
     DateTime drops the tzinfo, so a row read back from the database has none even though
     it was stored as UTC. Assuming local instead would subtract 5.5 hours from every
     deadline — a uniform error, and therefore the hardest kind to notice.
+
+    Delegates to `ist.to_ist`. The name stays because it is used throughout this module and its
+    tests, and because "every Easy Ship deadline is 18:29Z = 23:59 IST" is a fact about Amazon's
+    orders feed rather than about timezones.
     """
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(IST)
+    return ist.to_ist(value)
 
 
 def is_easy_ship(ship_service_level) -> bool:

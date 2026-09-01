@@ -251,6 +251,55 @@ def test_all_scheduled_jobs_are_registered(monkeypatch):
     }
 
 
+def test_the_nightly_jobs_fire_at_the_IST_time_they_claim(monkeypatch):
+    """**The sixth IST/UTC bug in this codebase, and the one that hid the others.**
+
+    `CronTrigger` takes no timezone here and evaluates in the server's local time, which is UTC on
+    the production box. So `ADS_REFRESH_HOUR = 3` fired at **09:20 IST** — the middle of the working
+    morning — under a comment that read "03:20 IST-ish (the box is UTC, so this is wall-clock server
+    time)": the mistake written down as a fact. The owner reported the Ads tab as empty at 12:59 IST
+    and the honest answer was that the "nightly" job had run three hours earlier and would not run
+    again for 21 hours.
+
+    Asserted through `ist.utc_hhmm` on the IST constants rather than against a literal `hour='2'`,
+    because a hardcoded UTC hour is exactly what the old code had and a test asserting one would pin
+    the bug rather than the intent.
+    """
+    from app import ist as ist_module
+    from app import scheduler as sched
+
+    jobs = _registered_jobs(monkeypatch, hour=6)
+
+    assert sched.ADS_REFRESH_IST == (8, 0), "the ads refresh is not at 08:00 IST as asked"
+    ads_hour, ads_minute = ist_module.utc_hhmm(*sched.ADS_REFRESH_IST)
+    assert f"hour='{ads_hour}'" in jobs["ads_refresh"], (
+        f"the ads job fires at {jobs['ads_refresh']}, not at 08:00 IST"
+    )
+    assert f"minute='{ads_minute}'" in jobs["ads_refresh"]
+
+    # The portfolio pull keeps its documented lead so the two never overlap on a 951 MB box.
+    assert sched.PORTFOLIO_REFRESH_IST < sched.ADS_REFRESH_IST, (
+        "the portfolio pull must stay before the ads one — both are minutes long and overlapping "
+        "them doubles the memory peak"
+    )
+    portfolio_hour, portfolio_minute = ist_module.utc_hhmm(*sched.PORTFOLIO_REFRESH_IST)
+    assert f"hour='{portfolio_hour}'" in jobs["portfolio_refresh"]
+    assert f"minute='{portfolio_minute}'" in jobs["portfolio_refresh"]
+
+
+def test_the_startup_log_states_the_IST_time_and_the_UTC_one(monkeypatch, caplog):
+    """`journalctl` stamps UTC while the intent is IST, so a line naming one leaves the next reader
+    to redo the arithmetic that was wrong here for the life of the feature."""
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="app.scheduler"):
+        _registered_jobs(monkeypatch, hour=6)
+
+    line = "\n".join(record.getMessage() for record in caplog.records)
+    assert "08:00 IST" in line, f"the log does not state the IST time: {line}"
+    assert "02:30 UTC" in line, f"the log does not state the UTC time it will be logged at: {line}"
+
+
 def test_the_nightly_ads_refresh_only_reads_and_never_edits_a_bid(monkeypatch):
     """**The scheduled job refreshes DATA. It must never apply a rule.**
 

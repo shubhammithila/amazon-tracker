@@ -4,6 +4,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select, delete
 
+from app import ist
 from app.config import get_settings
 from app.database import async_session
 from app.models import (
@@ -240,14 +241,19 @@ async def scheduled_purge_old_history():
     )
 
 
-#: When the nightly economics pull runs. 03:20 IST-ish (the box is UTC, so this is wall-clock
-#: server time like every other job here): after midnight so Amazon's daily data set has
-#: settled, and well clear of the 06:00 product scrape on a 951 MB box with no swap.
+#: When the nightly economics pull runs, **stated in IST and converted once** by `ist.utc_hhmm`.
 #:
-#: Minute 20 rather than 0 for the same reason the orders job starts 4 minutes in: nothing else
-#: should begin in the same second.
-PORTFOLIO_REFRESH_HOUR = 3
-PORTFOLIO_REFRESH_MINUTE = 20
+#: The previous value was `HOUR = 3` under a comment reading *"03:20 IST-ish (the box is UTC, so
+#: this is wall-clock server time)"* — the misreading written down as a fact, saying IST and meaning
+#: UTC in one sentence. `CronTrigger` takes no timezone here and evaluates in the server's local
+#: time, which is UTC on this box, so that job was firing at **08:50 IST**: the middle of the working
+#: morning rather than overnight. The ads one below was at 09:20 IST, which is how a nightly refresh
+#: came to look like it had never run.
+#:
+#: 07:30 IST rather than earlier so it is genuinely after midnight IST (Amazon's daily data set has
+#: settled) and still clear of the 06:00 *server-time* product scrape. Minute 30 rather than 0 for
+#: the same reason the orders job starts 4 minutes in: nothing else should begin in the same second.
+PORTFOLIO_REFRESH_IST = (7, 30)
 
 
 async def scheduled_portfolio_refresh():
@@ -283,11 +289,12 @@ async def scheduled_portfolio_refresh():
         )
 
 
-#: The ads refresh runs after the portfolio one rather than beside it. Both hit Amazon's reporting
-#: API and both are minutes long; overlapping them on a 951 MB box would double the peak for no
-#: benefit, and neither is urgent at 3am.
-ADS_REFRESH_HOUR = 3
-ADS_REFRESH_MINUTE = 50
+#: **08:00 IST, as asked for** — see `PORTFOLIO_REFRESH_IST` for why these are stated in IST.
+#:
+#: 30 minutes after the portfolio pull rather than beside it. Both hit Amazon's reporting API and
+#: both are minutes long (this one is ~50-60: four reports, since Amazon caps one at 31 days), so
+#: overlapping them on a 951 MB box would double the peak for no benefit.
+ADS_REFRESH_IST = (8, 0)
 
 
 async def scheduled_ads_refresh():
@@ -454,9 +461,13 @@ def setup_scheduler():
     # keyword track and the 09:15 purge asleep on a 951 MB box. The Portfolio tab needs its
     # nightly pull without waking any of those, and one Data Kiosk query a night is a rounding
     # error against the rate budget.
+    # **`ist.utc_hhmm` is what makes the times above mean what they say.** CronTrigger has no
+    # timezone here and the box runs UTC, so passing an IST hour straight through is the bug this
+    # converts away — it shifted both nightly jobs into the working morning.
+    portfolio_utc = ist.utc_hhmm(*PORTFOLIO_REFRESH_IST)
     scheduler.add_job(
         scheduled_portfolio_refresh,
-        CronTrigger(hour=PORTFOLIO_REFRESH_HOUR, minute=PORTFOLIO_REFRESH_MINUTE),
+        CronTrigger(hour=portfolio_utc[0], minute=portfolio_utc[1]),
         id="portfolio_refresh",
         replace_existing=True,
         # A slow run must not stack up behind itself. `refresh.run` refuses a concurrent start
@@ -464,21 +475,22 @@ def setup_scheduler():
         max_instances=1,
         coalesce=True,
     )
-    parts.append(
-        f"portfolio at {PORTFOLIO_REFRESH_HOUR:02d}:{PORTFOLIO_REFRESH_MINUTE:02d}"
-    )
+    parts.append(f"portfolio at {ist.label(*PORTFOLIO_REFRESH_IST)}")
 
     # Same flag pair again. The Ads tab needs current figures for its rules; it refreshes DATA
     # only and never edits a bid, so running it unattended is as safe as the portfolio pull.
+    ads_utc = ist.utc_hhmm(*ADS_REFRESH_IST)
     scheduler.add_job(
         scheduled_ads_refresh,
-        CronTrigger(hour=ADS_REFRESH_HOUR, minute=ADS_REFRESH_MINUTE),
+        CronTrigger(hour=ads_utc[0], minute=ads_utc[1]),
         id="ads_refresh",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
-    parts.append(f"ads at {ADS_REFRESH_HOUR:02d}:{ADS_REFRESH_MINUTE:02d}")
+    # **Both times, IST and UTC.** `journalctl` stamps UTC, the intent is IST, and printing one
+    # leaves the next reader to redo the arithmetic that was wrong here for the life of the feature.
+    parts.append(f"ads at {ist.label(*ADS_REFRESH_IST)}")
 
     scheduler.start()
     # Built from `parts` rather than one f-string: `keyword_hour` and `purge_hour` only exist

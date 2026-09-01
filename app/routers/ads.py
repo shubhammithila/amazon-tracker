@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import permissions
+from app import ist, permissions
 from app.ads import logic, refresh, repository, spapi_ads
 from app.config import get_settings
 from app.database import get_db
@@ -61,8 +61,12 @@ def _window(start: str | None, end: str | None, days: int | None,
     than it will tomorrow. The screen labels that rather than forbidding it: refusing to show today's
     spend at all is the wrong trade for a dashboard whose purpose is watching spend, and the owner
     asked for near-real-time explicitly.
+
+    **"Today" is the IST today.** On `date.today()` this box answers with the UTC date, so between
+    00:00 and 05:30 IST it would refuse the owner's actual today as "in the future" — the same
+    5.5-hour seam that shifted the date picker and back-dated a GST invoice. See `app/ist.py`.
     """
-    latest = today or date.today()
+    latest = today or ist.today()
 
     if start and end:
         try:

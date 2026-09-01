@@ -29,13 +29,16 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 
+from app import ist
+
 #: India is UTC+5:30, and the ledger stores naive `datetime.utcnow()`.
 #:
-#: **This offset is written once, here.** CLAUDE.md records FOUR separate bugs in this codebase from
-#: exactly this boundary — the Ads date picker, the Orders ship-by column, the Portfolio window, and a
-#: GST invoice that came out dated a day early — so the conversion is a named function with its own
-#: test rather than arithmetic inlined at a call site.
-IST_OFFSET = timedelta(hours=5, minutes=30)
+#: **Re-exported from `app.ist`, not defined here.** This module used to own the offset, under a
+#: comment noting FOUR bugs from this boundary. There are now SIX, and the sixth was the nightly
+#: scheduler firing at 09:20 IST — a file this offset could not reach. An offset that lives in
+#: whichever module happened to need it first is how a codebase ends up with three of them, so it
+#: moved up to `app/ist.py` and the name stays here because four call sites use it.
+IST_OFFSET = ist.IST_OFFSET
 
 
 def ist_day(when) -> str:
@@ -45,10 +48,12 @@ def ist_day(when) -> str:
     applied at 04:00 IST is 22:30 UTC the PREVIOUS day, so a UTC-day comparison would call it
     yesterday and allow a second run that morning — 5.5 hours out of every 24 in which the guard
     silently would not hold.
+
+    Delegates to `ist.day_of`; the name and this docstring stay because they are what the bid guard's
+    four call sites read, and because the reasoning above is about the guard rather than about
+    timezones in general.
     """
-    if when is None:
-        return ""
-    return (when + IST_OFFSET).date().isoformat()
+    return ist.day_of(when)
 
 # ─── Routing: which endpoint owns this row ───────────────────────────────────
 #

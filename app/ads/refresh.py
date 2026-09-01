@@ -22,6 +22,7 @@ from datetime import date, datetime, timedelta
 
 import httpx
 
+from app import ist
 from app.ads import repository, reports, spapi_ads
 from app.config import get_settings
 from app.database import async_session
@@ -122,8 +123,14 @@ def default_window(days: int = 7, *, today: date | None = None) -> tuple[str, st
     immediately while its attributed sale can land hours later — so a window including today shows a
     punishing ROAS every morning that recovers by evening. A bid rule acting on that would cut bids
     on a measurement artefact. Same rule the Portfolio tab documents.
+
+    **"Yesterday" is the IST yesterday, not the server's.** `date.today()` on this box is the UTC
+    date, so between 00:00 and 05:30 IST it is a day behind — and this function decides both what the
+    nightly job fetches AND what the screen's "last 7 days" means, so a wrong day here puts the
+    coverage and the presets one day apart for 5.5 hours out of every 24. The sixth instance of that
+    defect class in this codebase; `app/ist.py` records the other five.
     """
-    end = (today or date.today()) - timedelta(days=1)
+    end = (today or ist.today()) - timedelta(days=1)
     start = end - timedelta(days=days - 1)
     return start.isoformat(), end.isoformat()
 
