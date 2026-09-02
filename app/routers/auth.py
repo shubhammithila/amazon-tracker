@@ -24,6 +24,8 @@ cost: the alternative is baking the grant into the cookie, and then revoking som
 access would not take effect until their week-long session expired. Removing access has
 to be immediate — that is the entire point of the feature.
 """
+import logging
+
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -38,6 +40,7 @@ router = APIRouter()
 settings = get_settings()
 templates = Jinja2Templates(directory="templates")
 serializer = URLSafeTimedSerializer(settings.secret_key)
+logger = logging.getLogger(__name__)
 
 SESSION_COOKIE = "session_token"
 SESSION_MAX_AGE = 86400 * 7
@@ -342,6 +345,20 @@ def _landing(grant: str | None, is_admin: bool) -> str:
     return "/no-access"
 
 
+def _client_ip(request: Request) -> str | None:
+    """The real client address, through Caddy's X-Forwarded-For in production.
+
+    Caddy sits in front of uvicorn on this box (per CLAUDE.md's deployment section), so
+    `request.client.host` there is Caddy's own loopback address, not the visitor's. The header
+    is trusted here ONLY for a login log entry — a display value, never a security decision —
+    so a spoofed header has no consequence beyond a wrong-looking IP in this one report.
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else None
+
+
 @router.post("/login")
 async def login(
     request: Request,
@@ -355,12 +372,24 @@ async def login(
     get shadowed by it. Between the two shared passwords, APP_PASSWORD is checked first:
     if someone sets OPS_PASSWORD to the same value, the owner must not be silently
     demoted to ops.
+
+    **Every attempt is recorded** via `users_repo.record_login_event` — success or failure,
+    named or shared. See app/models.py's UserLoginEvent docstring for why this exists.
     """
-    async def _reject():
+    ip = _client_ip(request)
+
+    async def _reject(typed_username: str):
         try:
             named = await users_repo.any_users_exist(db)
         except Exception:
             named = False
+        try:
+            await users_repo.record_login_event(
+                db, username=typed_username or "(shared password)", user_id=None,
+                success=False, via="named" if typed_username else "app_password", ip_address=ip,
+            )
+        except Exception:
+            logger.warning("could not record a failed login attempt")
         return templates.TemplateResponse(
             request,
             "login.html",
@@ -380,6 +409,10 @@ async def login(
         except Exception:
             user = None  # users table missing — fall through to the shared passwords
         if user is not None:
+            await users_repo.record_login_event(
+                db, username=user.username, user_id=user.id, success=True, via="named",
+                ip_address=ip,
+            )
             return _issue(
                 {
                     "authenticated": True,
@@ -390,7 +423,7 @@ async def login(
                 },
                 _landing(user.permissions, user.is_admin),
             )
-        return await _reject()
+        return await _reject(username)
 
     # `settings.app_password and` is load-bearing, not defensive noise. Both shared
     # passwords now default to EMPTY (see app/config.py), and `password` arrives from
@@ -398,10 +431,18 @@ async def login(
     # would let an empty form through as full admin on any deployment that had not set
     # the variable. Unset must mean "this login does not exist".
     if settings.app_password and password == settings.app_password:
+        await users_repo.record_login_event(
+            db, username="(shared password)", user_id=None, success=True,
+            via="app_password", ip_address=ip,
+        )
         return _issue({"authenticated": True}, "/")
     if settings.ops_password and password == settings.ops_password:
+        await users_repo.record_login_event(
+            db, username="(shared password)", user_id=None, success=True,
+            via="ops_password", ip_address=ip,
+        )
         return _issue({"authenticated": True, "role": ROLE_OPS}, "/ops-page")
-    return await _reject()
+    return await _reject("")
 
 
 @router.get("/logout")

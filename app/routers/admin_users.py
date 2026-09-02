@@ -69,6 +69,20 @@ async def list_users(
     )
 
 
+@router.get("/login-log")
+async def login_log(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    actor: str = Depends(require_user_admin),
+):
+    """The most recent login attempts — success and failure, named and shared.
+
+    Recording started the day this shipped: there is no history before it. The panel says so.
+    """
+    events = await users_repo.load_login_events(db, limit=200)
+    return JSONResponse({"events": events})
+
+
 @router.post("")
 async def create_user(
     request: Request,

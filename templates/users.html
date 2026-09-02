@@ -175,6 +175,13 @@ tbody tr:hover{background:var(--accent-soft)}
     expire.</p>
   <div id="userList"><div class="empty">Loading…</div></div>
 </div>
+
+<div class="card">
+  <h3>Login log</h3>
+  <p class="help">Every sign-in attempt, successful or not — usernames, IPs and timestamps.
+    <strong>Recording started when this was added; nothing before then is in this log.</strong></p>
+  <div id="loginLog"><div class="empty">Loading…</div></div>
+</div>
 </main>
 
 <script>
@@ -229,6 +236,40 @@ async function load(){
   applyPreset();
   renderWarnings();
   renderUsers();
+  await loadLoginLog();
+}
+
+async function loadLoginLog(){
+  let data;
+  try{
+    const r = await fetch("/admin/users/login-log");
+    data = await r.json();
+    if(!r.ok) throw new Error(data.error || "Could not load the login log.");
+  }catch(err){
+    $("loginLog").innerHTML = `<div class="empty">${esc(err.message || "Could not reach the server.")}</div>`;
+    return;
+  }
+  const events = data.events || [];
+  if(!events.length){
+    $("loginLog").innerHTML = '<div class="empty">No login attempts recorded yet.</div>';
+    return;
+  }
+  const rows = events.map(e => {
+    const pill = e.success
+      ? '<span class="pill off" style="background:var(--green-soft);color:var(--green)">Success</span>'
+      : '<span class="pill off" style="background:var(--red-soft);color:var(--red)">Failed</span>';
+    const when = e.created_at ? new Date(e.created_at).toLocaleString() : "—";
+    return `<tr>
+      <td>${esc(e.username)} ${pill}</td>
+      <td>${esc(e.via)}</td>
+      <td>${esc(e.ip_address || "—")}</td>
+      <td>${esc(when)}</td>
+    </tr>`;
+  }).join("");
+  $("loginLog").innerHTML = `
+    <table><thead><tr>
+      <th>Who</th><th>Method</th><th>IP</th><th>When</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function renderPresets(){

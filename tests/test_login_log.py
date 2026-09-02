@@ -56,3 +56,51 @@ async def test_load_login_events_caps_at_500_even_if_more_is_requested(db):
         )
     events = await users_repo.load_login_events(db, limit=10_000)
     assert len(events) == 3  # not an error case, just confirms the cap does not break a small load
+
+
+# ─── POST /login records every attempt ──────────────────────────────────────────
+
+
+async def test_a_failed_login_is_recorded(client, db):
+    from app import users as users_repo
+
+    r = await client.post("/login", data={"username": "nobody", "password": "wrong"})
+    assert r.status_code == 401
+
+    events = await users_repo.load_login_events(db)
+    assert len(events) == 1
+    assert events[0]["success"] is False
+    assert events[0]["username"] == "nobody"
+
+
+async def test_a_successful_named_login_is_recorded_with_the_right_via(client, db):
+    from app import users as users_repo
+
+    user, password = await users_repo.create(
+        db, username="ravi", full_name="Ravi", is_admin=True, created_by="test",
+    )
+    r = await client.post("/login", data={"username": "ravi", "password": password})
+    assert r.status_code == 303
+
+    events = await users_repo.load_login_events(db)
+    assert events[0]["success"] is True
+    assert events[0]["via"] == "named"
+    assert events[0]["user_id"] == user.id
+
+
+async def test_a_shared_password_login_is_recorded_as_app_password(client, db, monkeypatch):
+    """`app/routers/auth.py` captures `settings = get_settings()` ONCE at import time into a
+    module-level name — patching a freshly-called `get_settings()` (a different object once
+    another test has cleared the lru_cache) would silently miss the instance `login()` actually
+    reads. `test_users_and_permissions.py` already established the correct target:
+    `auth_module.settings`, not `get_settings()`."""
+    from app import users as users_repo
+    from app.routers import auth as auth_module
+
+    monkeypatch.setattr(auth_module.settings, "app_password", "test-shared-password")
+    r = await client.post("/login", data={"password": "test-shared-password"})
+    assert r.status_code == 303
+
+    events = await users_repo.load_login_events(db)
+    assert events[0]["via"] == "app_password"
+    assert events[0]["user_id"] is None

@@ -1177,3 +1177,23 @@ async def test_named_accounts_do_not_disable_a_configured_shared_password(
         "a configured shared password stopped working once named accounts existed — "
         "that is the documented recovery path and removing it needs its own decision"
     )
+
+
+# ─── Login log ────────────────────────────────────────────────────────────────
+
+
+async def test_login_log_requires_admin(client, db):
+    r = await client.get("/admin/users/login-log")
+    assert r.status_code in (303, 401, 403)
+
+
+async def test_login_log_lists_recent_attempts(client, db):
+    admin, admin_password = await _make_admin(client, db)
+    await client.post("/login", data={"username": "wrong-user", "password": "wrong"})
+    await _signed_in(client, admin.username, admin_password)
+
+    r = await client.get("/admin/users/login-log")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["events"]) >= 2  # the failed probe and this test's own successful sign-in
+    assert any(not e["success"] for e in body["events"])
