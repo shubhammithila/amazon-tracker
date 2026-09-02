@@ -147,3 +147,60 @@ async def test_last_refresh_returns_the_newest_row(db):
     await repository.record_refresh(db, window_start="2026-08-02", window_end="2026-08-31", rows_stored=2)
     last = await repository.last_refresh(db)
     assert last["rows_stored"] == 2
+
+
+# ─── excluded_at: removing a row from the table, reversibly ────────────────────
+
+
+async def test_load_rows_excludes_by_default(db):
+    from app.projections import repository
+
+    await repository.save_row(db, "Chana Sattu", {"last_month_sale": 10.0}, source="sheet")
+    await repository.set_excluded(db, ["Chana Sattu"], True)
+
+    rows = await repository.load_rows(db)
+    assert rows == []
+
+
+async def test_load_rows_include_excluded_shows_it_anyway(db):
+    from app.projections import repository
+
+    await repository.save_row(db, "Chana Sattu", {"last_month_sale": 10.0}, source="sheet")
+    await repository.set_excluded(db, ["Chana Sattu"], True)
+
+    rows = await repository.load_rows(db, include_excluded=True)
+    assert len(rows) == 1
+    assert rows[0]["excluded_at"] is not None
+
+
+async def test_set_excluded_is_reversible(db):
+    from app.projections import repository
+
+    await repository.save_row(db, "Chana Sattu", {"last_month_sale": 10.0}, source="sheet")
+    await repository.set_excluded(db, ["Chana Sattu"], True)
+    await repository.set_excluded(db, ["Chana Sattu"], False)
+
+    rows = await repository.load_rows(db)
+    assert len(rows) == 1
+    assert rows[0]["parent_product"] == "Chana Sattu"
+
+
+async def test_set_excluded_is_idempotent(db):
+    """Excluding an already-excluded row a second time changes nothing and reports no
+    change — the same rule set_item_excluded follows, so a double-click cannot look like
+    two separate actions in a log or a response."""
+    from app.projections import repository
+
+    await repository.save_row(db, "Chana Sattu", {"last_month_sale": 10.0}, source="sheet")
+    first = await repository.set_excluded(db, ["Chana Sattu"], True)
+    second = await repository.set_excluded(db, ["Chana Sattu"], True)
+    assert first == ["Chana Sattu"]
+    assert second == []
+
+
+async def test_set_excluded_returns_only_the_names_actually_changed(db):
+    from app.projections import repository
+
+    await repository.save_row(db, "Chana Sattu", {"last_month_sale": 10.0}, source="sheet")
+    changed = await repository.set_excluded(db, ["Chana Sattu", "Nonexistent Product"], True)
+    assert changed == ["Chana Sattu"]

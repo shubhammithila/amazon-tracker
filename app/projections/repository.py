@@ -36,7 +36,7 @@ _FIELDS = (
     "parent_product", "brand", "purchase_rate", "supplier_to_wh", "packing", "wh_to_ixd",
     "ixd_to_fba", "wh_buffer_days", "seasonal_impact", "needs_review",
     "sales_source", "last_month_sale", "seven_day_rate", "thirty_day_rate", "daily_rate",
-    "diverged", "current_fba_stock", "current_wh_stock",
+    "diverged", "current_fba_stock", "current_wh_stock", "excluded_at",
 )
 
 #: Which of the fields above are Decimal-backed and need the float conversion on the way out.
@@ -54,10 +54,48 @@ def _row_to_dict(row: ProjectionRow) -> dict:
     return out
 
 
-async def load_rows(db: AsyncSession) -> list[dict]:
-    """Every stored parent row, as plain dicts with floats — never `Decimal`."""
-    rows = (await db.execute(select(ProjectionRow))).scalars().all()
+async def load_rows(db: AsyncSession, *, include_excluded: bool = False) -> list[dict]:
+    """Every stored parent row, as plain dicts with floats — never `Decimal`.
+
+    **Excludes a removed row by default**, matching `app.shipment.repository.load_plan_items`'s
+    own `include_excluded` default — the same soft-hide, same default direction, so a caller
+    that forgets the flag gets the safe answer (nothing removed is shown) rather than the
+    surprising one.
+    """
+    query = select(ProjectionRow)
+    if not include_excluded:
+        query = query.where(ProjectionRow.excluded_at.is_(None))
+    rows = (await db.execute(query)).scalars().all()
     return [_row_to_dict(r) for r in rows]
+
+
+async def set_excluded(
+    db: AsyncSession, parent_products: list[str], excluded: bool,
+) -> list[str]:
+    """Remove or restore rows by parent name, reversibly. Returns the names actually changed.
+
+    Mirrors `app.shipment.repository.set_item_excluded` exactly: idempotent (excluding an
+    already-excluded row is a no-op, not counted as a change) and never deletes anything.
+    """
+    if not parent_products:
+        return []
+
+    result = await db.execute(
+        select(ProjectionRow).where(ProjectionRow.parent_product.in_(list(parent_products)))
+    )
+    stamp = datetime.utcnow() if excluded else None
+    changed = []
+    for row in result.scalars():
+        if excluded and row.excluded_at is not None:
+            continue
+        if not excluded and row.excluded_at is None:
+            continue
+        row.excluded_at = stamp
+        changed.append(row.parent_product)
+
+    if changed:
+        await db.commit()
+    return changed
 
 
 async def save_row(

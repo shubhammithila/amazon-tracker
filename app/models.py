@@ -897,6 +897,16 @@ class ProjectionRow(Base):
     current_fba_stock = Column(Numeric(10, 1), default=0)
     current_wh_stock = Column(Numeric(10, 1), default=0)
 
+    # Set when the owner removes this parent from the screen. A TIMESTAMP rather than a
+    # boolean, matching ShipmentPlanItem.excluded_at exactly and for the same two reasons:
+    # `WHERE excluded_at IS NULL` treats every pre-migration row as included with no backfill,
+    # and reversibility is the point — removing several rows by mistake is one click back.
+    #
+    # **This does not permanently retire an active parent.** `build_current_rows` recreates a
+    # bare row for any currently-active sheet parent missing one, and exclusion does not stop
+    # that — only a row for a parent no longer active in the sheet stays hidden for good.
+    excluded_at = Column(DateTime)
+
     updated_at = Column(DateTime, default=datetime.utcnow)
     updated_by = Column(String(60))
 
