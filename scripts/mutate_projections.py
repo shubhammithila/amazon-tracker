@@ -102,6 +102,20 @@ MUTATIONS = [
         "        effective_wh_buffer = wh_buffer * divergence_buffer_multiplier",
         "test_ideal_wh_stock_does_not_widen_the_buffer_for_a_calm_row",
     ),
+    (
+        "load_rows stops excluding a removed row by default",
+        REPO,
+        "    query = select(ProjectionRow)\n    if not include_excluded:\n        query = query.where(ProjectionRow.excluded_at.is_(None))",
+        "    query = select(ProjectionRow)",
+        "test_load_rows_excludes_by_default",
+    ),
+    (
+        "the reorder export stops filtering to a positive reorder level",
+        ROUTER,
+        '    filtered = [p for p in products if (p.get("ideal_wh_stock") or 0) > 0]',
+        "    filtered = list(products)",
+        "test_download_reorder_xlsx_only_includes_positive_reorder_levels",
+    ),
 ]
 
 

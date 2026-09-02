@@ -235,12 +235,34 @@ async def test_exclude_refuses_an_empty_selection(auth_client, db, fake_catalogu
 async def test_download_reorder_xlsx_only_includes_positive_reorder_levels(
     auth_client, db, fake_catalogue,
 ):
+    """The actual boundary this export exists to enforce: a covered product (ideal_wh_stock
+    of 0, because it has no demand rate yet) must be ABSENT, while a product that genuinely
+    needs reordering must be present — mirroring the 'To buy' list's own filtered-not-zeroed
+    rule."""
+    from app.projections import repository
+
     await auth_client.get("/projections/last")  # seeds all active parents at daily_rate=0
+    # Govind Bhog Rice gets a real demand rate, so its ideal_wh_stock is > 0; Chana Sattu is
+    # left at daily_rate=0 (the seeded default) and stays covered (ideal_wh_stock == 0).
+    await repository.save_row(
+        db, "Govind Bhog Rice",
+        {"daily_rate": 40.0, "wh_buffer_days": 10, "supplier_to_wh": 5, "seasonal_impact": 1.0},
+        source="sheet",
+    )
+
     response = await auth_client.get("/projections/download/reorder.xlsx")
     assert response.status_code == 200
     assert response.headers["content-type"] == (
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
+    from openpyxl import load_workbook
+    import io
+    book = load_workbook(io.BytesIO(response.content))
+    sheet = book.active
+    text = " ".join(str(c.value) for row in sheet.iter_rows() for c in row if c.value)
+    assert "Govind Bhog Rice" in text, "a product needing reorder was missing from the export"
+    assert "Chana Sattu" not in text, "a covered product (0 reorder level) leaked into the export"
 
 
 async def test_download_reorder_pdf_responds_200(auth_client, db, fake_catalogue):
