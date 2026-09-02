@@ -77,6 +77,27 @@ or purchase costs.
 carried in the cookie. Sessions last a week, so a cookie-carried grant would make
 "I removed his access" untrue for up to seven days. That immediacy *is* the feature.
 
+### There was no login history before this, and the panel says so
+`User.last_login_at` is a single timestamp, overwritten on every success — it can answer "when
+did they last sign in" and nothing else. No audit table existed anywhere in this codebase.
+Reported directly: *"make a page to see user log, what did they do when they logged in to check
+what different users are doing."*
+
+**Scoped to login events, not a general activity trail.** A full "what did they click" log would
+need a hook on most of this app's ~150 routes and this codebase has no precedent for that kind of
+blanket instrumentation; login events answer the actual question — who signed in, when, from
+where, and whether an attempt failed — while touching exactly one route.
+
+**Every attempt is recorded, not only successes.** A log that only shows successful logins cannot
+answer "is someone trying my password," which is the more common reason to open a page like this.
+`UserLoginEvent.username` is the string TYPED, not resolved, because a failed attempt against a
+username that does not exist is still worth keeping — `user_id` stays NULL for that case and for
+every shared-password login, which has no user row to point at.
+
+**Recording starts the day this shipped.** The panel states this rather than implying a history
+that is not there — the honest version of the same lesson the Portfolio tab's `ProductDecision`
+already teaches: absence of a row must never be mistaken for absence of an event.
+
 > **`/ops-page` was the exception that broke.** It sat on `require_ops_or_admin`,
 > which reads only the cookie — so a *disabled* named account kept the packing screen
 > for a week while every other page cut it off at once. Found by testing the loop on
@@ -2551,6 +2572,32 @@ number is now `Total Ideal WH (kg)` across the portfolio, replacing four stats
 (`total_ideal_value`, `total_current_value`, `shipment_alerts`, `reorder_alerts`) that no longer
 have data behind them once the alert columns were removed; a `Diverged` count replaces
 `critical_alerts` as the other headline figure.
+
+### A product can be removed from the table, and the export only lists what needs reordering
+Reported directly: *"give a button to download reorder level... just the product, brand and the
+reorder level"*, *"also highlight it in the live table"*, and *"give option here to remove a
+product from the list by selecting and removing it."*
+
+**Removing a row is `excluded_at`, exactly `ShipmentPlanItem`'s own mechanism** — a nullable
+timestamp, never a `DELETE`, reversible in one click. This is not a way to permanently retire a
+product still active in the MRP sheet: `build_current_rows` recreates a bare row for any
+currently-active parent missing one, and exclusion does not stop that. It IS effectively
+permanent for a parent no longer active in the sheet, because nothing recreates that one. Both
+the confirm dialog and the hidden-rows note say so, rather than letting the owner discover the
+limit the first time a "removed" product reappears after a weekly refresh.
+
+**The reorder-level export gets the same treatment as the Shipment tab's "To buy" list**:
+filtered to `ideal_wh_stock > 0`, never a row reading "Product … 0" — the same reasoning
+`build_tobuy_xlsx`'s own docstring states, because a document like this gets forwarded to a
+supplier and a zero invites ordering zero of it. `build_reorder_xlsx`/`build_reorder_pdf` are new
+sibling functions in `app/shipment/documents.py`, not parameters on `build_simple_xlsx`/
+`build_simple_pdf` — those two are hardwired to the 8-column shipment identity shape via
+`IDENTITY_HEADERS`, the same reason `build_portfolio_xlsx` had to be its own function rather
+than widening `build_simple_xlsx`.
+
+The `Ideal WH` cell carries a background tint (`.ideal-wh-cell`) distinguishing it from the
+other bold calculated columns (Forecast, Ideal FBA) — bold alone did not single it out as the
+number actually being watched.
 
 ## Known gaps (deliberate, not oversights)
 
