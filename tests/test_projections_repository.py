@@ -99,6 +99,32 @@ async def test_load_blend_settings_defaults_when_never_saved(db):
     assert await repository.load_blend_settings(db) == logic.DEFAULT_BLEND
 
 
+async def test_global_growth_rate_and_divergence_multiplier_round_trip(db):
+    """The two new blend settings use the exact same load/save/reset path as the pre-existing
+    seven_day_weight/divergence_pct — no new repository functions needed, since
+    load_blend_settings/save_blend_settings already iterate DEFAULT_BLEND generically."""
+    defaults = await repository.load_blend_settings(db)
+    assert defaults["global_growth_rate"] == 0.3
+    assert defaults["divergence_buffer_multiplier"] == 1.5
+
+    saved = await repository.save_blend_settings(
+        db, {"global_growth_rate": 0.5, "divergence_buffer_multiplier": 2.0},
+    )
+    assert saved["global_growth_rate"] == 0.5
+    assert saved["divergence_buffer_multiplier"] == 2.0
+
+    reloaded = await repository.load_blend_settings(db)
+    assert reloaded["global_growth_rate"] == 0.5
+    assert reloaded["divergence_buffer_multiplier"] == 2.0
+
+
+async def test_divergence_buffer_multiplier_below_one_is_refused(db):
+    """The good_rating: 99 lesson, applied here: a multiplier below 1.0 would SHRINK a volatile
+    product's buffer, the opposite of what this setting exists to do."""
+    with pytest.raises(ValueError, match="divergence_buffer_multiplier"):
+        await repository.save_blend_settings(db, {"divergence_buffer_multiplier": 0.5})
+
+
 # ─── refresh history ───────────────────────────────────────────────────────────
 
 

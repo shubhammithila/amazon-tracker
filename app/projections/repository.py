@@ -34,14 +34,14 @@ BLEND_SETTING_NAME = "projection_blend"
 #: `save_row`'s `setattr` loop cannot drift about which fields exist.
 _FIELDS = (
     "parent_product", "brand", "purchase_rate", "supplier_to_wh", "packing", "wh_to_ixd",
-    "ixd_to_fba", "wh_buffer_days", "seasonal_impact", "growth_rate", "needs_review",
+    "ixd_to_fba", "wh_buffer_days", "seasonal_impact", "needs_review",
     "sales_source", "last_month_sale", "seven_day_rate", "thirty_day_rate", "daily_rate",
     "diverged", "current_fba_stock", "current_wh_stock",
 )
 
 #: Which of the fields above are Decimal-backed and need the float conversion on the way out.
 _NUMERIC_FIELDS = (
-    "purchase_rate", "wh_buffer_days", "seasonal_impact", "growth_rate", "last_month_sale",
+    "purchase_rate", "wh_buffer_days", "seasonal_impact", "last_month_sale",
     "seven_day_rate", "thirty_day_rate", "daily_rate", "current_fba_stock", "current_wh_stock",
 )
 
