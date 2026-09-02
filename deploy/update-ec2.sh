@@ -366,8 +366,10 @@ def indexes(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "projection_row" in tables and "growth_rate" not in cols("projection_row"):
+    print("db7f8bc09d4d")                           # head: growth_rate dropped (now a global setting)
 elif "projection_row" in tables:
-    print("e81434e50028")                           # head: projection rows + refresh record
+    print("e81434e50028")                           # projection rows + refresh record
 elif "ads_refresh" in tables:
     print("c5e91a3d47b6")                           # per-run ads refresh record
 elif "idx_ads_mutation_created" in indexes("ads_mutation"):
