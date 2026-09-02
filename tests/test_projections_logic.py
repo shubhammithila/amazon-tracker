@@ -174,3 +174,154 @@ def test_calculate_projections_falls_back_for_a_sheet_row_never_yet_refreshed():
     }]
     result = logic.calculate_projections(products)[0]
     assert result["monthly_forecast"] == pytest.approx(39.0)  # 30 * 1.0 * 1.3
+
+
+# ─── sales_kg_by_parent ────────────────────────────────────────────────────────
+
+
+def _econ_row(asin, units_ordered, net_units=None):
+    """One economics_snapshot row in Amazon's own nested shape — the same shape
+    `app.portfolio.economics.fetch_economics` returns and `app.portfolio.repository.load_snapshot`
+    reconstructs from storage, so this fixture is honest about what the real caller passes."""
+    return {
+        "childAsin": asin,
+        "sales": {
+            "unitsOrdered": units_ordered,
+            "netUnitsSold": net_units if net_units is not None else units_ordered,
+        },
+    }
+
+
+def test_sales_kg_by_parent_sums_units_ordered_times_weight():
+    groups = {"Chana Sattu": {"asins": ["B01"], "weights": {"B01": 0.5}, "brand": ""}}
+    rows = [_econ_row("B01", units_ordered=100)]
+    result = logic.sales_kg_by_parent(rows, groups)
+    assert result == {"Chana Sattu": 50.0}
+
+
+def test_sales_kg_by_parent_sums_multiple_pack_sizes_into_one_parent():
+    groups = {"Chana Sattu": {"asins": ["B01", "B02"], "weights": {"B01": 0.5, "B02": 1.0},
+                              "brand": ""}}
+    rows = [_econ_row("B01", units_ordered=100), _econ_row("B02", units_ordered=40)]
+    result = logic.sales_kg_by_parent(rows, groups)
+    assert result == {"Chana Sattu": 90.0}  # 100*0.5 + 40*1.0
+
+
+def test_sales_kg_by_parent_ignores_net_units_and_never_goes_negative():
+    """Measured cause: net_units went negative (-1) on 2 ASINs in a real refund-heavy 7-day
+    window. units_ordered is the demand signal; a returns problem is not lower demand, and a
+    negative daily rate would produce a negative purchase quantity."""
+    groups = {"Chana Sattu": {"asins": ["B01"], "weights": {"B01": 1.0}, "brand": ""}}
+    rows = [_econ_row("B01", units_ordered=5, net_units=-1)]
+    result = logic.sales_kg_by_parent(rows, groups)
+    assert result == {"Chana Sattu": 5.0}, "net_units leaked into the sales figure"
+
+
+def test_sales_kg_by_parent_ignores_an_asin_outside_the_active_groups():
+    """A row for a discontinued or unknown ASIN must not silently create a phantom parent."""
+    groups = {"Chana Sattu": {"asins": ["B01"], "weights": {"B01": 1.0}, "brand": ""}}
+    rows = [_econ_row("B01", units_ordered=10), _econ_row("B99UNKNOWN", units_ordered=999)]
+    result = logic.sales_kg_by_parent(rows, groups)
+    assert result == {"Chana Sattu": 10.0}
+
+
+def test_sales_kg_by_parent_is_empty_for_no_rows():
+    groups = {"Chana Sattu": {"asins": ["B01"], "weights": {"B01": 1.0}, "brand": ""}}
+    assert logic.sales_kg_by_parent([], groups) == {}
+
+
+# ─── blended_daily_rate ────────────────────────────────────────────────────────
+
+
+def test_blended_daily_rate_weights_seven_and_thirty_day():
+    """0.4 * (7d/7) + 0.6 * (30d/30), the default weight — verified against real account
+    figures: Bangla Moori-shaped (7d rate above 30d) and Miniket-shaped (7d rate below) both
+    move in the direction the blend implies, not toward zero."""
+    rate, diverged = logic.blended_daily_rate(kg_30d=300.0, kg_7d=70.0, weight=0.4)
+    # 30d/day = 10.0, 7d/day = 10.0 -> exact agreement, no divergence
+    assert rate == 10.0
+    assert diverged is False
+
+
+def test_blended_daily_rate_responds_to_a_spike():
+    # 30d/day = 10.0, 7d/day = 20.0 (2x) -> blended = 0.4*20 + 0.6*10 = 14.0
+    rate, diverged = logic.blended_daily_rate(kg_30d=300.0, kg_7d=140.0, weight=0.4)
+    assert rate == 14.0
+    assert diverged is True, "a 2x week-over-month move must be flagged against the default 30% threshold"
+
+
+def test_blended_daily_rate_takes_an_explicit_divergence_threshold():
+    """The threshold is a PARAMETER, not a hardcoded constant, because it is a saved, editable
+    setting (`DEFAULT_BLEND['divergence_pct']`) — the refresh job (Task 6) reads it from storage
+    and must be able to pass a value other than the default."""
+    # 30d/day = 10.0, 7d/day = 11.0 -> 10% move: not diverged at the default 30% threshold...
+    _, diverged_default = logic.blended_daily_rate(kg_30d=300.0, kg_7d=77.0, weight=0.4)
+    assert diverged_default is False
+    # ...but IS diverged against a tight 5% threshold, passed explicitly.
+    _, diverged_tight = logic.blended_daily_rate(
+        kg_30d=300.0, kg_7d=77.0, weight=0.4, divergence_fraction=0.05,
+    )
+    assert diverged_tight is True
+
+
+def test_blended_daily_rate_falls_back_to_thirty_day_when_seven_day_is_missing():
+    """kg_7d=None means no 7-day snapshot exists yet for this parent — NOT a zero-sales week.
+    Falling back entirely (rather than blending toward zero) is the whole point: 4 of 47
+    currently-selling parents on the real account had 30-day sales but no stored 7-day window
+    at all when this was measured, and treating that as a zero would have cut their forecasts
+    40% on no evidence.
+    """
+    rate, diverged = logic.blended_daily_rate(kg_30d=300.0, kg_7d=None, weight=0.4)
+    assert rate == 10.0  # 300/30, the 30-day rate alone
+    assert diverged is False, "a missing window is not evidence of divergence"
+
+
+def test_blended_daily_rate_DOES_blend_a_genuine_zero_sales_week():
+    """The other half of the same distinction: a REAL zero-sales week (the window exists, it
+    says 0) is data, and IS blended at the normal weight — collapsing 'no data' and 'zero
+    data' into the same behaviour is the mutation this test exists to catch.
+    """
+    rate, diverged = logic.blended_daily_rate(kg_30d=300.0, kg_7d=0.0, weight=0.4)
+    # 30d/day = 10.0, 7d/day = 0.0 -> blended = 0.4*0 + 0.6*10 = 6.0
+    assert rate == 6.0
+    assert diverged is True
+
+
+def test_blended_daily_rate_handles_a_dead_parent():
+    rate, diverged = logic.blended_daily_rate(kg_30d=0.0, kg_7d=0.0, weight=0.4)
+    assert rate == 0.0
+    assert diverged is False, "0 vs 0 is agreement, not divergence"
+
+
+# ─── blend settings: range-checked on read and write ──────────────────────────
+
+
+def test_default_blend_weight_and_threshold():
+    assert logic.DEFAULT_BLEND == {"seven_day_weight": 0.4, "divergence_pct": 30.0}
+
+
+def test_blend_setting_error_refuses_an_unknown_key():
+    assert logic.blend_setting_error("bogus", 5) is not None
+
+
+def test_blend_setting_error_refuses_an_out_of_range_weight():
+    """The good_rating: 99 lesson — a weight of 99 would mean 'ignore the 30-day figure
+    entirely and pretend last week is the only history that exists', silently."""
+    assert logic.blend_setting_error("seven_day_weight", 99) is not None
+    assert logic.blend_setting_error("seven_day_weight", 0.4) is None
+
+
+def test_blend_setting_error_refuses_a_non_numeric_value():
+    assert logic.blend_setting_error("seven_day_weight", "lots") is not None
+
+
+def test_blend_or_default_merges_over_the_defaults():
+    merged = logic.blend_or_default({"seven_day_weight": 0.5})
+    assert merged == {"seven_day_weight": 0.5, "divergence_pct": 30.0}
+
+
+def test_blend_or_default_discards_an_invalid_stored_value():
+    """Validated on READ, not only on write — a value already in the database, or edited by
+    hand, must not keep weakening the setting with nothing on screen explaining why."""
+    merged = logic.blend_or_default({"seven_day_weight": 500})
+    assert merged["seven_day_weight"] == logic.DEFAULT_BLEND["seven_day_weight"]

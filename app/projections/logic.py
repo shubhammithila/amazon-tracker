@@ -160,3 +160,122 @@ def calculate_projections(products: list[dict]) -> list[dict]:
         p["inventory_days"] = inventory_days
 
     return products
+
+
+def sales_kg_by_parent(snapshot_rows: list[dict], groups: Mapping[str, dict]) -> dict[str, float]:
+    """`units_ordered x pack weight`, summed per parent name. **Never `net_units`** — see the
+    module docstring's cross-reference and the test fixture's own note: `net_units` goes negative
+    on a refund-heavy week (measured: 2 ASINs in a real 7-day window), and a returns problem is
+    not a demand signal.
+
+    `snapshot_rows` is Amazon's nested row shape — the same shape
+    `app.portfolio.economics.fetch_economics` returns fresh and
+    `app.portfolio.repository.load_snapshot` reconstructs from storage, so this function does not
+    care which one supplied it. A row for an ASIN outside `groups` (discontinued, or unknown to
+    the sheet) contributes to no parent — it is not this function's job to invent one.
+    """
+    asin_to_parent: dict[str, tuple[str, float]] = {}
+    for parent, group in groups.items():
+        for asin in group["asins"]:
+            asin_to_parent[asin] = (parent, group["weights"].get(asin) or 0)
+
+    totals: dict[str, float] = {}
+    for row in snapshot_rows:
+        asin = (row.get("childAsin") or "").strip().upper()
+        mapping = asin_to_parent.get(asin)
+        if not mapping:
+            continue
+        parent, weight = mapping
+        units = int((row.get("sales") or {}).get("unitsOrdered") or 0)
+        totals[parent] = totals.get(parent, 0.0) + units * weight
+    return {parent: round(kg, 2) for parent, kg in totals.items()}
+
+
+def blended_daily_rate(
+    kg_30d: float, kg_7d: float | None, weight: float, *, divergence_fraction: float = 0.30,
+) -> tuple[float, bool]:
+    """`(rate, diverged)` — the daily kg/day to forecast from, and whether the 7-day and 30-day
+    windows disagreed enough to flag on screen.
+
+    **`kg_7d=None` and `kg_7d=0.0` are different facts, and this is the whole point of the
+    function.** `None` means no 7-day snapshot exists yet for this parent — the window is
+    missing, not zero — and the honest answer is the 30-day rate alone. `0.0` means the window
+    exists and genuinely recorded no sales that week, which IS real evidence and IS blended at
+    the normal weight. Collapsing the two would cut a slow mover's forecast by the blend weight
+    every time the 7-day fetch simply had not run yet, which is the common case on any given day.
+
+    `divergence_fraction` is a PARAMETER, not a hardcoded constant, because it is a saved,
+    editable setting (`DEFAULT_BLEND['divergence_pct'] / 100`) — the refresh job loads it from
+    storage and passes the owner's own threshold. The default of 0.30 matches `DEFAULT_BLEND`
+    exactly and is only what a caller gets for free if it never loads a setting.
+    """
+    rate_30 = (kg_30d or 0.0) / 30
+    if kg_7d is None:
+        return round(rate_30, 2), False
+
+    rate_7 = kg_7d / 7
+    blended = weight * rate_7 + (1 - weight) * rate_30
+    if rate_30 == 0:
+        diverged = rate_7 != 0
+    else:
+        diverged = abs(rate_7 / rate_30 - 1) > divergence_fraction
+    return round(blended, 2), diverged
+
+
+#: The blend weight and divergence threshold, editable and range-checked — the same pattern
+#: `app.ads.logic.DEFAULT_GUARDRAILS` / `GUARDRAIL_RANGES` / `guardrail_error` establishes, mirrored
+#: with its own names because both are hardcoded to their own `PortfolioSettings.name` row and
+#: neither owns the concept of "a saved, range-checked JSON setting" generally.
+DEFAULT_BLEND = {
+    #: How much weight the last 7 days carries against the last 30. 0.4 is a starting point
+    #: measured to move real parents meaningfully (Bangla Moori-shaped: 1.74x) without letting
+    #: one freak week dominate a monthly purchasing decision.
+    "seven_day_weight": 0.4,
+    #: The |7d/30d - 1| fraction, as a PERCENTAGE for the settings screen, above which a row is
+    #: flagged diverged. 30% — smaller than the real spikes measured (58-74%) so genuine signal
+    #: is not missed, larger than ordinary week-to-week noise.
+    "divergence_pct": 30.0,
+}
+
+#: Bounds for each blend setting. Same lesson as `app.ads.logic.GUARDRAIL_RANGES`: a
+#: `good_rating: 99`-shaped mistake here (`seven_day_weight: 99`) would mean "ignore the 30-day
+#: figure and treat one week as the whole history" — silently, with nothing to catch it.
+BLEND_RANGES = {
+    "seven_day_weight": (0.0, 1.0),
+    "divergence_pct": (1.0, 200.0),
+}
+
+
+def blend_setting_error(key: str, value) -> str | None:
+    """The REASON a blend setting is refused, or `None` if acceptable. Prose, not a bare False,
+    so a refusal can say what the units are — the same shape as `app.ads.logic.guardrail_error`.
+    """
+    if key not in DEFAULT_BLEND:
+        valid = ", ".join(sorted(DEFAULT_BLEND))
+        return f"Unknown setting {key!r}. Valid names: {valid}."
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return f"{key} must be a number, got {value!r}."
+    if number != number or number in (float("inf"), float("-inf")):
+        return f"{key} must be a number, got {value!r}."
+    low, high = BLEND_RANGES[key]
+    if not (low <= number <= high):
+        if key == "seven_day_weight":
+            return (f"{key} must be between {low:g} and {high:g} — it is a fraction of the "
+                     f"blend, got {number:g}.")
+        return f"{key} must be between {low:g} and {high:g}, got {number:g}."
+    return None
+
+
+def blend_or_default(stored: Mapping | None) -> dict:
+    """Merge stored blend settings over the defaults, discarding any value that fails its range.
+
+    **Validated on READ, not only on write** — a value already in the database, or edited by
+    hand outside the app, must not keep silently distorting every parent's forecast.
+    """
+    merged = dict(DEFAULT_BLEND)
+    for key, value in (stored or {}).items():
+        if blend_setting_error(key, value) is None:
+            merged[key] = float(value)
+    return merged
