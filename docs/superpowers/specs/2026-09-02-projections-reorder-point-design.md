@@ -110,8 +110,8 @@ today by accident of the static file's structure. Seasonality is genuinely per-p
 
 ## What changes on screen
 
-**Removed** (9 columns — Growth joins the 8 named in the request, since it becomes global rather
-than dropped entirely):
+**Removed** (8 columns — Growth joins the 7 named explicitly in the request, since it becomes
+global rather than dropped entirely):
 
 `Growth · Current FBA · Ship Alert · Current WH · Reorder Alert · Rate · Stock Value · Inv Days`
 
