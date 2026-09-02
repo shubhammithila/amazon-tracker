@@ -2403,6 +2403,100 @@ job in Seller Central.
 The only area that can spend money has to be granted knowingly, per person, rather than arriving
 with a job title. Deny-by-default already makes it invisible until granted.
 
+## Projections tab — live parents, live sales, a 7d/30d weighted blend
+
+`/projections-page`. Forecasts next month's kg demand per parent product and flags reorder/
+shipment alerts, the same purchasing-planning screen it always was — what changed is where every
+number comes from.
+
+### Parents come from the MRP sheet, not a static file — the Triphala Sattu bug, again
+The tab used to build every row from `app/invoice/projection_defaults.json`, 81 hand-maintained
+parents, filtered by nothing. **Measured before changing it**: only 37 of those 81 have any active
+ASIN reachable through `app/invoice/product_families.json`, and Triphala Sattu — active in the
+sheet, two pack sizes — was not in that file at all, so no amount of filtering the existing 81
+would have shown it. This is the identical defect the Shipment tab already fixed for the same
+reason (see "The product list comes from the MRP sheet, live", above), and it needed the same fix
+here: `app.shipment.catalogue.load_catalogue()`, the same source and fallback chain, decides which
+parents exist. A parent inactive in the sheet is hidden and NAMED (capped at 8) in
+`GET /projections/last`'s `catalogue.hidden_names` — never a bare count.
+
+**The parent-grouping unit is the sheet's own product NAME, unmerged — deliberately different
+from Portfolio's `family_label()`.** That function merges flavour variants (Cheese & Cream Chana,
+Nimbu Pudina Chana, Peri Peri Chana...) into one shared display name for a rollup; `product_
+families.json` itself keeps them as separate parents, because different flavours are different
+recipes and different purchase decisions. Reusing `family_label()` here would have been the wrong
+tool for a purchasing grouping.
+
+**A parent with no matching entry in `projection_defaults.json` gets Global Defaults and is
+flagged `needs_review`, never hidden.** Hiding it would repeat the exact mistake this change
+exists to fix, with a different static file. Measured: 14 of 38 currently-active parent names had
+no match under any spelling, including Triphala Sattu, Makkai Sattu, Raw Flaxseed, and "Bengali
+Gobindobhog Rice" — almost certainly the existing "Govind Bhog Rice" under a spelling variant, left
+for the owner to merge by hand rather than fuzzy-matched automatically.
+
+### Sales come from `economics_snapshot` — no new Amazon integration
+The nightly Portfolio refresh already stores `units_ordered`/`units_refunded`/`net_units` per
+child ASIN. The weekly Projections recompute (`app.projections.refresh.run`) reuses
+`app.portfolio.economics.fetch_economics` and `app.portfolio.repository.save_snapshot`/
+`load_snapshot`/`windows_available` directly — the two features share one cache, so a 30-day
+window the Portfolio tab's nightly job already fetched costs nothing extra here.
+
+**`units_ordered`, never `net_units`.** Measured: 2 ASINs in a real 7-day window had
+`net_units < 0` (a refund-heavy week), and a negative daily rate would produce a negative
+purchase quantity. Refunds are a returns problem, not lower demand.
+
+The pre-existing manual Business Report CSV upload stays, as an explicit override: any row edited
+through `/calculate` or `/upload-csv` is marked `sales_source="manual"` in `projection_row`, and
+the weekly job skips a manual row entirely until the owner resets it (`POST /reset-row`) — the
+same reasoning `ProductDecision` follows for never being touched by an automated pass.
+
+### The forecast blends the last 7 days against the last 30, and a missing window is not a zero
+Asked for as *"basis last 7 days sale I want to update the data weekly on some kind of weighted
+average of last month and last 7 days... to account for [products that] spike or suddenly drop."*
+
+Measured on the real account: the two windows broadly agree in aggregate (461.1 kg/day 30-day vs
+421.1 kg/day 7-day, a 0.91x ratio) while individual parents diverge sharply — Bangla Moori 1.74x,
+Flax Seed 1.58x on the way up; Miniket Rice 0.37x, Bangla Roasted Chana 0.43x on the way down. The
+blend (`app.projections.logic.blended_daily_rate`, default weight 0.4 toward the 7-day rate) is
+exactly what surfaces that.
+
+> **A missing 7-day window and a genuine zero-sales week are different facts, and conflating them
+> would have cut real forecasts on no evidence.** Measured: 4 of 47 currently-selling parents had
+> 30-day sales but no economics row at all in the 7-day window when this was checked — slow
+> movers, not dead ones. `blended_daily_rate` takes `kg_7d: float | None`: `None` (no snapshot row
+> exists yet for this parent in that window) falls back to the 30-day rate entirely; `0.0` (the
+> window exists and genuinely recorded no sales) IS blended at the normal weight. Collapsing the
+> two would cut a slow mover's forecast by the blend weight on every refresh where the 7-day fetch
+> simply had not landed for it yet.
+
+**Divergence is flagged, not hidden.** When `|7d rate / 30d rate - 1|` exceeds a saved threshold
+(default 30%), the row's `diverged` flag is set and both rates are shown — a forecast number that
+moved with no visible cause is what erodes trust in the whole screen, the same principle behind
+showing the true bid on the Ads tab rather than silently correcting a stale one.
+
+The blend weight and divergence threshold are saved settings (`portfolio_settings`, name
+`projection_blend` — that table is shared and name-keyed across features, not owned by Portfolio
+or Ads specifically), **range-checked on read AND write**: the `good_rating: 99` lesson from the
+Portfolio tab, where an unvalidated stored threshold silently broke every verdict on the account.
+
+### The weekly refresh runs at 07:00 IST, before Portfolio and Ads
+Registered through `app.ist.utc_hhmm`, the same way the Ads and Portfolio jobs are — no bare hour
+reaches `CronTrigger`, which is the mistake that put those two jobs at 08:50/09:20 IST for months
+before it was found. `day_of_week=6` (Sunday) is arbitrary but fixed; weekly, not nightly, because
+a 30-day rolling average moves little day to day and the owner asked for weekly specifically.
+
+**A failed or partial fetch never overwrites a parent's existing good rate.** The same discipline
+`ads_refresh` enforces: the failure is recorded (`projection_refresh`, mirroring
+`economics_refresh`'s shape) so the screen can say the last attempt failed and when, but nothing
+already stored is silently replaced with a wrong number.
+
+### `ProjectionRow` is keyed on the parent NAME, like `ProductRawStock`
+Not an ASIN, and not a database id the owner would have to look up: the MRP sheet's own product
+name is the one identifier a genuinely new parent (Triphala Sattu) carries from day one, and it is
+already how `ProductRawStock` — the Orders tab's raw-material table — is keyed, for the identical
+reason (bulk purchasing has no per-pack-size distinction; there is no such thing as 500g-flavoured
+raw sattu).
+
 ## Known gaps (deliberate, not oversights)
 
 ### The deal badge depends on which page Amazon serves you
