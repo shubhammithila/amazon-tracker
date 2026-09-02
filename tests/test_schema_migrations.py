@@ -417,3 +417,14 @@ def test_the_deploy_detector_reports_nothing_for_an_empty_database(tmp_path):
     db = tmp_path / "tracker.db"
     sqlite3.connect(db).close()          # exists, no tables
     assert _detected_baseline(db) == ""
+
+
+async def test_projection_tables_exist_after_migration(db):
+    """The two new tables are reachable through the ORM, not just through raw SQL — catches a
+    migration that runs but a model whose columns don't match it."""
+    from sqlalchemy import select
+
+    from app.models import ProjectionRefresh, ProjectionRow
+
+    await db.execute(select(ProjectionRow))
+    await db.execute(select(ProjectionRefresh))

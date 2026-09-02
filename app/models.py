@@ -837,6 +837,87 @@ class EconomicsRefresh(Base):
     finished_at = Column(DateTime)
 
 
+class ProjectionRow(Base):
+    """One parent product's purchasing forecast row. **Keyed on the parent product NAME, not an
+    ASIN** — the same choice `ProductRawStock` makes, for the same reason: this is a purchasing
+    decision taken at the parent level, and the MRP sheet's own `name` column is the only stable
+    identifier a genuinely new product (Triphala Sattu) carries from day one.
+
+    **`source` is what lets a hand-typed override survive a scheduled recompute.** The weekly job
+    only overwrites `sales_source == "sheet"` rows; a `"manual"` row is left alone until the owner
+    explicitly resets it. Without this column a refresh would silently discard a manual correction
+    the next time it ran — the same failure `ProductDecision` avoids by never being touched by an
+    automated pass at all.
+
+    **`needs_review` is set when no entry in `projection_defaults.json` matched this parent's name**
+    (case/space/hyphen-insensitive). The row still gets Global Defaults so it is never invisible —
+    invisible-because-unconfigured is exactly the Triphala Sattu bug this whole change removes —
+    but the owner is told to check the purchase rate and lead times rather than trusting a global
+    guess silently.
+    """
+    __tablename__ = "projection_row"
+    __table_args__ = (
+        Index("idx_projection_row_parent", "parent_product", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    #: The MRP sheet's own product name, unmerged — see the class docstring.
+    parent_product = Column(String(120), nullable=False)
+    brand = Column(String(60))
+
+    # ── Purchasing config, matched from projection_defaults.json or Global Defaults ──
+    purchase_rate = Column(Numeric(10, 2), default=0)
+    supplier_to_wh = Column(Integer, default=5)
+    packing = Column(Integer, default=2)
+    wh_to_ixd = Column(Integer, default=10)
+    ixd_to_fba = Column(Integer, default=5)
+    wh_buffer_days = Column(Numeric(6, 1), default=10)
+    seasonal_impact = Column(Numeric(6, 2), default=1.0)
+    growth_rate = Column(Numeric(6, 2), default=0.3)
+    #: True when no `projection_defaults.json` entry matched this parent's name. See class docstring.
+    needs_review = Column(Boolean, default=False, nullable=False)
+
+    # ── Sales, from economics_snapshot or a manual edit ──
+    #: "sheet" (from units_ordered x weight) or "manual" (hand-typed). A "manual" row is skipped by
+    #: the weekly recompute.
+    sales_source = Column(String(10), nullable=False, default="sheet")
+    last_month_sale = Column(Numeric(10, 2), default=0)
+    #: kg/day from the LAST 7 DAYS of units_ordered x weight. NULL, never 0.0, when no 7-day
+    #: snapshot exists yet for this parent — distinct from a genuine zero-sales week, which is a
+    #: real 0.0 and IS blended. See `app.projections.logic.blended_daily_rate`.
+    seven_day_rate = Column(Numeric(10, 2))
+    #: kg/day from the last 30 days. Always populated once any sheet-sourced row is computed.
+    thirty_day_rate = Column(Numeric(10, 2))
+    #: The blended rate actually used for the forecast — what `calculate_projections` reads.
+    daily_rate = Column(Numeric(10, 2), default=0)
+    #: True when |seven_day_rate/thirty_day_rate - 1| exceeded the saved divergence threshold at
+    #: the last recompute, so the screen can show WHY a number moved.
+    diverged = Column(Boolean, default=False, nullable=False)
+
+    # ── Owner-entered stock and current values, unaffected by the sales source ──
+    current_fba_stock = Column(Numeric(10, 1), default=0)
+    current_wh_stock = Column(Numeric(10, 1), default=0)
+
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    updated_by = Column(String(60))
+
+
+class ProjectionRefresh(Base):
+    """When the weekly 7d/30d sales blend was last recomputed, and what it covered. One row per
+    run — the same shape as `EconomicsRefresh`, so "the numbers stopped updating" is answerable
+    the same way on this tab as on the Portfolio tab.
+    """
+    __tablename__ = "projection_refresh"
+
+    id = Column(Integer, primary_key=True)
+    window_start = Column(String(10))
+    window_end = Column(String(10))
+    rows_stored = Column(Integer, default=0)
+    error = Column(Text)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    finished_at = Column(DateTime)
+
+
 class ProductDecision(Base):
     """The owner's decision about one parent product: kill, keep or watch. **Ours, not Amazon's.**
 
