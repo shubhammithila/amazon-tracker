@@ -70,12 +70,41 @@ td input.wide{width:70px}
 <h2>📈 Sales &amp; Stock Projections</h2>
 <p class="subtitle">Enter last month's sales, tweak seasonal/growth factors, get next month forecast + reorder alerts. All values in <strong>kg</strong>.</p>
 
-<!-- Global Defaults -->
-<!-- CSV Upload -->
+<!-- Catalogue & refresh status -->
+<div class="globals-card" style="flex-direction:column;align-items:stretch;gap:10px">
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <strong style="font-size:13px">📋 Active parents</strong>
+    <span id="catalogue-summary" style="font-size:12px;color:var(--text-muted)"></span>
+    <span id="last-refresh-note" style="font-size:12px;color:var(--text-muted);margin-left:auto"></span>
+    <button class="btn-outline" onclick="refreshNow()" id="refresh-now-btn">🔄 Refresh sales now</button>
+    <button class="btn-outline" onclick="openBlendSettings()">⚙ Blend settings</button>
+  </div>
+  <div id="hidden-parents-note" style="font-size:11.5px;color:var(--text-muted);display:none"></div>
+</div>
+
+<!-- Blend settings panel, hidden until opened -->
+<div class="globals-card" id="blend-panel" style="display:none;flex-direction:column;align-items:stretch;gap:10px">
+  <strong style="font-size:13px">7-day / 30-day sales blend</strong>
+  <p style="font-size:11.5px;color:var(--text-muted)" id="blend-help"></p>
+  <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+    <label style="font-size:12px;color:var(--text-muted);display:flex;flex-direction:column;gap:4px">
+      7-day weight (0-1)
+      <input type="number" id="blend-weight" step="0.05" min="0" max="1" style="width:80px;background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:5px 8px"/>
+    </label>
+    <label style="font-size:12px;color:var(--text-muted);display:flex;flex-direction:column;gap:4px">
+      Divergence flag threshold (%)
+      <input type="number" id="blend-threshold" step="5" min="1" max="200" style="width:80px;background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:5px 8px"/>
+    </label>
+    <button class="btn" onclick="saveBlendSettings()">Save</button>
+    <button class="btn-outline" onclick="resetBlendSettings()">↺ Reset to defaults</button>
+  </div>
+</div>
+
+<!-- CSV Upload (manual override) -->
 <div class="globals-card" style="flex-direction:column;align-items:stretch;gap:12px">
   <div style="display:flex;align-items:center;gap:12px">
-    <strong style="font-size:13px">📂 Import Sales Data</strong>
-    <span style="font-size:11px;color:var(--text-muted)">Upload Business Report CSV (By ASIN, last 30 days) to auto-fill "Last Month Sale" in kg</span>
+    <strong style="font-size:13px">📂 Manual sales override</strong>
+    <span style="font-size:11px;color:var(--text-muted)">Upload a Business Report CSV to override "Last Month Sale" by hand — an overridden row is skipped by the weekly automatic recompute until you reset it.</span>
   </div>
   <div style="display:flex;align-items:center;gap:12px">
     <input type="file" id="csv-file" accept=".csv" style="font-size:12px;color:var(--text-muted)"/>
@@ -86,18 +115,10 @@ td input.wide{width:70px}
 </div>
 
 <div class="globals-card">
-  <label>Growth Rate<input type="number" id="g-growth" value="0.30" step="0.05" min="0" max="3" onchange="recalcAll()"/></label>
-  <label>Seasonal Impact<input type="number" id="g-seasonal" value="1.0" step="0.1" min="0.1" max="5" onchange="recalcAll()"/></label>
-  <label>Supplier→WH (d)<input type="number" id="g-s2w" value="5" min="0" max="30" onchange="recalcAll()"/></label>
-  <label>Packing (d)<input type="number" id="g-pack" value="2" min="0" max="15" onchange="recalcAll()"/></label>
-  <label>WH→IXD (d)<input type="number" id="g-w2i" value="10" min="0" max="30" onchange="recalcAll()"/></label>
-  <label>IXD→FBA (d)<input type="number" id="g-i2f" value="5" min="0" max="15" onchange="recalcAll()"/></label>
-  <label>WH Buffer (d)<input type="number" id="g-wh-buf" value="10" min="0" max="30" onchange="recalcAll()"/></label>
   <div style="display:flex;gap:8px;margin-left:auto;align-items:center">
-    <button class="btn" onclick="recalcAll()">🔄 Recalculate</button>
+    <button class="btn" onclick="recalcAll()">🔄 Save edits &amp; Recalculate</button>
     <button class="btn-outline" onclick="downloadExcel()">⬇ Excel</button>
-    <button class="btn-outline" onclick="initFromDefaults()">↺ Reset to Defaults</button>
-    <button class="btn-danger" onclick="clearAll()">Clear</button>
+    <button class="btn-danger" onclick="clearAllOverrides()">Reset all manual edits</button>
   </div>
 </div>
 
@@ -121,6 +142,8 @@ td input.wide{width:70px}
   <th>#</th>
   <th style="text-align:left">Product</th>
   <th style="text-align:left">Brand</th>
+  <th style="text-align:left">Source</th>
+  <th>7d / 30d<br/>(kg/day)</th>
   <th class="col-group-input">Last Month<br/>Sale (kg)</th>
   <th class="col-group-input">Seasonal</th>
   <th class="col-group-input">Growth</th>
@@ -146,61 +169,140 @@ td input.wide{width:70px}
 <tbody id="tbody"></tbody>
 </table>
 </div>
-<div class="empty-state" id="empty" style="display:none">No products. Click "Reset to Defaults" to load product list.</div>
+<div class="empty-state" id="empty" style="display:none">No active parent products found in the MRP sheet.</div>
 </main>
 <div id="toast"></div>
 <script>
 let products = [];
 let currentBrand = "all";
+let catalogueInfo = {};
+let blendSettings = {};
 
-// Load saved or init
 (async()=>{
-  const r = await fetch("/projections/last");
-  const data = await r.json();
-  if(data.products && data.products.length){
-    products = data.products;
-    if(data.globals){
-      if(data.globals.growth_rate!=null) document.getElementById("g-growth").value=data.globals.growth_rate;
-      if(data.globals.seasonal_impact!=null) document.getElementById("g-seasonal").value=data.globals.seasonal_impact;
-    }
-    showSummary(data.summary);
-    renderTable();
-  } else {
-    await initFromDefaults();
-  }
+  await loadAll();
 })();
 
-async function initFromDefaults(){
-  const r = await fetch("/projections/init",{method:"POST"});
+async function loadAll(){
+  const r = await fetch("/projections/last");
   const data = await r.json();
-  products = data.products;
+  products = data.products || [];
+  catalogueInfo = data.catalogue || {};
+  blendSettings = data.blend || {};
+  renderCatalogueSummary();
+  renderLastRefresh(data.last_refresh);
+  showSummary(summaryFromProducts(products));
   renderTable();
-  toast("Loaded "+products.length+" products from defaults","success");
 }
 
-function getGlobals(){
+function summaryFromProducts(list){
+  const total_forecast_kg = list.reduce((s,p)=>s+(p.monthly_forecast||0),0);
+  const total_ideal_value = list.reduce((s,p)=>s+(p.ideal_stock_value||0),0);
+  const total_current_value = list.reduce((s,p)=>s+(p.current_stock_value||0),0);
   return {
-    growth_rate: parseFloat(document.getElementById("g-growth").value)||0.3,
-    seasonal_impact: parseFloat(document.getElementById("g-seasonal").value)||1.0,
-    supplier_to_wh: parseInt(document.getElementById("g-s2w").value)||5,
-    packing: parseInt(document.getElementById("g-pack").value)||2,
-    wh_to_ixd: parseInt(document.getElementById("g-w2i").value)||10,
-    ixd_to_fba: parseInt(document.getElementById("g-i2f").value)||5,
-    wh_buffer_days: parseInt(document.getElementById("g-wh-buf").value)||10,
+    total_products: list.length,
+    total_forecast_kg,
+    total_ideal_value,
+    total_current_value,
+    shipment_alerts: list.filter(p=>p.shipment_alert>0).length,
+    reorder_alerts: list.filter(p=>p.reorder_alert>0).length,
+    critical_alerts: list.filter(p=>(p.inventory_days??999)<7).length,
   };
 }
 
+function renderCatalogueSummary(){
+  const el = document.getElementById("catalogue-summary");
+  const c = catalogueInfo;
+  el.textContent = `${c.active_parents||0} active (source: ${c.source||"?"})`;
+  if(c.warning){el.textContent += " — " + c.warning;}
+  const hiddenEl = document.getElementById("hidden-parents-note");
+  if((c.hidden_count||0) > 0){
+    hiddenEl.style.display = "block";
+    const names = (c.hidden_names||[]).join(", ");
+    const more = c.hidden_count > (c.hidden_names||[]).length ? ` and ${c.hidden_count - c.hidden_names.length} more` : "";
+    hiddenEl.textContent = `${c.hidden_count} parent(s) hidden — not active in the MRP sheet: ${names}${more}`;
+  } else {
+    hiddenEl.style.display = "none";
+  }
+}
+
+function renderLastRefresh(last){
+  const el = document.getElementById("last-refresh-note");
+  if(!last){el.textContent = "Sales have never been refreshed from Amazon.";return;}
+  const when = last.finished_at ? new Date(last.finished_at).toLocaleString("en-IN") : "?";
+  if(last.error){
+    el.textContent = `Last weekly refresh FAILED (${when}): ${last.error}`;
+    el.style.color = "var(--red)";
+  } else {
+    el.textContent = `Sales last refreshed ${when} (${last.rows_stored} row(s))`;
+    el.style.color = "var(--text-muted)";
+  }
+}
+
+async function refreshNow(){
+  const btn = document.getElementById("refresh-now-btn");
+  btn.disabled = true;
+  btn.textContent = "Refreshing… (can take several minutes)";
+  try{
+    const r = await fetch("/projections/refresh-now", {method:"POST"});
+    const data = await r.json();
+    if(data.error) throw new Error(data.error);
+    toast(`Refreshed ${data.rows_stored} row(s)`, "success");
+    await loadAll();
+  }catch(e){
+    toast(e.message, "error");
+  }finally{
+    btn.disabled = false;
+    btn.textContent = "🔄 Refresh sales now";
+  }
+}
+
+// ── Blend settings panel ──
+function openBlendSettings(){
+  const panel = document.getElementById("blend-panel");
+  panel.style.display = panel.style.display === "none" ? "flex" : "none";
+  if(panel.style.display !== "none") loadBlendSettings();
+}
+
+async function loadBlendSettings(){
+  const r = await fetch("/projections/blend-settings");
+  const data = await r.json();
+  document.getElementById("blend-weight").value = data.blend.seven_day_weight;
+  document.getElementById("blend-threshold").value = data.blend.divergence_pct;
+  document.getElementById("blend-help").textContent =
+    data.help.seven_day_weight + " " + data.help.divergence_pct;
+}
+
+async function saveBlendSettings(){
+  const weight = parseFloat(document.getElementById("blend-weight").value);
+  const threshold = parseFloat(document.getElementById("blend-threshold").value);
+  const r = await fetch("/projections/blend-settings", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({blend: {seven_day_weight: weight, divergence_pct: threshold}}),
+  });
+  const data = await r.json();
+  if(data.error){toast(data.error, "error");return;}
+  toast("Blend settings saved", "success");
+}
+
+async function resetBlendSettings(){
+  const r = await fetch("/projections/blend-settings", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({reset: true}),
+  });
+  const data = await r.json();
+  document.getElementById("blend-weight").value = data.blend.seven_day_weight;
+  document.getElementById("blend-threshold").value = data.blend.divergence_pct;
+  toast("Reset to measured defaults", "success");
+}
+
 async function recalcAll(){
-  // Collect values from table inputs
   collectFromTable();
-  const globals = getGlobals();
-  const body = {globals, products};
-  const r = await fetch("/projections/calculate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  const r = await fetch("/projections/calculate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({products})});
   const data = await r.json();
   products = data.products;
   showSummary(data.summary);
   renderTable();
-  toast("Recalculated "+products.length+" products","success");
+  toast("Saved "+products.length+" edited row(s)","success");
 }
 
 function collectFromTable(){
@@ -241,11 +343,36 @@ function showSummary(s){
 
 function setBrand(b,el){currentBrand=b;document.querySelectorAll('.chip[data-brand]').forEach(c=>c.classList.remove("active"));el.classList.add("active");renderTable();}
 
+async function resetRow(parentProduct){
+  const r = await fetch("/projections/reset-row", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({parent_product: parentProduct}),
+  });
+  if(r.ok){toast(`${parentProduct}: reset to live sheet data`,"success");await loadAll();}
+}
+
+/* Delegated, not an inline onclick — `parent_product` comes from the MRP sheet, which is
+   hand-edited by someone other than a developer, and building an onclick out of it is exactly
+   the injection risk CLAUDE.md already rules out for keyword text and campaign names on the
+   Ads and Portfolio tabs. The button's own value carries the name instead. */
+document.getElementById("tbody").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-reset-row]");
+  if(btn) resetRow(btn.dataset.resetRow);
+});
+
+async function clearAllOverrides(){
+  if(!confirm("Reset every manually-edited row back to live sheet data?"))return;
+  const r = await fetch("/projections/clear",{method:"DELETE"});
+  const data = await r.json();
+  toast(`Reset ${data.reset_count} manual override(s)`,"success");
+  await loadAll();
+}
+
 function renderTable(){
   const q=(document.getElementById("search").value||"").toLowerCase();
   let filtered=products.map((p,i)=>({...p,_idx:i})).filter(p=>{
     if(currentBrand!=="all"&&p.brand!==currentBrand)return false;
-    if(q&&!p.product.toLowerCase().includes(q))return false;
+    if(q&&!p.parent_product.toLowerCase().includes(q))return false;
     return true;
   });
   document.getElementById("count-lbl").textContent=filtered.length+" of "+products.length;
@@ -259,10 +386,21 @@ function renderTable(){
     const reorderCls=p.reorder_alert>0?"alert-pos":"alert-neg";
     const invCls=p.inventory_days<7?"inv-critical":p.inventory_days<14?"inv-warning":"inv-good";
     const leadTotal=(p.supplier_to_wh||0)+(p.packing||0)+(p.wh_to_ixd||0)+(p.ixd_to_fba||0);
+    const nameCell = p.needs_review
+      ? `${escHtml(p.parent_product)} <span title="No saved purchasing config matched this product — using Global Defaults. Check the purchase rate and lead times." style="color:var(--orange);font-weight:700">⚠ needs review</span>`
+      : escHtml(p.parent_product);
+    const sourceCell = p.sales_source === "manual"
+      ? `manual <button class="btn-outline" style="padding:2px 6px;font-size:10px" data-reset-row="${escHtml(p.parent_product)}">reset</button>`
+      : "sheet";
+    const rateCell = p.seven_day_rate == null
+      ? `— / ${(p.thirty_day_rate||0).toFixed(1)}`
+      : `${p.diverged ? '<span title="7-day and 30-day rates disagree beyond the saved threshold" style="color:var(--orange)">⚠</span> ' : ''}${p.seven_day_rate.toFixed(1)} / ${(p.thirty_day_rate||0).toFixed(1)}`;
     return `<tr data-idx="${p._idx}">
       <td style="color:var(--text-muted);font-size:11px">${i+1}</td>
-      <td class="product-name">${p.product}</td>
-      <td class="brand-cell">${p.brand||""}</td>
+      <td class="product-name">${nameCell}</td>
+      <td class="brand-cell">${escHtml(p.brand||"")}</td>
+      <td class="brand-cell" style="font-size:10.5px">${sourceCell}</td>
+      <td style="font-size:10.5px;color:var(--text-muted)">${rateCell}</td>
       <td><input data-field="last_month_sale" value="${p.last_month_sale||0}" class="wide"/></td>
       <td><input data-field="seasonal_impact" value="${p.seasonal_impact||1}" style="width:45px"/></td>
       <td><input data-field="growth_rate" value="${p.growth_rate||0.3}" style="width:45px"/></td>
@@ -287,10 +425,13 @@ function renderTable(){
   }).join("");
 }
 
-function downloadExcel(){window.location.href="/projections/download";}
-async function clearAll(){if(!confirm("Clear all projection data?"))return;await fetch("/projections/clear",{method:"DELETE"});products=[];document.getElementById("summary").style.display="none";renderTable();toast("Cleared","success");}
+function escHtml(s){
+  return String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
 
-// CSV Upload
+function downloadExcel(){window.location.href="/projections/download";}
+
+// CSV Upload — a manual override, not a live source
 document.getElementById("csv-file").addEventListener("change",function(){document.getElementById("csv-btn").disabled=!this.files.length;});
 async function uploadCSV(){
   const fileInput=document.getElementById("csv-file");
@@ -307,9 +448,7 @@ async function uploadCSV(){
     showSummary({total_products:data.total_products,total_forecast_kg:data.total_forecast_kg,total_ideal_value:0,total_current_value:0,shipment_alerts:0,reorder_alerts:0,critical_alerts:0});
     renderTable();
     document.getElementById("csv-result").textContent=`Imported ${data.filled_from_csv} products, ${data.total_kg_from_csv} kg total sales`;
-    toast(`Sales imported: ${data.filled_from_csv} products filled from CSV`,"success");
-    // Now auto-recalculate with server to get full summary
-    await recalcAll();
+    toast(`Sales imported: ${data.filled_from_csv} products filled from CSV, marked manual`,"success");
   }catch(e){toast(e.message,"error");}
   finally{document.getElementById("csv-btn").disabled=false;document.getElementById("csv-spin").style.display="none";}
 }
