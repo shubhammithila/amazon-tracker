@@ -66,7 +66,7 @@ def group_active_by_name(catalogue: Mapping[str, dict]) -> dict[str, dict]:
 #: `build_parent_config` and its test cannot drift about which fields exist.
 CONFIG_FIELDS = (
     "purchase_rate", "supplier_to_wh", "packing", "wh_to_ixd", "ixd_to_fba",
-    "wh_buffer_days", "seasonal_impact", "growth_rate",
+    "wh_buffer_days", "seasonal_impact",
 )
 
 
@@ -90,41 +90,55 @@ def build_parent_config(
     return config
 
 
-def calculate_projections(products: list[dict]) -> list[dict]:
-    """Run projection formulas on each product row.
+def calculate_projections(
+    products: list[dict], *, global_growth_rate: float, divergence_buffer_multiplier: float,
+) -> list[dict]:
+    """Run the reorder-point formula on each product row.
 
-    **Moved from `app/routers/projections.py`, and the daily-rate source is NOT unchanged —
-    this is the one piece of arithmetic this feature actually exists to change.** The
-    pre-existing formula derived `daily_rate` from `last_month_sale * seasonal * (1 + growth)`
-    every time, which would have silently discarded the whole 7d/30d blend: a `sheet`-sourced row
-    already carries its blended `daily_rate`, computed once a week by
-    `app.projections.refresh.run` from real units_ordered data, and recomputing it here from
-    `last_month_sale` alone would have made the entire weekly-blend feature invisible on screen.
+    **One formula, always applied — this is the fix for two separate bugs measured on the real
+    account.**
 
-    So: a row whose `sales_source == "sheet"` and already has a non-null `daily_rate` (the
-    normal case after at least one weekly refresh) keeps that rate and derives
-    `monthly_forecast = daily_rate * 30` FROM it — seasonal/growth are not applied a second
-    time, because `blended_daily_rate` has no notion of them and double-applying a growth factor
-    on top of a rate already measured from real sales would inflate the forecast for no reason.
-    A `manual` row, or a `sheet` row that has never been refreshed yet (`daily_rate` is 0 or
-    `None`, e.g. immediately after `build_current_rows` creates a brand-new parent), falls back
-    to the original `last_month_sale`-driven formula, since a manual edit only ever supplies
-    `last_month_sale` and has no blended rate to read.
+    Bug 1: the pre-existing code only applied `seasonal_impact` and (the now-removed per-row)
+    `growth_rate` to a row whose blended `daily_rate` was 0/None — a `sheet` row that HAD been
+    through the weekly refresh (the normal case after the 02 Sep deploy) used its blended rate
+    completely unadjusted. Whether the two factors took effect depended on an accident of which
+    code path a row happened to hit, not on a decision anyone made. Now: `demand_rate` is
+    computed first (the blended rate if present, `last_month_sale / 30` otherwise), and
+    `seasonal_impact` / `global_growth_rate` are applied to it UNCONDITIONALLY, every time.
+
+    Bug 2: `ideal_wh_stock` used to be `daily_rate * wh_buffer_days` alone — the supplier lead
+    time (`supplier_to_wh`) never entered the warehouse reorder trigger, only `Ideal FBA`/`Lead
+    Total`. A product with a 25-day supplier lead and a 10-day buffer showed a trigger that was
+    blind to 25 of the 35 days it actually takes to have more stock in hand. Now
+    `ideal_wh_stock = demand_rate * (supplier_to_wh + effective_wh_buffer) * seasonal * (1 +
+    growth)` — the reorder point covers the FULL wait, ordering time plus safety margin, not the
+    margin alone.
+
+    `effective_wh_buffer` widens by `divergence_buffer_multiplier` when the row is already
+    flagged `diverged` (its 7d/30d rates disagree beyond the saved threshold) — a volatile
+    product gets more safety stock automatically the week it is detected, rather than needing the
+    owner to notice the ⚠ and hand-edit `wh_buffer_days`. It never applies to `ideal_fba_stock`:
+    that lead time is the internal pipeline (packing → WH→IXD → IXD→FBA), not the wait on an
+    external supplier, so a demand spike does not change how long the pipeline itself takes.
+
+    `global_growth_rate` and `divergence_buffer_multiplier` are REQUIRED keyword-only parameters,
+    not read from each product dict — they are account-wide settings (the whole reason the
+    growth rate stopped being a per-row column), and the caller (the router) is the one place
+    that loads them from `repository.load_blend_settings`.
     """
     for p in products:
         seasonal = p.get("seasonal_impact", 1.0) or 1.0
-        growth = p.get("growth_rate", 0.3) or 0.0
-        has_blended_rate = (
-            p.get("sales_source") == "sheet" and (p.get("daily_rate") or 0) > 0
-        )
+        has_blended_rate = (p.get("daily_rate") or 0) > 0
 
         if has_blended_rate:
-            daily_rate = p["daily_rate"]
-            monthly_forecast = daily_rate * 30
+            demand_rate = p["daily_rate"]
         else:
             last_sale = p.get("last_month_sale", 0) or 0
-            monthly_forecast = last_sale * seasonal * (1 + growth)
-            daily_rate = monthly_forecast / 30
+            demand_rate = last_sale / 30
+
+        growth_multiplier = 1 + global_growth_rate
+        daily_rate = demand_rate * seasonal * growth_multiplier
+        monthly_forecast = daily_rate * 30
 
         s2w = p.get("supplier_to_wh", 5) or 0
         pack = p.get("packing", 2) or 0
@@ -132,32 +146,17 @@ def calculate_projections(products: list[dict]) -> list[dict]:
         i2f = p.get("ixd_to_fba", 5) or 0
         total_lead = s2w + pack + w2i + i2f
         wh_buffer = p.get("wh_buffer_days", 10) or 0
+        effective_wh_buffer = wh_buffer * (divergence_buffer_multiplier if p.get("diverged") else 1.0)
 
-        ideal_fba = round(daily_rate * total_lead, 1)
-        ideal_wh = round(daily_rate * wh_buffer, 1)
-
-        current_fba = p.get("current_fba_stock", 0) or 0
-        current_wh = p.get("current_wh_stock", 0) or 0
-
-        shipment_alert = round(ideal_fba - current_fba, 1)
-        reorder_alert = round(ideal_fba + ideal_wh - current_fba - current_wh, 1)
-
-        purchase_rate = p.get("purchase_rate", 0) or 0
-        ideal_stock_value = round((ideal_fba + ideal_wh) * purchase_rate, 0)
-        current_stock_value = round((current_fba + current_wh) * purchase_rate, 0)
-
-        inventory_days = round(current_fba / daily_rate, 1) if daily_rate > 0 else 0
+        ideal_fba = round(demand_rate * (pack + w2i + i2f) * seasonal * growth_multiplier, 1)
+        ideal_wh = round(demand_rate * (s2w + effective_wh_buffer) * seasonal * growth_multiplier, 1)
 
         p["monthly_forecast"] = round(monthly_forecast, 1)
         p["daily_rate"] = round(daily_rate, 2)
         p["total_lead_time"] = total_lead
+        p["effective_wh_buffer_days"] = round(effective_wh_buffer, 2)
         p["ideal_fba_stock"] = ideal_fba
         p["ideal_wh_stock"] = ideal_wh
-        p["shipment_alert"] = shipment_alert
-        p["reorder_alert"] = reorder_alert
-        p["ideal_stock_value"] = ideal_stock_value
-        p["current_stock_value"] = current_stock_value
-        p["inventory_days"] = inventory_days
 
     return products
 
@@ -235,6 +234,15 @@ DEFAULT_BLEND = {
     #: flagged diverged. 30% — smaller than the real spikes measured (58-74%) so genuine signal
     #: is not missed, larger than ordinary week-to-week noise.
     "divergence_pct": 30.0,
+    #: The company's overall sales growth assumption, applied to EVERY product's forecast — one
+    #: number, not per-parent. Measured against `projection_defaults.json`: 79 of 81 static
+    #: entries already used 0.3, so this was already a company-wide figure typed 81 times by
+    #: accident of the static file's structure, not a genuine per-product signal.
+    "global_growth_rate": 0.3,
+    #: How much a DIVERGED row's warehouse safety buffer widens, automatically. 1.5x means a
+    #: 10-day buffer becomes 15 days the week a product's demand is flagged as having moved
+    #: sharply — real protection without drastically over-buying.
+    "divergence_buffer_multiplier": 1.5,
 }
 
 #: Bounds for each blend setting. Same lesson as `app.ads.logic.GUARDRAIL_RANGES`: a
@@ -243,6 +251,11 @@ DEFAULT_BLEND = {
 BLEND_RANGES = {
     "seven_day_weight": (0.0, 1.0),
     "divergence_pct": (1.0, 200.0),
+    "global_growth_rate": (0.0, 3.0),
+    #: Floor is 1.0, NOT 0.0 — a value below 1 would SHRINK a volatile product's buffer, which is
+    #: the exact inversion `good_rating: 99` already taught this codebase to guard against on
+    #: read as well as write.
+    "divergence_buffer_multiplier": (1.0, 5.0),
 }
 
 

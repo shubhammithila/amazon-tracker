@@ -94,7 +94,7 @@ def test_group_active_by_name_is_empty_for_an_empty_catalogue():
 # ─── build_parent_config ──────────────────────────────────────────────────────
 
 GLOBAL_DEFAULTS = {
-    "growth_rate": 0.3, "seasonal_impact": 1.0, "supplier_to_wh": 5, "packing": 2,
+    "seasonal_impact": 1.0, "supplier_to_wh": 5, "packing": 2,
     "wh_to_ixd": 10, "ixd_to_fba": 5, "wh_buffer_days": 10.0,
 }
 
@@ -102,10 +102,11 @@ GLOBAL_DEFAULTS = {
 def test_build_parent_config_uses_matched_defaults():
     defaults = {"Chana Sattu": {"purchase_rate": 120.0, "supplier_to_wh": 5, "packing": 2,
                                  "wh_to_ixd": 10, "ixd_to_fba": 5, "wh_buffer_days": 10.0,
-                                 "seasonal_impact": 1.5, "growth_rate": 0.3, "brand": "Mithila Foods"}}
+                                 "seasonal_impact": 1.5, "brand": "Mithila Foods"}}
     config = logic.build_parent_config("Chana Sattu", {}, defaults, GLOBAL_DEFAULTS)
     assert config["purchase_rate"] == 120.0
     assert config["needs_review"] is False
+    assert "growth_rate" not in config, "growth is now a global setting, not a per-parent field"
 
 
 def test_build_parent_config_flags_needs_review_with_global_defaults():
@@ -116,64 +117,147 @@ def test_build_parent_config_flags_needs_review_with_global_defaults():
     assert config["needs_review"] is True
     assert config["purchase_rate"] == 0
     assert config["seasonal_impact"] == GLOBAL_DEFAULTS["seasonal_impact"]
-    assert config["growth_rate"] == GLOBAL_DEFAULTS["growth_rate"]
     assert config["wh_buffer_days"] == GLOBAL_DEFAULTS["wh_buffer_days"]
 
 
-# ─── calculate_projections: the blended rate must actually be used ────────────
+# ─── calculate_projections: one formula, always applied ──────────────────────
 
 
-def test_calculate_projections_forecasts_from_the_blended_rate_for_a_sheet_row():
-    """**The bug this test exists to catch: the weekly blend must not be silently discarded.**
-
-    A `sheet`-sourced row already carries `daily_rate` from `blended_daily_rate` — computed once
-    a week from real units_ordered data. Re-deriving `daily_rate` from `last_month_sale *
-    seasonal * (1 + growth)` here, as the pre-existing formula did unconditionally, would make
-    the entire 7d/30d blend (the whole reason this feature exists) invisible on screen: the
-    number the weekly job computes and the number the forecast displays would disagree.
+def test_calculate_projections_applies_seasonality_and_growth_to_a_sheet_row():
+    """**The bug this test exists to catch.** The pre-existing code only applied
+    seasonal/growth to a row that had NEVER been through the weekly blend — a `sheet` row with a
+    real blended `daily_rate` skipped both factors entirely. Now they always apply, on top of
+    whichever daily rate is in play.
     """
     products = [{
-        "parent_product": "Chana Sattu", "sales_source": "sheet",
-        "daily_rate": 14.0,               # the blended rate, as Task 6's refresh job would store it
-        "last_month_sale": 300.0,          # 30-day total kg — NOT what the forecast should use
-        "seasonal_impact": 2.0, "growth_rate": 5.0,   # deliberately extreme, to prove they are IGNORED
-        "purchase_rate": 0, "supplier_to_wh": 0, "packing": 0, "wh_to_ixd": 0, "ixd_to_fba": 0,
-        "wh_buffer_days": 0, "current_fba_stock": 0, "current_wh_stock": 0,
+        "parent_product": "Chana Sattu", "sales_source": "sheet", "diverged": False,
+        "daily_rate": 14.0,               # the blended rate, as the weekly refresh job stores it
+        "last_month_sale": 300.0,          # unused when daily_rate is already present
+        "seasonal_impact": 2.0,
+        "purchase_rate": 0, "supplier_to_wh": 5, "packing": 0, "wh_to_ixd": 0, "ixd_to_fba": 0,
+        "wh_buffer_days": 10.0, "current_fba_stock": 0, "current_wh_stock": 0,
     }]
-    result = logic.calculate_projections(products)[0]
-    assert result["daily_rate"] == 14.0, "the blended rate was overwritten"
-    assert result["monthly_forecast"] == 420.0, "monthly_forecast must be daily_rate * 30"
+    result = logic.calculate_projections(
+        products, global_growth_rate=0.3, divergence_buffer_multiplier=1.5,
+    )[0]
+    # daily_rate is now the FACTOR-ADJUSTED figure shown on screen, not the raw blend: it must
+    # reflect seasonality and growth, or monthly_forecast (= daily_rate * 30) could not either.
+    # 14 * 2.0 * 1.3 = 36.4 — under the old code this stayed 14.0, unadjusted
+    assert result["daily_rate"] == pytest.approx(36.4), "seasonal/growth were not applied"
+    # monthly_forecast = daily_rate * 30 = 36.4 * 30 = 1092.0 — under the old code this was
+    # 420.0 (14 * 30, no factors applied to a blended row at all)
+    assert result["monthly_forecast"] == pytest.approx(1092.0)
 
 
-def test_calculate_projections_falls_back_to_last_month_sale_for_a_manual_row():
-    """A `manual` row never went through the weekly job and has no blended rate to read — it
-    must keep using the original seasonal/growth formula, unchanged from before this feature."""
+def test_calculate_projections_falls_back_to_last_month_sale_when_daily_rate_is_zero():
+    """A `manual` row, or a `sheet` row never yet refreshed, has no blended rate — falls back to
+    last_month_sale / 30 as its demand rate, then the SAME seasonality/growth factors apply."""
     products = [{
-        "parent_product": "Chana Sattu", "sales_source": "manual",
+        "parent_product": "Chana Sattu", "sales_source": "manual", "diverged": False,
         "daily_rate": 0, "last_month_sale": 300.0,
-        "seasonal_impact": 1.5, "growth_rate": 0.2,
-        "purchase_rate": 0, "supplier_to_wh": 0, "packing": 0, "wh_to_ixd": 0, "ixd_to_fba": 0,
-        "wh_buffer_days": 0, "current_fba_stock": 0, "current_wh_stock": 0,
+        "seasonal_impact": 1.5,
+        "purchase_rate": 0, "supplier_to_wh": 5, "packing": 0, "wh_to_ixd": 0, "ixd_to_fba": 0,
+        "wh_buffer_days": 10.0, "current_fba_stock": 0, "current_wh_stock": 0,
     }]
-    result = logic.calculate_projections(products)[0]
-    # 300 * 1.5 * 1.2 = 540
-    assert result["monthly_forecast"] == 540.0
+    result = logic.calculate_projections(
+        products, global_growth_rate=0.2, divergence_buffer_multiplier=1.5,
+    )[0]
+    # demand_rate = 300/30 = 10.0 kg/day; daily_rate (factor-adjusted) = 10 * 1.5 * 1.2 = 18.0;
+    # monthly_forecast = daily_rate * 30 = 540.0
     assert result["daily_rate"] == pytest.approx(18.0)
+    assert result["monthly_forecast"] == pytest.approx(540.0)
 
 
-def test_calculate_projections_falls_back_for_a_sheet_row_never_yet_refreshed():
-    """A brand-new parent (`build_current_rows` just created it) is `sales_source="sheet"` but
-    has never been through the weekly job, so `daily_rate` is 0/None — it must fall back to the
-    same formula a manual row uses, not silently forecast zero."""
+def test_ideal_wh_stock_includes_the_supplier_lead_time():
+    """**The second bug this plan exists to catch.** `ideal_wh_stock` used to be
+    `daily_rate * wh_buffer_days` alone — the supplier lead time (`supplier_to_wh`) never entered
+    the WH reorder trigger at all, only `Lead Total` / `Ideal FBA`. Now it does."""
     products = [{
-        "parent_product": "Triphala Sattu", "sales_source": "sheet",
-        "daily_rate": 0, "last_month_sale": 30.0,
-        "seasonal_impact": 1.0, "growth_rate": 0.3,
-        "purchase_rate": 0, "supplier_to_wh": 0, "packing": 0, "wh_to_ixd": 0, "ixd_to_fba": 0,
-        "wh_buffer_days": 0, "current_fba_stock": 0, "current_wh_stock": 0,
+        "parent_product": "Govind Bhog Rice", "sales_source": "sheet", "diverged": False,
+        "daily_rate": 35.4, "last_month_sale": 0, "seasonal_impact": 1.0,
+        "purchase_rate": 0, "supplier_to_wh": 2, "packing": 2, "wh_to_ixd": 10, "ixd_to_fba": 5,
+        "wh_buffer_days": 8.5, "current_fba_stock": 0, "current_wh_stock": 0,
     }]
-    result = logic.calculate_projections(products)[0]
-    assert result["monthly_forecast"] == pytest.approx(39.0)  # 30 * 1.0 * 1.3
+    result = logic.calculate_projections(
+        products, global_growth_rate=0.3, divergence_buffer_multiplier=1.5,
+    )[0]
+    # not diverged, so effective_wh_buffer == wh_buffer_days == 8.5
+    # ideal_wh_stock = 35.4 * (2 + 8.5) * 1.0 * 1.3 = 483.21
+    assert result["ideal_wh_stock"] == pytest.approx(483.21, abs=0.05)
+    # the OLD formula (daily_rate * wh_buffer_days alone, no lead, no growth) gave 300.9 —
+    # assert the new figure is meaningfully larger, not coincidentally close to the old one
+    assert result["ideal_wh_stock"] > 300.9 + 50
+
+
+def test_ideal_wh_stock_widens_the_buffer_for_a_diverged_row():
+    """The exact worked example from the spec: Govind Bhog Rice's real 02 Sep production figures
+    (7d=42.3, 30d=30.8, blended to 35.4 kg/day, flagged diverged), at the default multiplier."""
+    products = [{
+        "parent_product": "Govind Bhog Rice", "sales_source": "sheet", "diverged": True,
+        "daily_rate": 35.4, "last_month_sale": 0, "seasonal_impact": 1.0,
+        "purchase_rate": 0, "supplier_to_wh": 2, "packing": 2, "wh_to_ixd": 10, "ixd_to_fba": 5,
+        "wh_buffer_days": 8.5, "current_fba_stock": 0, "current_wh_stock": 0,
+    }]
+    result = logic.calculate_projections(
+        products, global_growth_rate=0.3, divergence_buffer_multiplier=1.5,
+    )[0]
+    # effective_wh_buffer = 8.5 * 1.5 = 12.75
+    # ideal_wh_stock = 35.4 * (2 + 12.75) * 1.0 * 1.3 = 678.807
+    assert result["ideal_wh_stock"] == pytest.approx(678.807, abs=0.05)
+    assert result["effective_wh_buffer_days"] == pytest.approx(12.75)
+
+
+def test_ideal_wh_stock_does_not_widen_the_buffer_for_a_calm_row():
+    """A non-diverged row's effective buffer is exactly wh_buffer_days — the multiplier must be
+    a no-op when the flag is False, not applied at a neutral-looking value."""
+    products = [{
+        "parent_product": "Chana Sattu", "sales_source": "sheet", "diverged": False,
+        "daily_rate": 10.0, "last_month_sale": 0, "seasonal_impact": 1.0,
+        "purchase_rate": 0, "supplier_to_wh": 5, "packing": 0, "wh_to_ixd": 0, "ixd_to_fba": 0,
+        "wh_buffer_days": 10.0, "current_fba_stock": 0, "current_wh_stock": 0,
+    }]
+    result = logic.calculate_projections(
+        products, global_growth_rate=0.0, divergence_buffer_multiplier=1.5,
+    )[0]
+    assert result["effective_wh_buffer_days"] == 10.0
+    # ideal_wh_stock = 10 * (5 + 10) * 1.0 * 1.0 = 150.0
+    assert result["ideal_wh_stock"] == pytest.approx(150.0)
+
+
+def test_ideal_fba_stock_uses_the_same_seasonality_and_growth():
+    """Ideal FBA also gets seasonality/growth, on the downstream pipeline lead time
+    (packing + wh_to_ixd + ixd_to_fba) — unaffected by the divergence buffer, which is a WH-only
+    concept (safety stock while waiting on the supplier, not the internal pipeline)."""
+    products = [{
+        "parent_product": "Chana Sattu", "sales_source": "sheet", "diverged": True,
+        "daily_rate": 10.0, "last_month_sale": 0, "seasonal_impact": 2.0,
+        "purchase_rate": 0, "supplier_to_wh": 5, "packing": 2, "wh_to_ixd": 10, "ixd_to_fba": 5,
+        "wh_buffer_days": 10.0, "current_fba_stock": 0, "current_wh_stock": 0,
+    }]
+    result = logic.calculate_projections(
+        products, global_growth_rate=0.3, divergence_buffer_multiplier=1.5,
+    )[0]
+    # ideal_fba_stock = 10 * (2 + 10 + 5) * 2.0 * 1.3 = 442.0 — divergence multiplier NOT applied
+    assert result["ideal_fba_stock"] == pytest.approx(442.0)
+
+
+def test_calculate_projections_no_longer_returns_removed_fields():
+    """Source assertion for the eight dropped fields — a runtime check that nothing downstream
+    silently keeps reading a stale key."""
+    products = [{
+        "parent_product": "Chana Sattu", "sales_source": "sheet", "diverged": False,
+        "daily_rate": 10.0, "last_month_sale": 0, "seasonal_impact": 1.0,
+        "purchase_rate": 50.0, "supplier_to_wh": 5, "packing": 2, "wh_to_ixd": 10, "ixd_to_fba": 5,
+        "wh_buffer_days": 10.0, "current_fba_stock": 999, "current_wh_stock": 999,
+    }]
+    result = logic.calculate_projections(
+        products, global_growth_rate=0.3, divergence_buffer_multiplier=1.5,
+    )[0]
+    for removed in (
+        "shipment_alert", "reorder_alert", "ideal_stock_value", "current_stock_value",
+        "inventory_days",
+    ):
+        assert removed not in result, f"{removed} should no longer be computed"
 
 
 # ─── sales_kg_by_parent ────────────────────────────────────────────────────────
@@ -297,7 +381,10 @@ def test_blended_daily_rate_handles_a_dead_parent():
 
 
 def test_default_blend_weight_and_threshold():
-    assert logic.DEFAULT_BLEND == {"seven_day_weight": 0.4, "divergence_pct": 30.0}
+    assert logic.DEFAULT_BLEND == {
+        "seven_day_weight": 0.4, "divergence_pct": 30.0,
+        "global_growth_rate": 0.3, "divergence_buffer_multiplier": 1.5,
+    }
 
 
 def test_blend_setting_error_refuses_an_unknown_key():
@@ -317,7 +404,10 @@ def test_blend_setting_error_refuses_a_non_numeric_value():
 
 def test_blend_or_default_merges_over_the_defaults():
     merged = logic.blend_or_default({"seven_day_weight": 0.5})
-    assert merged == {"seven_day_weight": 0.5, "divergence_pct": 30.0}
+    assert merged == {
+        "seven_day_weight": 0.5, "divergence_pct": 30.0,
+        "global_growth_rate": 0.3, "divergence_buffer_multiplier": 1.5,
+    }
 
 
 def test_blend_or_default_discards_an_invalid_stored_value():
