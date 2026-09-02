@@ -331,10 +331,20 @@ def test_blend_or_default_discards_an_invalid_stored_value():
 
 
 def test_hidden_parent_names_are_stored_parents_absent_from_the_live_groups():
-    stored_names = {"Chana Sattu", "Kasundi", "Bengali Posta"}
+    # Six missing names, not two — with only two, `list(set)` matches the sorted order by pure
+    # luck of Python's (hash-randomized) set iteration on roughly half of all runs, which is
+    # exactly the "fixture too narrow to discriminate" failure mode CLAUDE.md already records.
+    # Six names makes an accidentally-sorted iteration a 1-in-720 fluke instead of a coin flip.
+    stored_names = {
+        "Chana Sattu", "Kasundi", "Bengali Posta", "Zeera Sattu", "Amla Powder",
+        "Moringa Sattu", "Triphala Churna",
+    }
     live_groups = {"Chana Sattu": {}}
     hidden = logic.hidden_parent_names(stored_names, live_groups)
-    assert hidden == ["Bengali Posta", "Kasundi"], "not sorted, or not exactly the missing set"
+    assert hidden == [
+        "Amla Powder", "Bengali Posta", "Kasundi", "Moringa Sattu", "Triphala Churna",
+        "Zeera Sattu",
+    ], "not sorted, or not exactly the missing set"
 
 
 def test_hidden_parent_names_is_empty_when_everything_stored_is_still_active():
