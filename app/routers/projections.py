@@ -48,7 +48,7 @@ DEFAULTS = load_defaults()
 #: The config a parent gets when nothing in `projection_defaults.json` matches its name. Global
 #: Defaults, editable on screen, unchanged from the pre-existing behaviour for an unmatched row.
 GLOBAL_DEFAULTS = {
-    "growth_rate": 0.3, "seasonal_impact": 1.0, "supplier_to_wh": 5, "packing": 2,
+    "seasonal_impact": 1.0, "supplier_to_wh": 5, "packing": 2,
     "wh_to_ixd": 10, "ixd_to_fba": 5, "wh_buffer_days": 10.0,
 }
 
@@ -93,19 +93,45 @@ async def build_current_rows(db: AsyncSession) -> tuple[list[dict], dict]:
     return rows, report
 
 
+async def _calculate_with_settings(db: AsyncSession, rows: list[dict]) -> list[dict]:
+    """`calculate_projections`, with the account-wide settings loaded once per request rather
+    than three separate call sites each remembering to load them."""
+    blend = await repository.load_blend_settings(db)
+    return logic.calculate_projections(
+        rows,
+        global_growth_rate=blend["global_growth_rate"],
+        divergence_buffer_multiplier=blend["divergence_buffer_multiplier"],
+    )
+
+
 @router.get("/last")
 async def get_current(request: Request, _=Depends(require_auth), db: AsyncSession = Depends(get_db)):
-    """The live table: every active parent, its purchasing config, and its sales rate.
+    """The live table: every active parent, its purchasing config, its sales rate, and its
+    warehouse reorder point.
 
     Replaces the old file-backed `/last`+`/init` pair. There is no "never initialised" state any
     more — the sheet always has active parents, so this always has rows to show.
     """
     rows, report = await build_current_rows(db)
+    blend = await repository.load_blend_settings(db)
+    products = logic.calculate_projections(
+        rows,
+        global_growth_rate=blend["global_growth_rate"],
+        divergence_buffer_multiplier=blend["divergence_buffer_multiplier"],
+    )
+    total_ideal_wh = sum(p.get("ideal_wh_stock", 0) for p in products)
+    diverged_count = sum(1 for p in products if p.get("diverged"))
     return JSONResponse({
-        "products": logic.calculate_projections(rows),
+        "products": products,
         "catalogue": report,
-        "blend": await repository.load_blend_settings(db),
+        "blend": blend,
         "last_refresh": await repository.last_refresh(db),
+        "summary": {
+            "total_products": len(products),
+            "total_forecast_kg": round(sum(p["monthly_forecast"] for p in products), 0),
+            "total_ideal_wh_kg": round(total_ideal_wh, 0),
+            "diverged_count": diverged_count,
+        },
     })
 
 
@@ -133,31 +159,23 @@ async def calculate(
             "purchase_rate": p.get("purchase_rate", 0), "supplier_to_wh": p.get("supplier_to_wh", 5),
             "packing": p.get("packing", 2), "wh_to_ixd": p.get("wh_to_ixd", 10),
             "ixd_to_fba": p.get("ixd_to_fba", 5), "wh_buffer_days": p.get("wh_buffer_days", 10),
-            "seasonal_impact": p.get("seasonal_impact", 1.0), "growth_rate": p.get("growth_rate", 0.3),
+            "seasonal_impact": p.get("seasonal_impact", 1.0),
             "last_month_sale": p.get("last_month_sale", 0),
             "current_fba_stock": p.get("current_fba_stock", 0),
             "current_wh_stock": p.get("current_wh_stock", 0),
         }, source="manual")
         saved.append(row)
 
-    products = logic.calculate_projections(saved)
-    total_forecast = sum(p["monthly_forecast"] for p in products)
-    total_ideal_value = sum(p["ideal_stock_value"] for p in products)
-    total_current_value = sum(p["current_stock_value"] for p in products)
-    ship_alerts = sum(1 for p in products if p["shipment_alert"] > 0)
-    reorder_alerts = sum(1 for p in products if p["reorder_alert"] > 0)
-    critical_alerts = sum(1 for p in products if p.get("inventory_days", 999) < 7)
+    products = await _calculate_with_settings(db, saved)
+    diverged_count = sum(1 for p in products if p.get("diverged"))
 
     return JSONResponse({
         "products": products,
         "summary": {
             "total_products": len(products),
-            "total_forecast_kg": round(total_forecast, 0),
-            "total_ideal_value": round(total_ideal_value, 0),
-            "total_current_value": round(total_current_value, 0),
-            "shipment_alerts": ship_alerts,
-            "reorder_alerts": reorder_alerts,
-            "critical_alerts": critical_alerts,
+            "total_forecast_kg": round(sum(p["monthly_forecast"] for p in products), 0),
+            "total_ideal_wh_kg": round(sum(p.get("ideal_wh_stock", 0) for p in products), 0),
+            "diverged_count": diverged_count,
         },
     })
 
@@ -189,6 +207,12 @@ async def get_blend_settings(_=Depends(require_auth), db: AsyncSession = Depends
                                  "lower is steadier against a noisy week.",
             "divergence_pct": "When the 7-day and 30-day rates disagree by more than this, the "
                                "row is flagged so you can see why its forecast moved.",
+            "global_growth_rate": "The company's overall sales growth assumption, applied to "
+                                    "every product's forecast — one number, not per-product.",
+            "divergence_buffer_multiplier": "How much a diverged row's warehouse safety buffer "
+                                              "widens automatically — e.g. 1.5x turns a 10-day "
+                                              "buffer into 15 days the week a product's demand "
+                                              "is flagged as having moved sharply.",
         },
     }
 
@@ -307,7 +331,7 @@ async def upload_csv(
         updated = await repository.save_row(db, name, {**row, "last_month_sale": kg}, source="manual")
         saved.append(updated)
 
-    products = logic.calculate_projections(saved)
+    products = await _calculate_with_settings(db, saved)
     products.sort(key=lambda x: x.get("monthly_forecast", 0), reverse=True)
     filled = sum(1 for p in products if p["last_month_sale"] > 0)
 
@@ -331,50 +355,37 @@ async def get_defaults(request: Request, _=Depends(require_auth)):
 async def download_projection(request: Request, _=Depends(require_auth), db: AsyncSession = Depends(get_db)):
     """Download the current table as Excel."""
     rows, _report = await build_current_rows(db)
-    products = logic.calculate_projections(rows)
+    products = await _calculate_with_settings(db, rows)
     if not products:
         return JSONResponse({"error": "No projection data"}, status_code=404)
 
     out_rows = [{
         "Product": p["parent_product"],
         "Brand": p.get("brand", ""),
-        "Last Month Sale (kg)": p.get("last_month_sale", 0),
-        "Seasonal Impact": p.get("seasonal_impact", 1),
-        "Growth Rate": p.get("growth_rate", 0.3),
-        "Monthly Forecast (kg)": p.get("monthly_forecast", 0),
-        "Daily Rate (kg)": p.get("daily_rate", 0),
-        "Lead Time (days)": p.get("total_lead_time", 0),
-        "Ideal FBA Stock (kg)": p.get("ideal_fba_stock", 0),
-        "Current FBA Stock (kg)": p.get("current_fba_stock", 0),
-        "Shipment Alert (kg)": p.get("shipment_alert", 0),
-        "WH Buffer Days": p.get("wh_buffer_days", 0),
-        "Ideal WH Stock (kg)": p.get("ideal_wh_stock", 0),
-        "Current WH Stock (kg)": p.get("current_wh_stock", 0),
-        "Reorder Alert (kg)": p.get("reorder_alert", 0),
-        "Purchase Rate (Rs/kg)": p.get("purchase_rate", 0),
-        "Ideal Stock Value (Rs)": p.get("ideal_stock_value", 0),
-        "Inventory Days": p.get("inventory_days", 0),
         "Sales Source": p.get("sales_source", "sheet"),
         "Needs Review": "yes" if p.get("needs_review") else "",
+        "7-Day Rate (kg/day)": p.get("seven_day_rate"),
+        "30-Day Rate (kg/day)": p.get("thirty_day_rate"),
+        "Diverged": "yes" if p.get("diverged") else "",
+        "Last Month Sale (kg)": p.get("last_month_sale", 0),
+        "Seasonal Impact": p.get("seasonal_impact", 1),
+        "Monthly Forecast (kg)": p.get("monthly_forecast", 0),
+        "Daily Rate (kg)": p.get("daily_rate", 0),
+        "Ideal WH Stock (kg)": p.get("ideal_wh_stock", 0),
+        "Supplier -> WH (days)": p.get("supplier_to_wh", 0),
+        "Packing (days)": p.get("packing", 0),
+        "WH -> IXD (days)": p.get("wh_to_ixd", 0),
+        "IXD -> FBA (days)": p.get("ixd_to_fba", 0),
+        "Lead Time Total (days)": p.get("total_lead_time", 0),
+        "Ideal FBA Stock (kg)": p.get("ideal_fba_stock", 0),
+        "WH Buffer Days": p.get("wh_buffer_days", 0),
+        "Effective WH Buffer Days": p.get("effective_wh_buffer_days", 0),
     } for p in products]
 
     df = pd.DataFrame(out_rows)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Projections")
-        ws = writer.sheets["Projections"]
-        from openpyxl.styles import PatternFill
-        red_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-        yellow_fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
-        for row_idx, p in enumerate(products, start=2):
-            if p.get("shipment_alert", 0) > 0:
-                ws.cell(row=row_idx, column=11).fill = red_fill
-            if p.get("reorder_alert", 0) > 0:
-                ws.cell(row=row_idx, column=15).fill = red_fill
-            if p.get("inventory_days", 999) < 7:
-                ws.cell(row=row_idx, column=18).fill = red_fill
-            elif p.get("inventory_days", 999) < 14:
-                ws.cell(row=row_idx, column=18).fill = yellow_fill
 
     buffer.seek(0)
     return StreamingResponse(
