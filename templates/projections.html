@@ -51,6 +51,9 @@ td.brand-cell{text-align:left;font-size:11px;color:var(--text-muted)}
 td input{background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 5px;width:55px;font-size:12px;text-align:center}
 td input:focus{outline:none;border-color:var(--accent)}
 td input.wide{width:70px}
+/* The one column the owner actually watches — tinted so it reads as the headline number
+   among the other calculated columns (Forecast, Ideal FBA), which are ALSO bold. */
+td.ideal-wh-cell{background:var(--accent-soft);border-radius:4px}
 .empty-state{text-align:center;padding:40px;color:var(--text-muted)}
 #toast{position:fixed;bottom:20px;right:20px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 18px;font-size:13px;display:none;z-index:1000}
 #toast.error{border-color:var(--red);color:var(--red)}#toast.success{border-color:var(--green);color:var(--green)}
@@ -77,6 +80,7 @@ td input.wide{width:70px}
     <button class="btn-outline" onclick="openBlendSettings()">⚙ Blend settings</button>
   </div>
   <div id="hidden-parents-note" style="font-size:11.5px;color:var(--text-muted);display:none"></div>
+  <div id="excluded-parents-note" style="font-size:11.5px;color:var(--text-muted);display:none"></div>
 </div>
 
 <!-- Blend settings panel, hidden until opened -->
@@ -123,7 +127,10 @@ td input.wide{width:70px}
   <div style="display:flex;gap:8px;margin-left:auto;align-items:center">
     <button class="btn" onclick="recalcAll()">🔄 Save edits &amp; Recalculate</button>
     <button class="btn-outline" onclick="downloadExcel()">⬇ Excel</button>
+    <button class="btn-outline" onclick="window.location.href='/projections/download/reorder.xlsx'">⬇ Reorder level (Excel)</button>
+    <button class="btn-outline" onclick="window.location.href='/projections/download/reorder.pdf'">⬇ Reorder level (PDF)</button>
     <button class="btn-danger" onclick="clearAllOverrides()">Reset all manual edits</button>
+    <button class="btn-danger" id="remove-selected-btn" style="display:none" onclick="removeSelected()">Remove selected</button>
   </div>
 </div>
 
@@ -144,6 +151,7 @@ td input.wide{width:70px}
 <table>
 <thead>
 <tr>
+  <th style="width:28px"><input type="checkbox" id="select-all-checkbox" onchange="toggleSelectAll(this)" title="Select all visible rows"/></th>
   <th>#</th>
   <th style="text-align:left">Product</th>
   <th style="text-align:left">Brand</th>
@@ -206,6 +214,17 @@ function renderCatalogueSummary(){
     hiddenEl.textContent = `${c.hidden_count} parent(s) hidden — not active in the MRP sheet: ${names}${more}`;
   } else {
     hiddenEl.style.display = "none";
+  }
+  const excludedEl = document.getElementById("excluded-parents-note");
+  if((c.excluded_count||0) > 0){
+    excludedEl.style.display = "block";
+    const restoreLinks = (c.excluded_names||[]).map(n =>
+      `${escHtml(n)} <button class="btn-outline" style="padding:1px 6px;font-size:10px" onclick="restoreProduct('${escHtml(n).replace(/'/g,"\\'")}')">restore</button>`
+    ).join(", ");
+    const more = c.excluded_count > (c.excluded_names||[]).length ? ` and ${c.excluded_count - c.excluded_names.length} more` : "";
+    excludedEl.innerHTML = `${c.excluded_count} product(s) removed from this table: ${restoreLinks}${more}`;
+  } else {
+    excludedEl.style.display = "none";
   }
 }
 
@@ -358,6 +377,57 @@ async function clearAllOverrides(){
   await loadAll();
 }
 
+// ── Remove selected products (soft hide, reversible) ──
+function toggleSelectAll(checkbox){
+  document.querySelectorAll(".row-select").forEach(cb => cb.checked = checkbox.checked);
+  updateRemoveButton();
+}
+
+function selectedParents(){
+  return Array.from(document.querySelectorAll(".row-select:checked"))
+    .map(cb => cb.dataset.parent);
+}
+
+function updateRemoveButton(){
+  const count = selectedParents().length;
+  const btn = document.getElementById("remove-selected-btn");
+  btn.style.display = count > 0 ? "inline-block" : "none";
+  btn.textContent = `Remove selected (${count})`;
+}
+
+async function removeSelected(){
+  const names = selectedParents();
+  if(!names.length) return;
+  if(!confirm(
+    `Remove ${names.length} product(s) from this table?\n\n`
+    + "This only lasts until the next weekly refresh if a product is still active in the "
+    + "MRP sheet — it is meant to declutter this screen, not to retire a product Amazon "
+    + "still sells. You can restore a removed product from the hidden-parents note."
+  )) return;
+
+  const r = await fetch("/projections/exclude", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({parent_products: names, excluded: true}),
+  });
+  const data = await r.json();
+  if(!r.ok){ toast(data.error || "Could not remove.", "error"); return; }
+  toast(`Removed ${data.count} product(s)`, "success");
+  document.getElementById("select-all-checkbox").checked = false;
+  await loadAll();
+}
+
+async function restoreProduct(parentProduct){
+  const r = await fetch("/projections/exclude", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({parent_products: [parentProduct], excluded: false}),
+  });
+  if(r.ok){ toast(`${parentProduct}: restored`, "success"); await loadAll(); }
+}
+
+document.getElementById("tbody").addEventListener("change", (e) => {
+  if(e.target.classList.contains("row-select")) updateRemoveButton();
+});
+
 function renderTable(){
   const q=(document.getElementById("search").value||"").toLowerCase();
   let filtered=products.map((p,i)=>({...p,_idx:i})).filter(p=>{
@@ -386,6 +456,7 @@ function renderTable(){
       ? `title="Buffer widened for volatility: ${(p.wh_buffer_days||0)} × multiplier = ${p.effective_wh_buffer_days} days"`
       : "";
     return `<tr data-idx="${p._idx}">
+      <td><input type="checkbox" class="row-select" data-parent="${escHtml(p.parent_product)}"/></td>
       <td style="color:var(--text-muted);font-size:11px">${i+1}</td>
       <td class="product-name">${nameCell}</td>
       <td class="brand-cell">${escHtml(p.brand||"")}</td>
@@ -395,7 +466,7 @@ function renderTable(){
       <td><input data-field="seasonal_impact" value="${p.seasonal_impact||1}" style="width:45px"/></td>
       <td><strong>${p.monthly_forecast?Math.round(p.monthly_forecast):0}</strong></td>
       <td style="color:var(--text-muted)">${p.daily_rate?p.daily_rate.toFixed(1):0}</td>
-      <td ${idealWhTitle}><strong>${p.ideal_wh_stock?Math.round(p.ideal_wh_stock):0}</strong></td>
+      <td class="ideal-wh-cell" ${idealWhTitle}><strong>${p.ideal_wh_stock?Math.round(p.ideal_wh_stock):0}</strong></td>
       <td><input data-field="supplier_to_wh" value="${p.supplier_to_wh||5}" style="width:35px"/></td>
       <td><input data-field="packing" value="${p.packing||2}" style="width:35px"/></td>
       <td><input data-field="wh_to_ixd" value="${p.wh_to_ixd||10}" style="width:35px"/></td>
