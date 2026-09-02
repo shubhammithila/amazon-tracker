@@ -496,6 +496,43 @@ class User(Base):
     must_change_password = Column(Boolean, default=False, nullable=False)
 
 
+class UserLoginEvent(Base):
+    """One login attempt — successful or not. **The login history this app never had.**
+
+    `User.last_login_at` is a single timestamp, overwritten on every success, so it can answer
+    "when did they last sign in" and nothing else — not "how often," not "who tried and failed,"
+    not "which of the three login paths did this go through." No audit table existed anywhere
+    in this codebase before this one.
+
+    **Every attempt is recorded, success or failure** — a log that only shows successes cannot
+    answer "is someone trying my password," which is the more common reason to open this page.
+
+    `username` is the string TYPED, not resolved — a failed attempt against a username that does
+    not exist is still worth recording, and there is no user row to attach it to in that case.
+    `user_id` is set only when the attempt succeeded against a real named account, and stays NULL
+    for every shared-password login (no user row exists) and every failed one.
+
+    `via` distinguishes the three paths `POST /login` can take, so a shared-password sign-in does
+    not read as though it were a named one on the same log.
+    """
+    __tablename__ = "user_login_events"
+    __table_args__ = (
+        Index("idx_user_login_events_created", "created_at"),
+        Index("idx_user_login_events_user", "user_id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String(32), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    success = Column(Boolean, nullable=False)
+    #: "named" | "app_password" | "ops_password".
+    via = Column(String(16), nullable=False)
+    #: From X-Forwarded-For (Caddy sits in front of uvicorn in production) with a fallback to
+    #: the raw client address for local/dev runs with no proxy in front.
+    ip_address = Column(String(64))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Invoice(Base):
     __tablename__ = "invoices"
 

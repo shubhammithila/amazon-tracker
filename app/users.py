@@ -278,3 +278,50 @@ def payload(user: User) -> dict:
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
         "never_signed_in": user.last_login_at is None,
     }
+
+
+# ─── Login log ────────────────────────────────────────────────────────────────
+
+async def record_login_event(
+    db: AsyncSession, *, username: str, user_id: int | None, success: bool, via: str,
+    ip_address: str | None,
+) -> None:
+    """One row per login ATTEMPT — success or failure. Called from every branch of
+    `POST /login` in app/routers/auth.py, including the rejection path.
+
+    Writing this here rather than in the router matches this module's own stated rule: it is
+    the only place that touches user-related tables, and a login event is a side effect of
+    authenticating, not of routing.
+    """
+    from app.models import UserLoginEvent
+
+    db.add(UserLoginEvent(
+        username=username[:32], user_id=user_id, success=success, via=via[:16],
+        ip_address=(ip_address or "")[:64] or None,
+    ))
+    await db.commit()
+
+
+async def load_login_events(db: AsyncSession, *, limit: int = 200) -> list[dict]:
+    """The newest login attempts, JSON-safe. Capped at 500 regardless of what is asked for —
+    this table has no retention sweep yet, and an unbounded query on it would only get slower
+    as it grows. 500 is far more than a single screenful; it exists to bound the WORST case."""
+    from app.models import UserLoginEvent
+
+    capped = min(int(limit), 500)
+    result = await db.execute(
+        select(UserLoginEvent).order_by(UserLoginEvent.created_at.desc(), UserLoginEvent.id.desc())
+        .limit(capped)
+    )
+    return [
+        {
+            "id": row.id,
+            "username": row.username,
+            "user_id": row.user_id,
+            "success": bool(row.success),
+            "via": row.via,
+            "ip_address": row.ip_address,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in result.scalars()
+    ]
