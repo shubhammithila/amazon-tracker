@@ -366,8 +366,10 @@ def indexes(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "user_login_events" in tables:
+    print("d3479a8ed8ad")                           # head: login-event log
 elif "projection_row" in tables and "excluded_at" in cols("projection_row"):
-    print("ff8b85879cd6")                           # head: excluded_at for removing a row
+    print("ff8b85879cd6")                           # excluded_at for removing a row
 elif "projection_row" in tables and "growth_rate" not in cols("projection_row"):
     print("db7f8bc09d4d")                           # growth_rate dropped (now a global setting)
 elif "projection_row" in tables:
@@ -468,7 +470,9 @@ need = {"shipment_plans", "shipment_plan_items", "shipment_packing_days",
         # was throttled" — which is exactly the state that read as Rs 0 on 1 Sep.
         "ads_refresh",
         # The Projections tab's live parent rows and weekly-refresh record.
-        "projection_row", "projection_refresh"}
+        "projection_row", "projection_refresh",
+        # The Users login log — sign-in attempts, success or failure.
+        "user_login_events"}
 missing = sorted(need - have)
 if missing:
     print("    missing tables:", missing)
