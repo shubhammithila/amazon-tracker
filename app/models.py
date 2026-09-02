@@ -873,7 +873,6 @@ class ProjectionRow(Base):
     ixd_to_fba = Column(Integer, default=5)
     wh_buffer_days = Column(Numeric(6, 1), default=10)
     seasonal_impact = Column(Numeric(6, 2), default=1.0)
-    growth_rate = Column(Numeric(6, 2), default=0.3)
     #: True when no `projection_defaults.json` entry matched this parent's name. See class docstring.
     needs_review = Column(Boolean, default=False, nullable=False)
 
