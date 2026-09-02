@@ -366,8 +366,10 @@ def indexes(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "projection_row" in tables:
+    print("e81434e50028")                           # head: projection rows + refresh record
 elif "ads_refresh" in tables:
-    print("c5e91a3d47b6")                           # head: per-run ads refresh record
+    print("c5e91a3d47b6")                           # per-run ads refresh record
 elif "idx_ads_mutation_created" in indexes("ads_mutation"):
     print("b4d8f27ac913")                           # bid-log index on ads_mutation
 elif "ads_performance_daily" in tables and "ads_performance" not in tables:
@@ -460,7 +462,9 @@ need = {"shipment_plans", "shipment_plan_items", "shipment_packing_days",
         # Why a refresh only partly worked, surviving a restart. Without it the Ads tab cannot tell
         # "nothing was fetched" from "Sponsored Products is current and the Sponsored Brands report
         # was throttled" — which is exactly the state that read as Rs 0 on 1 Sep.
-        "ads_refresh"}
+        "ads_refresh",
+        # The Projections tab's live parent rows and weekly-refresh record.
+        "projection_row", "projection_refresh"}
 missing = sorted(need - have)
 if missing:
     print("    missing tables:", missing)
