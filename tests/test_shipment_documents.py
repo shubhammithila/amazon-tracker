@@ -942,3 +942,48 @@ def test_an_empty_to_buy_list_says_so_rather_than_printing_an_empty_table():
         for row in book.active.iter_rows()
     )
     assert "Nothing to buy" in text
+
+
+# ─── build_reorder_xlsx / build_reorder_pdf: Product, Brand, Reorder Level only ────
+
+
+def test_build_reorder_xlsx_has_three_columns_and_a_totals_row():
+    from openpyxl import load_workbook
+
+    rows = [
+        {"product": "Chana Sattu", "brand": "Mithila Foods", "reorder_level_kg": 962.0},
+        {"product": "Govindbhog Rice", "brand": "Mithila Foods", "reorder_level_kg": 745.0},
+    ]
+    buffer = documents.build_reorder_xlsx(rows, "2 products need reordering")
+    book = load_workbook(buffer)
+    sheet = book.active
+
+    headers = [cell.value for cell in sheet[1]]
+    assert headers == ["Product", "Brand", "Reorder Level (kg)"]
+    assert sheet.cell(row=2, column=1).value == "Chana Sattu"
+    assert sheet.cell(row=2, column=3).value == 962.0
+    # A totals row sums the one numeric column.
+    last_row = sheet.max_row
+    assert sheet.cell(row=last_row, column=3).value == 1707.0
+
+
+def test_build_reorder_xlsx_says_so_in_words_when_nothing_needs_reordering():
+    from openpyxl import load_workbook
+
+    buffer = documents.build_reorder_xlsx([], "Every product is above its reorder level.")
+    book = load_workbook(buffer)
+    sheet = book.active
+    text = " ".join(str(c.value) for row in sheet.iter_rows() for c in row if c.value)
+    assert "above its reorder level" in text
+
+
+def test_build_reorder_pdf_has_three_columns():
+    from pypdf import PdfReader
+
+    rows = [{"product": "Chana Sattu", "brand": "Mithila Foods", "reorder_level_kg": 962.0}]
+    buffer = documents.build_reorder_pdf(rows, "1 product needs reordering")
+    reader = PdfReader(io.BytesIO(buffer.getvalue()))
+    text = reader.pages[0].extract_text()
+    assert "Chana Sattu" in text
+    assert "Mithila Foods" in text
+    assert "962" in text

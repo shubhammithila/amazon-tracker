@@ -1178,3 +1178,99 @@ def build_tobuy_xlsx(purchasing: dict, subtitle: str) -> io.BytesIO:
     book.save(buffer)
     buffer.seek(0)
     return buffer
+
+
+#: Column headers for the reorder-level report — three columns, matching what was asked for
+#: verbatim: "just the product, brand and the reorder level."
+_REORDER_HEADERS = ["Product", "Brand", "Reorder Level (kg)"]
+_XLSX_REORDER_WIDTHS = [30, 16, 18]
+
+
+def build_reorder_xlsx(rows: list[dict], subtitle: str) -> io.BytesIO:
+    """The warehouse reorder level, Product/Brand/kg only — filtered by the CALLER to rows that
+    actually need reordering (`ideal_wh_stock > 0`), never zero-padded.
+
+    **A sibling of `build_simple_xlsx`, not a parameter on it — the same reason
+    `build_portfolio_xlsx` is its own function.** `build_simple_xlsx`'s totals row
+    (`_totals_row`) sums every column past `IDENTITY_HEADERS`, which this three-column document
+    does not have; hand-rolling the total here is simpler than threading a second identity
+    shape through code written for the Shipment tab's eight columns.
+
+    Mirrors `build_tobuy_xlsx`'s own two rules for a purchasing document: nothing to reorder
+    says so IN WORDS rather than rendering an empty grid (an empty download reads as a failed
+    one), and the caller's filtering is trusted completely — this function never re-filters.
+    """
+    from openpyxl import Workbook
+
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Reorder level"
+
+    if not rows:
+        out_rows = [[subtitle, "", ""]]
+    else:
+        out_rows = [
+            [row["product"], row.get("brand", ""), round(float(row["reorder_level_kg"]), 1)]
+            for row in rows
+        ]
+        out_rows.append([
+            f"TOTAL · {len(rows)} product(s)", "",
+            round(sum(row["reorder_level_kg"] for row in rows), 1),
+        ])
+
+    _write_sheet(sheet, _REORDER_HEADERS, out_rows, _XLSX_REORDER_WIDTHS)
+    book.properties.title = "Reorder level"
+    book.properties.description = subtitle
+
+    buffer = io.BytesIO()
+    book.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+
+def build_reorder_pdf(rows: list[dict], subtitle: str) -> io.BytesIO:
+    """The same report as a portrait A4 PDF — a short list, not a wide one, so the generic
+    document helpers (`_pdf_document`/`_head_cell`/`_pdf_table_style`) are reused directly
+    rather than through `build_simple_pdf`, which assumes the eight-column shipment identity
+    shape via `_pdf_column_widths`'s `IDENTITY_HEADERS` lookups.
+    """
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, Table
+
+    buffer = io.BytesIO()
+    doc, elements = _pdf_document(buffer, "Reorder level", subtitle, landscape_mode=False)
+
+    if not rows:
+        body = [[subtitle, "", ""]]
+    else:
+        body = [
+            [row["product"], row.get("brand", ""), round(float(row["reorder_level_kg"]), 1)]
+            for row in rows
+        ]
+        body.append([
+            f"TOTAL · {len(rows)} product(s)", "",
+            round(sum(row["reorder_level_kg"] for row in rows), 1),
+        ])
+
+    styles = _paragraph_styles()
+    data = [[_head_cell(h) for h in _REORDER_HEADERS]]
+    for position, row in enumerate(body):
+        is_totals = bool(rows) and position == len(body) - 1
+        product_style = styles["totals"] if is_totals else styles["loud"]
+        number_style = styles["totals_qty"] if is_totals else styles["quantity"]
+        data.append([
+            Paragraph(_escape(row[0]), product_style),
+            Paragraph(_escape(row[1]), styles["plain"]),
+            Paragraph(_escape(row[2]), number_style),
+        ])
+
+    # Fixed widths: three columns is narrow enough that measuring content (as the shipment
+    # documents do for eight columns of unpredictable width) is unnecessary complexity here.
+    table = Table(data, colWidths=[100 * mm, 45 * mm, 45 * mm], repeatRows=1)
+    table.setStyle(
+        _pdf_table_style(3, totals_row=len(body) if rows else None)
+    )
+    elements.append(table)
+    doc.build(elements, onFirstPage=_page_footer, onLaterPages=_page_footer)
+    buffer.seek(0)
+    return buffer
