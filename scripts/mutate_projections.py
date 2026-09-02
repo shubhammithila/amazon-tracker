@@ -81,6 +81,27 @@ MUTATIONS = [
         '        }, source="sheet")',
         "test_calculate_marks_every_saved_row_manual",
     ),
+    (
+        "calculate_projections stops applying growth/seasonal to an already-blended row",
+        LOGIC,
+        "        daily_rate = demand_rate * seasonal * growth_multiplier",
+        "        daily_rate = demand_rate",
+        "test_calculate_projections_applies_seasonality_and_growth_to_a_sheet_row",
+    ),
+    (
+        "ideal_wh_stock drops the supplier lead time from the WH reorder trigger",
+        LOGIC,
+        "        ideal_wh = round(demand_rate * (s2w + effective_wh_buffer) * seasonal * growth_multiplier, 1)",
+        "        ideal_wh = round(demand_rate * effective_wh_buffer * seasonal * growth_multiplier, 1)",
+        "test_ideal_wh_stock_includes_the_supplier_lead_time",
+    ),
+    (
+        "the divergence buffer multiplier stops being conditional on the diverged flag",
+        LOGIC,
+        '        effective_wh_buffer = wh_buffer * (divergence_buffer_multiplier if p.get("diverged") else 1.0)',
+        "        effective_wh_buffer = wh_buffer * divergence_buffer_multiplier",
+        "test_ideal_wh_stock_does_not_widen_the_buffer_for_a_calm_row",
+    ),
 ]
 
 
