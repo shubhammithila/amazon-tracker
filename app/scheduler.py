@@ -341,6 +341,44 @@ async def scheduled_ads_refresh():
         )
 
 
+#: **07:00 IST, before both the portfolio pull (07:30) and the ads one (08:00)** — see
+#: `PORTFOLIO_REFRESH_IST` for why these are stated in IST rather than as a bare server hour.
+#: Weekly, not nightly: the owner asked for weekly, and a 30-day rolling average moves little
+#: day to day, so a tighter cadence buys nothing. Sunday (day_of_week=6 in APScheduler's
+#: 0=Monday..6=Sunday) is an arbitrary but stable choice — a fixed day matters more than which one.
+PROJECTIONS_REFRESH_IST = (7, 0)
+PROJECTIONS_REFRESH_DAY = 6
+
+
+async def scheduled_projections_refresh():
+    """Recompute every parent's blended 7d/30d sales rate, once a week.
+
+    Reuses the Portfolio tab's own economics fetch — see `app.projections.refresh.run` — so this
+    costs nothing extra when the nightly Portfolio refresh has already stored the current 30-day
+    window; only the 7-day one is genuinely new most weeks.
+
+    **This job never edits Amazon.** It recomputes a forecast number a human orders against; it
+    does not place an order. Same reasoning `scheduled_ads_refresh` documents for why a scheduled
+    job here is safe unattended.
+    """
+    if not get_settings().spapi_configured:
+        logger.debug("Projections refresh skipped: SP-API is not configured")
+        return
+
+    from app.database import async_session
+    from app.projections import refresh as projections_refresh
+
+    async with async_session() as db:
+        result = await projections_refresh.run(db)
+    if result.get("error"):
+        logger.warning("Projections refresh failed: %s", result["error"])
+    else:
+        logger.info(
+            "Projections refresh: %d row(s) for %s..%s",
+            result.get("rows_stored", 0), result.get("window_start"), result.get("window_end"),
+        )
+
+
 async def scheduled_order_refresh():
     """Pull Amazon Easy Ship orders into the local tables, every 30 minutes.
 
@@ -491,6 +529,21 @@ def setup_scheduler():
     # **Both times, IST and UTC.** `journalctl` stamps UTC, the intent is IST, and printing one
     # leaves the next reader to redo the arithmetic that was wrong here for the life of the feature.
     parts.append(f"ads at {ist.label(*ADS_REFRESH_IST)}")
+
+    # Same flag pair again — a weekly forecast recompute is as safe unattended as the nightly
+    # portfolio and ads pulls; none of the three ever writes to Amazon.
+    projections_utc = ist.utc_hhmm(*PROJECTIONS_REFRESH_IST)
+    scheduler.add_job(
+        scheduled_projections_refresh,
+        CronTrigger(
+            day_of_week=PROJECTIONS_REFRESH_DAY, hour=projections_utc[0], minute=projections_utc[1],
+        ),
+        id="projections_refresh",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    parts.append(f"projections weekly at {ist.label(*PROJECTIONS_REFRESH_IST)}")
 
     scheduler.start()
     # Built from `parts` rather than one f-string: `keyword_hour` and `purge_hour` only exist
