@@ -1,0 +1,154 @@
+"""API tests for the live-data Projections tab.
+
+**Every test needing active parents must patch `app.shipment.catalogue.load_catalogue` itself.**
+`tests/conftest.py`'s autouse `no_live_product_sheet` fixture returns an EMPTY catalogue for every
+test by default — correct for the Shipment tests, wrong here, where the whole feature is "show
+what the sheet says is active". The pattern below is `tests/test_product_pricing.py`'s
+`fake_catalogue` fixture, adapted.
+"""
+import pytest
+
+pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture
+def fake_catalogue(monkeypatch):
+    """Two active parents (one multi-size), one inactive, one Triphala-shaped (active, absent
+    from projection_defaults.json under any spelling)."""
+    async def _catalogue():
+        return (
+            {
+                "B0CHANA001": {"asin": "B0CHANA001", "name": "Chana Sattu", "weight": 0.5,
+                               "brand": "Mithila Foods", "active": True},
+                "B0CHANA002": {"asin": "B0CHANA002", "name": "Chana Sattu", "weight": 1.0,
+                               "brand": "Mithila Foods", "active": True},
+                "B0GOVIND01": {"asin": "B0GOVIND01", "name": "Govind Bhog Rice", "weight": 1.0,
+                               "brand": "Mithila Foods", "active": True},
+                "B0DEAD0001": {"asin": "B0DEAD0001", "name": "Kasundi", "weight": 0.3,
+                               "brand": "Howrah Foods", "active": False},
+                "B0TRIPHAL1": {"asin": "B0TRIPHAL1", "name": "Triphala Sattu", "weight": 0.5,
+                               "brand": "Mithila Foods", "active": True},
+            },
+            None,
+            "sheet",
+        )
+
+    monkeypatch.setattr("app.shipment.catalogue.load_catalogue", _catalogue, raising=True)
+    return _catalogue
+
+
+async def test_last_returns_only_active_parents_by_name(auth_client, db, fake_catalogue):
+    body = (await auth_client.get("/projections/last")).json()
+    names = {p["parent_product"] for p in body["products"]}
+    assert names == {"Chana Sattu", "Govind Bhog Rice", "Triphala Sattu"}, (
+        "either an inactive parent leaked in, or an active one was hidden"
+    )
+
+
+async def test_triphala_sattu_appears_and_is_flagged_needs_review(auth_client, db, fake_catalogue):
+    """The specific product that exposed why this had to be a source change, not a filter:
+    active in the sheet, absent from projection_defaults.json under any spelling."""
+    body = (await auth_client.get("/projections/last")).json()
+    triphala = next(p for p in body["products"] if p["parent_product"] == "Triphala Sattu")
+    assert triphala["needs_review"] is True
+    assert triphala["purchase_rate"] == 0  # Global Defaults' purchase_rate, unset
+
+
+async def test_a_matched_parent_is_not_flagged_needs_review(auth_client, db, fake_catalogue):
+    body = (await auth_client.get("/projections/last")).json()
+    govind = next(p for p in body["products"] if p["parent_product"] == "Govind Bhog Rice")
+    assert govind["needs_review"] is False
+    # Verified against the real file: json.load(open("app/invoice/projection_defaults.json"))
+    # ["Govind Bhog Rice"]["purchase_rate"] == 150.0. If this fails after an unrelated edit to
+    # that file, re-check the real value rather than "fixing" this assertion blindly.
+    assert govind["purchase_rate"] == pytest.approx(150.0)  # from projection_defaults.json
+
+
+async def test_the_hidden_parent_is_named_not_just_counted(auth_client, db, fake_catalogue):
+    """Kasundi is inactive; it must not appear in products AND must be named in the report."""
+    # First load with Kasundi active, to get it stored...
+    body = (await auth_client.get("/projections/last")).json()
+    assert "Kasundi" not in {p["parent_product"] for p in body["products"]}
+    # Kasundi was never active in this fixture's catalogue at all, so it never enters storage
+    # and cannot be "hidden" this call. Prove the OTHER direction instead: an existing stored
+    # row for a name the current catalogue does not mention shows up as hidden.
+    from app.projections import repository
+    await repository.save_row(db, "Old Discontinued Product", {}, source="sheet")
+
+    body = (await auth_client.get("/projections/last")).json()
+    assert "Old Discontinued Product" in body["catalogue"]["hidden_names"]
+    assert body["catalogue"]["hidden_count"] >= 1
+
+
+async def test_calculate_marks_every_saved_row_manual(auth_client, db, fake_catalogue):
+    await auth_client.get("/projections/last")  # seed the rows
+    response = await auth_client.post("/projections/calculate", json={
+        "products": [{"product": "Chana Sattu", "last_month_sale": 42.0}],
+    })
+    body = response.json()
+    row = next(p for p in body["products"] if p["parent_product"] == "Chana Sattu")
+    assert row["sales_source"] == "manual"
+    assert row["last_month_sale"] == 42.0
+
+
+async def test_a_manual_row_survives_the_next_last_call(auth_client, db, fake_catalogue):
+    await auth_client.get("/projections/last")
+    await auth_client.post("/projections/calculate", json={
+        "products": [{"product": "Chana Sattu", "last_month_sale": 42.0}],
+    })
+    body = (await auth_client.get("/projections/last")).json()
+    row = next(p for p in body["products"] if p["parent_product"] == "Chana Sattu")
+    assert row["last_month_sale"] == 42.0, "the manual edit did not survive a page reload"
+
+
+async def test_reset_row_clears_the_manual_flag(auth_client, db, fake_catalogue):
+    await auth_client.get("/projections/last")
+    await auth_client.post("/projections/calculate", json={
+        "products": [{"product": "Chana Sattu", "last_month_sale": 42.0}],
+    })
+    response = await auth_client.post("/projections/reset-row", json={"parent_product": "Chana Sattu"})
+    assert response.json()["row"]["sales_source"] == "sheet"
+
+
+async def test_reset_row_refuses_an_unknown_parent(auth_client, db, fake_catalogue):
+    response = await auth_client.post("/projections/reset-row", json={"parent_product": "Nope"})
+    assert response.status_code == 404
+
+
+# ─── blend settings ────────────────────────────────────────────────────────────
+
+
+async def test_blend_settings_round_trip_through_the_api(auth_client, db):
+    from app.projections import logic
+
+    body = (await auth_client.get("/projections/blend-settings")).json()
+    assert body["blend"]["seven_day_weight"] == logic.DEFAULT_BLEND["seven_day_weight"]
+
+    saved = await auth_client.post("/projections/blend-settings", json={"blend": {"seven_day_weight": 0.6}})
+    assert saved.json()["blend"]["seven_day_weight"] == 0.6
+
+    reset = await auth_client.post("/projections/blend-settings", json={"reset": True})
+    assert reset.json()["blend"]["seven_day_weight"] == logic.DEFAULT_BLEND["seven_day_weight"]
+
+
+async def test_an_absurd_blend_weight_is_refused_with_its_reason(auth_client, db):
+    response = await auth_client.post(
+        "/projections/blend-settings", json={"blend": {"seven_day_weight": 99}},
+    )
+    assert response.status_code == 400
+    assert "seven_day_weight" in response.json()["error"]
+
+
+# ─── CSV upload marks manual ────────────────────────────────────────────────────
+
+
+async def test_csv_upload_marks_the_row_manual(auth_client, db, fake_catalogue):
+    csv_bytes = (
+        "(Child) ASIN,Units Ordered\nB0CHANA001,20\n"
+    ).encode("utf-8")
+    files = {"file": ("report.csv", csv_bytes, "text/csv")}
+    response = await auth_client.post("/projections/upload-csv", files=files)
+    body = response.json()
+    row = next(p for p in body["products"] if p["parent_product"] == "Chana Sattu")
+    assert row["sales_source"] == "manual"
+    assert row["last_month_sale"] == pytest.approx(10.0)  # 20 units * 0.5 kg
