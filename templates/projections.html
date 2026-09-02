@@ -44,7 +44,6 @@ thead th{background:var(--surface);padding:7px 8px;text-align:center;font-size:1
 thead th:hover{color:var(--text)}thead th.sorted{color:var(--accent)}
 thead th.col-group-input{background:var(--accent-soft);border-bottom:2px solid var(--accent)}
 thead th.col-group-calc{background:var(--green-soft)}
-thead th.col-group-alert{background:var(--red-soft)}
 tbody tr{border-bottom:1px solid var(--border)}tbody tr:hover{background:var(--accent-soft)}
 td{padding:5px 6px;font-size:12px;text-align:center;white-space:nowrap}
 td.product-name{text-align:left;font-weight:600;font-size:13px;padding-left:10px}
@@ -52,8 +51,6 @@ td.brand-cell{text-align:left;font-size:11px;color:var(--text-muted)}
 td input{background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 5px;width:55px;font-size:12px;text-align:center}
 td input:focus{outline:none;border-color:var(--accent)}
 td input.wide{width:70px}
-.alert-pos{color:var(--red);font-weight:700}.alert-neg{color:var(--green);font-weight:600}
-.inv-critical{color:var(--red);font-weight:700}.inv-warning{color:var(--orange);font-weight:600}.inv-good{color:var(--green)}
 .empty-state{text-align:center;padding:40px;color:var(--text-muted)}
 #toast{position:fixed;bottom:20px;right:20px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 18px;font-size:13px;display:none;z-index:1000}
 #toast.error{border-color:var(--red);color:var(--red)}#toast.success{border-color:var(--green);color:var(--green)}
@@ -68,7 +65,7 @@ td input.wide{width:70px}
 </header>
 <main>
 <h2>📈 Sales &amp; Stock Projections</h2>
-<p class="subtitle">Enter last month's sales, tweak seasonal/growth factors, get next month forecast + reorder alerts. All values in <strong>kg</strong>.</p>
+<p class="subtitle">Live sales, seasonality and lead time turn into one number — how much stock to keep at the warehouse. All values in <strong>kg</strong>.</p>
 
 <!-- Catalogue & refresh status -->
 <div class="globals-card" style="flex-direction:column;align-items:stretch;gap:10px">
@@ -94,6 +91,14 @@ td input.wide{width:70px}
     <label style="font-size:12px;color:var(--text-muted);display:flex;flex-direction:column;gap:4px">
       Divergence flag threshold (%)
       <input type="number" id="blend-threshold" step="5" min="1" max="200" style="width:80px;background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:5px 8px"/>
+    </label>
+    <label style="font-size:12px;color:var(--text-muted);display:flex;flex-direction:column;gap:4px">
+      Company growth rate (%)
+      <input type="number" id="blend-growth" step="5" min="0" max="300" style="width:80px;background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:5px 8px"/>
+    </label>
+    <label style="font-size:12px;color:var(--text-muted);display:flex;flex-direction:column;gap:4px">
+      Volatility buffer multiplier
+      <input type="number" id="blend-buffer-mult" step="0.1" min="1" max="5" style="width:80px;background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:5px 8px"/>
     </label>
     <button class="btn" onclick="saveBlendSettings()">Save</button>
     <button class="btn-outline" onclick="resetBlendSettings()">↺ Reset to defaults</button>
@@ -146,24 +151,16 @@ td input.wide{width:70px}
   <th>7d / 30d<br/>(kg/day)</th>
   <th class="col-group-input">Last Month<br/>Sale (kg)</th>
   <th class="col-group-input">Seasonal</th>
-  <th class="col-group-input">Growth</th>
   <th class="col-group-calc">Forecast<br/>(kg/mo)</th>
   <th class="col-group-calc">Daily<br/>(kg/d)</th>
+  <th class="col-group-calc">Ideal<br/>WH</th>
   <th class="col-group-input">S→WH<br/>(d)</th>
   <th class="col-group-input">Pack<br/>(d)</th>
   <th class="col-group-input">WH→IXD<br/>(d)</th>
   <th class="col-group-input">IXD→FBA<br/>(d)</th>
   <th class="col-group-calc">Lead<br/>Total</th>
   <th class="col-group-calc">Ideal<br/>FBA</th>
-  <th class="col-group-input">Current<br/>FBA</th>
-  <th class="col-group-alert">Ship<br/>Alert</th>
   <th class="col-group-input">WH Buf<br/>Days</th>
-  <th class="col-group-calc">Ideal<br/>WH</th>
-  <th class="col-group-input">Current<br/>WH</th>
-  <th class="col-group-alert">Reorder<br/>Alert</th>
-  <th class="col-group-input">Rate<br/>(₹/kg)</th>
-  <th class="col-group-calc">Stock<br/>Value (₹)</th>
-  <th class="col-group-alert">Inv<br/>Days</th>
 </tr>
 </thead>
 <tbody id="tbody"></tbody>
@@ -186,27 +183,14 @@ async function loadAll(){
   const r = await fetch("/projections/last");
   const data = await r.json();
   products = data.products || [];
+  // Biggest reorder need first — the whole point of moving Ideal WH to the front of the table.
+  products.sort((a, b) => (b.ideal_wh_stock || 0) - (a.ideal_wh_stock || 0));
   catalogueInfo = data.catalogue || {};
   blendSettings = data.blend || {};
   renderCatalogueSummary();
   renderLastRefresh(data.last_refresh);
-  showSummary(summaryFromProducts(products));
+  showSummary(data.summary);
   renderTable();
-}
-
-function summaryFromProducts(list){
-  const total_forecast_kg = list.reduce((s,p)=>s+(p.monthly_forecast||0),0);
-  const total_ideal_value = list.reduce((s,p)=>s+(p.ideal_stock_value||0),0);
-  const total_current_value = list.reduce((s,p)=>s+(p.current_stock_value||0),0);
-  return {
-    total_products: list.length,
-    total_forecast_kg,
-    total_ideal_value,
-    total_current_value,
-    shipment_alerts: list.filter(p=>p.shipment_alert>0).length,
-    reorder_alerts: list.filter(p=>p.reorder_alert>0).length,
-    critical_alerts: list.filter(p=>(p.inventory_days??999)<7).length,
-  };
 }
 
 function renderCatalogueSummary(){
@@ -268,6 +252,8 @@ async function loadBlendSettings(){
   const data = await r.json();
   document.getElementById("blend-weight").value = data.blend.seven_day_weight;
   document.getElementById("blend-threshold").value = data.blend.divergence_pct;
+  document.getElementById("blend-growth").value = data.blend.global_growth_rate * 100;
+  document.getElementById("blend-buffer-mult").value = data.blend.divergence_buffer_multiplier;
   document.getElementById("blend-help").textContent =
     data.help.seven_day_weight + " " + data.help.divergence_pct;
 }
@@ -275,13 +261,19 @@ async function loadBlendSettings(){
 async function saveBlendSettings(){
   const weight = parseFloat(document.getElementById("blend-weight").value);
   const threshold = parseFloat(document.getElementById("blend-threshold").value);
+  const growthPct = parseFloat(document.getElementById("blend-growth").value);
+  const bufferMult = parseFloat(document.getElementById("blend-buffer-mult").value);
   const r = await fetch("/projections/blend-settings", {
     method: "POST", headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({blend: {seven_day_weight: weight, divergence_pct: threshold}}),
+    body: JSON.stringify({blend: {
+      seven_day_weight: weight, divergence_pct: threshold,
+      global_growth_rate: growthPct / 100, divergence_buffer_multiplier: bufferMult,
+    }}),
   });
   const data = await r.json();
   if(data.error){toast(data.error, "error");return;}
   toast("Blend settings saved", "success");
+  await loadAll();
 }
 
 async function resetBlendSettings(){
@@ -292,7 +284,10 @@ async function resetBlendSettings(){
   const data = await r.json();
   document.getElementById("blend-weight").value = data.blend.seven_day_weight;
   document.getElementById("blend-threshold").value = data.blend.divergence_pct;
+  document.getElementById("blend-growth").value = data.blend.global_growth_rate * 100;
+  document.getElementById("blend-buffer-mult").value = data.blend.divergence_buffer_multiplier;
   toast("Reset to measured defaults", "success");
+  await loadAll();
 }
 
 async function recalcAll(){
@@ -315,30 +310,25 @@ function collectFromTable(){
     const get = id => {const el=tr.querySelector(`[data-field="${id}"]`);return el?parseFloat(el.value)||0:p[id]||0;};
     p.last_month_sale = get("last_month_sale");
     p.seasonal_impact = get("seasonal_impact");
-    p.growth_rate = get("growth_rate");
     p.supplier_to_wh = get("supplier_to_wh");
     p.packing = get("packing");
     p.wh_to_ixd = get("wh_to_ixd");
     p.ixd_to_fba = get("ixd_to_fba");
-    p.current_fba_stock = get("current_fba_stock");
-    p.current_wh_stock = get("current_wh_stock");
     p.wh_buffer_days = get("wh_buffer_days");
-    p.purchase_rate = get("purchase_rate");
+    // purchase_rate/current_fba_stock/current_wh_stock have no input in this table any more
+    // (their columns were removed — see CLAUDE.md), but the values already on `p` are preserved
+    // as-is since nothing here overwrites them.
   });
 }
 
 function showSummary(s){
   if(!s)return;
-  const fmt = n=>"₹"+Number(n).toLocaleString("en-IN",{maximumFractionDigits:0});
   document.getElementById("summary").style.display="grid";
   document.getElementById("summary").innerHTML=`
     <div class="stat"><div class="num">${s.total_products}</div><div class="lbl">Products</div></div>
     <div class="stat"><div class="num">${Number(s.total_forecast_kg).toLocaleString("en-IN",{maximumFractionDigits:0})}</div><div class="lbl">Forecast (kg)</div></div>
-    <div class="stat"><div class="num">${fmt(s.total_ideal_value)}</div><div class="lbl">Ideal Stock Value</div></div>
-    <div class="stat"><div class="num">${fmt(s.total_current_value)}</div><div class="lbl">Current Stock Value</div></div>
-    <div class="stat ${s.shipment_alerts>0?'alert':''}"><div class="num">${s.shipment_alerts}</div><div class="lbl">Shipment Alerts</div></div>
-    <div class="stat ${s.reorder_alerts>0?'warn':''}"><div class="num">${s.reorder_alerts}</div><div class="lbl">Reorder Alerts</div></div>
-    <div class="stat ${s.critical_alerts>0?'alert':''}"><div class="num">${s.critical_alerts}</div><div class="lbl">Critical (&lt;7d)</div></div>`;
+    <div class="stat"><div class="num">${Number(s.total_ideal_wh_kg).toLocaleString("en-IN",{maximumFractionDigits:0})}</div><div class="lbl">Total Ideal WH (kg)</div></div>
+    <div class="stat ${s.diverged_count>0?'warn':''}"><div class="num">${s.diverged_count}</div><div class="lbl">Diverged</div></div>`;
 }
 
 function setBrand(b,el){currentBrand=b;document.querySelectorAll('.chip[data-brand]').forEach(c=>c.classList.remove("active"));el.classList.add("active");renderTable();}
@@ -382,9 +372,6 @@ function renderTable(){
 
   const fmt=n=>"₹"+Number(n).toLocaleString("en-IN",{maximumFractionDigits:0});
   tbody.innerHTML=filtered.map((p,i)=>{
-    const shipCls=p.shipment_alert>0?"alert-pos":"alert-neg";
-    const reorderCls=p.reorder_alert>0?"alert-pos":"alert-neg";
-    const invCls=p.inventory_days<7?"inv-critical":p.inventory_days<14?"inv-warning":"inv-good";
     const leadTotal=(p.supplier_to_wh||0)+(p.packing||0)+(p.wh_to_ixd||0)+(p.ixd_to_fba||0);
     const nameCell = p.needs_review
       ? `${escHtml(p.parent_product)} <span title="No saved purchasing config matched this product — using Global Defaults. Check the purchase rate and lead times." style="color:var(--orange);font-weight:700">⚠ needs review</span>`
@@ -395,6 +382,9 @@ function renderTable(){
     const rateCell = p.seven_day_rate == null
       ? `— / ${(p.thirty_day_rate||0).toFixed(1)}`
       : `${p.diverged ? '<span title="7-day and 30-day rates disagree beyond the saved threshold" style="color:var(--orange)">⚠</span> ' : ''}${p.seven_day_rate.toFixed(1)} / ${(p.thirty_day_rate||0).toFixed(1)}`;
+    const idealWhTitle = p.diverged
+      ? `title="Buffer widened for volatility: ${(p.wh_buffer_days||0)} × multiplier = ${p.effective_wh_buffer_days} days"`
+      : "";
     return `<tr data-idx="${p._idx}">
       <td style="color:var(--text-muted);font-size:11px">${i+1}</td>
       <td class="product-name">${nameCell}</td>
@@ -403,24 +393,16 @@ function renderTable(){
       <td style="font-size:10.5px;color:var(--text-muted)">${rateCell}</td>
       <td><input data-field="last_month_sale" value="${p.last_month_sale||0}" class="wide"/></td>
       <td><input data-field="seasonal_impact" value="${p.seasonal_impact||1}" style="width:45px"/></td>
-      <td><input data-field="growth_rate" value="${p.growth_rate||0.3}" style="width:45px"/></td>
       <td><strong>${p.monthly_forecast?Math.round(p.monthly_forecast):0}</strong></td>
       <td style="color:var(--text-muted)">${p.daily_rate?p.daily_rate.toFixed(1):0}</td>
+      <td ${idealWhTitle}><strong>${p.ideal_wh_stock?Math.round(p.ideal_wh_stock):0}</strong></td>
       <td><input data-field="supplier_to_wh" value="${p.supplier_to_wh||5}" style="width:35px"/></td>
       <td><input data-field="packing" value="${p.packing||2}" style="width:35px"/></td>
       <td><input data-field="wh_to_ixd" value="${p.wh_to_ixd||10}" style="width:35px"/></td>
       <td><input data-field="ixd_to_fba" value="${p.ixd_to_fba||5}" style="width:35px"/></td>
       <td style="color:var(--text-muted)">${leadTotal}</td>
-      <td><strong>${p.ideal_fba_stock?Math.round(p.ideal_fba_stock):0}</strong></td>
-      <td><input data-field="current_fba_stock" value="${p.current_fba_stock||0}" class="wide"/></td>
-      <td class="${shipCls}">${p.shipment_alert?Math.round(p.shipment_alert):0}</td>
+      <td>${p.ideal_fba_stock?Math.round(p.ideal_fba_stock):0}</td>
       <td><input data-field="wh_buffer_days" value="${p.wh_buffer_days||10}" style="width:40px"/></td>
-      <td>${p.ideal_wh_stock?Math.round(p.ideal_wh_stock):0}</td>
-      <td><input data-field="current_wh_stock" value="${p.current_wh_stock||0}" style="width:55px"/></td>
-      <td class="${reorderCls}">${p.reorder_alert?Math.round(p.reorder_alert):0}</td>
-      <td><input data-field="purchase_rate" value="${p.purchase_rate||0}" style="width:50px"/></td>
-      <td style="font-size:11px">${p.ideal_stock_value?fmt(p.ideal_stock_value):"—"}</td>
-      <td class="${invCls}">${p.inventory_days!=null?Math.round(p.inventory_days):0}d</td>
     </tr>`;
   }).join("");
 }
@@ -445,7 +427,13 @@ async function uploadCSV(){
     const data=await r.json();
     if(data.error) throw new Error(data.error);
     products=data.products;
-    showSummary({total_products:data.total_products,total_forecast_kg:data.total_forecast_kg,total_ideal_value:0,total_current_value:0,shipment_alerts:0,reorder_alerts:0,critical_alerts:0});
+    products.sort((a, b) => (b.ideal_wh_stock || 0) - (a.ideal_wh_stock || 0));
+    showSummary({
+      total_products: data.total_products,
+      total_forecast_kg: data.total_forecast_kg,
+      total_ideal_wh_kg: products.reduce((s,p)=>s+(p.ideal_wh_stock||0),0),
+      diverged_count: products.filter(p=>p.diverged).length,
+    });
     renderTable();
     document.getElementById("csv-result").textContent=`Imported ${data.filled_from_csv} products, ${data.total_kg_from_csv} kg total sales`;
     toast(`Sales imported: ${data.filled_from_csv} products filled from CSV, marked manual`,"success");
