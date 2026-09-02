@@ -187,3 +187,85 @@ async def test_calculate_no_longer_accepts_or_returns_growth_rate(auth_client, d
     body = response.json()
     row = next(p for p in body["products"] if p["parent_product"] == "Chana Sattu")
     assert "growth_rate" not in row
+
+
+# ─── exclude/restore, and the reorder-level downloads ──────────────────────────
+
+
+async def test_exclude_hides_a_row_from_last(auth_client, db, fake_catalogue):
+    await auth_client.get("/projections/last")  # seed the rows
+    response = await auth_client.post("/projections/exclude", json={
+        "parent_products": ["Chana Sattu"], "excluded": True,
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "excluded"
+    assert body["changed"] == ["Chana Sattu"]
+
+    last = (await auth_client.get("/projections/last")).json()
+    names = {p["parent_product"] for p in last["products"]}
+    assert "Chana Sattu" not in names
+    assert "Chana Sattu" in last["catalogue"]["excluded_names"]
+    assert last["catalogue"]["excluded_count"] == 1
+
+
+async def test_exclude_then_restore_brings_the_row_back(auth_client, db, fake_catalogue):
+    await auth_client.get("/projections/last")
+    await auth_client.post("/projections/exclude", json={
+        "parent_products": ["Chana Sattu"], "excluded": True,
+    })
+    restore = await auth_client.post("/projections/exclude", json={
+        "parent_products": ["Chana Sattu"], "excluded": False,
+    })
+    assert restore.json()["status"] == "restored"
+
+    last = (await auth_client.get("/projections/last")).json()
+    names = {p["parent_product"] for p in last["products"]}
+    assert "Chana Sattu" in names
+    assert last["catalogue"]["excluded_count"] == 0
+
+
+async def test_exclude_refuses_an_empty_selection(auth_client, db, fake_catalogue):
+    response = await auth_client.post("/projections/exclude", json={
+        "parent_products": [], "excluded": True,
+    })
+    assert response.status_code == 400
+
+
+async def test_download_reorder_xlsx_only_includes_positive_reorder_levels(
+    auth_client, db, fake_catalogue,
+):
+    await auth_client.get("/projections/last")  # seeds all active parents at daily_rate=0
+    response = await auth_client.get("/projections/download/reorder.xlsx")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+
+async def test_download_reorder_pdf_responds_200(auth_client, db, fake_catalogue):
+    await auth_client.get("/projections/last")
+    response = await auth_client.get("/projections/download/reorder.pdf")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+
+
+async def test_excluded_row_never_appears_in_the_reorder_download(auth_client, db, fake_catalogue):
+    from app.projections import repository
+
+    await auth_client.get("/projections/last")
+    await repository.save_row(
+        db, "Chana Sattu",
+        {"daily_rate": 50.0, "wh_buffer_days": 10, "supplier_to_wh": 5, "seasonal_impact": 1.0},
+        source="sheet",
+    )
+    await auth_client.post("/projections/exclude", json={
+        "parent_products": ["Chana Sattu"], "excluded": True,
+    })
+    response = await auth_client.get("/projections/download/reorder.xlsx")
+    from openpyxl import load_workbook
+    import io
+    book = load_workbook(io.BytesIO(response.content))
+    sheet = book.active
+    text = " ".join(str(c.value) for row in sheet.iter_rows() for c in row if c.value)
+    assert "Chana Sattu" not in text

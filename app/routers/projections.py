@@ -62,18 +62,28 @@ async def build_current_rows(db: AsyncSession) -> tuple[list[dict], dict]:
     never re-synthesised on every page load. A parent hidden this load (no longer active) is left
     in the database untouched — its row is not deleted, only excluded from what is returned, so a
     reactivated product keeps its history rather than starting over.
+
+    **An OWNER-excluded row (`excluded_at` set) is likewise left untouched and left out of
+    `rows`** — the same non-destructive exclusion `hidden_names` already applies to a parent no
+    longer active in the sheet, now also available for one the owner chose to hide directly.
     """
     sheet_products, sheet_warning, sheet_source = await catalogue.load_catalogue()
     live_groups = logic.group_active_by_name(sheet_products)
 
-    stored = {r["parent_product"]: r for r in await repository.load_rows(db)}
-    hidden = logic.hidden_parent_names(set(stored), live_groups)
+    all_stored = await repository.load_rows(db, include_excluded=True)
+    stored = {r["parent_product"]: r for r in all_stored if r.get("excluded_at") is None}
+    excluded_names = sorted(r["parent_product"] for r in all_stored if r.get("excluded_at"))
+    hidden = logic.hidden_parent_names(
+        {r["parent_product"] for r in all_stored}, live_groups,
+    )
 
     rows: list[dict] = []
     for name, group in live_groups.items():
         if name in stored:
             rows.append(stored[name])
             continue
+        if name in excluded_names:
+            continue  # owner-excluded; stays hidden even though it is active in the sheet
         config = logic.build_parent_config(name, group, DEFAULTS, GLOBAL_DEFAULTS)
         created = await repository.save_row(
             db, name,
@@ -88,6 +98,8 @@ async def build_current_rows(db: AsyncSession) -> tuple[list[dict], dict]:
         "active_parents": len(live_groups),
         "hidden_count": len(hidden),
         "hidden_names": hidden[:8],
+        "excluded_count": len(excluded_names),
+        "excluded_names": excluded_names[:8],
         "warning": sheet_warning,
     }
     return rows, report
@@ -192,6 +204,96 @@ async def reset_row(request: Request, _=Depends(require_auth), db: AsyncSession 
     if result is None:
         return JSONResponse({"error": f"No row found for {name!r}."}, status_code=404)
     return JSONResponse({"row": result})
+
+
+@router.post("/exclude")
+async def exclude_products(
+    request: Request, _=Depends(require_auth), db: AsyncSession = Depends(get_db),
+):
+    """Remove or restore rows by parent name, reversibly. Body:
+    `{"parent_products": [...], "excluded": bool}`.
+
+    **No packed-units-style guard here, unlike Shipment's exclude route.** A projection row has
+    no analogous "already committed" state — nothing downstream treats a row as spent the way
+    packed cartons are, so there is nothing this needs to refuse.
+    """
+    body = await request.json()
+    names = [str(n).strip() for n in (body.get("parent_products") or []) if str(n).strip()]
+    excluded = bool(body.get("excluded", True))
+
+    if not names:
+        return JSONResponse({"error": "Select at least one product."}, status_code=400)
+
+    changed = await repository.set_excluded(db, names, excluded)
+    return JSONResponse({
+        "status": "excluded" if excluded else "restored",
+        "changed": changed,
+        "count": len(changed),
+    })
+
+
+def _reorder_rows(products: list[dict]) -> list[dict]:
+    """Product/Brand/reorder-level rows, filtered to only what needs reordering and sorted the
+    same way the live table's default sort reads — biggest need first — so the document and the
+    screen agree on order without either one being derived from the other after the fact."""
+    filtered = [p for p in products if (p.get("ideal_wh_stock") or 0) > 0]
+    filtered.sort(key=lambda p: p.get("ideal_wh_stock", 0), reverse=True)
+    return [
+        {"product": p["parent_product"], "brand": p.get("brand", ""),
+         "reorder_level_kg": p["ideal_wh_stock"]}
+        for p in filtered
+    ]
+
+
+def _reorder_subtitle(total: int, reordering: int) -> str:
+    if reordering == 0:
+        return "Every product is above its reorder level — nothing to reorder right now."
+    covered = total - reordering
+    return (
+        f"{reordering} product(s) need reordering"
+        + (f" · {covered} covered, not shown" if covered else "")
+    )
+
+
+@router.get("/download/reorder.xlsx")
+async def download_reorder_xlsx(
+    request: Request, _=Depends(require_auth), db: AsyncSession = Depends(get_db),
+):
+    """Product, Brand, Reorder Level (kg) — filtered to products that actually need it, same
+    rule the 'To buy' purchasing export already follows."""
+    from app.shipment import documents
+
+    rows, _report = await build_current_rows(db)
+    products = await _calculate_with_settings(db, rows)
+    reorder_rows = _reorder_rows(products)
+    subtitle = _reorder_subtitle(len(products), len(reorder_rows))
+
+    buffer = documents.build_reorder_xlsx(reorder_rows, subtitle)
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=reorder-level.xlsx"},
+    )
+
+
+@router.get("/download/reorder.pdf")
+async def download_reorder_pdf(
+    request: Request, _=Depends(require_auth), db: AsyncSession = Depends(get_db),
+):
+    """The same report as a portrait PDF."""
+    from app.shipment import documents
+
+    rows, _report = await build_current_rows(db)
+    products = await _calculate_with_settings(db, rows)
+    reorder_rows = _reorder_rows(products)
+    subtitle = _reorder_subtitle(len(products), len(reorder_rows))
+
+    buffer = documents.build_reorder_pdf(reorder_rows, subtitle)
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=reorder-level.pdf"},
+    )
 
 
 @router.get("/blend-settings")
