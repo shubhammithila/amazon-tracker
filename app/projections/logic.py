@@ -279,3 +279,12 @@ def blend_or_default(stored: Mapping | None) -> dict:
         if blend_setting_error(key, value) is None:
             merged[key] = float(value)
     return merged
+
+
+def hidden_parent_names(stored_names: set[str], live_groups: Mapping[str, dict]) -> list[str]:
+    """Which stored parents are no longer active in the sheet, sorted, for the screen's
+    hidden-parents note. **Named, never a bare count** — a parent silently missing from a
+    91-row list is indistinguishable from a bug, the same rule the Shipment tab's catalogue
+    diff follows.
+    """
+    return sorted(stored_names - set(live_groups))

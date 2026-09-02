@@ -325,3 +325,17 @@ def test_blend_or_default_discards_an_invalid_stored_value():
     hand, must not keep weakening the setting with nothing on screen explaining why."""
     merged = logic.blend_or_default({"seven_day_weight": 500})
     assert merged["seven_day_weight"] == logic.DEFAULT_BLEND["seven_day_weight"]
+
+
+# ─── hidden_parent_names ───────────────────────────────────────────────────────
+
+
+def test_hidden_parent_names_are_stored_parents_absent_from_the_live_groups():
+    stored_names = {"Chana Sattu", "Kasundi", "Bengali Posta"}
+    live_groups = {"Chana Sattu": {}}
+    hidden = logic.hidden_parent_names(stored_names, live_groups)
+    assert hidden == ["Bengali Posta", "Kasundi"], "not sorted, or not exactly the missing set"
+
+
+def test_hidden_parent_names_is_empty_when_everything_stored_is_still_active():
+    assert logic.hidden_parent_names({"Chana Sattu"}, {"Chana Sattu": {}}) == []
