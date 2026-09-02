@@ -2497,6 +2497,61 @@ already how `ProductRawStock` — the Orders tab's raw-material table — is key
 reason (bulk purchasing has no per-pack-size distinction; there is no such thing as 500g-flavoured
 raw sattu).
 
+### `Ideal WH` is a genuine reorder point, not a buffer alone — and growth is one number, not 81
+Reported directly: *"I want this sheet to mostly work for me to give me a level of stock of each
+item which when goes below a level at my warehouse i should buy."* Two real bugs sat under the old
+formula, both found by reading the code against that goal rather than by a test failing.
+
+**Seasonality and growth were applied only to a row that had NEVER been through the weekly
+blend.** A `sheet` row with a real blended `daily_rate` (the normal case after the weekly refresh)
+skipped both factors entirely — whether they took effect depended on an accident of which code
+path a row happened to hit, not a decision anyone made. Now `calculate_projections` computes the
+raw demand rate first (the blend, or `last_month_sale / 30`) and applies `seasonal_impact` and the
+new `global_growth_rate` unconditionally, every time.
+
+**`ideal_wh_stock` never used the supplier lead time.** It was `daily_rate * wh_buffer_days`
+alone — `supplier_to_wh` fed only `Lead Total`/`Ideal FBA`, the downstream pipeline. A product
+with a real 25-day supplier lead and a hand-set 10-day buffer showed a WH reorder trigger blind to
+25 of the 35 days it actually takes to have more stock in hand. It is now
+`demand_rate × (supplier_to_wh + effective_wh_buffer) × seasonal × (1 + growth)` — the reorder
+point covers the FULL wait, ordering time plus a safety margin, not the margin alone.
+
+**A diverged row's buffer widens automatically**, by a saved `divergence_buffer_multiplier`
+(default 1.5x) — a product already flagged as having moved sharply from its own 30-day baseline
+gets more warehouse safety stock the week it is detected, without the owner needing to notice the
+⚠ and hand-edit `wh_buffer_days` first. Never applied to `ideal_fba_stock`: that lead time is the
+internal pipeline (packing → WH→IXD → IXD→FBA), which does not change length because demand moved.
+
+**`growth_rate` stopped being a per-parent column.** Measured against
+`app/invoice/projection_defaults.json`: 79 of its 81 static entries already used the same `0.3` —
+a company-wide assumption typed once per product by accident of the static file's structure, not a
+genuine per-product signal like `seasonal_impact` (which genuinely spans 1.0/1.5/2.0). It is now
+`projection_blend.global_growth_rate`, one saved, range-checked setting
+(`app.projections.logic.DEFAULT_BLEND`/`BLEND_RANGES`, the same pattern the blend weight and
+divergence threshold already use), applied to every product. The `ProjectionRow.growth_rate`
+column was dropped via migration — genuinely dead once growth moved, following this codebase's own
+precedent (`0f85fa400957`, `shipment_packing_entries.cartons`) for removing a column rather than
+leaving it stored and silently ignored.
+
+**Eight columns tied to automation that does not exist yet were removed from the screen**:
+`Current FBA`, `Ship Alert`, `Current WH`, `Reorder Alert`, `Rate`, `Stock Value`, `Inv Days` (all
+depend on live Amazon/warehouse stock counts this tab does not fetch), plus `Growth` (now global).
+`purchase_rate`, `current_fba_stock`, `current_wh_stock` stay as stored, editable `ProjectionRow`
+columns even though the UI stops reading three of them today — real hand-typed data that would
+otherwise be silently discarded, kept for when stock-count automation lands.
+
+**`divergence_buffer_multiplier`'s range floor is `1.0`, not `0.0`.** A value below 1 would SHRINK
+a volatile product's buffer — the exact inversion `good_rating: 99` already taught this codebase
+to range-check for, applied here to a new setting before it ever shipped with the bug.
+
+`Ideal WH` moved to sit immediately after `Daily (kg/d)` in the table, and the table now
+default-sorts by it descending — it is the number the owner actually watches, and burying it after
+four lead-time input columns meant reading past them on every visit. The KPI strip's headline
+number is now `Total Ideal WH (kg)` across the portfolio, replacing four stats
+(`total_ideal_value`, `total_current_value`, `shipment_alerts`, `reorder_alerts`) that no longer
+have data behind them once the alert columns were removed; a `Diverged` count replaces
+`critical_alerts` as the other headline figure.
+
 ## Known gaps (deliberate, not oversights)
 
 ### The deal badge depends on which page Amazon serves you
