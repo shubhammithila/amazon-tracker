@@ -206,6 +206,57 @@ def _headers(token: str) -> dict:
     }
 
 
+async def poll_get(
+    client: httpx.AsyncClient, url: str, *, force_refresh_attempts: int = 3,
+) -> httpx.Response:
+    """GET an ads URL with a token refreshed as needed, retrying a 401 with a fresh one.
+
+    **The headers are rebuilt per call rather than bound once by the caller, and that is the whole
+    point of this function.** `POLL_MAX * POLL_INTERVAL` is 45 minutes of polling, while an LWA
+    access token lives 3600s — and by the time the Sponsored Brands report starts polling, the
+    preceding Sponsored Products reports have already spent ~17 of those minutes. Measured on
+    production over a week of failures: exactly ONE token mint per nightly run
+    (`journalctl | grep -c 'o2/token'` = 1), a real SB report needing ~9 minutes of polling, and
+    the token expiring underneath it — so every night returned
+    `401 {"message":"Unauthorized exception while handling 3P Request: Invalid token"}` and the
+    poll loop discarded a report Amazon had already produced. Sponsored Brands went stale, no
+    window could be summed, and no bid rule could be previewed at all.
+
+    **The tell that made it diagnosable:** one MANUAL 7-day refresh succeeded mid-week. Short runs
+    leave the token nearly full when SB starts; the nightly 60-day run burns SP first, so it could
+    never succeed. "Fails nightly, works when I press the button" is a token-lifetime signature,
+    not the rate limit this module's docstring describes for report CREATION.
+
+    **Calling `_access_token` per poll is cheap, not a stampede**: it returns the cached token
+    until `expires_at - _TOKEN_SAFETY_MARGIN`, so only a genuinely near-expiry token costs an LWA
+    round trip. A test pins that five polls mint once.
+
+    **A 401 is retried; every other status is returned untouched.** The caller owns its own error
+    prose and its own reading of `FAILURE`/`CANCELLED`/no-url — interpreting report state here
+    would merge two callers' messages into one. `force_refresh_attempts` bounds the retry so a
+    genuinely revoked refresh token surfaces as a 401 the caller can report, rather than looping
+    for the full 45 minutes.
+
+    **NOT for the report download.** That url is pre-signed and must be fetched with NO ads
+    headers, or the bearer token leaks to S3. See both callers' download step.
+    """
+    response = None
+    for attempt in range(force_refresh_attempts + 1):
+        token = await _access_token(client)
+        response = await client.get(url, headers=_headers(token))
+        if response.status_code != 401:
+            return response
+        # The token died mid-poll. Drop it so the next `_access_token` mints a fresh one, and try
+        # the SAME poll again — Amazon's report keeps generating regardless of our auth.
+        logger.info(
+            "ads: poll returned 401, re-minting the access token (attempt %d of %d)",
+            attempt + 1, force_refresh_attempts,
+        )
+        _token.value = ""
+        _token.expires_at = 0.0
+    return response
+
+
 def build_report_request(start: str, end: str) -> dict:
     """The report body Amazon accepts. ONE function, so the shape is stated once.
 

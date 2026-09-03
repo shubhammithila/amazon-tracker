@@ -485,3 +485,114 @@ async def test_one_failed_chunk_fails_the_whole_window(monkeypatch):
         await ads.fetch_acos("2026-06-01", "2026-08-29", sleep=_no_sleep)
     assert "chunk two broke" in str(exc.value)
     assert calls["n"] == 2, "it kept going after a failed chunk"
+
+
+# ─── poll_get: a token that expires mid-poll must not kill the report ──────────
+#
+# Reported as "I am seeing the same message daily and unable to optimize my ads." The Ads tab
+# said Sponsored Brands was missing days for a week. Measured on production: POLL_MAX *
+# POLL_INTERVAL is 45 minutes of polling on a token that lives 3600s and had already been spent
+# for ~17 minutes by the preceding Sponsored Products reports — exactly ONE LWA mint per nightly
+# run. The token expired mid-poll, the next poll 401'd, and the loop discarded a report Amazon
+# had already produced.
+
+
+def _poll_settings(monkeypatch):
+    """Ads credentials configured, with a fresh token cache. Mirrors `_patch`'s settings half,
+    without its report-fixture machinery — these tests drive `poll_get` directly."""
+    from app.config import Settings, get_settings
+
+    class _Settings(Settings):
+        ads_client_id: str = "amzn1.application-oa2-client.test"
+        ads_client_secret: str = "amzn1.oa2-cs.v1.test"
+        ads_refresh_token: str = "Atzr|test"
+        ads_profile_id: str = "473573783863246"
+
+    get_settings.cache_clear()
+    monkeypatch.setattr("app.portfolio.ads.get_settings", lambda: _Settings())
+    monkeypatch.setattr(ads, "_token", ads._Token())
+
+
+class _PollResponse:
+    def __init__(self, status, payload=None, text=""):
+        self.status_code = status
+        self._payload = payload or {}
+        self.text = text
+        self.content = b""
+
+    def json(self):
+        return self._payload
+
+
+async def test_a_401_mid_poll_is_retried_with_a_fresh_token(monkeypatch):
+    """**The bug this test exists to catch: Sponsored Brands failed every night for a week.**
+
+    The old loop bound `headers=head` once and reused it for the whole poll window, so an expired
+    token turned into `401 {"message":"Unauthorized exception while handling 3P Request: Invalid
+    token"}` and a fatal AdsError — throwing away a report Amazon had already generated.
+    """
+    _poll_settings(monkeypatch)
+    mints, polls = [], []
+
+    class _Client:
+        async def post(self, url, content=None, headers=None):
+            assert "auth/o2/token" in url
+            mints.append(url)
+            return _PollResponse(200, {"access_token": f"tok-{len(mints)}", "expires_in": 3600})
+
+        async def get(self, url, headers=None):
+            polls.append(headers.get("Authorization"))
+            if len(polls) == 1:
+                return _PollResponse(401, text='{"message":"Invalid token"}')
+            return _PollResponse(200, {"status": "COMPLETED"})
+
+    response = await ads.poll_get(_Client(), "https://ads.invalid/reporting/reports/rep-1")
+
+    assert response.status_code == 200, "a 401 mid-poll was not retried"
+    assert len(mints) == 2, f"the token was not re-minted after the 401 ({len(mints)} mints)"
+    assert polls[0] != polls[1], "the retry reused the same expired token"
+
+
+async def test_a_permanent_401_fails_after_the_retry_bound(monkeypatch):
+    """A genuinely revoked refresh token must surface, not loop for the full 45 minutes."""
+    _poll_settings(monkeypatch)
+    mints = []
+
+    class _Client:
+        async def post(self, url, content=None, headers=None):
+            mints.append(url)
+            return _PollResponse(200, {"access_token": f"tok-{len(mints)}", "expires_in": 3600})
+
+        async def get(self, url, headers=None):
+            return _PollResponse(401, text='{"message":"Invalid token"}')
+
+    response = await ads.poll_get(
+        _Client(), "https://ads.invalid/reporting/reports/rep-1", force_refresh_attempts=3,
+    )
+    assert response.status_code == 401, "a permanent 401 should be returned for the caller to report"
+    assert len(mints) <= 4, f"unbounded re-minting: {len(mints)} mints"
+
+
+async def test_the_happy_path_mints_only_once(monkeypatch):
+    """Rebuilding headers per poll must NOT mean re-authenticating per poll.
+
+    `_access_token` returns the cached token until `expires_at - _TOKEN_SAFETY_MARGIN`, so the
+    per-call rebuild is nearly free. Getting this wrong would turn one mint into 135 LWA calls
+    per report.
+    """
+    _poll_settings(monkeypatch)
+    mints = []
+
+    class _Client:
+        async def post(self, url, content=None, headers=None):
+            mints.append(url)
+            return _PollResponse(200, {"access_token": "tok", "expires_in": 3600})
+
+        async def get(self, url, headers=None):
+            return _PollResponse(200, {"status": "COMPLETED"})
+
+    client = _Client()
+    for _ in range(5):
+        await ads.poll_get(client, "https://ads.invalid/reporting/reports/rep-1")
+
+    assert len(mints) == 1, f"the cached token was not reused: {len(mints)} mints for 5 polls"
