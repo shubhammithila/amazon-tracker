@@ -1812,10 +1812,33 @@ Six differences, every one of which fails silently:
 > so it could never succeed. A bug that fails on a schedule and passes on demand reads as
 > "Amazon is flaky", which is exactly how it survived a week.
 >
-> `poll_get` (`app/portfolio/ads.py`) now mints per poll — cheap, because `_access_token` is cached
-> — and **retries a 401 with a freshly minted token**, invalidating the dead one first so the retry
-> cannot reuse it. Bounded at 3 forced refreshes, because a revoked token 401s forever and an
-> unbounded loop would hold a background job open indefinitely.
+> `poll_get` (`app/portfolio/ads.py`) now calls `_access_token` **per poll** — cheap, because it is
+> cached and returns the same string until the 60 s safety margin — and **retries a 401 with a
+> freshly minted token**, invalidating the dead one first so the retry cannot reuse it. Bounded at
+> 3 forced refreshes, because a revoked token 401s forever and an unbounded loop would hold a
+> background job open indefinitely.
+>
+> **The PROACTIVE refresh is the mechanism; the 401 retry is the backstop.** Verified on production
+> with a real 60-day run (03 Sep, 105 minutes end to end):
+>
+> ```
+> 13:08:38  POST api.amazon.com/auth/o2/token   <- mint 1
+> 13:59:10  ads: targeting report chunk 1/2     <- SB report starts, T+50min
+> 14:07:56  POST api.amazon.com/auth/o2/token   <- mint 2, at the expiry boundary, MID-POLL
+> 14:27:35  stored 53806 Sponsored Brands daily row(s) for 2026-07-05..2026-08-04
+> 14:54:18  stored 60217 Sponsored Brands daily row(s) for 2026-08-05..2026-09-02
+> 14:54:18  29 campaign(s), 476483 SP daily row(s), 114023 SB daily row(s)
+> ```
+>
+> **Two mints, 59m 18s apart, and ZERO 401s** — the token was replaced before Amazon could reject
+> it, so the retry never fired. Under the old code that run had one mint and the poll immediately
+> after 14:07 would have returned `Invalid token`. `status="done"`, `sb_error=None`, SB coverage
+> 9 days → **60**. The first fully-successful 60-day run this account has recorded.
+>
+> That run also measured **why the nightly job could never win**: SP chunk 2 alone took **135 polls
+> (45 min)** — completing 12 seconds inside `POLL_MAX` — so the SB report does not even *start*
+> until T+50min and polls entirely past the token boundary. The failure was structural, not a
+> flaky day.
 >
 > **Both poll loops use it**, and the second one had never been bitten: `app/portfolio/ads.py`'s
 > own economics poll had the identical defect, and its reports finish in ~30 s so the token never

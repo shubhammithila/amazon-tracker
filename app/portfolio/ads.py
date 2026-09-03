@@ -108,6 +108,17 @@ POLL_INTERVAL = 20.0
 #: runs as a background task, the bar keeps moving, and the margins are already committed before
 #: this phase starts. The cost of being tight is a refresh that reports failure on a report Amazon
 #: would have delivered.
+#:
+#: **45 minutes is no longer comfortable, and this is measured rather than feared.** A real 60-day
+#: nightly-shaped run on 03 Sep 2026 took **135 polls for one 31-day SP chunk** — it completed on
+#: the LAST allowed poll, 12 seconds inside the ceiling (report `a1b3187b`, requested 13:11:11,
+#: delivered 13:56:12). A report 13 seconds slower would raise "still generating after 45 minutes"
+#: and put the same "Sponsored Brands is stale" banner back on the tab for an unrelated reason.
+#:
+#: Deliberately NOT raised in the same change as the mid-poll token fix, so that fix could be
+#: verified against production without a second variable moving. Raising it is cheap (every test
+#: references this name, none pins the number) and `poll_get` now keeps the token alive for
+#: however long the loop runs, which is what made a longer ceiling safe in the first place.
 POLL_MAX = 135
 
 #: Amazon's access tokens last 3600s; refreshed a minute early so a request that is about to be
