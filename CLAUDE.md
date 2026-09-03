@@ -1788,6 +1788,49 @@ Six differences, every one of which fails silently:
 - **425 means "duplicate of `<reportId>`"** — Amazon deduplicates identical requests, so the retry
   above makes hitting this *likely*. The existing report is followed rather than discarded.
 
+> **A SECOND, different cause of "Sponsored Brands is stale" — and it is the one that ran for a
+> week.** Reported as *"I am seeing the same message daily and unable to optimize my ads."* The
+> banner was identical to the throttle case above, so the throttle note above is where anyone would
+> look. It was wrong: the error was a **401, not a 429**.
+>
+> ```
+> WARNING SB report failed: Polling the targeting report failed:
+>         {"message":"Unauthorized exception while handling 3P Request: Invalid token"}
+> ```
+>
+> **The token expired while we were polling for the report.** `_poll_report` bound
+> `head = _headers(token)` ONCE and reused that dict for the whole loop —
+> `POLL_MAX (135) × POLL_INTERVAL (20.0)` = **45 minutes** of polling against an LWA token that
+> lives 3600 s and has already been spent by the SP reports that run first (~17 min for two
+> 31-day chunks). Measured on production: `journalctl -u tracker | grep -c 'o2/token'` returns
+> **1** per nightly run. One mint, then 45 minutes of GETs with a header dict that goes stale
+> underneath them.
+>
+> **The tell was that one run in the middle of the week SUCCEEDED** (02 Sep 12:05, `sb_rows=14447`)
+> while every nightly run failed. That was a *manual 7-day refresh* — ~27 polls, ~9 minutes, token
+> still fresh. A nightly 60-day run is four reports and can never finish inside one token's life,
+> so it could never succeed. A bug that fails on a schedule and passes on demand reads as
+> "Amazon is flaky", which is exactly how it survived a week.
+>
+> `poll_get` (`app/portfolio/ads.py`) now mints per poll — cheap, because `_access_token` is cached
+> — and **retries a 401 with a freshly minted token**, invalidating the dead one first so the retry
+> cannot reuse it. Bounded at 3 forced refreshes, because a revoked token 401s forever and an
+> unbounded loop would hold a background job open indefinitely.
+>
+> **Both poll loops use it**, and the second one had never been bitten: `app/portfolio/ads.py`'s
+> own economics poll had the identical defect, and its reports finish in ~30 s so the token never
+> got the chance to expire underneath them. Fixing only the loop that failed would have left a
+> latent bug that surfaces the first time Amazon is slow. `tests/test_ads_sb.py` asserts at
+> SOURCE level that neither loop binds a header dict once — no runtime test can watch a loop
+> reuse a variable.
+>
+> **The pre-signed download is deliberately NOT routed through `poll_get`.** It carries no ads
+> headers at all, on purpose: adding the bearer token would leak it to S3.
+>
+> Retention made it worse quietly. The 60-day purge removes SB days that no run replaces, so `sb`
+> coverage *shrank* while `sp` held 59 days — down to 9 days by the time it was reported, which is
+> why `range_completeness` refused every window and no bid rule could be previewed.
+
 > **SB targets and THEMES are 51% of SB spend, and a keyword-only build would have missed them.**
 > The real 2,914-row report holds four match types: `EXACT` (1,361), `PHRASE` (878),
 > `TARGETING_EXPRESSION` (666, ₹45,854) and `THEME` (9, ₹1,044). The last two are product/category
