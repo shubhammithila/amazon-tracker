@@ -40,6 +40,7 @@ from app.portfolio.ads import (
     REPORT_PATH,
     _access_token,
     _headers,
+    poll_get,
     split_window,
 )
 
@@ -326,9 +327,10 @@ async def _one_report(client, start: str, end: str, *, daily: bool = False,
     url = None
     for attempt in range(POLL_MAX):
         await sleep(POLL_INTERVAL)
-        status = await client.get(
-            f"{settings.ads_endpoint}{REPORT_PATH}/{report_id}", headers=head
-        )
+        # `poll_get`, not `client.get(..., headers=head)`: a report can take longer to generate
+        # than the access token lives, and reusing one header dict across 45 minutes of polling is
+        # exactly what made Sponsored Brands 401 every night. See app/portfolio/ads.py:poll_get.
+        status = await poll_get(client, f"{settings.ads_endpoint}{REPORT_PATH}/{report_id}")
         if status.status_code >= 400:
             raise AdsError(
                 f"Polling the targeting report failed: {status.text[:200]}",

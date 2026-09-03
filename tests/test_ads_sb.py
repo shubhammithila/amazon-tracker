@@ -701,3 +701,58 @@ def test_an_empty_media_type_means_omit_rather_than_send_empty():
     typed = sp._media("application/vnd.sbcampaignresource.v4+json", "tok")
     assert typed["Content-Type"] == "application/vnd.sbcampaignresource.v4+json"
     assert typed["Accept"] == typed["Content-Type"]
+
+
+def test_both_poll_loops_refresh_their_token_rather_than_binding_it_once():
+    """**Sponsored Brands failed every night for a week, and this is the property that stops it.**
+
+    Measured on production: `POLL_MAX * POLL_INTERVAL` is 45 minutes of polling, on an access token
+    that lives 3600s and had already been spent for ~17 minutes by the preceding Sponsored Products
+    reports — exactly ONE LWA mint per nightly run. The token expired mid-poll, the next poll
+    returned `401 {"message":"Unauthorized exception while handling 3P Request: Invalid token"}`,
+    and the loop discarded a report Amazon had already produced.
+
+    **Asserted at SOURCE level, and deliberately so.** A runtime test cannot distinguish "the
+    Portfolio poll loop refreshes its token" from "the Portfolio poll loop is never slow enough to
+    need to" — its economics reports finish in ~30s, which is exactly why this bug surfaced on
+    Sponsored Brands first while sitting latent in the other module. The property that matters is
+    structural: neither loop may bind a header dict before the loop and reuse it across
+    `POLL_MAX` iterations. Behavioural coverage of the 401 retry itself lives in
+    tests/test_portfolio_ads.py.
+    """
+    root = Path(__file__).parent.parent
+    for relative in ("app/ads/reports.py", "app/portfolio/ads.py"):
+        source = (root / relative).read_text(encoding="utf-8")
+        assert "poll_get(" in source, f"{relative} does not route its report poll through poll_get"
+
+        start = source.index("for attempt in range(POLL_MAX)")
+        # **Comments are stripped before asserting.** The fix's own explanatory comment quotes the
+        # broken call (`client.get(..., headers=head)`) to say what NOT to do, so a raw substring
+        # search matches that comment and fails against CORRECT code — which is what happened the
+        # first time this test ran. CLAUDE.md records the same trap for the deploy detector: "the
+        # id also appears in the comment explaining the bug, so a substring check passed with the
+        # branch deleted." Here it failed rather than passed, but the cause is identical.
+        body = "\n".join(
+            line.split("#", 1)[0]
+            for line in source[start:start + 1400].splitlines()
+        )
+        assert "headers=head" not in body, (
+            f"{relative}'s poll loop still reuses a header dict bound before the loop — that is "
+            "exactly the token-expiry bug that made Sponsored Brands 401 every night"
+        )
+
+
+def test_the_report_download_is_still_fetched_without_ads_headers():
+    """Re-asserted because the token change touches the surrounding code.
+
+    The download url is pre-signed. Sending the ads bearer token to S3 would leak it to a different
+    host — and `poll_get` exists to attach that token to every ads-host poll, so the download must
+    stay explicitly outside it.
+    """
+    root = Path(__file__).parent.parent
+    for relative in ("app/ads/reports.py", "app/portfolio/ads.py"):
+        source = (root / relative).read_text(encoding="utf-8")
+        assert "await client.get(url)" in source, (
+            f"{relative} no longer downloads the report with a bare, header-free GET — check the "
+            "bearer token is not being sent to S3"
+        )

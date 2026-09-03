@@ -460,9 +460,10 @@ async def _one_report(
     url = None
     for attempt in range(POLL_MAX):
         await sleep(POLL_INTERVAL)
-        status = await client.get(
-            f"{settings.ads_endpoint}{REPORT_PATH}/{report_id}", headers=head
-        )
+        # Same reason as app/ads/reports.py — see poll_get's own docstring. This path had the
+        # IDENTICAL defect and had simply never been bitten, because the economics reports finish
+        # in ~30s and the token never got the chance to expire underneath them.
+        status = await poll_get(client, f"{settings.ads_endpoint}{REPORT_PATH}/{report_id}")
         if status.status_code >= 400:
             raise AdsError(
                 f"Polling the ad report failed: {status.text[:200]}",
