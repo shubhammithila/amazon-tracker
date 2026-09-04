@@ -260,6 +260,17 @@ DEFAULT_GUARDRAILS = {
     #: `spend > 0` would fit under it. The guards that actually prevent damage are `max_bid` and
     #: `max_change_pct` — this one only prevents surprise.
     "max_rows": 1000,
+    #: A pause rule may not act on a row that spent less than this in the window.
+    #:
+    #: **The pause equivalent of `max_change_pct`, and it guards a different mistake.** A bid rule's
+    #: dangerous typo is "10" written as "100", which the percentage ceiling catches. A pause has no
+    #: percentage: its dangerous typo is `spend > 10` where `spend > 1000` was meant, which would
+    #: turn off a wide swathe of cheap but perfectly healthy keywords. `max_rows` cannot catch that —
+    #: 900 cheap rows fit comfortably under a 1,000-row ceiling.
+    #:
+    #: Rs 100 rather than higher because the owner's own rule uses `spend > 1000`; this is a floor
+    #: under a mistyped rule, not a second opinion about the rule itself.
+    "min_pause_spend": 100.0,
 }
 
 #: Bounds for each guardrail, so an edited value cannot be absurd. Same lesson as
@@ -270,6 +281,9 @@ GUARDRAIL_RANGES = {
     "min_bid": (0.02, 100.0),
     "max_change_pct": (1.0, 100.0),
     "max_rows": (1, 20000),
+    # The upper bound is generous on purpose: the point is to refuse 0 (which would disable the
+    # guard entirely) and negatives, not to have an opinion about how selective a pause rule is.
+    "min_pause_spend": (1.0, 100000.0),
 }
 
 
@@ -478,16 +492,79 @@ def matches(row_metrics: Mapping, conditions: Sequence[Mapping]) -> bool:
     return True
 
 
-# ─── The bid action ──────────────────────────────────────────────────────────
+# ─── The action: a bid change, or turning the row off ────────────────────────
 
 ACTION_INCREASE_PCT = "increase_pct"
 ACTION_DECREASE_PCT = "decrease_pct"
 ACTION_INCREASE_ABS = "increase_abs"
 ACTION_DECREASE_ABS = "decrease_abs"
 ACTION_SET = "set"
+#: Turn a keyword or target OFF (or back on). Its `amount` carries a STATE STRING, not a number.
+ACTION_SET_STATE = "set_state"
 
-ACTIONS = (ACTION_INCREASE_PCT, ACTION_DECREASE_PCT,
-           ACTION_INCREASE_ABS, ACTION_DECREASE_ABS, ACTION_SET)
+#: The four arithmetic actions plus `set`. Named separately from `ACTIONS` because several guards —
+#: the percentage ceiling, the bid floor and ceiling, the no-explicit-bid skip — exist to protect bid
+#: MATH and have nothing to measure on a state change.
+BID_ACTIONS = (ACTION_INCREASE_PCT, ACTION_DECREASE_PCT,
+               ACTION_INCREASE_ABS, ACTION_DECREASE_ABS, ACTION_SET)
+
+ACTIONS = BID_ACTIONS + (ACTION_SET_STATE,)
+
+STATE_PAUSED = "PAUSED"
+STATE_ENABLED = "ENABLED"
+
+#: **The ONLY states this app will ever write, and the absence of `ARCHIVED` is the safety mechanism
+#: rather than an oversight.**
+#:
+#: Amazon documents archiving as terminal — "permanent and can't be undone" — and on Sponsored Brands
+#: an archived negative keyword can never be recreated for that campaign. The entire safety model of
+#: `ads_mutation` is an `old_* -> new_*` pair with a reversible undo chain, so an irreversible action
+#: has no undo and must not be reachable from a rule that can move several hundred rows in one click.
+#: Archiving stays a manual job in Seller Central.
+#:
+#: `ENABLING`, `PROPOSED` and the rest of Amazon's read-side enum are absent for a duller reason:
+#: they are states Amazon REPORTS, not states a caller sets.
+WRITABLE_STATES = (STATE_PAUSED, STATE_ENABLED)
+
+
+def is_state_action(action: str) -> bool:
+    """Does this action change an entity's state rather than its bid?
+
+    One named predicate rather than `action == ACTION_SET_STATE` repeated at each branch: the check
+    appears in `plan_run`, in `/ads/apply`'s live re-read, in the writer and in the ledger, and a
+    missed site is a silent wrong-field write rather than an error.
+    """
+    return action == ACTION_SET_STATE
+
+
+def state_error(value) -> str | None:
+    """The REASON a state value is refused, or None if it is acceptable.
+
+    Prose rather than False, matching `guardrail_error`, so a refusal can name what is allowed.
+    Accepts any case and surrounding whitespace because the value arrives from a `<select>`.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return f"A pause rule needs a state to set. Valid states: {', '.join(WRITABLE_STATES)}."
+    wanted = value.strip().upper()
+    if wanted == "ARCHIVED":
+        return ("Archiving is permanent at Amazon and cannot be undone, so this app will not archive "
+                "from a rule. Pause the row instead, or archive it in Seller Central.")
+    if wanted not in WRITABLE_STATES:
+        return (f"{value!r} is not a state this app can set. Valid states: "
+                f"{', '.join(WRITABLE_STATES)}.")
+    return None
+
+
+def normalise_state(value, ad_product: str = AD_PRODUCT_SP) -> str:
+    """The state string as the given ad product's API expects it.
+
+    **Sponsored Brands takes lower case and Sponsored Products upper case.** Sending the wrong case is
+    refused per-row inside a 207 whose HTTP status says success — the same silent shape as SB's
+    missing `adGroupId`. One function, so the rule is stated once rather than inlined at each of the
+    three payload builders.
+    """
+    wanted = str(value).strip().upper()
+    return wanted.lower() if ad_product == AD_PRODUCT_SB else wanted
 
 
 def new_bid(current, action: str, amount) -> float | None:
