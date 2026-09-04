@@ -4,6 +4,10 @@ Each entry breaks ONE decision from
 `docs/superpowers/specs/2026-09-03-ads-pause-keywords-design.md` and names the test that must catch
 it.
 
+Two of these were added AFTER the feature shipped broken: `/ads/apply` keyed the run on the client's
+`action` field, which the screen does not send, so every pause returned "no usable bid". 20 passing
+tests verified the server contract and none checked that the client honours it.
+
 **The bar for this feature is mutation testing, not a green suite.** CLAUDE.md records five separate
 cases in this feature area alone of a bug shipping past a fully green suite — including the original
 Sponsored Brands 401, which ran for a week.
@@ -112,6 +116,21 @@ MUTATIONS = [
         'for forbidden in ("apply_changes", "plan_run", "open_run", "/apply"):',
         'for forbidden in ("apply_bids", "plan_run", "open_run", "/apply"):',
         "test_apply_bids_is_gone_and_the_scheduler_guard_names_the_new_function",
+    ),
+    (
+        "apply keys the run on the client's `action` again, so the screen's payload 400s "
+        "(the reported 'no usable bid' bug)",
+        ROUTER,
+        "    if logic.is_state_action(action) or states:",
+        "    if logic.is_state_action(action):",
+        "test_apply_infers_a_state_run_from_the_rows_when_the_action_is_absent",
+    ),
+    (
+        "a mixed bid/state payload is half-applied instead of refused",
+        ROUTER,
+        "    if states and bids:",
+        "    if False:",
+        "test_a_mixed_payload_is_refused_rather_than_half_applied",
     ),
 ]
 

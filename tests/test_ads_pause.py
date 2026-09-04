@@ -753,3 +753,109 @@ async def test_preview_plans_a_pause_and_contacts_nobody(monkeypatch, auth_clien
     assert "new_bid" not in plan["changes"][0]
     # The summary reaches every ledger row and must not describe a bid change.
     assert "bid" not in (plan.get("rule") or "").lower()
+
+
+# ─── The client/server contract, which no earlier test checked ───────────────
+
+
+async def test_apply_infers_a_state_run_from_the_rows_when_the_action_is_absent(
+        monkeypatch, auth_client, ads_endpoint):
+    """**Reported from production: "Row 47991646532520 has no usable bid."**
+
+    Every other apply test here hand-built a payload that INCLUDED `action` and `amount`, so they
+    verified the server contract without ever checking that the client honours it. It does not: the
+    screen posts `{changes, rule}` only. So `target_state` stayed None, the request looked like a bid
+    run, and the bid-guardrail loop rejected every row for having no bid.
+
+    The fix is to infer the run from the rows themselves — `new_state` is already on every change and
+    is what `open_run` keys the ledger on, so it is the same source of truth rather than a second one.
+    Sending `action` from the screen as well would have worked, but leaves the route trusting a client
+    field it does not need, on the one endpoint that spends money.
+    """
+    monkeypatch.setattr(spapi_ads, "fetch_current_bids", _live(state="ENABLED"))
+    sent, fake_apply = _collector()
+    monkeypatch.setattr(spapi_ads, "apply_changes", fake_apply)
+
+    # EXACTLY what templates/ads.html posts: no `action`, no `amount`.
+    response = await auth_client.post("/ads/apply", json={
+        "changes": [_change(new_state="PAUSED")],
+        "rule": "Spend > 1000 -> turn OFF (pause)",
+    })
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["applied"] == 1, body
+    assert len(sent) == 1
+    assert sent[0]["new_state"] == "PAUSED"
+
+
+async def test_a_mixed_payload_is_refused_rather_than_half_applied(
+        monkeypatch, auth_client, ads_endpoint):
+    """One run is one kind of change. A payload holding both is a client bug, not a request to guess.
+
+    Refused rather than partly applied: the writer picks its field per row, so a mixed batch would
+    silently send bids for some rows and states for others under one ledger run and one undo.
+    """
+    def explode(*_a, **_k):
+        raise AssertionError("nothing may be sent for a mixed payload")
+
+    monkeypatch.setattr(spapi_ads, "fetch_current_bids", explode)
+    monkeypatch.setattr(spapi_ads, "apply_changes", explode)
+
+    response = await auth_client.post("/ads/apply", json={
+        "changes": [_change("111", new_state="PAUSED"),
+                    _change("222", old_bid=12.0, new_bid=13.2)],
+        "rule": "mixed",
+    })
+    assert response.status_code == 400
+    assert "state" in response.json()["error"].lower()
+
+
+async def test_an_explicit_action_still_wins_when_the_client_sends_one(
+        monkeypatch, auth_client, ads_endpoint):
+    """The inference is a fallback, not a replacement — a hand-built request naming ARCHIVED is still
+    refused by name, before any Amazon call."""
+    def explode(*_a, **_k):
+        raise AssertionError("nothing may be sent for an illegal state")
+
+    monkeypatch.setattr(spapi_ads, "fetch_current_bids", explode)
+    monkeypatch.setattr(spapi_ads, "apply_changes", explode)
+
+    response = await auth_client.post("/ads/apply", json={
+        "action": logic.ACTION_SET_STATE, "amount": "ARCHIVED",
+        "changes": [_change(new_state="ARCHIVED")], "rule": "hand-built",
+    })
+    assert response.status_code == 400
+    assert "permanent" in response.json()["error"].lower()
+
+
+async def test_undo_of_a_pause_run_reaches_amazon_end_to_end(
+        monkeypatch, auth_client, ads_endpoint, db):
+    """**The whole promise of pausing: it is reversible.** Exercised through the ROUTE, not the helper.
+
+    `POST /ads/undo/{run}` builds its own change list and never runs the bid guardrails, so the "no
+    usable bid" defect could not reach it — asserted rather than assumed, because that is exactly the
+    kind of reasoning that turned out to be wrong for the apply route.
+    """
+    monkeypatch.setattr(spapi_ads, "fetch_current_bids", _live(state="ENABLED"))
+    sent, fake_apply = _collector()
+    monkeypatch.setattr(spapi_ads, "apply_changes", fake_apply)
+
+    # Pause it, exactly as the screen posts.
+    paused = await auth_client.post("/ads/apply", json={
+        "changes": [_change(new_state="PAUSED")], "rule": "spend>1000 -> turn OFF (pause)",
+    })
+    run_id = paused.json()["run_id"]
+    assert paused.json()["applied"] == 1
+
+    sent.clear()
+    undone = await auth_client.post(f"/ads/undo/{run_id}")
+    assert undone.status_code == 200, undone.text
+    assert undone.json()["applied"] == 1, undone.json()
+    assert len(sent) == 1, "the undo must actually send something"
+    assert sent[0]["new_state"] == "ENABLED", "the undo of a pause is an enable"
+
+    # And the original run is marked reverted, so the history reads as a chain.
+    rows = (await db.execute(
+        select(AdsMutation).where(AdsMutation.run_id == run_id)
+    )).scalars().all()
+    assert [r.status for r in rows] == ["reverted"]

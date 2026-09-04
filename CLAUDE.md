@@ -2573,6 +2573,27 @@ possible reason. The bid ceiling and floor are skipped for the same reason — a
 > recorded as `entity_type="target"`. Historical rows are **not** back-filled: rewriting an audit trail
 > to what it should have said is a worse precedent than provably-wrong rows with a note.
 
+> **It shipped broken, and the reason is a test-design mistake worth naming: 20 passing tests
+> verified the SERVER contract and not one checked that the CLIENT honours it.** Reported immediately
+> after deploy as *"Row 47991646532520 has no usable bid"* on every pause. `/ads/apply` keyed the run
+> on `body["action"]`, and the screen posts `{changes, rule}` and nothing else — so `target_state`
+> stayed None, the request looked like a bid run, and the bid-guardrail loop refused every row for
+> lacking a bid. Each apply test had hand-built a payload that *included* `action` and `amount`, so
+> the one field the browser omits was the one field nothing exercised.
+>
+> The fix takes the kind of run from the ROWS (`new_state`, already on every change and already what
+> `open_run` keys the ledger on) rather than adding the field to the request. Adding it would also
+> have worked and is worse: it leaves the only route that spends money trusting a client field it does
+> not need in order to know what it is doing. **A mixed bid/state payload is now refused outright**,
+> because the writer picks its field per row and a mixed batch would send bids for some rows and
+> states for others under one ledger run and one undo.
+>
+> Two tests now close the gap for good: one posts **exactly** what `templates/ads.html` sends, and one
+> drives pause → undo through the real routes end to end. The lesson generalises — this codebase has
+> shipped the same shape twice before, in `intakeFromShipment` (the server sent three fields and the
+> screen discarded them) and `renderInvoiceBar` (complete, tested, and invisible because no
+> `<div id="invoice-bar">` existed).
+
 > **The mutation harness found two real test gaps, and the second was the trap this file already
 > warns about.** `scripts/mutate_ads_state.py` runs 13 mutations; 11 were caught first time. The two
 > survivors: (1) the `Number()` check asserted on the payload CALL SITES, so moving the coercion inside

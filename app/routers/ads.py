@@ -667,17 +667,53 @@ async def apply(
 
     guardrails = await repository.load_guardrails(db)
 
-    # **A state action is validated here too, not only in `plan_run`.** The client is not a trust
-    # boundary and this is the only route in the app that spends money, so a hand-built request naming
-    # `ARCHIVED` must be refused before any Amazon call rather than merely being absent from the
-    # screen. Archiving is terminal at Amazon and has no undo — see `logic.WRITABLE_STATES`.
+    # **Which KIND of run this is, taken from the ROWS rather than from a client field.**
+    #
+    # Reported from production as *"Row 47991646532520 has no usable bid"* on a pause: the screen posts
+    # `{changes, rule}` and no `action`, so keying on `body["action"]` left `target_state` None, the
+    # request looked like a bid run, and the bid-guardrail loop below refused every row for lacking a
+    # bid. Every apply test had hand-built a payload that INCLUDED `action`, so they verified the
+    # server contract without ever checking that the client honours it.
+    #
+    # `new_state` is already on every state change and is what `open_run` keys the ledger on, so this
+    # is the same source of truth rather than a second one. Adding `action` to the request would also
+    # have worked, and is worse: it leaves the one route that spends money trusting a client field it
+    # does not need in order to know what it is doing.
+    states = {str(c.get("new_state")).strip().upper() for c in approved if c.get("new_state")}
+    bids = [c for c in approved if c.get("new_state") is None]
+
+    # **A mixed payload is refused, never half-applied.** The writer picks its field per row, so a
+    # batch holding both would silently send bids for some rows and states for others under a single
+    # ledger run and a single undo.
+    if states and bids:
+        return JSONResponse(
+            {"error": f"This request mixes two kinds of change: "
+                      f"{len(approved) - len(bids)} row(s) set a state and {len(bids)} change a bid. "
+                      f"One run is one kind of change."},
+            status_code=400,
+        )
+    if len(states) > 1:
+        return JSONResponse(
+            {"error": f"This request sets more than one state ({', '.join(sorted(states))}). "
+                      f"One run is one kind of change."},
+            status_code=400,
+        )
+
+    # **The state is validated here too, not only in `plan_run`.** The client is not a trust boundary
+    # and this is the only route in the app that spends money, so a request naming `ARCHIVED` must be
+    # refused before any Amazon call rather than merely being absent from the screen. Archiving is
+    # terminal at Amazon and has no undo — see `logic.WRITABLE_STATES`.
+    #
+    # An explicit `action` still wins where one is sent, so a hand-built request cannot smuggle a state
+    # past the check by omitting it.
     action = body.get("action") or ""
     target_state = None
-    if logic.is_state_action(action):
-        problem = logic.state_error(body.get("amount"))
+    if logic.is_state_action(action) or states:
+        wanted = body.get("amount") if logic.is_state_action(action) else next(iter(states))
+        problem = logic.state_error(wanted)
         if problem:
             return JSONResponse({"error": problem}, status_code=400)
-        target_state = str(body.get("amount")).strip().upper()
+        target_state = str(wanted).strip().upper()
 
     # Re-validate the approved rows against the guardrails, BEFORE the credentials check and before
     # any Amazon call. The preview already did this, but the browser sends the list back and a client
