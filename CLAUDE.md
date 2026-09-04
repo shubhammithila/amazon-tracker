@@ -2479,12 +2479,118 @@ once daily ads data is being kept for real.
   window would show every ad group at zero beneath a campaign row showing real spend.
 
 ### Nothing runs a rule automatically
-The nightly job (03:50) refreshes **data only**, and a test asserts it cannot reach `apply_bids`,
+The nightly job (03:50) refreshes **data only**, and a test asserts it cannot reach `apply_changes`,
 `plan_run` or `open_run`. A scheduled job that could move 299 live bids would move them on a bad
 data day, unattended — the same reason the Portfolio tab never auto-applies a verdict.
 
-**Bids only.** No pause, no archive, no budget edits, no keyword creation. Pausing stays a manual
-job in Seller Central.
+> **That test greps source for LITERAL names, so a rename silently retires it.** When `apply_bids`
+> became `apply_changes` the old literal appeared nowhere in the codebase, so the loop would have
+> passed vacuously — a green test on the guard that stops a scheduled job moving live bids. It now
+> asserts the searched names EXIST first. Third instance of this trap here: the deploy detector's
+> revision id, the SB `daily=True` fake, and now this.
+
+**Bids and pause/enable only.** No archive, no negative keywords, no budget edits, no keyword
+creation.
+
+### Pausing a keyword is a rule action, and three of the apply guards had to be scoped
+Asked for as *"if any keyword has spend>1000 and orders 0 or roas<1, then we remove or turn off that
+keyword"*.
+
+> **"Bids only" was true until 04 Sep 2026, and the reason it changed is worth keeping.** That
+> sentence was right when written: every guard in `/ads/apply` was built around bid arithmetic, and
+> adding a second kind of write before that path was proven would have widened the blast radius of the
+> only feature in this app that spends money. The path is now proven — 105 real changes applied on
+> 31 Aug, a working undo chain, a ledger that survives a crash.
+>
+> **The `no archive` half stands, for a reason that does not expire.** Amazon documents archiving as
+> terminal — *"permanent and can't be undone"* — and on Sponsored Brands an archived negative can never
+> be recreated. The whole safety model here is an `old -> new` pair with a reversible undo, so an
+> irreversible action has no undo and cannot honestly go through a rule that moves hundreds of rows in
+> one click. `logic.WRITABLE_STATES` records this so nobody "completes" the enum.
+
+**Measured before building.** `spend>1000 AND roas<1` on the live 30-day window matches **88 rows
+carrying ₹1,40,751** (6.8% of spend) across 46 ad groups — SP kw 31, SP target 23, SB kw 17, SB target
+17 — and no ad group would be fully silenced. `orders=0` is a strict SUBSET of `roas<1`, so one
+condition expresses the owner's "or".
+
+**Every one of those 88 rows has more than 10 clicks. Zero have none** — and that is what makes this
+safe where the zero-ROAS *bid* warning was REJECTED. There, 1,107 of 1,425 rows had zero clicks, so
+ROAS was an undefined ratio rather than a measurement and raising the bid was the correct action. Here
+the `spend>1000` floor does the discriminating: a keyword that has spent ₹1,000 has been tested. **The
+distinction is the CLICK COUNT, not the ROAS** — a future reader who sees "ROAS < 1" and recalls the
+rejected warning should read this paragraph before concluding the two contradict each other.
+
+`set_state` is a fifth action through the **same** write path (`apply_bids` became `apply_changes` with
+a per-row payload switch), because everything hard about that function — four endpoints, 500-row
+batching, request-array order as the only link back to a row, three mutually-unreadable 207 shapes — is
+identical for a state write. `fetch_current_bids` already had to be regrouped by writer once after
+exactly that kind of divergence.
+
+**Three of the four live re-read checks encode bid assumptions, and reusing them would have broken
+this two ways:**
+
+| Check | For a pause | For an enable |
+|---|---|---|
+| `live_state != ENABLED` | this IS the "already paused" case | **inverted** — an enable targets rows that are not enabled, so unchanged it drops every row it was meant to act on |
+| `live_bid is None` | must not apply — a state write needs no bid | must not apply |
+| `live_bid != old_bid` | must not apply | must not apply |
+
+That last one is the trap. The bid-drift check exists because applying a stale PERCENTAGE produces a
+number nobody chose; a pause has no arithmetic and therefore no staleness. Refusing to turn off a
+money-losing keyword because a colleague nudged its bid would leave it running for the least relevant
+possible reason. The bid ceiling and floor are skipped for the same reason — a row above the ceiling is
+*likelier* to need pausing.
+
+- **`old_state` is a MEASUREMENT taken at apply time, never from the report.** `spTargeting` has no
+  state column at all, so there is deliberately no `SKIP_ALREADY_PAUSED` in `plan_run` — it could never
+  fire, and a constant that cannot fire invites a later reader to invent a state source that does not
+  exist. The precondition lives where the state is actually known, and an already-paused row is
+  reported in its own `unchanged` bucket rather than dropped.
+- **`build_undo` had to branch on `action`, and this is the second time that class of bug has bitten.**
+  It skipped any row with a null `old_bid` under a comment saying that was impossible — true when
+  written, and normal for a state row. Left alone, undoing an 88-row pause run would have reversed
+  **nothing and reported success**. Exactly the shape of `delete_draft_plans`, whose docstring asserted
+  an invariant a later feature invalidated, and which destroyed 400 units of packed stock.
+- **`last_applied_states` is its own function because `last_applied_bids` CANNOT do the job.** That one
+  filters `new_bid IS NOT NULL` — which correctly stops a paused row being served as the true current
+  bid, and is exactly what makes it blind to a state row. Reusing it as the day guard's basis would
+  have left the guard silently inert while the screen still showed the guarded-row machinery. The bid
+  filter's protection is *incidental*, so it is now pinned by its own test.
+- **`min_pause_spend` (₹100) is the pause equivalent of `max_change_pct`**, guarding a different
+  mistake: a pause has no percentage, so its dangerous typo is `spend>10` where `spend>1000` was meant.
+  `max_rows` cannot catch that — 900 cheap rows fit under a 1,000-row ceiling.
+- **`Number("PAUSED")` is `NaN`, which `JSON.stringify` sends as `null`.** Both payload call sites go
+  through one `ruleAmount()` helper; a bare `Number()` would have sent a rule with no state at all,
+  with nothing throwing. The state control REPLACES the number box rather than relabelling it, so a
+  stale numeric value cannot travel with a rule that has no use for it.
+- **SB needs lower-case states AND `campaignId` on a keyword state write** — the latter is not needed
+  for a bid write. Both fail per-row inside a 207 whose HTTP status says success.
+
+> **Two pre-existing ledger bugs were fixed alongside, both found by reading the code this change
+> touches.** `open_run` never passed `ad_product`, so **304 Sponsored Brands rows on production are
+> recorded as `sp`** — harmless in effect, since `writer` carries the routing, but the column exists so
+> the audit trail can name the API that was written to. In the same expression, every SB keyword was
+> recorded as `entity_type="target"`. Historical rows are **not** back-filled: rewriting an audit trail
+> to what it should have said is a worse precedent than provably-wrong rows with a note.
+
+> **The mutation harness found two real test gaps, and the second was the trap this file already
+> warns about.** `scripts/mutate_ads_state.py` runs 13 mutations; 11 were caught first time. The two
+> survivors: (1) the `Number()` check asserted on the payload CALL SITES, so moving the coercion inside
+> `ruleAmount` restored the bug with every call site still reading `amount: ruleAmount()`; (2) the
+> scheduler-guard check asserted `"apply_changes" in text`, and that string also appears in the guard
+> file's own explanatory comments — so reverting the real line to `apply_bids` left the substring check
+> passing. **That is the deploy-detector mistake reproduced while trying to prevent it**, and it is now
+> asserted on the parsed tuple via `ast` rather than on file text.
+
+**Negative keywords were asked for and deliberately NOT built.** Researched against Amazon's current
+OpenAPI specs rather than assumed, and recorded in the spec so the decision is reviewable: **40 of the
+88 matching rows are targets with no search term to negate**; a negative silently overrides an ENABLED
+positive keyword, so the screen would show a live bid on something that cannot serve; SB negatives
+cannot be recreated once archived; SB negative *targets* return **200, not 207**, with errors inside a
+success code; and a duplicate negative errors rather than dedupes. A pause is reversible and covers all
+88 rows. Negatives are better designed after the owner has used pause and can see where the spend
+actually moved to — pausing an exact-match keyword does not stop the same query arriving through a
+broad match or an auto campaign.
 
 ### `ads` is absent from the Packer and Accounts presets on purpose
 The only area that can spend money has to be granted knowingly, per person, rather than arriving

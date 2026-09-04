@@ -51,6 +51,11 @@ def test_the_state_value_is_never_coerced_to_a_number(script):
 
     So the server would receive no state at all. Asserted on SOURCE because the failure is a silently
     absent field rather than an exception: the request succeeds and does the wrong thing.
+
+    **`ruleAmount`'s own BODY is what this checks, not the call sites.** A mutation caught the first
+    version of this test: moving the unconditional `Number()` inside the helper left every call site
+    reading `amount: ruleAmount()`, so a payload-site-only assertion passed while the bug was fully
+    restored. The helper must branch, and the branch is the thing under test.
     """
     bare = re.findall(r"amount:\s*Number\(", script)
     assert not bare, (
@@ -58,6 +63,15 @@ def test_the_state_value_is_never_coerced_to_a_number(script):
         f"action sends a string, and Number('PAUSED') is NaN -> null"
     )
     assert "function ruleAmount(" in script, "one helper must decide the amount for every call site"
+
+    body = re.search(r"function ruleAmount\(\)\s*\{(.*?)\n\}", script, re.S)
+    assert body, "ruleAmount must be a plain function so its body can be inspected"
+    inner = body.group(1)
+    assert "isStateRun" in inner, (
+        "ruleAmount does not branch on the action, so a state rule's amount is coerced to a number: "
+        f"body was {inner.strip()!r}"
+    )
+    assert "state-amount" in inner, "ruleAmount must read the state control for a state action"
 
 
 def test_both_payload_sites_go_through_the_one_amount_helper(script):

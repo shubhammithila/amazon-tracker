@@ -408,13 +408,35 @@ def test_apply_bids_is_gone_and_the_scheduler_guard_names_the_new_function():
     VACUOUSLY — a green test on the guard that stops a scheduled job moving live bids. Same trap
     CLAUDE.md records for the deploy detector, where grepping for a revision id passed with the
     branch deleted because the id also appeared in a comment.
+
+    **The mutation harness caught the first version of THIS test too**, and by the identical
+    mechanism: it asserted `"apply_changes" in text`, and that string also appears in the guard file's
+    own explanatory comments — so reverting the real `for forbidden in (...)` line back to
+    `apply_bids` left the substring check passing. The assertion is therefore on the SEARCHED TUPLE,
+    parsed out of the source, never on the file text.
     """
+    import ast
     import pathlib
 
     assert not hasattr(spapi_ads, "apply_bids"), "no alias: both callers must be updated"
     assert hasattr(spapi_ads, "apply_changes")
-    text = pathlib.Path("tests/test_retention_and_scheduler.py").read_text(encoding="utf-8")
-    assert "apply_changes" in text, "the scheduler guard must search for the CURRENT name"
+
+    guard = pathlib.Path("tests/test_retention_and_scheduler.py")
+    tree = ast.parse(guard.read_text(encoding="utf-8"))
+    searched: set[str] = set()
+    for node in ast.walk(tree):
+        # The `for forbidden in ("...", ...)` loop, read as a literal rather than as text.
+        if isinstance(node, ast.For) and isinstance(node.iter, ast.Tuple):
+            for element in node.iter.elts:
+                if isinstance(element, ast.Constant) and isinstance(element.value, str):
+                    searched.add(element.value)
+
+    assert searched, "could not find the guard's forbidden-name tuple at all"
+    assert "apply_changes" in searched, (
+        f"the scheduler guard searches for {sorted(searched)} — the write function is now called "
+        f"`apply_changes`, so a stale literal there makes that test pass without proving anything"
+    )
+    assert "apply_bids" not in searched, "searching for a name that no longer exists proves nothing"
 
 
 # ─── The once-per-day guard's own basis ──────────────────────────────────────
