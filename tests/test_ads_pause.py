@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import pytest
 
-from app.ads import logic
+from sqlalchemy import select
+
+from app.ads import logic, repository
+from app.models import AdsMutation
 
 
 def test_archived_is_not_a_writable_state():
@@ -235,3 +238,56 @@ def test_a_pause_still_refuses_a_campaign_somebody_else_optimises():
     assert plan["changes"] == []
     assert plan["skipped"][0]["reason"] == logic.SKIP_AUTOMATED
     assert plan["totals"]["automated"] == 1
+
+
+# ─── The ledger ──────────────────────────────────────────────────────────────
+
+
+async def test_open_run_records_a_state_change_and_its_action(db):
+    """The ledger must be able to express a pause, or undo cannot reverse one."""
+    run_id = await repository.open_run(db, [{
+        "entity_id": "111", "writer": logic.WRITER_KEYWORD, "ad_product": "sp",
+        "text": "kw", "campaign_id": "c1", "ad_group_id": "g1",
+        "old_state": "ENABLED", "new_state": "PAUSED",
+    }], rule_summary="spend>1000, roas<1 -> PAUSED")
+
+    row = (await db.execute(
+        select(AdsMutation).where(AdsMutation.run_id == run_id)
+    )).scalars().one()
+    assert row.action == "state"
+    assert row.old_state == "ENABLED"
+    assert row.new_state == "PAUSED"
+    assert row.old_bid is None and row.new_bid is None
+    assert row.status == "pending", "written BEFORE the wire"
+
+
+async def test_open_run_records_a_bid_change_as_action_bid(db):
+    """The default must stay `bid`, so a year of existing rows keep their meaning."""
+    run_id = await repository.open_run(db, [{
+        "entity_id": "222", "writer": logic.WRITER_TARGET, "ad_product": "sp",
+        "old_bid": 12.0, "new_bid": 13.2,
+    }], rule_summary="+10%")
+    row = (await db.execute(
+        select(AdsMutation).where(AdsMutation.run_id == run_id)
+    )).scalars().one()
+    assert row.action == "bid"
+    assert row.new_state is None
+
+
+async def test_open_run_records_the_ad_product_it_was_given(db):
+    """**A pre-existing bug, fixed with this change rather than around it.**
+
+    Measured on production: 304 Sponsored Brands rows were stored as `ad_product="sp"` because
+    `open_run` never passed the field and the column default won. Harmless so far — `writer` carries
+    the routing — but the column exists so the audit trail can name the API that was written to, and
+    it was naming the wrong one.
+    """
+    run_id = await repository.open_run(db, [{
+        "entity_id": "333", "writer": logic.WRITER_SB_KEYWORD, "ad_product": "sb",
+        "old_bid": 20.0, "new_bid": 18.0,
+    }], rule_summary="-10%")
+    row = (await db.execute(
+        select(AdsMutation).where(AdsMutation.run_id == run_id)
+    )).scalars().one()
+    assert row.ad_product == "sb", "an SB row must not be recorded as Sponsored Products"
+    assert row.entity_type == "keyword", "sb_keyword is a keyword, not a target"

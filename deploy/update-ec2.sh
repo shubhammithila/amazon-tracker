@@ -366,8 +366,10 @@ def indexes(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "new_state" in cols("ads_mutation"):
+    print("bf1c526cd768")                           # head: pause/enable from a rule
 elif "user_login_events" in tables:
-    print("d3479a8ed8ad")                           # head: login-event log
+    print("d3479a8ed8ad")                           # login-event log
 elif "projection_row" in tables and "excluded_at" in cols("projection_row"):
     print("ff8b85879cd6")                           # excluded_at for removing a row
 elif "projection_row" in tables and "growth_rate" not in cols("projection_row"):

@@ -1294,8 +1294,20 @@ class AdsMutation(Base):
     text = Column(String(500))
     campaign_id = Column(String(32))
     ad_group_id = Column(String(32))
+    #: `"bid"` or `"state"` — WHICH KIND of change this row is.
+    #:
+    #: **Without it a row is ambiguous and undo cannot reverse it.** `build_undo` has to know whether
+    #: to restore a bid or a state, and a null `new_bid` is not a safe signal — it is also what a row
+    #: from a crashed run looks like. Defaults to `"bid"` so existing rows keep their meaning with no
+    #: back-fill.
+    action = Column(String(8), nullable=False, default="bid", server_default="bid")
     old_bid = Column(Numeric(12, 2))
     new_bid = Column(Numeric(12, 2))
+    #: The state pair, mirroring the bid pair. `old_state` is read LIVE from Amazon at apply time and
+    #: never taken from the report — `spTargeting` has no state column at all, so a value here is a
+    #: measurement rather than a guess, which is what makes undo trustworthy.
+    old_state = Column(String(12))
+    new_state = Column(String(12))
     status = Column(String(12), nullable=False, default="pending")
     #: Amazon's own refusal, verbatim. Their validation messages name the cause — they are how the
     #: 31-day report cap and the bid floor were both found — so they are surfaced, not replaced.

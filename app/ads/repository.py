@@ -817,17 +817,31 @@ async def open_run(
     now = datetime.utcnow()
 
     for change in changes:
+        # **`ad_product` is passed explicitly, and it was not before.** Measured on production: 304
+        # Sponsored Brands rows sat in this table labelled `sp`, because the column default won
+        # whenever the field was omitted — which was always. Harmless in effect, since `writer` is
+        # what `split_by_writer` routes on, but the column exists precisely so the audit trail can
+        # name the API that was written to. `entity_type` had the same fault in the same expression:
+        # every SB keyword was recorded as a `target`.
         db.add(AdsMutation(
             run_id=run_id,
             entity_id=str(change["entity_id"]),
-            entity_type=("keyword" if change.get("writer") == logic.WRITER_KEYWORD else "target"),
+            entity_type=("keyword" if change.get("writer") in (
+                logic.WRITER_KEYWORD, logic.WRITER_SB_KEYWORD) else "target"),
+            ad_product=change.get("ad_product") or logic.AD_PRODUCT_SP,
             writer=change.get("writer") or logic.WRITER_KEYWORD,
             text=(change.get("text") or "")[:500],
             campaign_id=change.get("campaign_id") or None,
             ad_group_id=change.get("ad_group_id") or None,
+            # **Which KIND of change, derived from what the plan actually carries.** Keyed on
+            # `new_state` rather than on a passed-in action, so a caller cannot label a state change
+            # as a bid change; the two column pairs are then mutually exclusive by construction.
+            action="state" if change.get("new_state") else "bid",
             # The value BEFORE. Without this the run is not reversible.
             old_bid=change.get("old_bid"),
             new_bid=change.get("new_bid"),
+            old_state=change.get("old_state"),
+            new_state=change.get("new_state"),
             status="pending",
             rule_summary=(rule_summary or "")[:300],
             reverts_run_id=reverts_run_id,
