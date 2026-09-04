@@ -627,6 +627,16 @@ SKIP_AUTOMATED = (
 #: a -10% rule run twice is **-19%**.
 SKIP_CHANGED_TODAY = "the bid was already changed today, so applying again would compound it"
 
+#: A pause rule matched a row that barely spent anything.
+#:
+#: **Not a bid guard — a typo guard.** `spend > 10` where `spend > 1000` was meant matches hundreds of
+#: cheap, healthy keywords, and `max_rows` cannot see the difference because they all fit under the
+#: ceiling. Named on the preview like every other skip, because a row silently missing from a
+#: 1,005-row table is indistinguishable from a bug.
+SKIP_BELOW_PAUSE_SPEND = (
+    "it spent less than the pause floor, so a rule this broad is probably a typo"
+)
+
 
 def plan_run(
     rows: Sequence[Mapping],
@@ -687,9 +697,24 @@ def plan_run(
         return {"changes": [], "skipped": [],
                 "blocked": f"Unknown action {action!r}.", "totals": {}}
 
+    # **A state action's `amount` is a STATE STRING, validated before any row is considered.**
+    # Refused here rather than at the writer so the owner sees "this rule is not allowed" instead of
+    # a preview they might approve. `ARCHIVED` is refused by name, with its reason — see
+    # `WRITABLE_STATES`.
+    target_state = None
+    if is_state_action(action):
+        problem = state_error(amount)
+        if problem:
+            return {"changes": [], "skipped": [], "blocked": problem, "totals": {}}
+        target_state = str(amount).strip().upper()
+
     # **A percentage move beyond the guardrail is refused BEFORE any row is considered**, so the
     # owner sees "this rule is not allowed" rather than a 299-row preview they might approve.
-    if action in (ACTION_INCREASE_PCT, ACTION_DECREASE_PCT):
+    #
+    # Scoped away from a state action explicitly rather than relying on `action in (...)` happening
+    # to exclude it, because the bid guards further down are scoped by the same reasoning and a
+    # reader needs to see it stated once.
+    if not is_state_action(action) and action in (ACTION_INCREASE_PCT, ACTION_DECREASE_PCT):
         try:
             step = abs(float(amount))
         except (TypeError, ValueError):
@@ -740,6 +765,33 @@ def plan_run(
         if not m.get("writer"):
             skipped.append({**m, "reason": SKIP_UNKNOWN_WRITER})
             continue
+
+        # ── A state change: no arithmetic, so none of the bid guards below apply ──
+        #
+        # Deliberately BEFORE the `SKIP_NO_BID` check. That check exists because bid MATH needs a
+        # bid; a pause does not. Measured across 37,943 rows over 60 days, only 8 have a null bid and
+        # one of those has spend (of Rs 2) — so this ordering changes almost nothing today and is
+        # simply the honest reason.
+        #
+        # **`old_state` is None on purpose.** The `spTargeting` report carries no state column at all,
+        # so the live state is genuinely unknown here; `/ads/apply` reads it and fills it in before the
+        # ledger is written. Writing a guess would put a fiction in the audit trail and hand undo a
+        # value Amazon never held.
+        if is_state_action(action):
+            if _as_float(m.get("spend")) < limits["min_pause_spend"]:
+                skipped.append({**m, "reason": SKIP_BELOW_PAUSE_SPEND})
+                continue
+            ledger = ledger_bids.get(str(m.get("entity_id"))) or {}
+            changes.append({
+                **m,
+                "old_state": None,
+                "new_state": target_state,
+                "changed_today": bool(ledger) and ledger.get("day") == this_day,
+                "changed_at": ledger.get("at") or "",
+                "changed_rule": ledger.get("rule") or "",
+            })
+            continue
+
         if not m.get("bid"):
             skipped.append({**m, "reason": SKIP_NO_BID})
             continue
@@ -839,6 +891,13 @@ def plan_run(
             "automated": sum(1 for s in skipped if s.get("reason") == SKIP_AUTOMATED),
             # How many arrive unticked because their bid already moved today.
             "changed_today": sum(1 for c in changes if c["changed_today"]),
+            # How many rows this run would turn off (or on). Separate from `changing` so a mixed
+            # reading of the preview is impossible: a pause run's `spend` total is money being
+            # STOPPED, not money being re-priced.
+            "pausing": sum(1 for c in changes if c.get("new_state")),
+            "below_pause_spend": sum(
+                1 for s in skipped if s.get("reason") == SKIP_BELOW_PAUSE_SPEND
+            ),
         },
     }
 
