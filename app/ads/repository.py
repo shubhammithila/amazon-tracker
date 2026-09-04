@@ -931,6 +931,53 @@ async def last_applied_bids(db: AsyncSession, entity_ids: Sequence[str]) -> dict
     return out
 
 
+async def last_applied_states(db: AsyncSession, entity_ids: Sequence[str]) -> dict[str, dict]:
+    """`{entity_id: {"state", "at", "rule", "day"}}` — the newest APPLIED state change per entity.
+
+    **A sibling of `last_applied_bids` rather than a parameter on it, because that one CANNOT do this
+    job.** It filters `new_bid IS NOT NULL`, which is what correctly stops a paused row being served as
+    the true current bid — and is exactly what makes it blind to a state row. Reusing it as the state
+    guard's basis would leave the guard silently doing nothing: the screen would still render the
+    guarded-row machinery while every row arrived ticked.
+
+    **What the guard prevents here differs from the bid version.** A repeated bid change COMPOUNDS
+    (15.25 x 1.10 = 16.78, so -10% twice is -19%). A repeated pause is idempotent. What this stops is a
+    pause/enable FLIP-FLOP inside one day — a keyword turned off by one rule and back on by the next,
+    ending wherever the last run happened to land.
+
+    **Only `applied` rows**, like the bid version: a `failed` row never changed anything at Amazon and
+    a `pending` one is unknown, so neither may gate a later run.
+
+    Chunked for the same reason — a real rule matched 1,005 rows and SQLite caps an `IN (...)` list.
+    """
+    wanted = [str(e) for e in entity_ids if e]
+    if not wanted:
+        return {}
+
+    out: dict[str, dict] = {}
+    CHUNK = 500
+    for start in range(0, len(wanted), CHUNK):
+        rows = (await db.execute(
+            select(AdsMutation)
+            .where(
+                AdsMutation.entity_id.in_(wanted[start:start + CHUNK]),
+                AdsMutation.status == "applied",
+                AdsMutation.new_state.is_not(None),
+            )
+            # ASCENDING, so the last write per entity simply overwrites as the dict is filled — one
+            # fewer thing to get backwards than a descending scan with `setdefault`.
+            .order_by(AdsMutation.created_at, AdsMutation.id)
+        )).scalars().all()
+        for row in rows:
+            out[row.entity_id] = {
+                "state": row.new_state,
+                "at": row.created_at.isoformat() if row.created_at else "",
+                "rule": row.rule_summary or "",
+                "day": logic.ist_day(row.created_at),
+            }
+    return out
+
+
 async def load_runs(db: AsyncSession, limit: int = 25) -> list[dict]:
     """Recent runs, newest first, each with its counts — the history panel and the undo list."""
     run_ids = (await db.execute(

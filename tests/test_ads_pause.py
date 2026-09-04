@@ -415,3 +415,68 @@ def test_apply_bids_is_gone_and_the_scheduler_guard_names_the_new_function():
     assert hasattr(spapi_ads, "apply_changes")
     text = pathlib.Path("tests/test_retention_and_scheduler.py").read_text(encoding="utf-8")
     assert "apply_changes" in text, "the scheduler guard must search for the CURRENT name"
+
+
+# ─── The once-per-day guard's own basis ──────────────────────────────────────
+
+
+async def test_last_applied_bids_ignores_state_rows(db):
+    """**Pins an INCIDENTAL protection, which is why it needs a test rather than an edit.**
+
+    `last_applied_bids` filters `new_bid IS NOT NULL`, so a state row is already excluded with no code
+    change. But it holds by accident of a filter written for another purpose: widen it and a paused
+    row's null bid becomes the "true current bid", so the next percentage rule computes from a null.
+    Stated as a requirement so the filter cannot later be removed as redundant.
+    """
+    run_id = await repository.open_run(db, [{
+        "entity_id": "555", "writer": logic.WRITER_KEYWORD, "ad_product": "sp",
+        "old_state": "ENABLED", "new_state": "PAUSED",
+    }], rule_summary="pause")
+    await repository.record_results(db, run_id, [{"entity_id": "555", "ok": True}])
+
+    assert await repository.last_applied_bids(db, ["555"]) == {}, (
+        "a pause is not a bid change and must never be served as the current bid"
+    )
+
+
+async def test_last_applied_states_reports_a_row_paused_today(db):
+    """The day guard's own basis. Only `applied` rows count, like the bid version."""
+    import datetime as dt
+
+    run_id = await repository.open_run(db, [{
+        "entity_id": "666", "writer": logic.WRITER_KEYWORD, "ad_product": "sp",
+        "old_state": "ENABLED", "new_state": "PAUSED",
+    }], rule_summary="spend>1000 -> PAUSED")
+    await repository.record_results(db, run_id, [{"entity_id": "666", "ok": True}])
+
+    found = await repository.last_applied_states(db, ["666"])
+    assert found["666"]["state"] == "PAUSED"
+    assert found["666"]["day"] == logic.ist_day(dt.datetime.utcnow())
+    assert found["666"]["rule"] == "spend>1000 -> PAUSED"
+
+
+async def test_last_applied_states_excludes_a_failed_row(db):
+    """A failed row never changed anything at Amazon, so it must not gate a later run.
+
+    Same rule `build_undo` follows for the same reason: treating a refusal as a real change is how a
+    guard starts blocking work that was never done.
+    """
+    run_id = await repository.open_run(db, [{
+        "entity_id": "777", "writer": logic.WRITER_KEYWORD, "ad_product": "sp",
+        "old_state": "ENABLED", "new_state": "PAUSED",
+    }], rule_summary="pause")
+    await repository.record_results(
+        db, run_id, [{"entity_id": "777", "ok": False, "error": "refused"}])
+
+    assert await repository.last_applied_states(db, ["777"]) == {}
+
+
+async def test_last_applied_states_ignores_bid_rows(db):
+    """The mirror image of the first test: a bid change is not a state change."""
+    run_id = await repository.open_run(db, [{
+        "entity_id": "888", "writer": logic.WRITER_KEYWORD, "ad_product": "sp",
+        "old_bid": 10.0, "new_bid": 11.0,
+    }], rule_summary="+10%")
+    await repository.record_results(db, run_id, [{"entity_id": "888", "ok": True}])
+
+    assert await repository.last_applied_states(db, ["888"]) == {}
