@@ -234,8 +234,16 @@ tr.child td:first-child{padding-left:30px}
       <option value="decrease_abs">decrease bid by (₹)</option>
       <option value="increase_abs">increase bid by (₹)</option>
       <option value="set">set bid to (₹)</option>
+      <option value="set_state">turn the keyword</option>
     </select>
     <input type="number" id="amount" value="10" step="0.5" style="width:90px"/>
+    {# Shown INSTEAD of the number box for a state action. A state is not a quantity, and
+       `Number("PAUSED")` is NaN, which JSON.stringify writes as null — so the server would receive a
+       rule with no state at all and nothing would throw. See `ruleAmount()`. #}
+    <select id="state-amount" style="display:none">
+      <option value="PAUSED">OFF — pause it</option>
+      <option value="ENABLED">ON — enable it</option>
+    </select>
     <span class="dim" id="amount-unit">%</span>
     <button class="btn" id="preview-btn">Preview changes</button>
     <button class="btn-outline" id="save-rule-btn">💾 Save this rule</button>
@@ -718,8 +726,16 @@ function loadRule(name){
   conditions = (rule.conditions || []).map(c => ({...c}));
   remember("conditions", conditions);
   if(rule.action) $("action").value = rule.action;
-  if(rule.amount !== null && rule.amount !== undefined) $("amount").value = rule.amount;
-  $("amount-unit").textContent = String(rule.action || "").endsWith("_pct") ? "%" : "₹";
+  if(rule.amount !== null && rule.amount !== undefined){
+    // A saved state rule holds "PAUSED"/"ENABLED"; a saved bid rule holds a number. Loading one into
+    // the other's control is how a saved rule silently changes meaning — a state string in the number
+    // box renders an EMPTY box, so the rule would preview as having no amount at all.
+    if(isStateRun(rule.action)) $("state-amount").value = rule.amount;
+    else $("amount").value = rule.amount;
+  }
+  // Reuse the one `change` handler so the loaded rule's controls match its action, rather than
+  // setting the unit label here and leaving the two boxes in the previous action's arrangement.
+  $("action").dispatchEvent(new Event("change"));
   loadedRule = name;
   renderConditions();
   renderSaved();
@@ -732,6 +748,19 @@ function loadRule(name){
   </div></div>`;
 }
 
+/* **The rule's amount: a NUMBER for a bid action, a STRING for a state action.**
+
+   One helper for both call sites (save-rule and preview), because the bug it prevents is silent:
+   `Number("PAUSED")` is `NaN` and `JSON.stringify` writes `NaN` as `null`, so the server would
+   receive a rule with no state and either refuse it or fall through to a default. Nothing throws. */
+function isStateRun(action){
+  return (action || $("action").value) === "set_state";
+}
+
+function ruleAmount(){
+  return isStateRun() ? $("state-amount").value : Number($("amount").value);
+}
+
 async function saveRule(){
   const name = (window.prompt("Name this rule (saving again with the same name replaces it):",
     loadedRule || "") || "").trim();
@@ -739,7 +768,7 @@ async function saveRule(){
   const response = await fetch("/ads/rules", {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({name, conditions, action: $("action").value,
-                          amount: Number($("amount").value), window_days: 7}),
+                          amount: ruleAmount(), window_days: 7}),
   });
   const body = await response.json();
   if(!response.ok){
@@ -942,7 +971,7 @@ async function runPreview(){
         start: data.window[0], end: data.window[1],
         conditions: conditions,
         action: $("action").value,
-        amount: Number($("amount").value),
+        amount: ruleAmount(),
         campaign_ids: [...selected],
         ad_group_ids: [...selectedAdGroups],
       }),
@@ -985,12 +1014,22 @@ function applyBarHtml(){
      one. The same total is recomputed in the per-row change handler; both read this rule. */
   const total = (plan.changes || []).filter(c => !c.changed_today).length;
   const allTicked = total > 0 && approved.size >= total;
+  /* **A bid nudge and stopping delivery are not the same promise, so they do not share a sentence.**
+     A pause takes a keyword off air; the button says so, and the note says it is reversible. */
+  const state = isStateRun() ? $("state-amount").value : null;
+  const verb = state === "PAUSED"
+    ? `Pause <span data-apply-count>${approved.size}</span> row(s) — they will stop serving`
+    : state === "ENABLED"
+      ? `Enable <span data-apply-count>${approved.size}</span> row(s) — they will start serving`
+      : `Apply <span data-apply-count>${approved.size}</span> change(s) to Amazon`;
+  const note = state
+    ? "Reversible: undo this run from the history below and every row returns to its previous state."
+    : "Recorded with the previous bid, so it can be undone.";
   return `<div class="controls" data-apply-bar style="margin:0 0 10px">
-    <button class="btn-danger" data-apply${approved.size ? "" : " disabled"}>Apply
-      <span data-apply-count>${approved.size}</span> change(s) to Amazon</button>
+    <button class="btn-danger" data-apply${approved.size ? "" : " disabled"}>${verb}</button>
     <button class="btn-outline" data-toggle-all>${allTicked ? "Unselect all" : "Select all"}</button>
     <button class="btn-outline" data-cancel-preview>Cancel</button>
-    <span class="dim" style="font-size:12px">Recorded with the previous bid, so it can be undone.</span>
+    <span class="dim" style="font-size:12px">${note}</span>
   </div>`;
 }
 
@@ -1133,8 +1172,15 @@ function renderPreview(options){
         <th scope="col"></th><th scope="col">Keyword / target</th><th scope="col">Type</th>
         <th scope="col" title="How this row competes: exact, phrase, broad, or a target">Match</th>
         <th scope="col" class="num">Spend</th><th scope="col" class="num">ROAS</th>
-        <th scope="col" class="num">ACOS</th><th scope="col" class="num">Bid</th>
-        <th scope="col" class="num" title="Amazon's own suggested bid for this target">Suggested</th>
+        <th scope="col" class="num">ACOS</th>
+        ${/* `Bid -> New bid` is meaningless for a pause, and leaving the Suggested header in place
+              would imply a bid is moving. Amazon offers no suggested bid for Sponsored Brands at all,
+              so a dash there already means something else. */""}
+        ${isStateRun()
+          ? `<th scope="col" class="num">State</th>
+             <th scope="col" class="num" title="Not applicable to a state change">Suggested</th>`
+          : `<th scope="col" class="num">Bid</th>
+             <th scope="col" class="num" title="Amazon's own suggested bid for this target">Suggested</th>`}
       </tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
@@ -1241,14 +1287,29 @@ function previewRowHtml(c){
           because Amazon's report does not re-issue when we change a bid. Measured on production, the
           report held 13.86 for a keyword we had just set to 15.25. The badge says so rather than
           silently correcting the number, and the tooltip carries the stale figure. */""}
-    <td class="num"><span class="bid-old">₹${c.old_bid.toFixed(2)}</span>
-      → <span class="bid-new">₹${c.new_bid.toFixed(2)}</span>${
-      c.changed_today
-        ? `<br/><span class="tag changed" title="Changed at ${esc((c.changed_at || '').slice(11, 16))
-            } by: ${esc(c.changed_rule || 'a rule')}. The report still says ₹${
-            (c.report_bid || 0).toFixed(2)}.">changed today</span>`
-        : ""}</td>
-    <td class="num">${suggestedCell(c)}</td>
+    ${c.new_state
+      /* A STATE run shows the state pair, not the bid pair. `old_bid` is genuinely absent on these
+         rows, so the bid branch below would throw on `.toFixed` — and a bid arrow would claim a
+         re-pricing that is not happening. The left side reads "serving" rather than inventing a
+         value: the live state is only measured at apply time, because the report has no state
+         column. */
+      ? `<td class="num"><span class="bid-old">${esc(c.old_state || "serving")}</span>
+           → <span class="bid-new">${esc(c.new_state)}</span>${
+           c.changed_today
+             ? `<br/><span class="tag changed" title="Already changed at ${
+                 esc((c.changed_at || '').slice(11, 16))} by: ${
+                 esc(c.changed_rule || 'a rule')}.">changed today</span>`
+             : ""}</td>
+         <td class="num dim" title="Amazon offers no suggested bid for a state change">—</td>`
+      : `<td class="num"><span class="bid-old">₹${(c.old_bid || 0).toFixed(2)}</span>
+           → <span class="bid-new">₹${(c.new_bid || 0).toFixed(2)}</span>${
+           c.changed_today
+             ? `<br/><span class="tag changed" title="Changed at ${
+                 esc((c.changed_at || '').slice(11, 16))} by: ${
+                 esc(c.changed_rule || 'a rule')}. The report still says ₹${
+                 (c.report_bid || 0).toFixed(2)}.">changed today</span>`
+             : ""}</td>
+         <td class="num">${suggestedCell(c)}</td>`}
   </tr>`;
 }
 
@@ -1341,7 +1402,11 @@ async function applyPlan(){
 
   const moved = body.moved || [];
   const inactive = body.inactive || [];
-  const parts = [`<strong>${body.applied} bid(s) changed.</strong>`];
+  const unchanged = body.unchanged || [];
+  // A pause did not change a BID, so saying so would describe the wrong action.
+  const parts = [isStateRun()
+    ? `<strong>${body.applied} row(s) turned ${String($("state-amount").value).toLowerCase()}.</strong>`
+    : `<strong>${body.applied} bid(s) changed.</strong>`];
   if(body.failed) parts.push(`${body.failed} refused by Amazon.`);
   if(body.pending) parts.push(`${body.pending} with no answer from Amazon — check the run history.`);
   if(moved.length){
@@ -1354,6 +1419,13 @@ async function applyPlan(){
   if(inactive.length){
     parts.push(`${inactive.length} skipped because they are paused or archived at Amazon, so a bid
       change would do nothing.`);
+  }
+  /* NAMED, never a silent drop — "12 were already paused" is information, where a count quietly
+     smaller than the table reads as the rule not working. Its own bucket rather than folded into
+     `inactive`: this is the rule having nothing left to do, not a pointless bid change. */
+  if(unchanged.length){
+    parts.push(`${unchanged.length} were already in that state at Amazon, so nothing was sent for
+      them.`);
   }
   /* Refused because their bid already moved today. Reported apart from `moved` — "somebody changed
      this" and "we changed this an hour ago" are different facts — and reported at all because a
@@ -1682,7 +1754,12 @@ $("add-condition").addEventListener("click", () => {
 
 $("action").addEventListener("change", () => {
   const value = $("action").value;
-  $("amount-unit").textContent = value.endsWith("_pct") ? "%" : "₹";
+  const state = isStateRun(value);
+  // The number box is REPLACED rather than relabelled, so a stale numeric value cannot travel with a
+  // rule that has no use for it — and the unit is cleared, because a state has no unit.
+  $("amount").style.display = state ? "none" : "";
+  $("state-amount").style.display = state ? "" : "none";
+  $("amount-unit").textContent = state ? "" : (value.endsWith("_pct") ? "%" : "₹");
 });
 
 $("preview-btn").addEventListener("click", runPreview);
