@@ -15,7 +15,7 @@ import pytest
 
 from sqlalchemy import select
 
-from app.ads import logic, repository, spapi_ads
+from app.ads import logic, refresh, repository, spapi_ads
 from app.models import AdsMutation
 
 
@@ -480,3 +480,254 @@ async def test_last_applied_states_ignores_bid_rows(db):
     await repository.record_results(db, run_id, [{"entity_id": "888", "ok": True}])
 
     assert await repository.last_applied_states(db, ["888"]) == {}
+
+
+# ─── Undo ────────────────────────────────────────────────────────────────────
+
+
+async def test_undo_of_a_pause_is_an_enable(db):
+    """**`build_undo`'s null-`old_bid` skip would otherwise reverse NOTHING and report success.**
+
+    That skip was correct when written and its comment said the case "should be impossible". On a state
+    row a null bid is NORMAL, so left as a blanket check an undo of an 88-row pause run would silently
+    do nothing. Exactly the shape of `delete_draft_plans`, whose docstring asserted an invariant a
+    later feature invalidated — and which destroyed 400 units of packed stock on production.
+    """
+    run_id = await repository.open_run(db, [{
+        "entity_id": "999", "writer": logic.WRITER_KEYWORD, "ad_product": "sp",
+        "ad_group_id": "g1", "campaign_id": "c1",
+        "old_state": "ENABLED", "new_state": "PAUSED",
+    }], rule_summary="pause")
+    await repository.record_results(db, run_id, [{"entity_id": "999", "ok": True}])
+
+    undo = await repository.build_undo(db, run_id)
+    assert len(undo) == 1, "a paused row must be reversible"
+    assert undo[0]["new_state"] == "ENABLED", "the undo of a pause is an enable"
+    assert undo[0]["old_state"] == "PAUSED"
+    assert "new_bid" not in undo[0]
+    # The writer needs these to build an SB payload; losing them here is a per-row refusal later.
+    assert undo[0]["ad_group_id"] == "g1"
+    assert undo[0]["campaign_id"] == "c1"
+    assert undo[0]["ad_product"] == "sp"
+
+
+async def test_undo_of_a_bid_run_is_unchanged(db):
+    """The regression guard: the bid branch must keep swapping the bid pair."""
+    run_id = await repository.open_run(db, [{
+        "entity_id": "1000", "writer": logic.WRITER_KEYWORD, "ad_product": "sp",
+        "old_bid": 12.0, "new_bid": 13.2,
+    }], rule_summary="+10%")
+    await repository.record_results(db, run_id, [{"entity_id": "1000", "ok": True}])
+
+    undo = await repository.build_undo(db, run_id)
+    assert undo[0]["old_bid"] == 13.2, "what it is now"
+    assert undo[0]["new_bid"] == 12.0, "what it was before the run"
+    assert "new_state" not in undo[0]
+
+
+async def test_a_state_row_with_no_measured_old_state_is_skipped_rather_than_guessed(db):
+    """`/ads/apply` always records the live state, so a null means a row from some other path.
+
+    Skipped rather than guessed, because guessing writes a state Amazon may never have held — the same
+    reasoning that excludes `failed` and `pending` rows from an undo.
+    """
+    run_id = await repository.open_run(db, [{
+        "entity_id": "1001", "writer": logic.WRITER_KEYWORD, "ad_product": "sp",
+        "old_state": None, "new_state": "PAUSED",
+    }], rule_summary="pause with no measurement")
+    await repository.record_results(db, run_id, [{"entity_id": "1001", "ok": True}])
+
+    assert await repository.build_undo(db, run_id) == []
+
+
+# ─── /ads/apply, where the live state is the precondition ────────────────────
+
+
+def _live(state="ENABLED", bid=12.0, entity_id="111"):
+    async def fake(_client, changes):
+        return {entity_id: {"bid": bid, "state": state}}
+    return fake
+
+
+def _collector():
+    sent = []
+
+    async def fake_apply(_client, rows, *, writer):
+        sent.extend(rows)
+        return [{"entity_id": r["entity_id"], "ok": True} for r in rows]
+    return sent, fake_apply
+
+
+def _change(entity_id="111", **extra):
+    return {
+        "entity_id": entity_id, "writer": logic.WRITER_KEYWORD, "ad_product": "sp",
+        "ad_group_id": "g1", "campaign_id": "c1", "text": "kw", **extra,
+    }
+
+
+async def test_a_pause_is_not_refused_because_someone_moved_the_bid(
+        monkeypatch, auth_client, ads_endpoint):
+    """**The trap in reusing the bid path's live re-read.**
+
+    The bid-drift check exists because applying a stale PERCENTAGE produces a number nobody chose. A
+    pause has no arithmetic and no staleness, so a bid that moved since the window was fetched is not
+    a reason to keep a money-losing keyword running.
+    """
+    monkeypatch.setattr(spapi_ads, "fetch_current_bids", _live(bid=99.0))  # was 12.0
+    sent, fake_apply = _collector()
+    monkeypatch.setattr(spapi_ads, "apply_changes", fake_apply)
+
+    response = await auth_client.post("/ads/apply", json={
+        "action": logic.ACTION_SET_STATE, "amount": "PAUSED", "rule": "spend>1000 -> PAUSED",
+        "changes": [_change(old_bid=12.0, new_state="PAUSED")],
+    })
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["applied"] == 1, body
+    assert body["moved"] == [], "a moved bid must not block a pause"
+    assert len(sent) == 1
+
+
+async def test_an_already_paused_row_is_reported_unchanged_and_not_sent(
+        monkeypatch, auth_client, ads_endpoint):
+    """The precondition the report could not supply, enforced where the state is actually known.
+
+    Reported in its own bucket rather than dropped: "12 were already paused" is information, and a
+    count quietly smaller than the table reads as the rule not working.
+    """
+    monkeypatch.setattr(spapi_ads, "fetch_current_bids", _live(state="PAUSED"))
+    sent, fake_apply = _collector()
+    monkeypatch.setattr(spapi_ads, "apply_changes", fake_apply)
+
+    response = await auth_client.post("/ads/apply", json={
+        "action": logic.ACTION_SET_STATE, "amount": "PAUSED", "rule": "pause",
+        "changes": [_change(new_state="PAUSED")],
+    })
+    body = response.json()
+    assert sent == [], "nothing may be sent for a row already in the target state"
+    assert len(body["unchanged"]) == 1
+    assert "already paused" in body["unchanged"][0]["reason"].lower()
+
+
+async def test_an_enable_acts_on_a_paused_row(monkeypatch, auth_client, ads_endpoint):
+    """**The inverted precondition.**
+
+    The existing filter drops anything not ENABLED, because a bid change to a paused row does nothing.
+    An enable targets precisely those rows — unchanged, it would drop every row it was meant to act on
+    and report a completely successful run of zero.
+    """
+    monkeypatch.setattr(spapi_ads, "fetch_current_bids", _live(state="PAUSED"))
+    sent, fake_apply = _collector()
+    monkeypatch.setattr(spapi_ads, "apply_changes", fake_apply)
+
+    response = await auth_client.post("/ads/apply", json={
+        "action": logic.ACTION_SET_STATE, "amount": "ENABLED", "rule": "re-enable",
+        "changes": [_change(new_state="ENABLED")],
+    })
+    body = response.json()
+    assert body["applied"] == 1, body
+    assert len(sent) == 1
+    assert body["inactive"] == [], "a paused row is the TARGET of an enable, not an exclusion"
+
+
+async def test_the_ledger_records_the_live_state_as_old_state(
+        monkeypatch, auth_client, ads_endpoint, db):
+    """`old_state` must be a MEASUREMENT, not a guess — it is what undo writes back."""
+    monkeypatch.setattr(spapi_ads, "fetch_current_bids", _live(state="ENABLED"))
+    _sent, fake_apply = _collector()
+    monkeypatch.setattr(spapi_ads, "apply_changes", fake_apply)
+
+    response = await auth_client.post("/ads/apply", json={
+        "action": logic.ACTION_SET_STATE, "amount": "PAUSED", "rule": "pause",
+        "changes": [_change(new_state="PAUSED")],
+    })
+    run_id = response.json()["run_id"]
+    row = (await db.execute(
+        select(AdsMutation).where(AdsMutation.run_id == run_id)
+    )).scalars().one()
+    assert row.old_state == "ENABLED"
+    assert row.new_state == "PAUSED"
+    assert row.action == "state"
+
+
+async def test_apply_refuses_an_archived_state_from_a_hand_built_request(
+        monkeypatch, auth_client, ads_endpoint):
+    """The client is not a trust boundary. Refused before any Amazon call."""
+    def explode(*_a, **_k):
+        raise AssertionError("nothing may be sent for an illegal state")
+
+    monkeypatch.setattr(spapi_ads, "fetch_current_bids", explode)
+    monkeypatch.setattr(spapi_ads, "apply_changes", explode)
+
+    response = await auth_client.post("/ads/apply", json={
+        "action": logic.ACTION_SET_STATE, "amount": "ARCHIVED", "rule": "hand-built",
+        "changes": [_change(new_state="ARCHIVED")],
+    })
+    assert response.status_code == 400
+    assert "permanent" in response.json()["error"].lower()
+
+
+async def test_a_pause_is_not_refused_by_the_bid_ceiling(monkeypatch, auth_client, ads_endpoint):
+    """A row above the bid ceiling is still pausable — indeed likelier to need it.
+
+    The bid guardrails measure arithmetic a state change does not do, so applying them here would
+    refuse to turn off the most expensive keywords in the account.
+    """
+    monkeypatch.setattr(spapi_ads, "fetch_current_bids", _live(bid=900.0))
+    sent, fake_apply = _collector()
+    monkeypatch.setattr(spapi_ads, "apply_changes", fake_apply)
+
+    response = await auth_client.post("/ads/apply", json={
+        "action": logic.ACTION_SET_STATE, "amount": "PAUSED", "rule": "pause",
+        "changes": [_change(new_state="PAUSED")],
+    })
+    assert response.status_code == 200, response.text
+    assert len(sent) == 1
+
+
+def test_a_state_rule_summary_does_not_describe_a_bid_change():
+    """The summary is stored on every ledger row and read weeks later.
+
+    `-> bid set_state` would name the wrong action entirely.
+    """
+    from app.routers.ads import _rule_summary
+
+    summary = _rule_summary(
+        [{"field": "spend", "op": "gt", "value": 1000}], logic.ACTION_SET_STATE, "PAUSED")
+    assert "bid" not in summary.lower()
+    assert "pause" in summary.lower() or "off" in summary.lower()
+
+
+async def test_preview_plans_a_pause_and_contacts_nobody(monkeypatch, auth_client, db):
+    """A preview must never reach Amazon — the same rule the suggested-bid column follows.
+
+    The preview is the safety mechanism for the only feature that spends money, so it must not get
+    slower or fail because of a live call. `ads_configured` is TRUE in this repo, so a fetch here would
+    have every preview test authenticate against LWA for real.
+    """
+    def explode(*_a, **_k):
+        raise AssertionError("preview must not call Amazon")
+
+    monkeypatch.setattr(spapi_ads, "fetch_current_bids", explode)
+    monkeypatch.setattr(spapi_ads, "apply_changes", explode)
+
+    start, end = refresh.default_window(7)
+    await repository.save_daily(db, [{
+        "keywordId": "111", "matchType": "PHRASE", "keyword": "roasted chana",
+        "campaignId": "c1", "campaignName": "MF_SP_keywords", "adGroupId": "g1",
+        "adGroupName": "ag", "keywordBid": 12.0, "cost": 2000.0, "sales7d": 500.0,
+        "clicks": 120, "impressions": 9000, "purchases7d": 1, "date": end,
+    }], ad_product="sp")
+
+    response = await auth_client.post("/ads/preview", json={
+        "start": end, "end": end,
+        "action": logic.ACTION_SET_STATE, "amount": "PAUSED",
+        "conditions": [{"field": "spend", "op": "gt", "value": 1000}],
+    })
+    assert response.status_code == 200, response.text
+    plan = response.json()
+    assert plan["totals"]["pausing"] == 1, plan["totals"]
+    assert plan["changes"][0]["new_state"] == "PAUSED"
+    assert "new_bid" not in plan["changes"][0]
+    # The summary reaches every ledger row and must not describe a bid change.
+    assert "bid" not in (plan.get("rule") or "").lower()

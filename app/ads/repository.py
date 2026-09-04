@@ -1048,6 +1048,10 @@ async def build_undo(db: AsyncSession, run_id: str) -> list[dict]:
     `pending` rows are excluded for the same reason but a different cause: their outcome is unknown,
     and guessing in either direction is a write nobody asked for. They are reported to the owner
     instead.
+
+    **A state row is reversed by swapping the state pair, so the undo of a pause IS an enable** — a
+    forward `set_state` through the same writer, with no reverse-specific code. `old_state` is the
+    value read live from Amazon at apply time, never a value taken from the report.
     """
     rows = (await db.execute(
         select(AdsMutation).where(
@@ -1058,20 +1062,44 @@ async def build_undo(db: AsyncSession, run_id: str) -> list[dict]:
 
     undo = []
     for r in rows:
-        if r.old_bid is None:
-            # Cannot restore what was never recorded. Should be impossible — `open_run` always
-            # writes it — but a row from a future code path with a null old_bid must be skipped
-            # rather than written as bid 0.
-            continue
-        undo.append({
+        common = {
             "entity_id": r.entity_id,
             "writer": r.writer,
+            # Carried so an SB payload can be rebuilt: `adGroupId` is required on every SB write and
+            # `campaignId` on an SB keyword state write. Dropping them here is a per-row refusal
+            # inside a 207 whose HTTP status says success.
+            "ad_product": r.ad_product or logic.AD_PRODUCT_SP,
             "text": r.text or "",
             "campaign_id": r.campaign_id or "",
             "ad_group_id": r.ad_group_id or "",
-            "old_bid": _f(r.new_bid),      # what it is now
-            "new_bid": _f(r.old_bid),      # what it was before the run
-        })
+        }
+
+        # **Branch on `action`, because the null-check below is per-KIND.**
+        #
+        # This used to skip any row with a null `old_bid`, under a comment saying that was impossible.
+        # It was, when written. On a state row a null bid is NORMAL — so left as a blanket check,
+        # undoing an 88-row pause run would reverse nothing and report success. Exactly the shape of
+        # `delete_draft_plans`, whose docstring asserted an invariant that a later feature invalidated,
+        # and which destroyed 400 units of packed stock on production.
+        if r.action == "state":
+            if not r.old_state:
+                # Nothing measured to restore. `/ads/apply` always records the live state, so this
+                # means a row from a path that did not — skipped rather than guessed, because guessing
+                # writes a state Amazon may never have held.
+                continue
+            undo.append({**common,
+                         "old_state": r.new_state,     # what it is now
+                         "new_state": r.old_state})    # what it was before the run
+            continue
+
+        if r.old_bid is None:
+            # Cannot restore what was never recorded. Should be impossible for a bid row — `open_run`
+            # always writes it — but a row from a future code path with a null old_bid must be skipped
+            # rather than written as bid 0.
+            continue
+        undo.append({**common,
+                     "old_bid": _f(r.new_bid),      # what it is now
+                     "new_bid": _f(r.old_bid)})     # what it was before the run
     return undo
 
 

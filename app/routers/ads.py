@@ -141,6 +141,14 @@ def _rule_summary(conditions, action: str, amount) -> str:
         field = logic.FIELDS.get(condition.get("field"), {}).get("label", condition.get("field"))
         operator = logic.OPERATORS.get(condition.get("op"), condition.get("op"))
         parts.append(f"{field} {operator} {condition.get('value')}")
+    # **A state rule does not read "-> bid ...".** It is stored on every ledger row and is what the
+    # owner recognises three weeks later, so "spend > 1000, roas < 1 -> bid set_state" would describe
+    # the wrong action entirely.
+    if logic.is_state_action(action):
+        state = str(amount).strip().upper()
+        verb = "turn OFF (pause)" if state == logic.STATE_PAUSED else "turn ON (enable)"
+        return f"{', '.join(parts)} -> {verb}"
+
     verb = {
         logic.ACTION_INCREASE_PCT: f"increase {amount}%",
         logic.ACTION_DECREASE_PCT: f"decrease {amount}%",
@@ -553,14 +561,23 @@ async def preview(
 
     # The TRUE current bid and the once-per-day guard, both from our own ledger — **no Amazon call.**
     # One query serves two purposes; see `logic.plan_run`'s docstring for why they are separate facts.
-    applied_today = await repository.last_applied_bids(
-        db, [r["entity_id"] for r in rows]
+    #
+    # **A state rule asks the STATE ledger instead, because the bid one cannot answer.**
+    # `last_applied_bids` filters `new_bid IS NOT NULL` — which is what correctly stops a paused row
+    # being served as the true current bid, and is exactly what makes it blind to a pause. Reusing it
+    # here would leave the guard silently inert while the screen still rendered the guarded-row
+    # machinery. See `repository.last_applied_states`.
+    action = body.get("action") or ""
+    entity_ids = [r["entity_id"] for r in rows]
+    applied_today = await (
+        repository.last_applied_states(db, entity_ids) if logic.is_state_action(action)
+        else repository.last_applied_bids(db, entity_ids)
     )
 
     plan = logic.plan_run(
         rows,
         conditions=body.get("conditions") or [],
-        action=body.get("action") or "",
+        action=action,
         amount=body.get("amount"),
         guardrails=await repository.load_guardrails(db),
         scope_campaign_ids=body.get("campaign_ids") or None,
@@ -650,6 +667,18 @@ async def apply(
 
     guardrails = await repository.load_guardrails(db)
 
+    # **A state action is validated here too, not only in `plan_run`.** The client is not a trust
+    # boundary and this is the only route in the app that spends money, so a hand-built request naming
+    # `ARCHIVED` must be refused before any Amazon call rather than merely being absent from the
+    # screen. Archiving is terminal at Amazon and has no undo — see `logic.WRITABLE_STATES`.
+    action = body.get("action") or ""
+    target_state = None
+    if logic.is_state_action(action):
+        problem = logic.state_error(body.get("amount"))
+        if problem:
+            return JSONResponse({"error": problem}, status_code=400)
+        target_state = str(body.get("amount")).strip().upper()
+
     # Re-validate the approved rows against the guardrails, BEFORE the credentials check and before
     # any Amazon call. The preview already did this, but the browser sends the list back and a client
     # is not a trust boundary — a hand-edited request must not be able to exceed the ceiling, and it
@@ -662,7 +691,11 @@ async def apply(
             status_code=400,
         )
 
-    for change in approved:
+    # **The bid ceiling and floor are checked only for a BID action.** They measure arithmetic a state
+    # change does not do, and a row whose bid sits above the ceiling is still perfectly pausable —
+    # indeed it is likelier to need it. Applying them here would refuse to turn off the most expensive
+    # keywords in the account, which is the opposite of the point.
+    for change in [] if target_state else approved:
         try:
             new_bid = float(change.get("new_bid"))
         except (TypeError, ValueError):
@@ -689,10 +722,17 @@ async def apply(
     #
     # Reported like `moved` and `inactive` rather than silently dropped, and it costs no Amazon call —
     # the ledger already knows what we set today.
+    # **A state run asks the STATE ledger, because the bid one cannot answer.**
+    # `last_applied_bids` filters `new_bid IS NOT NULL`, so it is structurally blind to a pause —
+    # reusing it here would leave this guard silently inert for the new action. What it prevents also
+    # differs: a repeated pause is idempotent, but a pause/enable flip-flop inside one day ends
+    # wherever the last run happened to land. See `repository.last_applied_states`.
     repeated = []
     if approved:
-        ledger = await repository.last_applied_bids(
-            db, [str(c.get("entity_id")) for c in approved]
+        entity_ids = [str(c.get("entity_id")) for c in approved]
+        ledger = await (
+            repository.last_applied_states(db, entity_ids) if target_state
+            else repository.last_applied_bids(db, entity_ids)
         )
         today_ist = logic.ist_day(datetime.utcnow())
         still = []
@@ -702,9 +742,11 @@ async def apply(
                 repeated.append({
                     **change,
                     "live_bid": entry.get("bid"),
+                    "live_state": entry.get("state"),
                     "reason": (
-                        f"the bid was already changed today at "
-                        f"{str(entry.get('at') or '')[11:16]} by: {entry.get('rule') or 'a rule'}"
+                        f"it was already {'turned ' + str(entry.get('state', '')).lower() if target_state else 'changed'} "
+                        f"today at {str(entry.get('at') or '')[11:16]} "
+                        f"by: {entry.get('rule') or 'a rule'}"
                     ),
                 })
             else:
@@ -716,7 +758,7 @@ async def apply(
         # nothing is wrong, the rows simply already moved today.
         return {
             "run_id": None, "applied": 0, "failed": 0, "pending": 0,
-            "moved": [], "inactive": [], "repeated": repeated, "results": [],
+            "moved": [], "inactive": [], "unchanged": [], "repeated": repeated, "results": [],
         }
 
     # Only now: the request is well-formed and within every limit, so a missing credential is the
@@ -733,7 +775,10 @@ async def apply(
         async with httpx.AsyncClient(timeout=settings.ads_timeout) as client:
             # 1-3. The live re-read: ONE call that answers two questions.
             live = await spapi_ads.fetch_current_bids(client, approved)
-            to_send, moved, inactive = [], [], []
+            # `unchanged` is a THIRD reported bucket, not a silent drop. The standing rule in this
+            # feature is excluded and NAMED: "12 were already paused" is information, where a count
+            # quietly smaller than the table on screen reads as the rule not working.
+            to_send, moved, inactive, unchanged = [], [], [], []
             for change in approved:
                 identifier = str(change["entity_id"])
                 current = live.get(identifier) or {}
@@ -744,6 +789,34 @@ async def apply(
                 if not current:
                     moved.append({**change, "live_bid": None,
                                   "reason": "Amazon no longer reports this row at all."})
+                    continue
+
+                # ── A state change: the live STATE is the precondition, and the live BID is not
+                #    consulted at all ──
+                #
+                # Three of the four bid checks below encode arithmetic assumptions:
+                #
+                # * `live_state != ENABLED` is the "already paused" case for a pause, and is exactly
+                #   INVERTED for an enable, which targets rows that are NOT enabled. Left as-is it
+                #   would drop every row an enable was meant to act on and report a completely
+                #   successful run of zero.
+                # * `live_bid is None` cannot apply: a state write needs no bid.
+                # * the bid-drift check cannot apply either. It exists because applying a stale
+                #   PERCENTAGE produces a number nobody chose; a pause has no arithmetic and so no
+                #   staleness. Refusing to turn off a money-losing keyword because a colleague nudged
+                #   its bid would leave it running for the least relevant possible reason.
+                if target_state is not None:
+                    if live_state == target_state:
+                        unchanged.append({
+                            **change, "live_state": live_state,
+                            "reason": f"it is already {live_state.lower()} at Amazon.",
+                        })
+                        continue
+                    # `old_state` is a MEASUREMENT taken here, because the report carries no state
+                    # column. It is what undo writes back, so a guess would hand undo a value Amazon
+                    # never held.
+                    to_send.append({**change, "old_state": live_state or None,
+                                    "new_state": target_state})
                     continue
 
                 # **Only ENABLED rows are written.** The `spTargeting` report has NO state column —
@@ -775,9 +848,10 @@ async def apply(
             if not to_send:
                 return {
                     "run_id": None, "applied": 0, "failed": 0, "pending": 0,
-                    "moved": moved, "inactive": inactive, "repeated": repeated,
-                    "note": "Nothing was sent: every approved row had either changed at Amazon or "
-                            "is no longer active.",
+                    "moved": moved, "inactive": inactive, "unchanged": unchanged,
+                    "repeated": repeated,
+                    "note": "Nothing was sent: every approved row had either changed at Amazon, is "
+                            "no longer active, or is already in the state the rule wanted.",
                 }
 
             # 3. The ledger, before the wire.
@@ -811,6 +885,10 @@ async def apply(
         # `moved`: "someone changed the bid" and "this is not serving" are different facts and lead
         # to different actions.
         "inactive": inactive,
+        # Rows that were ALREADY in the state the rule wanted, so nothing was sent for them. Its own
+        # bucket rather than folded into `inactive`: "already paused" is the rule having nothing left
+        # to do, where `inactive` means a bid change would have been pointless.
+        "unchanged": unchanged,
         "results": results,
     }
 
