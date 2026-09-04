@@ -1,9 +1,9 @@
 """The only caller of the Advertising API's ENTITY endpoints — and the only module in this app
 that writes to Amazon.
 
-Everything else here reads Amazon and writes our own records. `apply_bids` changes live bids, and
-therefore live spend, which is why the read and write halves of this module are documented to
-different standards: a read bug shows a wrong number, a write bug spends money.
+Everything else here reads Amazon and writes our own records. `apply_changes` changes live bids and
+live states — and therefore live spend, which is why the read and write halves of this module are
+documented to different standards: a read bug shows a wrong number, a write bug spends money.
 
 **Reuses `app.portfolio.ads`'s token cache deliberately.** Same LWA client, same refresh token,
 same host (`advertising-api-eu.amazon.com`) — a second cache would mint a second token for the same
@@ -539,7 +539,7 @@ async def fetch_bid_recommendations(client, rows: Sequence[Mapping]) -> dict[str
     is the safety mechanism for the only feature in this app that spends money. Every failure path
     returns a per-row reason instead.
     """
-    # Imported here rather than at module scope, matching `fetch_current_bids` and `apply_bids` —
+    # Imported here rather than at module scope, matching `fetch_current_bids` and `apply_changes` —
     # `app.ads.logic` is pure and this module is its caller, so the import stays inside the functions
     # that need it.
     from app.ads.logic import AD_PRODUCT_SP
@@ -783,14 +783,14 @@ async def fetch_sb_targets(client, *, states=("ENABLED",)) -> list[dict]:
 # ─── Writes ──────────────────────────────────────────────────────────────────
 
 
-async def apply_bids(
+async def apply_changes(
     client: httpx.AsyncClient,
     changes: Sequence[Mapping],
     *,
     writer: str,
     sleep=asyncio.sleep,
 ) -> list[dict]:
-    """Send one writer's bid changes. Returns a per-row result, never a bare success flag.
+    """Send one writer's changes — a bid edit OR a pause. Per-row results, never a success flag.
 
     `[{"entity_id": ..., "ok": bool, "error": str|None}, ...]`, one entry per input row and in no
     guaranteed order — the caller matches on `entity_id`.
@@ -810,6 +810,17 @@ async def apply_bids(
     **Sponsored Brands differs in TWO ways, and both fail silently if missed.** Its payload needs
     `adGroupId` (SP does not), and its 207 body is a bare array rather than
     `{success: [...], error: [...]}`. See `_sb_payload_row` and `_parse_sb_outcome`.
+
+    **Two KINDS of change go through this one function, deliberately.** A row carrying `new_state` is
+    a pause or an enable; a row carrying `new_bid` is a bid edit. Everything that is hard to get right
+    — the four endpoints, the 500-row batching, request-array order as the only link back to a row,
+    and three mutually-unreadable 207 body shapes — is identical for both, so a second writer would
+    mean two copies of the code whose own comment says that getting the order wrong makes the ledger
+    blame the wrong keyword. `fetch_current_bids` already had to be regrouped by writer after exactly
+    that kind of divergence.
+
+    **A state row never also carries a bid.** Each payload builder picks one field, so a pause cannot
+    apply an unpreviewed bid change as a side effect.
     """
     from app.ads.logic import (
         WRITER_KEYWORD,
@@ -855,10 +866,7 @@ async def apply_bids(
             # endpoints, three payload shapes — none of them guessable.
             payload = {"targets": [_sb_target_payload_row(c) for c in batch]}
         else:
-            payload = {body_key: [
-                {id_field: str(c["entity_id"]), "bid": round(float(c["new_bid"]), 2)}
-                for c in batch
-            ]}
+            payload = {body_key: [_sp_payload_row(c, id_field) for c in batch]}
 
         if batch_start:
             await sleep(WRITE_INTERVAL)
@@ -869,7 +877,7 @@ async def apply_bids(
         # the batch was applied, and every row must be reported as failed rather than left silent.
         if response.status_code >= 400 and response.status_code != 207:
             message = f"Amazon refused the batch ({response.status_code}): {response.text[:200]}"
-            logger.warning("ads: bid write batch failed: %s", message)
+            logger.warning("ads: write batch failed: %s", message)
             results.extend({"entity_id": i, "ok": False, "error": message} for i in order)
             continue
 
@@ -882,6 +890,26 @@ async def apply_bids(
             results.extend(_parse_sp_outcome(body, order, id_field, body_key))
 
     return results
+
+
+def _sp_payload_row(change: Mapping, id_field: str) -> dict:
+    """One row of a Sponsored Products write — a bid change OR a state change, never both.
+
+    Amazon's update schemas require only the id and treat every other attribute as a partial update,
+    so sending `state` alone leaves the bid untouched and vice versa. **Exactly one is sent**, because
+    a pause that also carried a bid would apply a change nobody previewed.
+
+    Its own function for the same reason `_sb_payload_row` is: the requirement is then stated once and
+    pinned by a test, rather than living as an easily-dropped key inside a comprehension.
+    """
+    from app.ads.logic import AD_PRODUCT_SP, normalise_state
+
+    row = {id_field: str(change["entity_id"])}
+    if change.get("new_state"):
+        row["state"] = normalise_state(change["new_state"], AD_PRODUCT_SP)
+    else:
+        row["bid"] = round(float(change["new_bid"]), 2)
+    return row
 
 
 def _sb_payload_row(change: Mapping) -> dict:
@@ -900,13 +928,27 @@ def _sb_payload_row(change: Mapping) -> dict:
     Kept as its own function so the requirement is stated once and pinned by a test, rather than
     living as an easily-dropped extra key inside a comprehension.
     """
-    return {
-        "keywordId": int(change["entity_id"]) if str(change["entity_id"]).isdigit()
-        else change["entity_id"],
-        "adGroupId": int(change["ad_group_id"]) if str(change.get("ad_group_id", "")).isdigit()
-        else change.get("ad_group_id"),
-        "bid": round(float(change["new_bid"]), 2),
+    from app.ads.logic import AD_PRODUCT_SB, normalise_state
+
+    def _as_id(value):
+        text = str(value or "")
+        return int(text) if text.isdigit() else value
+
+    row = {
+        "keywordId": _as_id(change["entity_id"]),
+        "adGroupId": _as_id(change.get("ad_group_id")),
     }
+    if change.get("new_state"):
+        # **`campaignId` is required for an SB keyword STATE write and is NOT required for a bid
+        # write.** Amazon's update schema lists all three ids as required on the state path; omitting
+        # it is a per-row refusal inside a 207 whose HTTP status says success — the same silent shape
+        # as the missing `adGroupId` this function was written for.
+        row["campaignId"] = _as_id(change.get("campaign_id"))
+        # **Lower case.** SB's state enum is `enabled|paused|archived|draft` where SP's is upper.
+        row["state"] = normalise_state(change["new_state"], AD_PRODUCT_SB)
+    else:
+        row["bid"] = round(float(change["new_bid"]), 2)
+    return row
 
 
 def _sb_target_payload_row(change: Mapping) -> dict:
@@ -915,13 +957,19 @@ def _sb_target_payload_row(change: Mapping) -> dict:
     Same `adGroupId` requirement as SB keywords, but wrapped in a dict rather than sent as a bare
     list — verified, the list form is refused with a JSON parsing error.
     """
+    from app.ads.logic import AD_PRODUCT_SB, normalise_state
+
     identifier = str(change["entity_id"])
     ad_group = str(change.get("ad_group_id") or "")
-    return {
+    row = {
         "targetId": int(identifier) if identifier.isdigit() else identifier,
         "adGroupId": int(ad_group) if ad_group.isdigit() else ad_group,
-        "bid": round(float(change["new_bid"]), 2),
     }
+    if change.get("new_state"):
+        row["state"] = normalise_state(change["new_state"], AD_PRODUCT_SB)
+    else:
+        row["bid"] = round(float(change["new_bid"]), 2)
+    return row
 
 
 def _parse_sb_target_outcome(body, order: list[str]) -> list[dict]:
@@ -1126,5 +1174,5 @@ def _error_message(item: Mapping) -> str:
 __all__ = [
     "AdsError", "AdsNotConfigured",
     "fetch_campaigns", "fetch_ad_groups", "fetch_keywords", "fetch_targets",
-    "fetch_current_bids", "apply_bids",
+    "fetch_current_bids", "apply_changes",
 ]

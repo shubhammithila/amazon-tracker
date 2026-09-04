@@ -119,12 +119,12 @@ async def test_keywords_and_targets_go_to_different_urls_with_different_id_field
     fake = _Ads()
     client = _patch(monkeypatch, fake)
 
-    await spapi_ads.apply_bids(client, [_change("111")], writer=logic.WRITER_KEYWORD,
+    await spapi_ads.apply_changes(client, [_change("111")], writer=logic.WRITER_KEYWORD,
                                sleep=_no_sleep)
     assert fake.put_paths[-1].endswith("/sp/keywords")
     assert fake.puts[-1] == {"keywords": [{"keywordId": "111", "bid": 9.0}]}
 
-    await spapi_ads.apply_bids(client, [_change("222", writer=logic.WRITER_TARGET)],
+    await spapi_ads.apply_changes(client, [_change("222", writer=logic.WRITER_TARGET)],
                                writer=logic.WRITER_TARGET, sleep=_no_sleep)
     assert fake.put_paths[-1].endswith("/sp/targets")
     assert fake.puts[-1] == {"targetingClauses": [{"targetId": "222", "bid": 9.0}]}
@@ -135,7 +135,7 @@ async def test_the_bid_is_rounded_to_two_decimals_in_the_request(monkeypatch):
     preview has already shown the owner 11.41."""
     fake = _Ads()
     client = _patch(monkeypatch, fake)
-    await spapi_ads.apply_bids(client, [_change("1", new=11.412)],
+    await spapi_ads.apply_changes(client, [_change("1", new=11.412)],
                                writer=logic.WRITER_KEYWORD, sleep=_no_sleep)
     assert fake.puts[0]["keywords"][0]["bid"] == 11.41
 
@@ -166,7 +166,7 @@ async def test_a_partial_failure_is_reported_per_row_not_as_overall_success(monk
 
     fake = _Ads(outcome=outcome)
     client = _patch(monkeypatch, fake)
-    results = await spapi_ads.apply_bids(
+    results = await spapi_ads.apply_changes(
         client, [_change("111"), _change("222")], writer=logic.WRITER_KEYWORD, sleep=_no_sleep
     )
 
@@ -192,7 +192,7 @@ async def test_a_failure_identified_only_by_index_is_matched_to_the_right_row(mo
 
     fake = _Ads(outcome=outcome)
     client = _patch(monkeypatch, fake)
-    results = await spapi_ads.apply_bids(
+    results = await spapi_ads.apply_changes(
         client, [_change("aaa"), _change("bbb"), _change("ccc")],
         writer=logic.WRITER_KEYWORD, sleep=_no_sleep,
     )
@@ -211,7 +211,7 @@ async def test_a_row_amazon_never_mentions_is_recorded_as_failed_not_applied(mon
 
     fake = _Ads(outcome=outcome)
     client = _patch(monkeypatch, fake)
-    results = await spapi_ads.apply_bids(
+    results = await spapi_ads.apply_changes(
         client, [_change("111"), _change("222")], writer=logic.WRITER_KEYWORD, sleep=_no_sleep
     )
     by_id = {r["entity_id"]: r for r in results}
@@ -227,7 +227,7 @@ async def test_a_transport_failure_marks_every_row_in_the_batch_failed(monkeypat
     """
     fake = _Ads(status=429)
     client = _patch(monkeypatch, fake)
-    results = await spapi_ads.apply_bids(
+    results = await spapi_ads.apply_changes(
         client, [_change("1"), _change("2")], writer=logic.WRITER_KEYWORD, sleep=_no_sleep
     )
     assert len(results) == 2
@@ -241,7 +241,7 @@ async def test_every_input_row_gets_exactly_one_result(monkeypatch):
     fake = _Ads()
     client = _patch(monkeypatch, fake)
     changes = [_change(i) for i in range(120)]
-    results = await spapi_ads.apply_bids(client, changes, writer=logic.WRITER_KEYWORD,
+    results = await spapi_ads.apply_changes(client, changes, writer=logic.WRITER_KEYWORD,
                                          sleep=_no_sleep)
     assert len(results) == 120
     assert len({r["entity_id"] for r in results}) == 120
@@ -253,7 +253,7 @@ async def test_a_large_run_is_batched_and_every_batch_is_sent(monkeypatch):
     fake = _Ads()
     client = _patch(monkeypatch, fake)
     changes = [_change(i) for i in range(spapi_ads.WRITE_BATCH + 200)]
-    results = await spapi_ads.apply_bids(client, changes, writer=logic.WRITER_KEYWORD,
+    results = await spapi_ads.apply_changes(client, changes, writer=logic.WRITER_KEYWORD,
                                          sleep=_no_sleep)
     assert len(fake.puts) == 2, "the run was not split into batches"
     assert sum(len(p["keywords"]) for p in fake.puts) == len(changes)
@@ -265,7 +265,7 @@ async def test_no_changes_sends_no_request(monkeypatch):
     ledger would record a run that did nothing."""
     fake = _Ads()
     client = _patch(monkeypatch, fake)
-    assert await spapi_ads.apply_bids(client, [], writer=logic.WRITER_KEYWORD,
+    assert await spapi_ads.apply_changes(client, [], writer=logic.WRITER_KEYWORD,
                                       sleep=_no_sleep) == []
     assert fake.puts == []
 

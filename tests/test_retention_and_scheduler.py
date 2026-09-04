@@ -327,14 +327,29 @@ def test_the_nightly_ads_refresh_only_reads_and_never_edits_a_bid(monkeypatch):
     A job that could move bids would move 299 of them on a bad data day, unattended and at 3am —
     which is the same reason the Portfolio tab never auto-applies a verdict. Asserted on the source
     because the distinction is a design promise, not a value: `ads_refresh` may call the refresh, and
-    must not reach `apply_bids`, `plan_run` or the router's apply path.
+    must not reach `apply_changes`, `plan_run` or the router's apply path.
+
+    **These are LITERAL source searches, so a rename silently retires the assertion.** When
+    `apply_bids` became `apply_changes` (the pause action, 04 Sep 2026) the old literal appeared
+    nowhere in the codebase, so this loop would have passed VACUOUSLY — a green test on the guard that
+    stops a scheduled job moving live bids. The same trap CLAUDE.md records for the deploy detector,
+    where grepping for a revision id passed with the branch deleted because the id also appeared in a
+    comment. The searched names are therefore asserted to EXIST first.
     """
     import inspect
 
     from app import scheduler as sched
+    from app.ads import logic as ads_logic
+    from app.ads import repository as ads_repo
+    from app.ads import spapi_ads
+
+    assert hasattr(spapi_ads, "apply_changes"), "renamed? this test searches for a name that is gone"
+    assert hasattr(ads_logic, "plan_run") and hasattr(ads_repo, "open_run"), (
+        "a searched name no longer exists, so this test would pass without proving anything"
+    )
 
     source = inspect.getsource(sched.scheduled_ads_refresh)
-    for forbidden in ("apply_bids", "plan_run", "open_run", "/apply"):
+    for forbidden in ("apply_changes", "plan_run", "open_run", "/apply"):
         assert forbidden not in source, (
             f"the nightly ads job references {forbidden!r} — a scheduled bid change is exactly "
             f"what this feature refuses to do"

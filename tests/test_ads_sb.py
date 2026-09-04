@@ -554,7 +554,7 @@ async def test_apply_skips_targets_that_are_paused_or_archived_at_amazon(auth_cl
         return [{"entity_id": str(r["entity_id"]), "ok": True, "error": None} for r in rows]
 
     monkeypatch.setattr(sp, "fetch_current_bids", fake_live)
-    monkeypatch.setattr(sp, "apply_bids", fake_apply)
+    monkeypatch.setattr(sp, "apply_changes", fake_apply)
 
     from app.config import Settings, get_settings
 

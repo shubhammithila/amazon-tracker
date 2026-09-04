@@ -788,7 +788,7 @@ async def apply(
             results: list[dict] = []
             for writer, rows in grouped.items():
                 if rows:
-                    results.extend(await spapi_ads.apply_bids(client, rows, writer=writer))
+                    results.extend(await spapi_ads.apply_changes(client, rows, writer=writer))
 
         counts = await repository.record_results(db, run_id, results)
 
@@ -847,7 +847,7 @@ async def undo(
             results: list[dict] = []
             for writer, rows in grouped.items():
                 if rows:
-                    results.extend(await spapi_ads.apply_bids(client, rows, writer=writer))
+                    results.extend(await spapi_ads.apply_changes(client, rows, writer=writer))
 
         counts = await repository.record_results(db, undo_run, results)
         # Only the rows Amazon actually restored. A partly-failed undo must leave the rest

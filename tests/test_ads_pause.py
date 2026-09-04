@@ -15,7 +15,7 @@ import pytest
 
 from sqlalchemy import select
 
-from app.ads import logic, repository
+from app.ads import logic, repository, spapi_ads
 from app.models import AdsMutation
 
 
@@ -291,3 +291,127 @@ async def test_open_run_records_the_ad_product_it_was_given(db):
     )).scalars().one()
     assert row.ad_product == "sb", "an SB row must not be recorded as Sponsored Products"
     assert row.entity_type == "keyword", "sb_keyword is a keyword, not a target"
+
+
+# ─── The write ───────────────────────────────────────────────────────────────
+
+
+async def _fake_token(client):
+    """`_access_token` stubbed out — no test may authenticate against LWA."""
+    return "token"
+
+
+@pytest.fixture
+def ads_endpoint(monkeypatch):
+    """A fake endpoint, so the writer builds a URL without reaching Amazon."""
+    from app.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "ads_endpoint", "https://ads.test", raising=False)
+    return settings
+
+
+class _Recorder:
+    """A fake httpx client that records what was PUT. Mirrors the fakes in test_ads_writes.py."""
+
+    def __init__(self, body=None, status=207):
+        self.sent = []
+        self._body = body if body is not None else {"keywords": {"success": [], "error": []}}
+        self._status = status
+
+    async def put(self, url, json=None, headers=None):
+        self.sent.append({"url": url, "json": json, "headers": headers or {}})
+        body, status = self._body, self._status
+
+        class _Response:
+            status_code = status
+            text = ""
+
+            def json(self):
+                return body
+
+        return _Response()
+
+
+async def test_an_sp_pause_sends_state_and_no_bid(monkeypatch, ads_endpoint):
+    """The SP payload must carry `state` INSTEAD of `bid`, not alongside it.
+
+    Amazon's update schemas require only the id and treat everything else as a partial update, so
+    sending both would apply a bid change nobody previewed.
+    """
+    monkeypatch.setattr(spapi_ads, "_access_token", _fake_token)
+    client = _Recorder({"keywords": {"success": [{"index": 0, "keywordId": "111"}], "error": []}})
+
+    await spapi_ads.apply_changes(client, [{
+        "entity_id": "111", "ad_group_id": "g1", "campaign_id": "c1",
+        "ad_product": "sp", "new_state": "PAUSED",
+    }], writer=logic.WRITER_KEYWORD)
+
+    row = client.sent[0]["json"]["keywords"][0]
+    assert row == {"keywordId": "111", "state": "PAUSED"}
+    assert "bid" not in row
+
+
+async def test_an_sb_pause_is_lower_case_and_carries_its_parent_ids(monkeypatch, ads_endpoint):
+    """**Three SB requirements, each of which fails inside a 207 whose status says success.**
+
+    Lower-case state, `adGroupId`, and — for a keyword STATE write specifically — `campaignId`,
+    which a bid write does not need.
+    """
+    monkeypatch.setattr(spapi_ads, "_access_token", _fake_token)
+    client = _Recorder([{"code": "SUCCESS", "keywordId": 111}])
+
+    await spapi_ads.apply_changes(client, [{
+        "entity_id": "111", "ad_group_id": "222", "campaign_id": "333",
+        "ad_product": "sb", "new_state": "PAUSED",
+    }], writer=logic.WRITER_SB_KEYWORD)
+
+    row = client.sent[0]["json"][0]
+    assert row["state"] == "paused", "SB rejects upper case"
+    assert row["adGroupId"] == 222
+    assert row["campaignId"] == 333, "required for an SB keyword STATE write"
+    assert "bid" not in row
+
+
+async def test_an_sb_target_pause_is_lower_case_under_its_targets_key(monkeypatch, ads_endpoint):
+    """SB targets use a dict under `targets`, not SB keywords' bare list."""
+    monkeypatch.setattr(spapi_ads, "_access_token", _fake_token)
+    client = _Recorder({"updateTargetSuccessResults": [
+        {"targetRequestIndex": 0, "targetId": 444}], "updateTargetErrorResults": []})
+
+    await spapi_ads.apply_changes(client, [{
+        "entity_id": "444", "ad_group_id": "222", "campaign_id": "333",
+        "ad_product": "sb", "new_state": "PAUSED",
+    }], writer=logic.WRITER_SB_TARGET)
+
+    row = client.sent[0]["json"]["targets"][0]
+    assert row["state"] == "paused"
+    assert row["targetId"] == 444
+    assert "bid" not in row
+
+
+async def test_a_bid_write_is_unchanged_by_the_rename(monkeypatch, ads_endpoint):
+    """The regression guard. A bid payload must not gain a state key."""
+    monkeypatch.setattr(spapi_ads, "_access_token", _fake_token)
+    client = _Recorder()
+    await spapi_ads.apply_changes(client, [{
+        "entity_id": "111", "ad_product": "sp", "old_bid": 12.0, "new_bid": 13.2,
+    }], writer=logic.WRITER_KEYWORD)
+    assert client.sent[0]["json"]["keywords"][0] == {"keywordId": "111", "bid": 13.2}
+
+
+def test_apply_bids_is_gone_and_the_scheduler_guard_names_the_new_function():
+    """**The rename would otherwise silently retire a safety assertion.**
+
+    `tests/test_retention_and_scheduler.py` proves the nightly job cannot write to Amazon by grepping
+    source for literal names. After a rename the old literal appears nowhere, so that loop passes
+    VACUOUSLY — a green test on the guard that stops a scheduled job moving live bids. Same trap
+    CLAUDE.md records for the deploy detector, where grepping for a revision id passed with the
+    branch deleted because the id also appeared in a comment.
+    """
+    import pathlib
+
+    assert not hasattr(spapi_ads, "apply_bids"), "no alias: both callers must be updated"
+    assert hasattr(spapi_ads, "apply_changes")
+    text = pathlib.Path("tests/test_retention_and_scheduler.py").read_text(encoding="utf-8")
+    assert "apply_changes" in text, "the scheduler guard must search for the CURRENT name"
