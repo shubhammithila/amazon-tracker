@@ -96,7 +96,7 @@
     <h2>Upload Amazon FBA Shipment File</h2>
     <div class="upload-area" id="upload-area" onclick="document.getElementById('tsv-file').click()">
       <input type="file" id="tsv-file" accept=".tsv,.txt,.csv" />
-      <strong style="font-size:16px;">Drop shipment .tsv file here</strong>
+      <strong style="font-size:var(--fs-xl, 16px);">Drop shipment .tsv file here</strong>
       <p>or click to browse — download from Amazon Seller Central > Shipments</p>
     </div>
     <span id="upload-status" class="status-msg"></span>
@@ -217,14 +217,14 @@
     </div>
     <div class="actions">
       <button class="btn-primary" id="btn-finalize">Finalize Invoice</button>
-      <span style="font-size:12px;color:var(--text-dim);">Fill rates for all items, then click finalize. Leave transporter blank to skip.</span>
+      <span style="font-size:var(--fs-sm, 12px);color:var(--text-dim);">Fill rates for all items, then click finalize. Leave transporter blank to skip.</span>
     </div>
   </div>
 
   <!-- Step 3: Download -->
   <div class="card" id="step3">
     <h2>Download Invoice</h2>
-    <p style="margin-bottom:16px;color:var(--text-muted);font-size:13px;">Your invoice is ready. Download in your preferred format:</p>
+    <p style="margin-bottom:16px;color:var(--text-muted);font-size:var(--fs-md, 13px);">Your invoice is ready. Download in your preferred format:</p>
     <div class="actions">
       <button class="btn-success" id="btn-dl-excel">Download Excel (.xlsx)</button>
       <button class="btn-warning" id="btn-dl-pdf">Download PDF</button>
@@ -435,12 +435,12 @@
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>${i+1}</td>
-        <td style="font-size:10px;white-space:nowrap;">${item.sku}</td>
+        <td style="font-size:var(--fs-xs, 11px);white-space:nowrap;">${item.sku}</td>
         <td class="title-col" title="${item.title}">${item.short_title}</td>
         <td><input type="text" value="${item.hsn_code}" data-field="hsn" data-idx="${i}" style="width:55px;"></td>
         <td><input type="number" value="${item.gst_rate}" data-field="gst" data-idx="${i}" style="width:45px;" step="1"></td>
-        <td style="font-size:10px;">${item.asin}</td>
-        <td style="font-size:10px;">${item.fnsku}</td>
+        <td style="font-size:var(--fs-xs, 11px);">${item.asin}</td>
+        <td style="font-size:var(--fs-xs, 11px);">${item.fnsku}</td>
         <td><input type="number" value="${item.rate || ''}" data-field="rate" data-idx="${i}" style="width:65px;" step="1" placeholder="₹"></td>
         <td>${item.quantity}</td>
         <td class="calc-taxable" data-idx="${i}">0</td>

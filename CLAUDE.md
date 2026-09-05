@@ -184,6 +184,67 @@ how they look. `app/shipment/documents.py` and `app/invoice/generator.py` keep
 their dark header bands: those are printed documents, where dark-on-white is the
 accounting convention.
 
+**Sizes are tokenised too, and for the reason colour already was.** Counted before the refresh:
+**19 distinct font-size values** across the templates (including both `12.5px` and `13.5px`), **22
+paddings** and **11 radii** — while `box-shadow` never drifted, because it was tokenised from the
+start, and colour never drifted, because a test forbade it. **Everything with a token AND a test
+held; everything without one drifted.** `theme.css` now carries `--fs-*` (6 steps), `--sp-*` (a 4px
+base) and `--radius-*` (4 steps), and `test_no_template_hardcodes_a_size` keeps them honest.
+
+> **82% of the CSS was never in the stylesheet.** 1,404 lines lived in per-template `<style>` blocks
+> against 299 shared — and then a further **87 hardcoded sizes turned out to be in inline
+> `style="..."` attributes**, which the first pass missed entirely because it only rewrote `<style>`
+> blocks. `shipment.html` alone had 28. A refresh that cleaned the stylesheets would have looked
+> complete while most of the drift sat in the markup.
+
+**Soft colours are DERIVED, not hand-picked.** Each semantic colour carries an RGB channel, so a
+tint is `rgb(var(--green-rgb) / var(--tint-soft))` rather than a matching pastel chosen by eye. Six
+independent choices became one per colour, and adding Sponsored Display later is one line. The tint
+steps are **0.10 and 0.16** — Materio's ramp starts at 0.08, which is near-invisible for our darker
+greens and reds on `#f6f7f9`; the figures were settled by this file's WCAG contrast tests rather
+than by preference.
+
+**Every `var()` carries a fallback equal to its own value**, and that is not belt-and-braces.
+Measured with a stale cached stylesheet: the tokens resolve to nothing, `var(--fs-md)` falls back to
+inherited 15px, and the grid reflows — rows went 33px → 36px and tags 10px → 15px. `theme.css` is
+now load-bearing for **layout**, not only colour, so a browser or proxy one version behind must
+degrade to today's appearance instead of rearranging a page of money.
+`test_every_size_token_carries_a_fallback` pins it across all 12 templates.
+
+**Three literal sizes are exempt, and the exemption is the VALUE rather than the page.** Exempting
+`ops.html` wholesale — which was the original plan — would have left **26 of its font-sizes
+unguarded to protect 4**, an 85% loophole on the page most likely to be edited under time pressure.
+
+| Value | Why |
+|---|---|
+| `17px` | iOS silently zooms the page for an input under 16px, and the packer loses his place mid-count. **17, not 16**, so there is margin above the threshold rather than sitting on it — `--fs-xl` is 16px and would put it back on the boundary. |
+| `9px` | the `aria-hidden` ▲/▼ sort glyph. Decoration, not type: 11px makes the indicator compete with the header it modifies. |
+| `34px` | the no-access padlock illustration. The scale stops at 20px because that is the largest a NUMBER needs to be; an icon has no such ceiling. |
+
+> **Three UI defects were found by measuring in a browser rather than reading the CSS**, and one was
+> conditional in a way reading could not reveal. `/portfolio-page` is 3,766px tall and its headers
+> sat at **-289px** after 900px of scroll, so on 11 money columns you lost which was ACOS and which
+> TACOS. The nav overflowed a 375px phone by **212px** — recorded in this file as known-and-unfixed
+> for months, and a one-property fix. And numerals drifted **6px on Android/Linux and 3px on iPad
+> but 0px on Windows**, so money columns aligned for the owner and misaligned on the warehouse
+> tablet. Every one would have read as fine from the source.
+
+> **`thead th` is sticky at `z-index: 2`, and the low number is deliberate.** `ops.html` runs a
+> four-layer stack — `th.freeze` (5) > `thead th` (4) > `td.freeze` (3) > body cells — because the
+> corner cell must outrank both the header row and the frozen column. The shared default is the
+> LOWEST of these on purpose, so it can never cover the frozen column at the join. `ops.html` and
+> `shipment.html` keep their own higher values, which now read as deliberate overrides rather than
+> lone workarounds.
+
+> **Materio's admin template was the prompt for this, and most of it was rejected on measurement.**
+> Its free version has one table with no numeric columns, no sticky header, no skeletons and no
+> pagination — so it could teach us nothing about dense data. Its 50px rows against our measured
+> **33px** would have cost a third of the visible rows on every table; shadows on every card make
+> elevation mean nothing; and a purple primary would add a third saturated hue to screens where red
+> and green mean money. What was worth taking was the derived opacity ramp, and the discipline of
+> having a scale at all. `scripts/tokenise_template.py` records the mapping so it is a decision made
+> once rather than re-derived per page.
+
 The nav lives in `templates/nav.html` and is `include`d, not inherited. It used
 to be copy-pasted into all 7 templates and had drifted: `projections.html` was
 simply missing the Shipment link, which is why that tab vanished when you opened

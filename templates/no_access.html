@@ -25,7 +25,11 @@ a{display:inline-block;margin-top:18px;color:var(--accent);font-size:var(--fs-lg
 </head>
 <body>
 <div class="card">
-  <div style="font-size:34px;margin-bottom:10px">🔒</div>
+  {# 34px is NOT on the type scale, deliberately: the padlock is an ILLUSTRATION, sized to
+     carry an empty state, not text anyone reads. The scale tops out at 20px because that is the
+     largest a NUMBER needs to be; an icon has no such ceiling. Same reasoning as the aria-hidden
+     sort glyphs at 9px — decoration is not type. #}
+  <div style="font-size:34px;margin-bottom:var(--sp-3, 12px)" aria-hidden="true">🔒</div>
   <h1>Your account has no sections yet</h1>
   <p>You are signed in, so your username and password are correct — nobody has
      granted you access to any part of the app yet.</p>

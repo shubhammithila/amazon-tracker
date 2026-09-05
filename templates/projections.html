@@ -73,36 +73,36 @@ td.ideal-wh-cell{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-soft, 
 <!-- Catalogue & refresh status -->
 <div class="globals-card" style="flex-direction:column;align-items:stretch;gap:10px">
   <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-    <strong style="font-size:13px">📋 Active parents</strong>
-    <span id="catalogue-summary" style="font-size:12px;color:var(--text-muted)"></span>
-    <span id="last-refresh-note" style="font-size:12px;color:var(--text-muted);margin-left:auto"></span>
+    <strong style="font-size:var(--fs-md, 13px)">📋 Active parents</strong>
+    <span id="catalogue-summary" style="font-size:var(--fs-sm, 12px);color:var(--text-muted)"></span>
+    <span id="last-refresh-note" style="font-size:var(--fs-sm, 12px);color:var(--text-muted);margin-left:auto"></span>
     <button class="btn-outline" onclick="refreshNow()" id="refresh-now-btn">🔄 Refresh sales now</button>
     <button class="btn-outline" onclick="openBlendSettings()">⚙ Blend settings</button>
   </div>
-  <div id="hidden-parents-note" style="font-size:11.5px;color:var(--text-muted);display:none"></div>
-  <div id="excluded-parents-note" style="font-size:11.5px;color:var(--text-muted);display:none"></div>
+  <div id="hidden-parents-note" style="font-size:var(--fs-xs, 11px);color:var(--text-muted);display:none"></div>
+  <div id="excluded-parents-note" style="font-size:var(--fs-xs, 11px);color:var(--text-muted);display:none"></div>
 </div>
 
 <!-- Blend settings panel, hidden until opened -->
 <div class="globals-card" id="blend-panel" style="display:none;flex-direction:column;align-items:stretch;gap:10px">
-  <strong style="font-size:13px">7-day / 30-day sales blend</strong>
-  <p style="font-size:11.5px;color:var(--text-muted)" id="blend-help"></p>
+  <strong style="font-size:var(--fs-md, 13px)">7-day / 30-day sales blend</strong>
+  <p style="font-size:var(--fs-xs, 11px);color:var(--text-muted)" id="blend-help"></p>
   <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
-    <label style="font-size:12px;color:var(--text-muted);display:flex;flex-direction:column;gap:4px">
+    <label style="font-size:var(--fs-sm, 12px);color:var(--text-muted);display:flex;flex-direction:column;gap:4px">
       7-day weight (0-1)
-      <input type="number" id="blend-weight" step="0.05" min="0" max="1" style="width:80px;background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:5px 8px"/>
+      <input type="number" id="blend-weight" step="0.05" min="0" max="1" style="width:80px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm, 4px);color:var(--text);padding:5px 8px"/>
     </label>
-    <label style="font-size:12px;color:var(--text-muted);display:flex;flex-direction:column;gap:4px">
+    <label style="font-size:var(--fs-sm, 12px);color:var(--text-muted);display:flex;flex-direction:column;gap:4px">
       Divergence flag threshold (%)
-      <input type="number" id="blend-threshold" step="5" min="1" max="200" style="width:80px;background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:5px 8px"/>
+      <input type="number" id="blend-threshold" step="5" min="1" max="200" style="width:80px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm, 4px);color:var(--text);padding:5px 8px"/>
     </label>
-    <label style="font-size:12px;color:var(--text-muted);display:flex;flex-direction:column;gap:4px">
+    <label style="font-size:var(--fs-sm, 12px);color:var(--text-muted);display:flex;flex-direction:column;gap:4px">
       Company growth rate (%)
-      <input type="number" id="blend-growth" step="5" min="0" max="300" style="width:80px;background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:5px 8px"/>
+      <input type="number" id="blend-growth" step="5" min="0" max="300" style="width:80px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm, 4px);color:var(--text);padding:5px 8px"/>
     </label>
-    <label style="font-size:12px;color:var(--text-muted);display:flex;flex-direction:column;gap:4px">
+    <label style="font-size:var(--fs-sm, 12px);color:var(--text-muted);display:flex;flex-direction:column;gap:4px">
       Volatility buffer multiplier
-      <input type="number" id="blend-buffer-mult" step="0.1" min="1" max="5" style="width:80px;background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:5px 8px"/>
+      <input type="number" id="blend-buffer-mult" step="0.1" min="1" max="5" style="width:80px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm, 4px);color:var(--text);padding:5px 8px"/>
     </label>
     <button class="btn" onclick="saveBlendSettings()">Save</button>
     <button class="btn-outline" onclick="resetBlendSettings()">↺ Reset to defaults</button>
@@ -112,14 +112,14 @@ td.ideal-wh-cell{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-soft, 
 <!-- CSV Upload (manual override) -->
 <div class="globals-card" style="flex-direction:column;align-items:stretch;gap:12px">
   <div style="display:flex;align-items:center;gap:12px">
-    <strong style="font-size:13px">📂 Manual sales override</strong>
-    <span style="font-size:11px;color:var(--text-muted)">Upload a Business Report CSV to override "Last Month Sale" by hand — an overridden row is skipped by the weekly automatic recompute until you reset it.</span>
+    <strong style="font-size:var(--fs-md, 13px)">📂 Manual sales override</strong>
+    <span style="font-size:var(--fs-xs, 11px);color:var(--text-muted)">Upload a Business Report CSV to override "Last Month Sale" by hand — an overridden row is skipped by the weekly automatic recompute until you reset it.</span>
   </div>
   <div style="display:flex;align-items:center;gap:12px">
-    <input type="file" id="csv-file" accept=".csv" style="font-size:12px;color:var(--text-muted)"/>
+    <input type="file" id="csv-file" accept=".csv" style="font-size:var(--fs-sm, 12px);color:var(--text-muted)"/>
     <button class="btn" onclick="uploadCSV()" id="csv-btn" disabled>Import Sales from CSV</button>
     <span id="csv-spin" style="display:none"><span class="spinner"></span></span>
-    <span id="csv-result" style="font-size:12px;color:var(--green)"></span>
+    <span id="csv-result" style="font-size:var(--fs-sm, 12px);color:var(--green)"></span>
   </div>
 </div>
 
@@ -142,7 +142,7 @@ td.ideal-wh-cell{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-soft, 
   <button class="chip active" data-brand="all" onclick="setBrand('all',this)">All</button>
   <button class="chip" data-brand="Mithila Foods" onclick="setBrand('Mithila Foods',this)">Mithila Foods</button>
   <button class="chip" data-brand="Howrah Foods" onclick="setBrand('Howrah Foods',this)">Howrah Foods</button>
-  <span style="font-size:11px;color:var(--text-muted)" id="count-lbl"></span>
+  <span style="font-size:var(--fs-xs, 11px);color:var(--text-muted)" id="count-lbl"></span>
   <input type="text" class="search-input" placeholder="Search product..." oninput="renderTable()" id="search"/>
 </div>
 
@@ -219,7 +219,7 @@ function renderCatalogueSummary(){
   if((c.excluded_count||0) > 0){
     excludedEl.style.display = "block";
     const restoreLinks = (c.excluded_names||[]).map(n =>
-      `${escHtml(n)} <button class="btn-outline" style="padding:1px 6px;font-size:10px" onclick="restoreProduct('${escHtml(n).replace(/'/g,"\\'")}')">restore</button>`
+      `${escHtml(n)} <button class="btn-outline" style="padding:1px 6px;font-size:var(--fs-xs, 11px)" onclick="restoreProduct('${escHtml(n).replace(/'/g,"\\'")}')">restore</button>`
     ).join(", ");
     const more = c.excluded_count > (c.excluded_names||[]).length ? ` and ${c.excluded_count - c.excluded_names.length} more` : "";
     excludedEl.innerHTML = `${c.excluded_count} product(s) removed from this table: ${restoreLinks}${more}`;
@@ -447,7 +447,7 @@ function renderTable(){
       ? `${escHtml(p.parent_product)} <span title="No saved purchasing config matched this product — using Global Defaults. Check the purchase rate and lead times." style="color:var(--orange);font-weight:700">⚠ needs review</span>`
       : escHtml(p.parent_product);
     const sourceCell = p.sales_source === "manual"
-      ? `manual <button class="btn-outline" style="padding:2px 6px;font-size:10px" data-reset-row="${escHtml(p.parent_product)}">reset</button>`
+      ? `manual <button class="btn-outline" style="padding:2px 6px;font-size:var(--fs-xs, 11px)" data-reset-row="${escHtml(p.parent_product)}">reset</button>`
       : "sheet";
     const rateCell = p.seven_day_rate == null
       ? `— / ${(p.thirty_day_rate||0).toFixed(1)}`
@@ -457,11 +457,11 @@ function renderTable(){
       : "";
     return `<tr data-idx="${p._idx}">
       <td><input type="checkbox" class="row-select" data-parent="${escHtml(p.parent_product)}"/></td>
-      <td style="color:var(--text-muted);font-size:11px">${i+1}</td>
+      <td style="color:var(--text-muted);font-size:var(--fs-xs, 11px)">${i+1}</td>
       <td class="product-name">${nameCell}</td>
       <td class="brand-cell">${escHtml(p.brand||"")}</td>
-      <td class="brand-cell" style="font-size:10.5px">${sourceCell}</td>
-      <td style="font-size:10.5px;color:var(--text-muted)">${rateCell}</td>
+      <td class="brand-cell" style="font-size:var(--fs-xs, 11px)">${sourceCell}</td>
+      <td style="font-size:var(--fs-xs, 11px);color:var(--text-muted)">${rateCell}</td>
       <td><input data-field="last_month_sale" value="${p.last_month_sale||0}" class="wide"/></td>
       <td><input data-field="seasonal_impact" value="${p.seasonal_impact||1}" style="width:45px"/></td>
       <td><strong>${p.monthly_forecast?Math.round(p.monthly_forecast):0}</strong></td>

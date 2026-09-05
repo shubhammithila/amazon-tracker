@@ -265,7 +265,7 @@ th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
     <button class="btn" id="refresh-btn">↻ Refresh from Amazon</button>
     <a class="btn-outline" id="excel-link" href="/portfolio/download.xlsx">⬇ Excel</a>
     <button class="btn-outline" id="rules-btn">⚙ Verdict rules</button>
-    <span id="refresh-note" class="dim" style="font-size:12px">—</span>
+    <span id="refresh-note" class="dim" style="font-size:var(--fs-sm, 12px)">—</span>
   </div>
   <div id="progress-wrap">
     <div class="progress-bar-bg"><div class="progress-bar-fill" id="progress-fill"></div></div>
@@ -377,7 +377,7 @@ function stars(rating, count){
   if(rating === null || rating === undefined) return '<span class="dim">—</span>';
   const cls = rating < 4 ? "neg" : "pos";
   return `<span class="${cls}">${rating.toFixed(1)}★</span>
-          <span class="dim" style="font-size:11px">(${n(count)})</span>`;
+          <span class="dim" style="font-size:var(--fs-xs, 11px)">(${n(count)})</span>`;
 }
 
 /* ACOS has THREE states and they must not look alike:
@@ -476,14 +476,14 @@ function renderWindowBar(){
   $("window-bar").innerHTML = `
     <span class="win-label">Window</span>
     ${buttons}
-    <span class="dim" style="font-size:12px">|</span>
+    <span class="dim" style="font-size:var(--fs-sm, 12px)">|</span>
     <input class="win-date" type="date" id="win-from" value="${esc(w[0])}" max="${esc(maxDate())}"
       aria-label="Window start date"/>
     <input class="win-date" type="date" id="win-to" value="${esc(w[1])}" max="${esc(maxDate())}"
       aria-label="Window end date, no later than yesterday"/>
     <button class="btn-outline" id="win-apply">Show</button>
     ${uncached ? `<button class="btn" id="win-fetch">Fetch this window (~20 min)</button>` : ""}
-    <span class="dim" style="font-size:11.5px">a dot means already fetched — instant</span>`;
+    <span class="dim" style="font-size:var(--fs-xs, 11px)">a dot means already fetched — instant</span>`;
 }
 
 /* Yesterday, because today's figures are still settling: an ad charge lands hours after the
@@ -651,7 +651,7 @@ function renderFilters(){
         <option value="lt">is less than</option>
       </select>
       <input type="number" step="any" data-val="${i}" value="${f.value}"/>
-      <span class="dim" style="font-size:11.5px">${
+      <span class="dim" style="font-size:var(--fs-xs, 11px)">${
         kind === "pct" ? "as a percentage, e.g. 50" : (kind === "money" ? "rupees" : "")}</span>
       <button class="fdrop" data-rm="${i}" title="Remove">×</button>
     </div>`;
@@ -919,7 +919,7 @@ function sizeRowHtml(s, nested){
     <td class="num">${pct(s.net_pct, {sign: true})}</td>
     <td class="num">${n(s.units).toLocaleString("en-IN")}</td>
     <td class="num">${s.returns_pct ? pct(s.returns_pct) : '<span class="dim">—</span>'}</td>
-    <td colspan="2" class="dim" style="font-size:11px">
+    <td colspan="2" class="dim" style="font-size:var(--fs-xs, 11px)">
       ${/* Ratings are pooled per family by Amazon, so a per-size star rating would be the
            parent's number repeated — implying a precision the review data lacks. */ ""}
       rating is per product</td>
@@ -977,7 +977,7 @@ function renderTable(){
         html += `<tr class="size"><td colspan="11">
           <div class="reason"><strong>Why ${esc(s.verdict)}:</strong> ${esc(s.verdict_reason)}</div>
           ${channelHtml(s)}
-          <div class="dim" style="font-size:11.5px;margin-top:4px">
+          <div class="dim" style="font-size:var(--fs-xs, 11px);margin-top:4px">
             Part of <strong>${esc(s.parent_product)}</strong>, whose overall verdict is
             ${esc(s.parent_verdict)}. Decisions are recorded on the product, not the size —
             switch to Products to set one.</div>
@@ -1042,7 +1042,7 @@ function renderTable(){
             <td class="num">${pct(g.net_pct, {sign: true})}</td>
             <td class="num">${n(g.units).toLocaleString("en-IN")}</td>
             <td class="num">${g.returns_pct ? pct(g.returns_pct) : '<span class="dim">—</span>'}</td>
-            <td colspan="2" class="dim" style="font-size:11px">rating is per product</td>
+            <td colspan="2" class="dim" style="font-size:var(--fs-xs, 11px)">rating is per product</td>
           </tr>`;
           g.sizes.forEach(s => { html += sizeRowHtml(s, true); });
         });

@@ -320,7 +320,7 @@ td input[type="text"].sku-input{width:120px;font-size:var(--fs-xs, 11px)}
 <div class="card">
   <h3>Packing days</h3>
   <p>Held days are below the shipping threshold and are excluded from shippable totals until you verify or release them. Their units still count as packed — the boxes exist.</p>
-  <div class="days" id="days"><span style="color:var(--text-muted);font-size:12px">Nothing packed against this plan yet.</span></div>
+  <div class="days" id="days"><span style="color:var(--text-muted);font-size:var(--fs-sm, 12px)">Nothing packed against this plan yet.</span></div>
   <!-- renderInvoiceBar() fills this. It must exist in the markup: the function returns
        early when the container is missing, so a missing div showed no error anywhere and
        simply made combined invoicing invisible. -->
@@ -333,7 +333,7 @@ td input[type="text"].sku-input{width:120px;font-size:var(--fs-xs, 11px)}
     <div class="form-group"><label>Min cartons to ship</label><input type="number" id="min-cartons" min="0" step="1"/></div>
     <div class="form-group"><label>Min units to ship</label><input type="number" id="min-units" min="0" step="1"/></div>
     <button class="btn-outline" onclick="saveThresholds()">Save thresholds</button>
-    <span style="font-size:11px;color:var(--text-muted);max-width:430px;line-height:1.45">
+    <span style="font-size:var(--fs-xs, 11px);color:var(--text-muted);max-width:430px;line-height:1.45">
       A day is held only when it is below <em>both</em> numbers — a heavy-bag day with few cartons, or a pouch day with few units, still ships.
     </span>
   </div>
@@ -344,17 +344,17 @@ td input[type="text"].sku-input{width:120px;font-size:var(--fs-xs, 11px)}
   <button class="chip active" data-filter="deficit" onclick="setFilter('deficit',this)">Needs Shipment</button>
   <button class="chip" data-filter="outstanding" onclick="setFilter('outstanding',this)">Still To Pack</button>
   <button class="chip" data-filter="all" onclick="setFilter('all',this)">All Products</button>
-  <span style="font-size:11px;color:var(--text-muted)" id="count-lbl"></span>
+  <span style="font-size:var(--fs-xs, 11px);color:var(--text-muted)" id="count-lbl"></span>
   <input type="text" class="search-input" placeholder="Search..." oninput="renderTable()" id="search"/>
 </div>
 <!-- Row selection. Only shown when something is ticked, so it does not sit there
      as a permanently-disabled bar the owner has to read past. -->
 <div class="controls" id="selection-bar" style="display:none">
-  <strong id="selection-count" style="font-size:13px"></strong>
+  <strong id="selection-count" style="font-size:var(--fs-md, 13px)"></strong>
   <button class="btn-danger" onclick="excludeSelected(true)">Remove from plan</button>
   <button class="btn-outline" onclick="excludeSelected(false)">Put back</button>
   <button class="btn-outline" onclick="clearSelection()">Clear selection</button>
-  <span style="font-size:11px;color:var(--text-muted);max-width:420px;line-height:1.45">
+  <span style="font-size:var(--fs-xs, 11px);color:var(--text-muted);max-width:420px;line-height:1.45">
     Removing is reversible — nothing is deleted. Rows already packed cannot be removed;
     set <em>To Ship</em> to 0 instead so the boxes stay on the invoice.
   </span>
@@ -382,36 +382,36 @@ td input[type="text"].sku-input{width:120px;font-size:var(--fs-xs, 11px)}
      ours, and adding our layout to it would get the upload rejected. -->
 <div class="card" style="padding:14px 16px">
   <div class="controls" style="margin-bottom:8px">
-    <strong style="font-size:12px;min-width:120px">Shipment plan</strong>
+    <strong style="font-size:var(--fs-sm, 12px);min-width:120px">Shipment plan</strong>
     <button class="btn-outline" onclick="dl('/shipment/download/plan.xlsx')">⬇ Excel</button>
     <button class="btn-outline" onclick="dl('/shipment/download/plan.pdf')">⬇ PDF</button>
-    <span style="font-size:11px;color:var(--text-muted)">only rows with something to ship</span>
+    <span style="font-size:var(--fs-xs, 11px);color:var(--text-muted)">only rows with something to ship</span>
   </div>
 
   <div class="controls" style="margin-bottom:8px">
-    <strong style="font-size:12px;min-width:120px">Packed data</strong>
+    <strong style="font-size:var(--fs-sm, 12px);min-width:120px">Packed data</strong>
     <button class="btn-outline" onclick="dlPacked('xlsx')">⬇ Excel</button>
     <button class="btn-outline" onclick="dlPacked('pdf')">⬇ PDF</button>
-    <label style="font-size:11px;color:var(--text-muted)">from
-      <input type="date" id="packed-from" style="font-size:12px;padding:4px 6px"/></label>
-    <label style="font-size:11px;color:var(--text-muted)">to
-      <input type="date" id="packed-to" style="font-size:12px;padding:4px 6px"/></label>
-    <span style="font-size:11px;color:var(--text-muted)">leave both blank for every day</span>
+    <label style="font-size:var(--fs-xs, 11px);color:var(--text-muted)">from
+      <input type="date" id="packed-from" style="font-size:var(--fs-sm, 12px);padding:4px 6px"/></label>
+    <label style="font-size:var(--fs-xs, 11px);color:var(--text-muted)">to
+      <input type="date" id="packed-to" style="font-size:var(--fs-sm, 12px);padding:4px 6px"/></label>
+    <span style="font-size:var(--fs-xs, 11px);color:var(--text-muted)">leave both blank for every day</span>
   </div>
 
   <div class="controls" style="margin-bottom:8px">
-    <strong style="font-size:12px;min-width:120px">Still to pack</strong>
+    <strong style="font-size:var(--fs-sm, 12px);min-width:120px">Still to pack</strong>
     <button class="btn-outline" onclick="dl('/shipment/download/remaining.xlsx')">⬇ Excel</button>
     <button class="btn-outline" onclick="dl('/shipment/download/remaining.pdf')">⬇ PDF</button>
-    <span style="font-size:11px;color:var(--text-muted)">what is left against the finalised plan</span>
+    <span style="font-size:var(--fs-xs, 11px);color:var(--text-muted)">what is left against the finalised plan</span>
   </div>
 
   <div class="controls" style="margin-bottom:0;padding-top:8px;border-top:1px solid var(--border)">
-    <strong style="font-size:12px;min-width:120px">Amazon upload</strong>
+    <strong style="font-size:var(--fs-sm, 12px);min-width:120px">Amazon upload</strong>
     <button class="btn-outline" onclick="dl('/shipment/download/shipment-file.xlsx?mode=remaining')">⬇ Remaining</button>
     <button class="btn-outline" onclick="dl('/shipment/download/shipment-file.xlsx?mode=all')">⬇ Full plan</button>
     <button class="btn-outline" onclick="dl('/shipment/download/shipment-file.xlsx?mode=verified')">⬇ Verified only</button>
-    <span style="font-size:11px;color:var(--text-muted)">Amazon's own columns — merchant SKU + quantity</span>
+    <span style="font-size:var(--fs-xs, 11px);color:var(--text-muted)">Amazon's own columns — merchant SKU + quantity</span>
   </div>
 </div>
 
@@ -438,8 +438,8 @@ td input[type="text"].sku-input{width:120px;font-size:var(--fs-xs, 11px)}
      invisible. tests/test_template_render_targets.py checks this. -->
 <div class="card" id="history-card" style="padding:14px 16px">
   <div class="controls" style="margin-bottom:8px">
-    <strong style="font-size:13px">Plan history</strong>
-    <span style="font-size:11px;color:var(--text-muted)">day-wise packing, invoice
+    <strong style="font-size:var(--fs-md, 13px)">Plan history</strong>
+    <span style="font-size:var(--fs-xs, 11px);color:var(--text-muted)">day-wise packing, invoice
       numbers and Amazon shipment ids for every plan — for reconciliation</span>
   </div>
   <div id="history-list"></div>
@@ -465,7 +465,7 @@ td input[type="text"].sku-input{width:120px;font-size:var(--fs-xs, 11px)}
     <div class="controls" style="margin:12px 0 0">
       <button class="btn-green" onclick="saveCategories()">Save priorities</button>
       <button class="btn-outline" onclick="closeCategories()">Cancel</button>
-      <span id="cat-dirty" style="font-size:11px;color:var(--text-muted)"></span>
+      <span id="cat-dirty" style="font-size:var(--fs-xs, 11px);color:var(--text-muted)"></span>
     </div>
   </div>
 </div>
@@ -831,7 +831,7 @@ function dayLabel(iso){
 function renderDays(){
   const box = document.getElementById("days");
   if(!days.length){
-    box.innerHTML = '<span style="color:var(--text-muted);font-size:12px">Nothing packed against this plan yet.</span>';
+    box.innerHTML = '<span style="color:var(--text-muted);font-size:var(--fs-sm, 12px)">Nothing packed against this plan yet.</span>';
     return;
   }
   box.innerHTML = days.map(d => {
@@ -1773,16 +1773,16 @@ function renderTable(){
       <td class="pick no-strike freeze freeze-pick"><input type="checkbox" ${selected.has(i.asin) ? "checked" : ""}
           onchange="pick('${asin}',this.checked)"/></td>
       <td class="left freeze freeze-name"><strong>${esc(i.item)}</strong></td>
-      <td class="freeze freeze-wt" style="font-size:11px;color:var(--text-muted)">${esc(i.weight_label || "")}</td>
+      <td class="freeze freeze-wt" style="font-size:var(--fs-xs, 11px);color:var(--text-muted)">${esc(i.weight_label || "")}</td>
       <td class="freeze freeze-s"><input type="checkbox" ${i.s ? "checked" : ""} onchange="edit('${asin}','s',this.checked)"/></td>
       <td class="freeze freeze-m"><input type="checkbox" ${i.m ? "checked" : ""} onchange="edit('${asin}','m',this.checked)"/></td>
       <td class="freeze freeze-b"><input type="checkbox" ${i.b ? "checked" : ""} onchange="edit('${asin}','b',this.checked)"/></td>
-      <td class="freeze freeze-brand" style="font-size:11px">${esc(i.brand)}</td>
+      <td class="freeze freeze-brand" style="font-size:var(--fs-xs, 11px)">${esc(i.brand)}</td>
       <td class="no-strike"><input type="text" class="sku-input" value="${esc(i.fba_sku)}"
           placeholder="no SKU — type it" title="Amazon rejects rows with no merchant SKU"
           onchange="edit('${asin}','fba_sku',this.value.trim())"
           style="${i.fba_sku ? "" : "border-color:var(--red)"}"/></td>
-      <td style="font-size:10px">${asin}</td>
+      <td style="font-size:var(--fs-xs, 11px)">${asin}</td>
       <td>${i.sales_7d}</td>
       <td>${i.projection}</td>
       <td>${i.fba_stock}</td>
@@ -2257,7 +2257,7 @@ async function loadHistory(){
         <span class="h-inv">${invoices ? esc(invoices) : ""}</span>
         <span class="h-lineage">${esc(lineage.join(" · "))}</span>
       </div>`;
-    }).join("") : '<span style="color:var(--text-muted);font-size:12px">No plans yet.</span>';
+    }).join("") : '<span style="color:var(--text-muted);font-size:var(--fs-sm, 12px)">No plans yet.</span>';
   }catch(e){
     /* History is a convenience. A failure here must not take the packing screen with
        it, so it is swallowed rather than thrown — but the panel then stays empty, which
@@ -2278,8 +2278,8 @@ async function openPlanDetail(planId){
        how the screen and the downloads drifted apart before — the complaint the single
        ORDER BY exists to answer. The packed sheet link below covers the per-SKU detail. */
     box.innerHTML = `<div class="history-detail-inner">
-      <strong style="font-size:12.5px">${esc(data.plan.label)}</strong>
-      <span style="font-size:11px;color:var(--text-muted)">
+      <strong style="font-size:var(--fs-sm, 12px)">${esc(data.plan.label)}</strong>
+      <span style="font-size:var(--fs-xs, 11px);color:var(--text-muted)">
         ${Number(data.days.length)} packing day(s)${data.plan.closed_at
           ? " · closed " + esc(String(data.plan.closed_at).slice(0, 10)) : ""}</span>
       ${data.days.map(d => `<div class="history-day">
@@ -2290,7 +2290,7 @@ async function openPlanDetail(planId){
         ${d.shipment_confirmation_id ? " · " + esc(d.shipment_confirmation_id) : ""}
         ${d.destination_warehouse_id ? " → " + esc(d.destination_warehouse_id) : ""}
         ${d.carried_from_plan_id ? ' <span class="badge carried">carried in</span>' : ""}
-      </div>`).join("") || '<span style="color:var(--text-muted);font-size:12px">Nothing was packed against this plan.</span>'}
+      </div>`).join("") || '<span style="color:var(--text-muted);font-size:var(--fs-sm, 12px)">Nothing was packed against this plan.</span>'}
       <div class="controls" style="margin-top:8px">
         <button class="btn-outline" onclick="dl('/shipment/download/packed.xlsx?plan_id=${Number(planId)}')">⬇ Packed sheet</button>
         <button class="btn-outline" onclick="dl('/shipment/download/plan.xlsx?plan_id=${Number(planId)}')">⬇ Plan sheet</button>

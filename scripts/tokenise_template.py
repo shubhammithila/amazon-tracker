@@ -154,14 +154,23 @@ def main() -> int:
 
     path = pathlib.Path(args.template)
     original = path.read_text(encoding="utf-8")
-    match = re.search(r"(<style[^>]*>)(.*?)(</style>)", original, re.S)
-    if not match:
-        print(f"{path.name}: no <style> block — nothing to convert")
-        return 0
-
     counter, skipped = collections.Counter(), collections.Counter()
-    converted = convert(match.group(2), counter, skipped)
-    updated = original[:match.start(2)] + converted + original[match.end(2):]
+
+    updated = original
+    match = re.search(r"(<style[^>]*>)(.*?)(</style>)", updated, re.S)
+    if match:
+        converted = convert(match.group(2), counter, skipped)
+        updated = updated[:match.start(2)] + converted + updated[match.end(2):]
+
+    # **Inline `style="..."` attributes too, and they were the bigger half.** Measured across the
+    # templates: 87 hardcoded sizes lived in inline attributes against 5 left in `<style>` blocks
+    # once those were converted. A refresh that cleaned only the stylesheets would have looked
+    # complete while most of the drift sat in the markup — `shipment.html` alone had 28.
+    def inline(attr):
+        body = convert(attr.group(1), counter, skipped)
+        return f'style="{body}"'
+
+    updated = re.sub(r'style="([^"]*)"', inline, updated)
 
     print(f"{path.name}: {sum(counter.values())} replacement(s)")
     for key, count in sorted(counter.items()):

@@ -420,7 +420,7 @@ function editUser(id){
   if(box.innerHTML){ box.innerHTML = ""; return; }  // second click closes
 
   box.innerHTML = `
-    <div style="margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg)">
+    <div style="margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:var(--radius, 8px);background:var(--bg)">
       <div class="areas" id="areas-${id}">${areaBoxes("u" + id, user.areas)}</div>
       <label class="area" style="margin-top:10px">
         <input type="checkbox" id="admin-${id}" ${user.is_admin ? "checked" : ""}/>

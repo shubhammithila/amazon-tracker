@@ -196,7 +196,7 @@ tr.child td:first-child{padding-left:30px}
     <button class="btn-outline" id="guardrails-btn">⚙ Limits</button>
     <button class="btn-outline" id="history-btn">🕘 Run history</button>
     <button class="btn-outline" id="bidlog-btn">📜 Bid log</button>
-    <span id="refresh-note" class="dim" style="font-size:12px">—</span>
+    <span id="refresh-note" class="dim" style="font-size:var(--fs-sm, 12px)">—</span>
   </div>
   <div id="progress-wrap">
     <div class="progress-bar-bg"><div class="progress-bar-fill" id="progress-fill"></div></div>
@@ -228,7 +228,7 @@ tr.child td:first-child{padding-left:30px}
   <div id="conditions"></div>
   <div class="controls" style="margin-bottom:0">
     <button class="btn-outline" id="add-condition">+ condition</button>
-    <span class="dim" style="font-size:12px" id="scope-note"></span>
+    <span class="dim" style="font-size:var(--fs-sm, 12px)" id="scope-note"></span>
   </div>
   <div class="rule-then">
     <span class="win-label">Then</span>
@@ -262,10 +262,10 @@ tr.child td:first-child{padding-left:30px}
     <span class="count-chip" id="selection-count">nothing selected</span>
     <button class="btn-outline" id="select-all">Select all</button>
     <button class="btn-outline" id="select-none">Clear</button>
-    <label class="dim" style="font-size:12.5px;display:flex;align-items:center;gap:5px;cursor:pointer">
+    <label class="dim" style="font-size:var(--fs-sm, 12px);display:flex;align-items:center;gap:5px;cursor:pointer">
       <input type="checkbox" id="show-paused"/> show paused
     </label>
-    <label class="dim" style="font-size:12.5px;display:flex;align-items:center;gap:5px;cursor:pointer"
+    <label class="dim" style="font-size:var(--fs-sm, 12px);display:flex;align-items:center;gap:5px;cursor:pointer"
            title="M19 and Amazon Adaptive campaigns. Shown read-only — rules never edit them.">
       <input type="checkbox" id="show-automated"/> <span id="automated-label">show automated</span>
     </label>
@@ -531,13 +531,13 @@ function renderWindow(){
   $("window-bar").innerHTML = `
     <span class="win-label">Window</span>
     ${buttons}
-    <span class="dim" style="font-size:12px">|</span>
+    <span class="dim" style="font-size:var(--fs-sm, 12px)">|</span>
     <input class="win-date" type="date" id="win-from" value="${esc(w[0])}" max="${esc(maxDate())}"
       aria-label="Window start date"/>
     <input class="win-date" type="date" id="win-to" value="${esc(w[1])}" max="${esc(maxDate())}"
       aria-label="Window end date"/>
     <button class="btn-outline" id="win-apply">Show</button>
-    <span class="dim" style="font-size:11.5px" id="win-note"></span>`;
+    <span class="dim" style="font-size:var(--fs-xs, 11px)" id="win-note"></span>`;
   renderWindowNote();
 }
 
@@ -679,7 +679,7 @@ function renderConditions(){
         `<option value="${esc(key)}"${key === c.op ? " selected" : ""}>${esc(label)}</option>`
       ).join("")}</select>
       <input type="number" step="any" data-part="value" value="${esc(c.value)}"/>
-      <span class="dim" style="font-size:11.5px">${esc(unitFor(c.field))}</span>
+      <span class="dim" style="font-size:var(--fs-xs, 11px)">${esc(unitFor(c.field))}</span>
       <button class="fdrop" data-drop="${index}" title="remove">×</button>
     </div>`).join("");
 }
@@ -698,7 +698,7 @@ function unitFor(field){
 function renderSaved(){
   const rules = data.rules || [];
   if(!rules.length){
-    $("saved-bar").innerHTML = `<span class="dim" style="font-size:12px">No saved rules yet —
+    $("saved-bar").innerHTML = `<span class="dim" style="font-size:var(--fs-sm, 12px)">No saved rules yet —
       build one below and press <strong>Save this rule</strong>.</span>`;
     return;
   }
@@ -1033,7 +1033,7 @@ function applyBarHtml(){
     <button class="btn-danger" data-apply${approved.size ? "" : " disabled"}>${verb}</button>
     <button class="btn-outline" data-toggle-all>${allTicked ? "Unselect all" : "Select all"}</button>
     <button class="btn-outline" data-cancel-preview>Cancel</button>
-    <span class="dim" style="font-size:12px">${note}</span>
+    <span class="dim" style="font-size:var(--fs-sm, 12px)">${note}</span>
   </div>`;
 }
 
@@ -1053,7 +1053,7 @@ function suggestedCell(change){
     return `<span class="dim" title="${esc(why)}">—</span>`;
   }
   const range = (change.suggested_low !== null && change.suggested_low !== undefined)
-    ? `<br/><span class="dim" style="font-size:10.5px">₹${change.suggested_low.toFixed(2)}–${
+    ? `<br/><span class="dim" style="font-size:var(--fs-xs, 11px)">₹${change.suggested_low.toFixed(2)}–${
         change.suggested_high.toFixed(2)}</span>`
     : "";
   return `₹${change.suggested_bid.toFixed(2)}${range}`;
@@ -1259,7 +1259,7 @@ function groupRowHtml({level, id, name, group, ids, open}){
             n(group.changed_today)} changed today</span>`
         : ""}
       ${tickedCount && !allTicked
-        ? `<span class="dim" style="font-size:11.5px">${n(tickedCount)} of ${n(ids.length)}
+        ? `<span class="dim" style="font-size:var(--fs-xs, 11px)">${n(tickedCount)} of ${n(ids.length)}
            selected</span>`
         : ""}</td>
     <td class="num">${money(group.spend)}</td>
@@ -1496,7 +1496,7 @@ async function renderGuardrails(){
     <div class="controls" style="margin-top:10px;margin-bottom:0">
       <button class="btn" id="save-guardrails">Save limits</button>
       <button class="btn-outline" id="reset-guardrails">Reset to defaults</button>
-      <span class="dim" id="gr-note" style="font-size:12px"></span>
+      <span class="dim" id="gr-note" style="font-size:var(--fs-sm, 12px)"></span>
     </div>`;
 }
 
@@ -1560,7 +1560,7 @@ async function renderBidLog(options){
       <button class="btn-outline" data-bidlog-apply>Search</button>
       <button class="btn-outline" data-bidlog-clear>Clear</button>
       <a class="btn-outline" href="/ads/bid-log.xlsx?${query.toString()}">⬇ Excel</a>
-      <span class="dim" style="font-size:12px">${n(body.total)} change(s)${esc(showing)}${
+      <span class="dim" style="font-size:var(--fs-sm, 12px)">${n(body.total)} change(s)${esc(showing)}${
         bidLogAscending ? " · oldest first (bid path)" : ""}</span>
     </div>
     ${rows.length ? `<div class="table-wrap"><table>
@@ -1583,7 +1583,7 @@ async function renderBidLog(options){
               : r.status === "failed"
                 ? `<span class="tag changed" title="${esc(r.error)}">refused</span>`
                 : `<span class="tag">${esc(r.status)}</span>`}</td>
-        <td class="dim" style="font-size:11.5px">${esc(r.rule)}${
+        <td class="dim" style="font-size:var(--fs-xs, 11px)">${esc(r.rule)}${
           r.reverts_run_id ? ' <span class="tag">undo</span>' : ""}</td>
       </tr>`).join("")}</tbody></table></div>`
       : `<div class="empty-note">No bid changes match${search ? ` “${esc(search)}”` : ""}.</div>`}`;

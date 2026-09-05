@@ -488,3 +488,120 @@ def test_every_size_token_carries_a_fallback(template):
         f"{template.name} uses {sorted(set(bare))} with no fallback — a stale theme.css would "
         f"collapse these to an inherited size and reflow the page"
     )
+
+
+# ─── No new hardcoded sizes ──────────────────────────────────────────────────
+
+#: Whole pages allowed to hold raw sizes, with the reason. **Asserted in both directions below**,
+#: so the list cannot silently grow — the pattern `test_unauthenticated_access.py` uses for its
+#: five public routes. Empty on purpose: every page converted, including `login.html`, which the
+#: plan had expected to exempt.
+SIZE_EXEMPT: dict[str, str] = {}
+
+#: **Specific VALUES that are exempt everywhere, rather than pages that are exempt entirely.**
+#:
+#: The plan proposed exempting `ops.html` wholesale for its iOS input guard. Measured while
+#: converting it, that would have left **26 of its font-size declarations unguarded to protect 4**
+#: — an 85% loophole on the page most likely to be edited under time pressure. Exempting the value
+#: keeps the other 22 honest.
+#:
+#: It also named the wrong value. `ops.html` states the rule itself: "iOS silently zooms the whole
+#: page in on focus for anything under 16px", so the packing inputs are **17px** — deliberately
+#: above the threshold rather than sitting on it. `--fs-xl` is 16px and would put them back on the
+#: boundary.
+SIZE_EXEMPT_VALUES = {
+    "17px": "iOS zooms the page for an input under 16px; the packing inputs sit above it at 17",
+    "9px": "the aria-hidden sort glyph is decoration, not type — 11px makes it compete with its header",
+    "34px": "the no-access padlock is an illustration; the scale tops out at 20px because that is "
+            "the largest a NUMBER needs to be, and an icon has no such ceiling",
+}
+
+
+@pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
+def test_no_template_hardcodes_a_size(template):
+    """**The colour test's twin, for the values that actually drifted.**
+
+    Counted before the refresh: **19 distinct font-size values** across the templates (13, 12,
+    12.5, 11, 14, 10, 15, 16, 13.5, 10.5, 11.5, 9, 21, 19, 14.5, 17...), **22 paddings** and **11
+    radii** — while `box-shadow` never drifted, because it was tokenised from the start, and colour
+    never drifted, because this file forbids it.
+
+    **Everything with a token AND a test held. Everything without one drifted.** That is the whole
+    argument for this test, and it is why the fix was not merely "use the tokens once".
+
+    Verified to bite before it was written: run against the unconverted templates it failed on 10
+    pages covering 410 values. A guard that cannot fail proves nothing.
+    """
+    if template.name in SIZE_EXEMPT:
+        pytest.skip(f"{template.name}: {SIZE_EXEMPT[template.name]}")
+
+    body = template.read_text(encoding="utf-8")
+    # Comments are prose, and several legitimately QUOTE a pixel value while explaining why it is
+    # not used — portfolio.html's body comment says "theme.css sets body{font-size:15px}". Stripping
+    # them is the same courtesy the colour test extends, and the converter had to learn it too.
+    for pattern in (r"\{#.*?#\}", r"<!--.*?-->", r"/\*.*?\*/"):
+        body = re.sub(pattern, " ", body, flags=re.S)
+
+    offenders = []
+    for prop, token in (("font-size", "--fs-*"), ("border-radius", "--radius*")):
+        for match in re.findall(rf"{prop}:\s*([0-9.]+)px", body):
+            if f"{match}px" in SIZE_EXEMPT_VALUES:
+                continue
+            offenders.append(f"{prop}: {match}px (use {token})")
+
+    assert not offenders, (
+        f"{template.name} hardcodes {len(offenders)} size(s): {sorted(set(offenders))[:6]} — "
+        f"use a theme token so the next change reaches them"
+    )
+
+
+def test_the_size_exemption_lists_are_exactly_what_is_exempt():
+    """Asserted in BOTH directions so an exemption cannot be added silently.
+
+    A one-way check lets someone quiet a failure by appending a filename; this makes the lists
+    themselves the thing under review.
+    """
+    names = {p.name for p in TEMPLATES}
+    for exempt in SIZE_EXEMPT:
+        assert exempt in names, f"{exempt} is exempted but no longer exists"
+    assert SIZE_EXEMPT == {}, (
+        "a page-wide exemption was added — prefer exempting the VALUE, which keeps the rest of "
+        "that page's sizes guarded"
+    )
+    assert set(SIZE_EXEMPT_VALUES) == {"17px", "9px", "34px"}, (
+        "the value-exemption list changed — a new exempt value is a new hole in this guard"
+    )
+
+
+def test_the_ios_input_guard_still_protects_only_what_it_is_for():
+    """The 17px exemption is for the packing INPUTS, not a general licence.
+
+    Without this, `17px` becomes a free size anywhere, and the reason it is allowed — iOS zooming a
+    focused input — stops being visible to whoever next reaches for it.
+    """
+    ops = (REPO_ROOT / "templates" / "ops.html").read_text(encoding="utf-8")
+    assert re.search(r"input\.qty\{[^}]*font-size:\s*17px", ops), (
+        "ops.html's packing input is no longer 17px — retire the value exemption rather than "
+        "leaving it open"
+    )
+    assert "zoom" in ops.lower(), (
+        "the 17px rule must carry its reason, or a later reader will 'tidy' it onto the type scale "
+        "and reintroduce the iOS zoom mid-count"
+    )
+
+
+def test_the_sort_glyph_exemption_is_only_used_on_sort_glyphs():
+    """`9px` is allowed for the ▲/▼ arrow and nothing else.
+
+    Both pages that sort a dense table use it; asserting the SELECTOR keeps the exemption from
+    becoming a way to smuggle unreadably small text past the scale.
+    """
+    for name in ("portfolio.html", "ads.html"):
+        body = (REPO_ROOT / "templates" / name).read_text(encoding="utf-8")
+        for match in re.finditer(r"font-size:\s*9px", body):
+            rule_start = body.rfind("}", 0, match.start()) + 1
+            selector = body[rule_start:match.start()].split("{")[0]
+            assert "arrow" in selector, (
+                f"{name} uses 9px on '{selector.strip()}' — the exemption is for the aria-hidden "
+                f"sort glyph, not for small text generally"
+            )
