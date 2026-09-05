@@ -113,13 +113,25 @@ def test_no_template_hardcodes_a_colour(template):
     seven-file edit: `#fff` on a button and `rgba(99,102,241,.08)` on a hover row
     are invisible to a variable swap, and rgba tints computed for a dark
     background read as mud on white.
+
+    **A colour COMPOSED from variables is not a literal**, and the distinction had to be
+    added when the derived tints arrived: `rgb(var(--green-rgb) / var(--tint-soft))` is
+    exactly what this test wants — one source of truth, reachable by a variable swap —
+    while `rgb(20 108 52 / .1)` is the thing it forbids. The old pattern stopped at the
+    first `)`, so it flagged the good form as `rgb(var(--green-rgb)` and would have pushed
+    the next person to inline a pastel instead.
     """
     body = template.read_text(encoding="utf-8")
     # Jinja/HTML/JS comments are prose; a hex code mentioned in one is harmless.
     for pattern in (r"\{#.*?#\}", r"<!--.*?-->", r"/\*.*?\*/"):
         body = re.sub(pattern, " ", body, flags=re.S)
 
-    literals = re.findall(r"#[0-9a-fA-F]{6}\b", body) + re.findall(r"rgba?\([^)]*\)", body)
+    literals = re.findall(r"#[0-9a-fA-F]{6}\b", body)
+    # Balanced enough for one nested `var(...)`, then kept only if it names no variable.
+    for call in re.findall(r"rgba?\((?:[^()]|\([^()]*\))*\)", body):
+        if "var(" not in call:
+            literals.append(call)
+
     assert not literals, (
         f"{template.name} hardcodes colour(s): {sorted(set(literals))[:6]} — use a "
         "theme variable so the next change reaches them"

@@ -36,50 +36,55 @@
 #}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px}
+/* No `font-size` here on purpose. theme.css sets `body{font-size:15px}` with its own
+   reasoning (14px was hard work on a warehouse phone) and loads AFTER this block, so a
+   value here never applied anyway — it just looked as though it did. `body` is also
+   deliberately off the type scale: 15px sits between --fs-lg and --fs-xl because it is a
+   readability floor for prose, not a step in a grid's rhythm. */
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
-header h1{font-size:16px;font-weight:600}
+header h1{font-size:var(--fs-xl, 16px);font-weight:600}
 .nav-links{display:flex;gap:16px;margin-left:32px}
-.nav-links a{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
+.nav-links a{color:var(--text-muted);text-decoration:none;font-size:var(--fs-md, 13px);font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
 .nav-links a:hover,.nav-links a.active{color:var(--text);border-color:var(--accent)}
-.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:13px;text-decoration:none}
+.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:var(--fs-md, 13px);text-decoration:none}
 main{max-width:1280px;margin:0 auto;padding:16px 20px 80px}
-h2{font-size:19px;font-weight:600;margin-bottom:2px}
-.subtitle{color:var(--text-muted);font-size:12.5px;margin-bottom:12px;line-height:1.5}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;box-shadow:var(--shadow)}
+h2{font-size:var(--fs-2xl, 20px);font-weight:600;margin-bottom:2px}
+.subtitle{color:var(--text-muted);font-size:var(--fs-sm, 12px);margin-bottom:12px;line-height:1.5}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg, 12px);padding:12px 14px;margin-bottom:10px;box-shadow:var(--shadow)}
 
-.banner{border-radius:8px;padding:10px 13px;font-size:12.5px;margin-bottom:10px;line-height:1.55}
-.banner.warn{background:var(--yellow-soft);border:1px solid var(--yellow);color:var(--yellow)}
-.banner.good{background:var(--green-soft);border:1px solid var(--green);color:var(--green)}
-.banner.error{background:var(--red-soft);border:1px solid var(--red);color:var(--red)}
-.banner.info{background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue)}
+.banner{border-radius:var(--radius);padding:10px 13px;font-size:var(--fs-sm, 12px);margin-bottom:10px;line-height:1.55}
+.banner.warn{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10));border:1px solid var(--yellow);color:var(--yellow)}
+.banner.good{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10));border:1px solid var(--green);color:var(--green)}
+.banner.error{background:rgb(var(--red-rgb, 198 40 40) / var(--tint-soft, 0.10));border:1px solid var(--red);color:var(--red)}
+.banner.info{background:rgb(var(--blue-rgb, 29 78 216) / var(--tint-soft, 0.10));border:1px solid var(--blue);color:var(--blue)}
 
 .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
-.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:var(--radius);padding:8px 14px;font-size:var(--fs-md, 13px);font-weight:600;cursor:pointer}
 .btn:disabled{opacity:.55;cursor:not-allowed}
-.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border-strong);border-radius:8px;padding:7px 13px;font-size:12.5px;cursor:pointer;text-decoration:none;display:inline-block}
+.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border-strong);border-radius:var(--radius);padding:7px 13px;font-size:var(--fs-sm, 12px);cursor:pointer;text-decoration:none;display:inline-block}
 .search-input{flex:1 1 240px;min-width:180px;background:var(--bg);border:1px solid var(--border-strong);
-  border-radius:8px;color:var(--text);padding:8px 12px;font-size:13.5px}
+  border-radius:var(--radius);color:var(--text);padding:8px 12px;font-size:var(--fs-md, 13px)}
 .search-input:focus{outline:none;border-color:var(--accent)}
 
 /* Reuses index.html's bar classes rather than inventing a third bar style. */
 #progress-wrap{display:none;margin-top:10px}
-.progress-bar-bg{height:6px;background:var(--bg);border-radius:99px;overflow:hidden;margin-bottom:6px}
-.progress-bar-fill{height:100%;background:var(--accent);border-radius:99px;width:0%;transition:width .4s}
-#progress-label{font-size:12px;color:var(--text-muted)}
+.progress-bar-bg{height:6px;background:var(--bg);border-radius:var(--radius-pill, 999px);overflow:hidden;margin-bottom:6px}
+.progress-bar-fill{height:100%;background:var(--accent);border-radius:var(--radius-pill, 999px);width:0%;transition:width .4s}
+#progress-label{font-size:var(--fs-sm, 12px);color:var(--text-muted)}
 
 .kpis{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
-.kpi{flex:1 1 130px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
-.kpi .v{font-size:21px;font-weight:700;line-height:1.15}
-.kpi .k{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+.kpi{flex:1 1 130px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg, 12px);padding:10px 12px}
+.kpi .v{font-size:var(--fs-2xl, 20px);font-weight:700;line-height:1.15}
+.kpi .k{font-size:var(--fs-xs, 11px);color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
 .kpi.good .v{color:var(--green)}
 .kpi.bad .v{color:var(--red)}
 .kpi.warn .v{color:var(--yellow)}
 
 /* The verdict strip IS the worklist, so it doubles as a filter. */
 .verdicts{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
-.vchip{border:1px solid var(--border-strong);background:var(--surface);border-radius:20px;
-  padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer;color:var(--text-muted)}
+.vchip{border:1px solid var(--border-strong);background:var(--surface);border-radius:var(--radius-pill, 999px);
+  padding:5px 12px;font-size:var(--fs-sm, 12px);font-weight:600;cursor:pointer;color:var(--text-muted)}
 .vchip:hover{border-color:var(--accent)}
 .vchip.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .vchip .n{font-weight:800;margin-right:4px}
@@ -105,20 +110,20 @@ h2{font-size:19px;font-weight:600;margin-bottom:2px}
    No sticky header and no max-height, unlike ops.html: this grid expands rows inline, so
    capping the height would put a scroll region inside a page that also scrolls. ops.html
    records what a sticky thead does inside such a box. */
-.table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border);
+.table-wrap{overflow-x:auto;border-radius:var(--radius-lg, 12px);border:1px solid var(--border);
   -webkit-overflow-scrolling:touch}
 table{width:100%;border-collapse:separate;border-spacing:0;min-width:900px}
-thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;font-size:10.5px;
+thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;font-size:var(--fs-xs, 11px);
   font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:left;white-space:nowrap;
   border-bottom:2px solid var(--border-strong)}
-tbody td{padding:7px 10px;font-size:13px;border-bottom:1px solid var(--border);white-space:nowrap}
+tbody td{padding:7px 10px;font-size:var(--fs-md, 13px);border-bottom:1px solid var(--border);white-space:nowrap}
 th.num,td.num{text-align:right}
 tbody tr.parent{cursor:pointer}
-tbody tr.parent:hover td{background:var(--accent-soft)}
-.p-name{font-weight:700;font-size:13.5px}
-.brand{font-size:10.5px;color:var(--text-muted);font-weight:600}
+tbody tr.parent:hover td{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-hover, 0.16))}
+.p-name{font-weight:700;font-size:var(--fs-md, 13px)}
+.brand{font-size:var(--fs-xs, 11px);color:var(--text-muted);font-weight:600}
 /* Size rows recede: they are detail under a heading, not peers of it. */
-tr.size td{background:var(--surface2);font-size:12.5px;color:var(--text-muted)}
+tr.size td{background:var(--surface2);font-size:var(--fs-sm, 12px);color:var(--text-muted)}
 tr.size td:first-child{padding-left:30px}
 
 /* **The channel note MUST wrap, and this is what made Units disappear.**
@@ -135,90 +140,90 @@ tr.size td:first-child{padding-left:30px}
 
    Prose wraps; numbers do not. `max-width` keeps the note from claiming the column on its own
    at a wide viewport, where there is no scrollbar to make the cost of it visible. */
-.chan{white-space:normal;max-width:520px;font-size:11.5px;margin-top:3px;line-height:1.5}
+.chan{white-space:normal;max-width:520px;font-size:var(--fs-xs, 11px);margin-top:3px;line-height:1.5}
 
 /* Flavour headings: a level BETWEEN the parent and its weights, for the 5 parents that vary by
    flavour as well as by size. Styled between the two — bolder than a size row, lighter than a
    parent — because that is exactly what it is, and the nesting has to be readable at a glance or
    the grouping has not solved anything. */
-tr.flav td{background:var(--surface2);font-weight:700;font-size:12.5px;color:var(--text)}
+tr.flav td{background:var(--surface2);font-weight:700;font-size:var(--fs-sm, 12px);color:var(--text)}
 tr.flav td:first-child{padding-left:30px}
-.fcount{font-size:10.5px;color:var(--text-muted);font-weight:600;margin-left:6px}
+.fcount{font-size:var(--fs-xs, 11px);color:var(--text-muted);font-weight:600;margin-left:6px}
 tr.size.nested td:first-child{padding-left:52px}
 
 /* The totals row. Heavier than the data and pinned to the bottom of the grid, so a long list
    still shows what the column adds up to without scrolling back. `position:sticky` on the cells
    rather than the row, because a `tr` is not a positioned box in the table layout model. */
-tfoot tr.totals td{background:var(--surface2);font-weight:700;font-size:13px;color:var(--text);
+tfoot tr.totals td{background:var(--surface2);font-weight:700;font-size:var(--fs-md, 13px);color:var(--text);
   border-top:2px solid var(--border-strong);border-bottom:none;
   position:sticky;bottom:0;z-index:1}
-.tnote{display:block;font-size:10.5px;color:var(--text-dim);font-weight:500;white-space:normal;
+.tnote{display:block;font-size:var(--fs-xs, 11px);color:var(--text-dim);font-weight:500;white-space:normal;
   max-width:340px;line-height:1.45;margin-top:2px}
-.asin{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--text-dim)}
+.asin{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--fs-xs, 11px);color:var(--text-dim)}
 .neg{color:var(--red);font-weight:700}
 .pos{color:var(--green);font-weight:700}
 .dim{color:var(--text-dim)}
 
-.tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;background:var(--surface2);color:var(--text-muted);white-space:nowrap}
-.v-KILL{background:var(--red-soft);color:var(--red)}
-.v-SURGICAL{background:var(--orange-soft);color:var(--orange)}
+.tag{font-size:var(--fs-xs, 11px);font-weight:700;padding:2px 7px;border-radius:var(--radius-pill, 999px);background:var(--surface2);color:var(--text-muted);white-space:nowrap}
+.v-KILL{background:rgb(var(--red-rgb, 198 40 40) / var(--tint-soft, 0.10));color:var(--red)}
+.v-SURGICAL{background:rgb(var(--orange-rgb, 194 65 12) / var(--tint-soft, 0.10));color:var(--orange)}
 .v-DEAD{background:var(--surface2);color:var(--text-dim)}
-.v-MONITOR{background:var(--yellow-soft);color:var(--yellow)}
-.v-SCALE{background:var(--blue-soft);color:var(--blue)}
-.v-BEST{background:var(--green-soft);color:var(--green)}
+.v-MONITOR{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10));color:var(--yellow)}
+.v-SCALE{background:rgb(var(--blue-rgb, 29 78 216) / var(--tint-soft, 0.10));color:var(--blue)}
+.v-BEST{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10));color:var(--green)}
 
-.reason{font-size:12px;color:var(--text-muted);line-height:1.5;white-space:normal}
-.caret{display:inline-block;width:12px;color:var(--text-dim);font-size:10px}
+.reason{font-size:var(--fs-sm, 12px);color:var(--text-muted);line-height:1.5;white-space:normal}
+.caret{display:inline-block;width:12px;color:var(--text-dim);font-size:var(--fs-xs, 11px)}
 
 .decide{display:flex;gap:6px;align-items:center;flex-wrap:wrap;white-space:normal}
 .decide select,.decide input{background:var(--bg);border:1px solid var(--border-strong);
-  border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px}
+  border-radius:var(--radius);color:var(--text);padding:5px 8px;font-size:var(--fs-sm, 12px)}
 .decide input{flex:1 1 190px;min-width:120px}
 .decide select:focus,.decide input:focus{outline:none;border-color:var(--accent)}
 .d-kill{border-color:var(--red)!important;color:var(--red)!important;font-weight:700}
 .d-keep{border-color:var(--green)!important;color:var(--green)!important;font-weight:700}
 .d-watch{border-color:var(--yellow)!important;color:var(--yellow)!important;font-weight:700}
-.decided{font-size:11px;color:var(--text-muted)}
-.empty-note{font-size:12.5px;color:var(--text-muted);padding:8px 0}
-.section-title{font-size:14px;font-weight:700;margin-bottom:2px}
-.section-sub{font-size:12.5px;color:var(--text-muted);margin-bottom:8px;line-height:1.5}
+.decided{font-size:var(--fs-xs, 11px);color:var(--text-muted)}
+.empty-note{font-size:var(--fs-sm, 12px);color:var(--text-muted);padding:8px 0}
+.section-title{font-size:var(--fs-lg, 14px);font-weight:700;margin-bottom:2px}
+.section-sub{font-size:var(--fs-sm, 12px);color:var(--text-muted);margin-bottom:8px;line-height:1.5}
 
 /* ── Window bar, view toggle, filters, rules panel ──────────────────────────── */
-.seg{display:inline-flex;border:1px solid var(--border-strong);border-radius:8px;overflow:hidden}
-.seg-btn{background:transparent;border:none;color:var(--text-muted);font-size:12.5px;
+.seg{display:inline-flex;border:1px solid var(--border-strong);border-radius:var(--radius);overflow:hidden}
+.seg-btn{background:transparent;border:none;color:var(--text-muted);font-size:var(--fs-sm, 12px);
   font-weight:600;padding:7px 13px;cursor:pointer}
 .seg-btn:hover{color:var(--text)}
 .seg-btn.on{background:var(--accent);color:var(--on-accent)}
-.win-btn{background:transparent;border:1px solid var(--border-strong);border-radius:8px;
-  color:var(--text);font-size:12.5px;padding:6px 12px;cursor:pointer;position:relative}
+.win-btn{background:transparent;border:1px solid var(--border-strong);border-radius:var(--radius);
+  color:var(--text);font-size:var(--fs-sm, 12px);padding:6px 12px;cursor:pointer;position:relative}
 .win-btn:hover{border-color:var(--accent)}
 .win-btn.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 /* A dot marks a window already cached, so the cost of a click is visible before clicking. */
 .win-btn .dot{display:inline-block;width:5px;height:5px;border-radius:50%;
   background:var(--green);margin-left:5px;vertical-align:middle}
 .win-btn.on .dot{background:var(--on-accent)}
-.win-date{background:var(--bg);border:1px solid var(--border-strong);border-radius:8px;
-  color:var(--text);padding:6px 8px;font-size:12.5px}
-.win-label{font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase;
+.win-date{background:var(--bg);border:1px solid var(--border-strong);border-radius:var(--radius);
+  color:var(--text);padding:6px 8px;font-size:var(--fs-sm, 12px)}
+.win-label{font-size:var(--fs-xs, 11px);color:var(--text-muted);font-weight:600;text-transform:uppercase;
   letter-spacing:.04em;margin-right:2px}
 
 .frow{display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap}
 .frow select,.frow input{background:var(--bg);border:1px solid var(--border-strong);
-  border-radius:6px;color:var(--text);padding:6px 9px;font-size:12.5px}
+  border-radius:var(--radius);color:var(--text);padding:6px 9px;font-size:var(--fs-sm, 12px)}
 .frow input{width:120px}
-.fdrop{background:transparent;border:none;color:var(--red);cursor:pointer;font-size:15px;
+.fdrop{background:transparent;border:none;color:var(--red);cursor:pointer;font-size:var(--fs-xl, 16px);
   padding:0 6px;line-height:1}
-.fcount{font-size:12.5px;color:var(--text-muted);margin-left:4px}
+.fcount{font-size:var(--fs-sm, 12px);color:var(--text-muted);margin-left:4px}
 
 .rules-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px}
-.rule{border:1px solid var(--border);border-radius:8px;padding:10px 12px}
-.rule h4{font-size:12.5px;margin-bottom:4px;display:flex;align-items:center;gap:6px}
-.rule p{font-size:12px;color:var(--text-muted);line-height:1.55}
-.thresh{display:flex;gap:6px;align-items:center;margin-top:6px;font-size:12px;flex-wrap:wrap}
+.rule{border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px}
+.rule h4{font-size:var(--fs-sm, 12px);margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.rule p{font-size:var(--fs-sm, 12px);color:var(--text-muted);line-height:1.55}
+.thresh{display:flex;gap:6px;align-items:center;margin-top:6px;font-size:var(--fs-sm, 12px);flex-wrap:wrap}
 .thresh input{width:76px;background:var(--bg);border:1px solid var(--border-strong);
-  border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px;text-align:right}
+  border-radius:var(--radius);color:var(--text);padding:5px 8px;font-size:var(--fs-sm, 12px);text-align:right}
 .thresh label{color:var(--text-muted)}
-.info{background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:11px;
+.info{background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:var(--fs-xs, 11px);
   padding:0 3px}
 .info:hover{color:var(--accent)}
 
@@ -231,6 +236,10 @@ th.sorted{color:var(--accent)}
    leaves an outline behind. `outline-offset:-2px` keeps it inside the cell, since an
    outset ring on a header sits on top of the neighbouring column's gridline. */
 th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+/* 9px is NOT on the type scale, deliberately: this is the ▲/▼ sort glyph, which is
+   `aria-hidden` DECORATION rather than text. The smallest type token is 11px because
+   that is the floor for something a person reads; an arrow is an icon, and scaling it
+   to 11px makes the sort indicator compete with the header it modifies. */
 .arrow{font-size:9px;margin-left:3px}
 </style>
 <link rel="stylesheet" href="/static/theme.css"/>
