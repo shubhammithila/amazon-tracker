@@ -404,3 +404,87 @@ def test_the_nav_wraps_rather_than_overflowing_a_phone():
     assert "flex-wrap: wrap" in block.group(1), (
         "9 nav links in a nowrap row overflow a 375px phone by 212px"
     )
+
+
+# ─── The tokens actually resolve, per page ───────────────────────────────────
+
+
+def _resolve(value: str, tokens: dict[str, str]) -> str:
+    """A CSS value with every `var(--token, fallback)` substituted, as a browser would.
+
+    Written because the preview browser cached `theme.css` across restarts and reported every
+    token as empty, which is indistinguishable from a genuinely broken stylesheet. Resolving the
+    served files here answers the same question deterministically, and keeps answering it.
+    """
+    for _ in range(4):
+        match = re.search(r"var\((--[a-z0-9-]+)(?:,\s*([^)]+))?\)", value)
+        if not match:
+            break
+        name = match.group(1).lstrip("-")
+        replacement = tokens.get(name, (match.group(2) or "").strip())
+        value = value[:match.start()] + replacement + value[match.end():]
+    return value.strip()
+
+
+@pytest.mark.parametrize(
+    "template,selector,expected",
+    [
+        # The dense grids must all land on the SAME sizes — that is what a scale buys.
+        ("portfolio.html", "thead th", "11px"),
+        ("portfolio.html", "tbody td", "13px"),
+        ("ads.html", "thead th", "11px"),
+        ("ads.html", "tbody td", "13px"),
+        ("orders.html", "thead th", "11px"),
+        ("orders.html", "tbody td", "13px"),
+        ("ops.html", "thead th", "11px"),
+        ("shipment.html", "thead th", "11px"),
+        ("projections.html", "thead th", "11px"),
+    ],
+)
+def test_every_dense_grid_resolves_to_the_same_size(template, selector, expected):
+    """**One rhythm across the pages, asserted on the RESOLVED value.**
+
+    Before the refresh these were 10px, 10.5px, 11px and 12.5px depending on which page you were
+    looking at — 19 distinct font sizes across the templates, because each page picked its own. A
+    token in the source is not proof of a shared size: it could carry a wrong fallback, or name a
+    token that does not exist, and either way the page renders differently from its neighbours
+    while the source LOOKS consistent. So this resolves the value the way a browser does.
+    """
+    theme = (REPO_ROOT / "static" / "theme.css").read_text(encoding="utf-8")
+    root = re.search(r":root\s*\{(.*?)\}", theme, re.S).group(1)
+    tokens = {name: value.strip()
+              for name, value in re.findall(r"--([a-z0-9-]+)\s*:\s*([^;]+);", root)}
+
+    css = re.search(r"<style[^>]*>(.*?)</style>",
+                    (REPO_ROOT / "templates" / template).read_text(encoding="utf-8"), re.S).group(1)
+    css = re.sub(r"/\*.*?\*/", " ", css, flags=re.S)
+
+    match = re.search(re.escape(selector) + r"\{[^}]*font-size:\s*([^;}]+)", css)
+    assert match, f"{template} no longer sets a font-size on {selector}"
+    assert _resolve(match.group(1), tokens) == expected, (
+        f"{template} renders {selector} at {_resolve(match.group(1), tokens)}, not {expected} — "
+        f"the pages have drifted apart again"
+    )
+
+
+@pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
+def test_every_size_token_carries_a_fallback(template):
+    """**A stale `theme.css` must degrade to today's layout, not collapse.**
+
+    Measured during the portfolio conversion: with the stylesheet cached and the tokens undefined,
+    `var(--fs-md)` fell back to inherited 15px and the whole grid reflowed — rows went 33px to 36px
+    and tags 10px to 15px. `theme.css` is now load-bearing for LAYOUT rather than only colour, and
+    a browser or proxy serving one version behind should not rearrange a page of money.
+
+    Every fallback equals the token's own value, so this costs nothing while the stylesheet is
+    fresh, and is invisible insurance when it is not.
+    """
+    body = template.read_text(encoding="utf-8")
+    for pattern in (r"\{#.*?#\}", r"<!--.*?-->", r"/\*.*?\*/"):
+        body = re.sub(pattern, " ", body, flags=re.S)
+
+    bare = re.findall(r"var\((--(?:fs|sp|radius)-?[a-z0-9]*)\)(?!\s*,)", body)
+    assert not bare, (
+        f"{template.name} uses {sorted(set(bare))} with no fallback — a stale theme.css would "
+        f"collapse these to an inherited size and reflow the page"
+    )
