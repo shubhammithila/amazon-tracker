@@ -34,66 +34,66 @@
 #}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:var(--fs-xl, 16px)}
 header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
-header h1{font-size:16px;font-weight:600}
+header h1{font-size:var(--fs-xl, 16px);font-weight:600}
 .nav-links{display:flex;gap:16px;margin-left:32px}
-.nav-links a{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
+.nav-links a{color:var(--text-muted);text-decoration:none;font-size:var(--fs-md, 13px);font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
 .nav-links a:hover,.nav-links a.active{color:var(--text);border-color:var(--accent)}
-.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:13px;text-decoration:none}
+.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:var(--fs-md, 13px);text-decoration:none}
 main{max-width:1280px;margin:0 auto;padding:16px 20px 80px}
-h2{font-size:19px;font-weight:600;margin-bottom:2px}
-.subtitle{color:var(--text-muted);font-size:12.5px;margin-bottom:12px;line-height:1.5}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;box-shadow:var(--shadow)}
-.section-title{font-size:13px;font-weight:700;margin-bottom:2px}
-.section-sub{font-size:12px;color:var(--text-muted);margin-bottom:8px;line-height:1.5}
+h2{font-size:var(--fs-2xl, 20px);font-weight:600;margin-bottom:2px}
+.subtitle{color:var(--text-muted);font-size:var(--fs-sm, 12px);margin-bottom:12px;line-height:1.5}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg, 12px);padding:12px 14px;margin-bottom:10px;box-shadow:var(--shadow)}
+.section-title{font-size:var(--fs-md, 13px);font-weight:700;margin-bottom:2px}
+.section-sub{font-size:var(--fs-sm, 12px);color:var(--text-muted);margin-bottom:8px;line-height:1.5}
 
-.banner{border-radius:8px;padding:10px 13px;font-size:12.5px;margin-bottom:10px;line-height:1.55}
-.banner.warn{background:var(--yellow-soft);border:1px solid var(--yellow);color:var(--yellow)}
-.banner.good{background:var(--green-soft);border:1px solid var(--green);color:var(--green)}
-.banner.error{background:var(--red-soft);border:1px solid var(--red);color:var(--red)}
-.banner.info{background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue)}
+.banner{border-radius:var(--radius, 8px);padding:10px 13px;font-size:var(--fs-sm, 12px);margin-bottom:10px;line-height:1.55}
+.banner.warn{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10));border:1px solid var(--yellow);color:var(--yellow)}
+.banner.good{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10));border:1px solid var(--green);color:var(--green)}
+.banner.error{background:rgb(var(--red-rgb, 198 40 40) / var(--tint-soft, 0.10));border:1px solid var(--red);color:var(--red)}
+.banner.info{background:rgb(var(--blue-rgb, 29 78 216) / var(--tint-soft, 0.10));border:1px solid var(--blue);color:var(--blue)}
 
 .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
-.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:var(--radius, 8px);padding:8px 14px;font-size:var(--fs-md, 13px);font-weight:600;cursor:pointer}
 .btn:disabled{opacity:.55;cursor:not-allowed}
-.btn-danger{background:var(--red);color:var(--on-accent);border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer}
+.btn-danger{background:var(--red);color:var(--on-accent);border:none;border-radius:var(--radius, 8px);padding:8px 14px;font-size:var(--fs-md, 13px);font-weight:700;cursor:pointer}
 .btn-danger:disabled{opacity:.5;cursor:not-allowed}
-.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border-strong);border-radius:8px;padding:7px 13px;font-size:12.5px;cursor:pointer;text-decoration:none;display:inline-block}
+.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border-strong);border-radius:var(--radius, 8px);padding:7px 13px;font-size:var(--fs-sm, 12px);cursor:pointer;text-decoration:none;display:inline-block}
 .search-input{flex:1 1 220px;min-width:170px;background:var(--bg);border:1px solid var(--border-strong);
-  border-radius:8px;color:var(--text);padding:8px 12px;font-size:13.5px}
+  border-radius:var(--radius, 8px);color:var(--text);padding:8px 12px;font-size:var(--fs-md, 13px)}
 .search-input:focus{outline:none;border-color:var(--accent)}
 
 #progress-wrap{display:none;margin-top:10px}
-.progress-bar-bg{height:6px;background:var(--bg);border-radius:99px;overflow:hidden;margin-bottom:6px}
-.progress-bar-fill{height:100%;background:var(--accent);border-radius:99px;width:0%;transition:width .4s}
-#progress-label{font-size:12px;color:var(--text-muted)}
+.progress-bar-bg{height:6px;background:var(--bg);border-radius:var(--radius-pill, 999px);overflow:hidden;margin-bottom:6px}
+.progress-bar-fill{height:100%;background:var(--accent);border-radius:var(--radius-pill, 999px);width:0%;transition:width .4s}
+#progress-label{font-size:var(--fs-sm, 12px);color:var(--text-muted)}
 
 .kpis{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
-.kpi{flex:1 1 130px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
-.kpi .v{font-size:21px;font-weight:700;line-height:1.15}
-.kpi .k{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+.kpi{flex:1 1 130px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg, 12px);padding:10px 12px}
+.kpi .v{font-size:var(--fs-2xl, 20px);font-weight:700;line-height:1.15}
+.kpi .k{font-size:var(--fs-xs, 11px);color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
 .kpi.good .v{color:var(--green)}
 .kpi.bad .v{color:var(--red)}
 .kpi.warn .v{color:var(--yellow)}
 
-.win-btn{border:1px solid var(--border-strong);background:var(--surface);border-radius:8px;
-  padding:6px 12px;font-size:12.5px;font-weight:600;cursor:pointer;color:var(--text-muted)}
+.win-btn{border:1px solid var(--border-strong);background:var(--surface);border-radius:var(--radius, 8px);
+  padding:6px 12px;font-size:var(--fs-sm, 12px);font-weight:600;cursor:pointer;color:var(--text-muted)}
 .win-btn:hover{border-color:var(--accent)}
 .win-btn.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .win-btn .dot{display:inline-block;width:5px;height:5px;border-radius:50%;
   background:var(--green);margin-left:5px;vertical-align:middle}
 .win-btn.on .dot{background:var(--on-accent)}
-.win-date{background:var(--bg);border:1px solid var(--border-strong);border-radius:8px;
-  color:var(--text);padding:6px 8px;font-size:12.5px}
-.win-label{font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase;
+.win-date{background:var(--bg);border:1px solid var(--border-strong);border-radius:var(--radius, 8px);
+  color:var(--text);padding:6px 8px;font-size:var(--fs-sm, 12px)}
+.win-label{font-size:var(--fs-xs, 11px);color:var(--text-muted);font-weight:600;text-transform:uppercase;
   letter-spacing:.04em;margin-right:2px}
 
 .frow{display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap}
 .frow select,.frow input{background:var(--bg);border:1px solid var(--border-strong);
-  border-radius:6px;color:var(--text);padding:6px 9px;font-size:12.5px}
+  border-radius:var(--radius, 8px);color:var(--text);padding:6px 9px;font-size:var(--fs-sm, 12px)}
 .frow input{width:110px}
-.fdrop{background:transparent;border:none;color:var(--red);cursor:pointer;font-size:15px;
+.fdrop{background:transparent;border:none;color:var(--red);cursor:pointer;font-size:var(--fs-xl, 16px);
   padding:0 6px;line-height:1}
 .rule-then{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:8px;
   padding-top:8px;border-top:1px solid var(--border)}
@@ -102,13 +102,13 @@ h2{font-size:19px;font-weight:600;margin-bottom:2px}
    found on the Portfolio tab (744px of document scroll at a 350px viewport). `min-width` on the
    table is the half that is easy to omit: without it the table obeys `width:100%`, squeezes to
    the container, and the nowrap cells overflow their own gridlines instead. */
-.table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border);
+.table-wrap{overflow-x:auto;border-radius:var(--radius-lg, 12px);border:1px solid var(--border);
   -webkit-overflow-scrolling:touch}
 table{width:100%;border-collapse:separate;border-spacing:0;min-width:860px}
-thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;font-size:10.5px;
+thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;font-size:var(--fs-xs, 11px);
   font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:left;white-space:nowrap;
   border-bottom:2px solid var(--border-strong)}
-tbody td{padding:7px 10px;font-size:13px;border-bottom:1px solid var(--border);white-space:nowrap}
+tbody td{padding:7px 10px;font-size:var(--fs-md, 13px);border-bottom:1px solid var(--border);white-space:nowrap}
 th.num,td.num{text-align:right}
 th.sortable{cursor:pointer;user-select:none}
 th.sortable:hover{color:var(--text)}
@@ -117,38 +117,42 @@ th.sorted{color:var(--accent)}
    theme.css rings inputs and buttons; a `th` matches neither selector. `:focus-visible` rather
    than `:focus`, or every mouse click on a header leaves an outline behind. */
 th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+/* 9px is NOT on the type scale, deliberately: this is the ▲/▼ sort glyph, which is
+   `aria-hidden` DECORATION rather than text. The smallest type token is 11px because
+   that is the floor for something a person reads; an arrow is an icon, and scaling it
+   to 11px makes the sort indicator compete with the header it modifies. */
 .arrow{font-size:9px;margin-left:3px}
 /* The 'ends today' caveat sits inline in the window note rather than as a banner:
    it applies to the CHOICE being made, so it belongs beside the dates. */
 .warn-inline{color:var(--yellow)}
 tbody tr.parent{cursor:pointer}
-tbody tr.parent:hover td{background:var(--accent-soft)}
-tr.child td{background:var(--surface2);font-size:12.5px;color:var(--text-muted)}
+tbody tr.parent:hover td{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-hover, 0.16))}
+tr.child td{background:var(--surface2);font-size:var(--fs-sm, 12px);color:var(--text-muted)}
 tr.child td:first-child{padding-left:30px}
-.p-name{font-weight:700;font-size:13.5px}
-.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--text-dim)}
+.p-name{font-weight:700;font-size:var(--fs-md, 13px)}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--fs-xs, 11px);color:var(--text-dim)}
 .neg{color:var(--red);font-weight:700}
 .pos{color:var(--green);font-weight:700}
 .dim{color:var(--text-dim)}
-.tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;background:var(--surface2);color:var(--text-muted);white-space:nowrap}
-.tag.kw{background:var(--blue-soft);color:var(--blue)}
-.tag.auto{background:var(--yellow-soft);color:var(--yellow)}
-.tag.product{background:var(--green-soft);color:var(--green)}
+.tag{font-size:var(--fs-xs, 11px);font-weight:700;padding:2px 7px;border-radius:var(--radius-pill, 999px);background:var(--surface2);color:var(--text-muted);white-space:nowrap}
+.tag.kw{background:rgb(var(--blue-rgb, 29 78 216) / var(--tint-soft, 0.10));color:var(--blue)}
+.tag.auto{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10));color:var(--yellow)}
+.tag.product{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10));color:var(--green)}
 .tag.paused{background:var(--surface2);color:var(--text-dim)}
 /* Match types — how a row COMPETES, which is a different question from which API its bid is written
    to (the .kw/.auto/.product tags above). The three keyword matches share a hue and the three target
    kinds another, so the shape of a 1,005-row preview is readable without reading every row.
    `broad` is deliberately the odd one out: it was invisible while EXACT, PHRASE and BROAD were all
    rendered as one tag, and it is the match type most likely to be spending on the wrong query. */
-.tag.m-exact{background:var(--blue-soft);color:var(--blue)}
-.tag.m-phrase{background:var(--blue-soft);color:var(--blue)}
-.tag.m-broad{background:var(--orange-soft);color:var(--orange)}
-.tag.m-auto{background:var(--yellow-soft);color:var(--yellow)}
-.tag.m-product{background:var(--green-soft);color:var(--green)}
-.tag.m-theme{background:var(--green-soft);color:var(--green)}
+.tag.m-exact{background:rgb(var(--blue-rgb, 29 78 216) / var(--tint-soft, 0.10));color:var(--blue)}
+.tag.m-phrase{background:rgb(var(--blue-rgb, 29 78 216) / var(--tint-soft, 0.10));color:var(--blue)}
+.tag.m-broad{background:rgb(var(--orange-rgb, 194 65 12) / var(--tint-soft, 0.10));color:var(--orange)}
+.tag.m-auto{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10));color:var(--yellow)}
+.tag.m-product{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10));color:var(--green)}
+.tag.m-theme{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10));color:var(--green)}
 /* "changed today" — why a row arrives unticked. Orange rather than red: it is a caution the owner may
    deliberately override, not a refusal. */
-.tag.changed{background:var(--orange-soft);color:var(--orange)}
+.tag.changed{background:rgb(var(--orange-rgb, 194 65 12) / var(--tint-soft, 0.10));color:var(--orange)}
 /* A keyword in the bid log, clickable to see its own bid path. A real <button> rather than a styled
    <span>: it does something, so it has to be reachable from the keyboard and announced as pressable. */
 .link-btn{background:none;border:none;padding:0;font:inherit;color:var(--accent);cursor:pointer;
@@ -157,18 +161,18 @@ tr.child td:first-child{padding-left:30px}
 /* Which Amazon ad product. Not decoration: SP and SB are different APIs with
    different write payloads, so the row's product decides where a bid change goes. */
 .tag.sp{background:var(--surface2);color:var(--text-muted)}
-.tag.sb{background:var(--blue-soft);color:var(--blue)}
-.bid-old{color:var(--text-dim);text-decoration:line-through;font-size:12px}
+.tag.sb{background:rgb(var(--blue-rgb, 29 78 216) / var(--tint-soft, 0.10));color:var(--blue)}
+.bid-old{color:var(--text-dim);text-decoration:line-through;font-size:var(--fs-sm, 12px)}
 .bid-new{font-weight:800}
-.empty-note{padding:18px;text-align:center;color:var(--text-muted);font-size:13px;line-height:1.6}
-.count-chip{font-size:12.5px;font-weight:700;padding:4px 10px;border-radius:20px;
-  background:var(--accent-soft);color:var(--accent)}
+.empty-note{padding:18px;text-align:center;color:var(--text-muted);font-size:var(--fs-md, 13px);line-height:1.6}
+.count-chip{font-size:var(--fs-sm, 12px);font-weight:700;padding:4px 10px;border-radius:var(--radius-pill, 999px);
+  background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-soft, 0.10));color:var(--accent)}
 .gr-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
-.gr{border:1px solid var(--border);border-radius:8px;padding:10px 12px}
-.gr h4{font-size:12.5px;margin-bottom:4px}
-.gr p{font-size:11.5px;color:var(--text-muted);line-height:1.5}
+.gr{border:1px solid var(--border);border-radius:var(--radius, 8px);padding:10px 12px}
+.gr h4{font-size:var(--fs-sm, 12px);margin-bottom:4px}
+.gr p{font-size:var(--fs-xs, 11px);color:var(--text-muted);line-height:1.5}
 .gr input{width:90px;background:var(--bg);border:1px solid var(--border-strong);
-  border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px;text-align:right;margin-top:6px}
+  border-radius:var(--radius, 8px);color:var(--text);padding:5px 8px;font-size:var(--fs-sm, 12px);text-align:right;margin-top:6px}
 </style>
 <link rel="stylesheet" href="/static/theme.css"/>
 </head>

@@ -49,57 +49,57 @@
 #}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:var(--fs-xl, 16px)}
 header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
-header h1{font-size:16px;font-weight:600}
+header h1{font-size:var(--fs-xl, 16px);font-weight:600}
 .nav-links{display:flex;gap:16px;margin-left:32px}
-.nav-links a{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
+.nav-links a{color:var(--text-muted);text-decoration:none;font-size:var(--fs-md, 13px);font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
 .nav-links a:hover,.nav-links a.active{color:var(--text);border-color:var(--accent)}
-.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:13px;text-decoration:none}
+.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:var(--fs-md, 13px);text-decoration:none}
 main{max-width:1180px;margin:0 auto;padding:16px 20px 80px}
-h2{font-size:19px;font-weight:600;margin-bottom:2px}
-.subtitle{color:var(--text-muted);font-size:12.5px;margin-bottom:12px;line-height:1.5}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;box-shadow:var(--shadow)}
+h2{font-size:var(--fs-2xl, 20px);font-weight:600;margin-bottom:2px}
+.subtitle{color:var(--text-muted);font-size:var(--fs-sm, 12px);margin-bottom:12px;line-height:1.5}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg, 12px);padding:12px 14px;margin-bottom:10px;box-shadow:var(--shadow)}
 
-.banner{border-radius:8px;padding:10px 13px;font-size:12.5px;margin-bottom:10px;line-height:1.55}
-.banner.warn{background:var(--yellow-soft);border:1px solid var(--yellow);color:var(--yellow)}
-.banner.good{background:var(--green-soft);border:1px solid var(--green);color:var(--green)}
-.banner.error{background:var(--red-soft);border:1px solid var(--red);color:var(--red)}
-.banner.info{background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue)}
+.banner{border-radius:var(--radius, 8px);padding:10px 13px;font-size:var(--fs-sm, 12px);margin-bottom:10px;line-height:1.55}
+.banner.warn{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10));border:1px solid var(--yellow);color:var(--yellow)}
+.banner.good{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10));border:1px solid var(--green);color:var(--green)}
+.banner.error{background:rgb(var(--red-rgb, 198 40 40) / var(--tint-soft, 0.10));border:1px solid var(--red);color:var(--red)}
+.banner.info{background:rgb(var(--blue-rgb, 29 78 216) / var(--tint-soft, 0.10));border:1px solid var(--blue);color:var(--blue)}
 
 .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
-.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:var(--radius, 8px);padding:8px 14px;font-size:var(--fs-md, 13px);font-weight:600;cursor:pointer}
 .btn:disabled{opacity:.55;cursor:not-allowed}
-.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border-strong);border-radius:8px;padding:7px 13px;font-size:12.5px;cursor:pointer}
+.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border-strong);border-radius:var(--radius, 8px);padding:7px 13px;font-size:var(--fs-sm, 12px);cursor:pointer}
 .search-input{flex:1 1 240px;min-width:180px;background:var(--bg);border:1px solid var(--border-strong);
-  border-radius:8px;color:var(--text);padding:8px 12px;font-size:13.5px}
+  border-radius:var(--radius, 8px);color:var(--text);padding:8px 12px;font-size:var(--fs-md, 13px)}
 .search-input:focus{outline:none;border-color:var(--accent)}
 
 /* The download menu. A details/summary rather than JS, so it closes on click-away for free. */
 .menu{position:relative;display:inline-block}
 .menu summary{list-style:none;cursor:pointer;background:transparent;color:var(--text);
-  border:1px solid var(--border-strong);border-radius:8px;padding:7px 13px;font-size:12.5px}
+  border:1px solid var(--border-strong);border-radius:var(--radius, 8px);padding:7px 13px;font-size:var(--fs-sm, 12px)}
 .menu summary::-webkit-details-marker{display:none}
 .menu-body{position:absolute;top:calc(100% + 4px);left:0;z-index:50;min-width:230px;
-  background:var(--surface);border:1px solid var(--border-strong);border-radius:10px;
+  background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius-lg, 12px);
   box-shadow:var(--shadow-lg);padding:6px}
-.menu-body a{display:block;padding:7px 10px;font-size:12.5px;color:var(--text);
-  text-decoration:none;border-radius:6px;cursor:pointer}
-.menu-body a:hover{background:var(--accent-soft)}
+.menu-body a{display:block;padding:7px 10px;font-size:var(--fs-sm, 12px);color:var(--text);
+  text-decoration:none;border-radius:var(--radius, 8px);cursor:pointer}
+.menu-body a:hover{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-hover, 0.16))}
 .menu-body .sep{height:1px;background:var(--border);margin:5px 2px}
-.menu-body .lbl{font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;
+.menu-body .lbl{font-size:var(--fs-xs, 11px);text-transform:uppercase;letter-spacing:.04em;
   color:var(--text-muted);font-weight:700;padding:5px 10px 2px}
 
 /* The progress bar reuses index.html's classes rather than inventing a third bar. */
 #progress-wrap{display:none;margin-top:10px}
-.progress-bar-bg{height:6px;background:var(--bg);border-radius:99px;overflow:hidden;margin-bottom:6px}
-.progress-bar-fill{height:100%;background:var(--accent);border-radius:99px;width:0%;transition:width .4s}
-#progress-label{font-size:12px;color:var(--text-muted)}
+.progress-bar-bg{height:6px;background:var(--bg);border-radius:var(--radius-pill, 999px);overflow:hidden;margin-bottom:6px}
+.progress-bar-fill{height:100%;background:var(--accent);border-radius:var(--radius-pill, 999px);width:0%;transition:width .4s}
+#progress-label{font-size:var(--fs-sm, 12px);color:var(--text-muted)}
 
 .kpis{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
-.kpi{flex:1 1 120px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
-.kpi .v{font-size:22px;font-weight:700;line-height:1.15}
-.kpi .k{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+.kpi{flex:1 1 120px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg, 12px);padding:10px 12px}
+.kpi .v{font-size:var(--fs-2xl, 20px);font-weight:700;line-height:1.15}
+.kpi .k{font-size:var(--fs-xs, 11px);color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
 .kpi.done .v{color:var(--green)}
 .kpi.left .v{color:var(--accent)}
 .kpi.buy .v{color:var(--yellow)}
@@ -107,81 +107,81 @@ h2{font-size:19px;font-weight:600;margin-bottom:2px}
 /* The tab strip. */
 .tabs{display:flex;gap:4px;border-bottom:2px solid var(--border);margin-bottom:12px}
 .tab{background:transparent;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;
-  color:var(--text-muted);font-size:13.5px;font-weight:600;padding:9px 14px;cursor:pointer}
+  color:var(--text-muted);font-size:var(--fs-md, 13px);font-weight:600;padding:9px 14px;cursor:pointer}
 .tab:hover{color:var(--text)}
 .tab.active{color:var(--accent);border-color:var(--accent)}
-.tab .count{font-size:11px;color:var(--text-muted);font-weight:500;margin-left:5px}
+.tab .count{font-size:var(--fs-xs, 11px);color:var(--text-muted);font-weight:500;margin-left:5px}
 
 table{width:100%;border-collapse:separate;border-spacing:0}
-thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;font-size:10.5px;
+thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;font-size:var(--fs-xs, 11px);
   font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:left;white-space:nowrap;
   border-bottom:2px solid var(--border-strong)}
-tbody td{padding:6px 10px;font-size:13px;border-bottom:1px solid var(--border);white-space:nowrap}
-tbody tr:hover{background:var(--accent-soft)}
-tfoot td{padding:8px 10px;font-size:13px;font-weight:700;border-top:2px solid var(--border-strong)}
+tbody td{padding:6px 10px;font-size:var(--fs-md, 13px);border-bottom:1px solid var(--border);white-space:nowrap}
+tbody tr:hover{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-hover, 0.16))}
+tfoot td{padding:8px 10px;font-size:var(--fs-md, 13px);font-weight:700;border-top:2px solid var(--border-strong)}
 .num{text-align:right}
 .p-name{font-weight:600}
 .p-size{font-weight:600}
 .muted{color:var(--text-muted)}
 
-.qty{width:86px;background:var(--bg);border:1px solid var(--border-strong);border-radius:6px;
-  color:var(--text);padding:5px 7px;font-size:13.5px;text-align:right;font-weight:600}
+.qty{width:86px;background:var(--bg);border:1px solid var(--border-strong);border-radius:var(--radius, 8px);
+  color:var(--text);padding:5px 7px;font-size:var(--fs-md, 13px);text-align:right;font-weight:600}
 .qty:focus{outline:none;border-color:var(--accent)}
 .qty.over{border-color:var(--red);color:var(--red)}
-.qty.dirty{border-color:var(--accent);background:var(--accent-soft)}
-tr.over td{background:var(--red-soft)}
+.qty.dirty{border-color:var(--accent);background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-soft, 0.10))}
+tr.over td{background:rgb(var(--red-rgb, 198 40 40) / var(--tint-soft, 0.10))}
 
-.undo{background:transparent;border:none;color:var(--accent);cursor:pointer;font-size:12px;
+.undo{background:transparent;border:none;color:var(--accent);cursor:pointer;font-size:var(--fs-sm, 12px);
   padding:2px 5px;margin-left:4px}
-.tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;background:var(--surface2);color:var(--text-muted)}
-.tag.unknown{background:var(--yellow-soft);color:var(--yellow)}
-.tag.over{background:var(--red-soft);color:var(--red)}
-.tag.ok{background:var(--green-soft);color:var(--green)}
-.tag.short{background:var(--yellow-soft);color:var(--yellow)}
-.tag.multi{background:var(--orange-soft);color:var(--orange)}
-.o-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
-.sku{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:var(--text-muted)}
+.tag{font-size:var(--fs-xs, 11px);font-weight:700;padding:2px 7px;border-radius:var(--radius-pill, 999px);background:var(--surface2);color:var(--text-muted)}
+.tag.unknown{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10));color:var(--yellow)}
+.tag.over{background:rgb(var(--red-rgb, 198 40 40) / var(--tint-soft, 0.10));color:var(--red)}
+.tag.ok{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10));color:var(--green)}
+.tag.short{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10));color:var(--yellow)}
+.tag.multi{background:rgb(var(--orange-rgb, 194 65 12) / var(--tint-soft, 0.10));color:var(--orange)}
+.o-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--fs-xs, 11px)}
+.sku{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--fs-xs, 11px);color:var(--text-muted)}
 
 /* ── Order grouping and the packed tick (tab 3) ───────────────────────────────
    A multi-product order is ONE parcel and has to read as one block, or its second line looks
    like somebody else's order and the box goes out short. The group is shown three ways at once —
    a tinted band, a left rule, and an "N items" badge — because a single cue is easy to miss on a
    long sheet, and this is the row where missing it costs a reshipment. */
-tr.multi td{background:var(--orange-soft)}
+tr.multi td{background:rgb(var(--orange-rgb, 194 65 12) / var(--tint-soft, 0.10))}
 tr.multi.grp-first td{border-top:2px solid var(--orange)}
 tr.multi.grp-last td{border-bottom:2px solid var(--orange)}
 tr.multi td:first-child{border-left:3px solid var(--orange)}
 /* A packed order recedes: the eye should land on what is still to do. Green stays on the tick
    itself so the row does not shout. */
-tr.packed-row td{background:var(--green-soft);color:var(--text-muted)}
-tr.multi.packed-row td{background:var(--green-soft)}
+tr.packed-row td{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10));color:var(--text-muted)}
+tr.multi.packed-row td{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10))}
 
 .pack-cell{white-space:nowrap}
 .tick{display:inline-flex;align-items:center;justify-content:center;cursor:pointer;
-  width:30px;height:30px;border:1.5px solid var(--border-strong);border-radius:6px;
+  width:30px;height:30px;border:1.5px solid var(--border-strong);border-radius:var(--radius, 8px);
   background:var(--surface);position:relative}
 .tick:hover{border-color:var(--accent)}
 /* The native box is kept in the DOM and merely hidden: it stays keyboard-reachable and
    screen-reader-labelled, which a div-with-a-click-handler would not be. A warehouse tablet is
    often driven with a stylus or an external keypad. */
 .tick input{position:absolute;inset:0;opacity:0;cursor:pointer;margin:0}
-.tick-mark{font-size:16px;font-weight:800;color:var(--green);line-height:1}
-.tick:has(input:checked){border-color:var(--green);background:var(--green-soft)}
+.tick-mark{font-size:var(--fs-xl, 16px);font-weight:800;color:var(--green);line-height:1}
+.tick:has(input:checked){border-color:var(--green);background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10))}
 .tick:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
 
-.pack-progress{font-size:13px;color:var(--text-muted);margin:0 0 8px;padding:6px 10px;
-  background:var(--surface2);border-radius:6px}
-.pack-progress strong{font-size:15px;color:var(--text)}
-.empty-note{font-size:12.5px;color:var(--text-muted);padding:8px 0}
-.section-title{font-size:14px;font-weight:700;margin-bottom:2px}
-.section-sub{font-size:12.5px;color:var(--text-muted);margin-bottom:8px;line-height:1.5}
+.pack-progress{font-size:var(--fs-md, 13px);color:var(--text-muted);margin:0 0 8px;padding:6px 10px;
+  background:var(--surface2);border-radius:var(--radius, 8px)}
+.pack-progress strong{font-size:var(--fs-xl, 16px);color:var(--text)}
+.empty-note{font-size:var(--fs-sm, 12px);color:var(--text-muted);padding:8px 0}
+.section-title{font-size:var(--fs-lg, 14px);font-weight:700;margin-bottom:2px}
+.section-sub{font-size:var(--fs-sm, 12px);color:var(--text-muted);margin-bottom:8px;line-height:1.5}
 
 /* The save bar follows the packing screen: fixed, and only present when something is unsaved.
    A dialog gets dismissed; a bar is a standing fact. */
 .savebar{position:fixed;left:0;right:0;bottom:0;background:var(--surface);border-top:1px solid var(--border-strong);
   padding:10px 20px;display:none;align-items:center;gap:12px;box-shadow:var(--shadow-lg);z-index:200}
 .savebar.show{display:flex}
-.savebar .count{font-size:13px;color:var(--text-muted);margin-right:auto}
+.savebar .count{font-size:var(--fs-md, 13px);color:var(--text-muted);margin-right:auto}
 </style>
 <link rel="stylesheet" href="/static/theme.css"/>
 </head>

@@ -23,150 +23,150 @@
 #}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:var(--fs-lg, 14px)}
 header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
-header h1{font-size:16px;font-weight:600}
+header h1{font-size:var(--fs-xl, 16px);font-weight:600}
 .nav-links{display:flex;gap:16px;margin-left:32px}
-.nav-links a{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent;transition:all .2s}
+.nav-links a{color:var(--text-muted);text-decoration:none;font-size:var(--fs-md, 13px);font-weight:500;padding:4px 0;border-bottom:2px solid transparent;transition:all .2s}
 .nav-links a:hover,.nav-links a.active{color:var(--text);border-color:var(--accent)}
-.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:13px;text-decoration:none}
+.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:var(--fs-md, 13px);text-decoration:none}
 main{max-width:1700px;margin:0 auto;padding:20px}
-h2{font-size:20px;font-weight:600;margin-bottom:4px}
-.subtitle{color:var(--text-muted);font-size:13px;margin-bottom:16px}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px}
-.card h3{font-size:14px;margin-bottom:8px}
-.card p{color:var(--text-muted);font-size:12px;margin-bottom:10px}
+h2{font-size:var(--fs-2xl, 20px);font-weight:600;margin-bottom:4px}
+.subtitle{color:var(--text-muted);font-size:var(--fs-md, 13px);margin-bottom:16px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg, 12px);padding:16px;margin-bottom:16px}
+.card h3{font-size:var(--fs-lg, 14px);margin-bottom:8px}
+.card p{color:var(--text-muted);font-size:var(--fs-sm, 12px);margin-bottom:10px}
 .form-row{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}
 .form-group{display:flex;flex-direction:column;gap:4px}
-.form-group label{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
-.form-group input[type="file"]{font-size:12px;color:var(--text-muted)}
-.form-group input[type="number"]{background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:6px 10px;width:80px;font-size:13px}
-.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:6px;padding:8px 16px;font-size:13px;font-weight:500;cursor:pointer}
+.form-group label{font-size:var(--fs-xs, 11px);color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
+.form-group input[type="file"]{font-size:var(--fs-sm, 12px);color:var(--text-muted)}
+.form-group input[type="number"]{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm, 4px);color:var(--text);padding:6px 10px;width:80px;font-size:var(--fs-md, 13px)}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:var(--radius, 8px);padding:8px 16px;font-size:var(--fs-md, 13px);font-weight:500;cursor:pointer}
 .btn:disabled{opacity:.5;cursor:not-allowed}
-.btn-outline{background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer}
+.btn-outline{background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:var(--radius, 8px);padding:6px 12px;font-size:var(--fs-sm, 12px);cursor:pointer}
 .btn-outline:hover{border-color:var(--accent);color:var(--text)}
-.btn-danger{background:transparent;color:var(--red);border:1px solid var(--red);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;opacity:.7}
+.btn-danger{background:transparent;color:var(--red);border:1px solid var(--red);border-radius:var(--radius, 8px);padding:6px 12px;font-size:var(--fs-sm, 12px);cursor:pointer;opacity:.7}
 .btn-danger:hover{opacity:1}
-.btn-green{background:var(--green);color:var(--on-green);border:none;border-radius:6px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer}
-.btn-warn{background:var(--yellow);color:var(--on-yellow);border:none;border-radius:6px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer}
+.btn-green{background:var(--green);color:var(--on-green);border:none;border-radius:var(--radius, 8px);padding:7px 14px;font-size:var(--fs-sm, 12px);font-weight:600;cursor:pointer}
+.btn-warn{background:var(--yellow);color:var(--on-yellow);border:none;border-radius:var(--radius, 8px);padding:7px 14px;font-size:var(--fs-sm, 12px);font-weight:600;cursor:pointer}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 .summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:10px;margin-bottom:16px}
-.stat{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center}
-.stat .num{font-size:20px;font-weight:700}.stat .lbl{font-size:10px;color:var(--text-muted);margin-top:3px;text-transform:uppercase;letter-spacing:.04em}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg, 12px);padding:12px;text-align:center}
+.stat .num{font-size:var(--fs-2xl, 20px);font-weight:700}.stat .lbl{font-size:var(--fs-xs, 11px);color:var(--text-muted);margin-top:3px;text-transform:uppercase;letter-spacing:.04em}
 .stat.alert .num{color:var(--red)}
 .stat.hold{border-color:var(--yellow)}.stat.hold .num{color:var(--yellow)}
 .stat.good .num{color:var(--green)}
 
-.banner{border-radius:8px;padding:10px 14px;font-size:12.5px;margin-bottom:14px;line-height:1.5}
-.banner.warn{background:var(--yellow-soft);border:1px solid var(--yellow);color:var(--yellow)}
-.banner.info{background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue)}
+.banner{border-radius:var(--radius, 8px);padding:10px 14px;font-size:var(--fs-sm, 12px);margin-bottom:14px;line-height:1.5}
+.banner.warn{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10));border:1px solid var(--yellow);color:var(--yellow)}
+.banner.info{background:rgb(var(--blue-rgb, 29 78 216) / var(--tint-soft, 0.10));border:1px solid var(--blue);color:var(--blue)}
 
 .days{display:flex;gap:10px;flex-wrap:wrap}
-.day{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;min-width:190px}
+.day{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius, 8px);padding:10px 12px;min-width:190px}
 .day.held{border-color:var(--yellow)}
 .day.verified{border-color:var(--green)}
-.day .d-date{font-size:13px;font-weight:600;margin-bottom:5px}
-.day .d-nums{font-size:11px;color:var(--text-muted);margin-bottom:8px}
-.day .d-reason{font-size:11px;color:var(--yellow);margin-bottom:8px;line-height:1.45}
-.day .d-invoiced{font-size:11px;color:var(--accent);font-weight:600;align-self:center}
+.day .d-date{font-size:var(--fs-md, 13px);font-weight:600;margin-bottom:5px}
+.day .d-nums{font-size:var(--fs-xs, 11px);color:var(--text-muted);margin-bottom:8px}
+.day .d-reason{font-size:var(--fs-xs, 11px);color:var(--yellow);margin-bottom:8px;line-height:1.45}
+.day .d-invoiced{font-size:var(--fs-xs, 11px);color:var(--accent);font-weight:600;align-self:center}
 .day .d-actions{display:flex;gap:6px;flex-wrap:wrap}
 /* A ticked day is tinted, so the selection is visible without reading each box. */
-.day.picked{border-color:var(--accent);background:var(--accent-soft)}
-.day .d-pick{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--accent);font-weight:600;margin-bottom:8px;cursor:pointer}
+.day.picked{border-color:var(--accent);background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-soft, 0.10))}
+.day .d-pick{display:flex;align-items:center;gap:6px;font-size:var(--fs-xs, 11px);color:var(--accent);font-weight:600;margin-bottom:8px;cursor:pointer}
 .day .d-pick input{width:15px;height:15px;cursor:pointer}
-.invoice-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:var(--bg)}
-.invoice-bar .ib-summary{font-size:12.5px;line-height:1.5;flex:1;min-width:200px}
+.invoice-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px;padding:10px 14px;border:1px solid var(--border);border-radius:var(--radius, 8px);background:var(--bg)}
+.invoice-bar .ib-summary{font-size:var(--fs-sm, 12px);line-height:1.5;flex:1;min-width:200px}
 .invoice-bar .ib-actions{display:flex;gap:8px;flex-wrap:wrap}
 /* The second bar: destination, the sheet, Amazon's shipment ID, then the invoice —
    left to right in the order the work happens. Joined to the bar above by a flat top
    edge so the two read as one panel rather than two unrelated strips. */
 .invoice-bar.ib-ship{margin-top:-1px;border-top-left-radius:0;border-top-right-radius:0}
-.ib-field{display:flex;flex-direction:column;gap:3px;font-size:10px;
+.ib-field{display:flex;flex-direction:column;gap:3px;font-size:var(--fs-xs, 11px);
   text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);font-weight:600}
 .ib-field select,.ib-field input{background:var(--surface);border:1px solid var(--border);
-  border-radius:6px;color:var(--text);padding:6px 8px;font-size:12.5px;
+  border-radius:var(--radius, 8px);color:var(--text);padding:6px 8px;font-size:var(--fs-sm, 12px);
   text-transform:none;letter-spacing:normal;font-weight:400;min-width:190px}
 .ib-field select:focus,.ib-field input:focus{outline:none;border-color:var(--accent)}
 /* Amazon lookup results. Hidden until something is rendered into it, so an empty
    container does not leave a gap on a page that is mostly table. */
 #amazon-panel:empty{display:none}
 #amazon-panel{margin-top:8px;padding:10px 14px;border:1px solid var(--border);
-  border-radius:8px;background:var(--bg);font-size:12.5px;line-height:1.55}
+  border-radius:var(--radius, 8px);background:var(--bg);font-size:var(--fs-sm, 12px);line-height:1.55}
 #amazon-panel .warn{color:var(--yellow);font-weight:600}
 #amazon-panel .good{color:var(--green);font-weight:600}
 #amazon-panel .muted{color:var(--text-muted)}
 /* Each shipment is a real button: it is a choice that changes the invoice's
    destination, so it must be keyboard-reachable rather than a clickable div. */
 .amz-row{display:block;width:100%;text-align:left;margin-top:5px;padding:7px 10px;
-  border:1px solid var(--border);border-radius:6px;background:var(--surface);
-  color:var(--text);font:inherit;font-size:12.5px;cursor:pointer}
-.amz-row:hover{border-color:var(--accent);background:var(--accent-soft)}
+  border:1px solid var(--border);border-radius:var(--radius, 8px);background:var(--surface);
+  color:var(--text);font:inherit;font-size:var(--fs-sm, 12px);cursor:pointer}
+.amz-row:hover{border-color:var(--accent);background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-hover, 0.16))}
 .amz-table{margin-top:6px;border-collapse:collapse;width:100%}
-.amz-table td{padding:3px 8px;font-size:12px;border-bottom:1px solid var(--border)}
+.amz-table td{padding:3px 8px;font-size:var(--fs-sm, 12px);border-bottom:1px solid var(--border)}
 .amz-table td:last-child{color:var(--text-muted)}
 /* The Amazon action. Distinct from .btn-green (which raises an invoice) because these are
    two different irreversible things, and clicking the wrong one costs differently. */
-.btn-amz{background:var(--accent);color:var(--on-accent);border:none;border-radius:6px;
-  padding:7px 14px;font-size:12.5px;font-weight:600;cursor:pointer}
+.btn-amz{background:var(--accent);color:var(--on-accent);border:none;border-radius:var(--radius, 8px);
+  padding:7px 14px;font-size:var(--fs-sm, 12px);font-weight:600;cursor:pointer}
 .btn-amz:hover:not(:disabled){background:var(--accent-hover)}
 .btn-amz:disabled{opacity:.45;cursor:default}
 /* The confirm button sits inside the panel, full width and separated: it is the
    irreversible step and must not read as one option among a row of buttons. */
 .amz-confirm{display:block;width:100%;margin-top:8px;padding:10px}
 .amz-labels{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 8px}
-.amz-labels .btn-outline{padding:5px 10px;font-size:11.5px}
+.amz-labels .btn-outline{padding:5px 10px;font-size:var(--fs-xs, 11px)}
 /* The Amazon shipment id on a day card. Monospace because it is an identifier that gets
    compared character by character against Seller Central. */
-.day .d-shipped-amz{font-size:11px;color:var(--text-muted);font-weight:600;
+.day .d-shipped-amz{font-size:var(--fs-xs, 11px);color:var(--text-muted);font-weight:600;
   align-self:center;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-.badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.badge{display:inline-block;padding:2px 8px;border-radius:var(--radius-pill, 999px);font-size:var(--fs-xs, 11px);font-weight:700;text-transform:uppercase;letter-spacing:.05em}
 .badge.open{background:var(--surface2);color:var(--text-muted)}
-.badge.submitted{background:var(--blue-soft);color:var(--blue)}
-.badge.held{background:var(--yellow-soft);color:var(--yellow)}
-.badge.verified{background:var(--green-soft);color:var(--green)}
-.badge.shipped{background:var(--accent-soft);color:var(--accent)}
+.badge.submitted{background:rgb(var(--blue-rgb, 29 78 216) / var(--tint-soft, 0.10));color:var(--blue)}
+.badge.held{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10));color:var(--yellow)}
+.badge.verified{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10));color:var(--green)}
+.badge.shipped{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-soft, 0.10));color:var(--accent)}
 /* A plan status, not a day status, but it shares the badge shape because it reads in the
    same column of the history list. */
 .badge.closed{background:var(--surface2);color:var(--text-dim)}
-.badge.draft{background:var(--yellow-soft);color:var(--yellow)}
-.badge.active{background:var(--green-soft);color:var(--green)}
-.badge.carried{background:var(--blue-soft);color:var(--blue)}
+.badge.draft{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10));color:var(--yellow)}
+.badge.active{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10));color:var(--green)}
+.badge.carried{background:rgb(var(--blue-rgb, 29 78 216) / var(--tint-soft, 0.10));color:var(--blue)}
 
 /* Plan history. Colour comes only from theme.css variables — tests/test_theme.py fails
    any template that hardcodes a hex or rgba value. */
 .history-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;
-  padding:6px 0;border-bottom:1px solid var(--border);font-size:12.5px}
+  padding:6px 0;border-bottom:1px solid var(--border);font-size:var(--fs-sm, 12px)}
 .history-row:last-child{border-bottom:none}
 .history-row .h-inv{color:var(--accent);font-weight:600}
-.history-row .h-lineage{color:var(--text-muted);font-size:11px}
+.history-row .h-lineage{color:var(--text-muted);font-size:var(--fs-xs, 11px)}
 .history-detail-inner{margin-top:10px;padding-top:10px;border-top:1px solid var(--border);
   display:flex;flex-direction:column;gap:4px}
-.history-day{font-size:12.5px;color:var(--text-muted);display:flex;gap:8px;
+.history-day{font-size:var(--fs-sm, 12px);color:var(--text-muted);display:flex;gap:8px;
   align-items:center;flex-wrap:wrap}
 .history-day strong{color:var(--text)}
 .btn-link{background:none;border:none;padding:0;color:var(--accent);cursor:pointer;
-  font-size:12.5px;font-weight:600;text-align:left;text-decoration:underline}
+  font-size:var(--fs-sm, 12px);font-weight:600;text-align:left;text-decoration:underline}
 
 .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
-.chip{padding:5px 12px;border-radius:20px;border:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:12px;cursor:pointer}
+.chip{padding:5px 12px;border-radius:var(--radius-pill, 999px);border:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:var(--fs-sm, 12px);cursor:pointer}
 .chip.active{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
-.search-input{background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:6px 10px;font-size:13px;width:160px;margin-left:auto}
+.search-input{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius, 8px);color:var(--text);padding:6px 10px;font-size:var(--fs-md, 13px);width:160px;margin-left:auto}
 .search-input:focus{outline:none;border-color:var(--accent)}
 
-.table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border)}
+.table-wrap{overflow-x:auto;border-radius:var(--radius-lg, 12px);border:1px solid var(--border)}
 table{width:100%;border-collapse:collapse;min-width:1450px}
-thead th{background:var(--surface);padding:7px 6px;text-align:center;font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid var(--border);white-space:nowrap;position:sticky;top:0}
+thead th{background:var(--surface);padding:7px 6px;text-align:center;font-size:var(--fs-xs, 11px);font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid var(--border);white-space:nowrap;position:sticky;top:0}
 thead th.col-smb{background:var(--surface2);width:28px}
-thead th.col-input{background:var(--accent-soft)}
-thead th.col-calc{background:var(--green-soft)}
-thead th.col-day{background:var(--yellow-soft)}
-thead th.col-day.held{background:var(--orange-soft);color:var(--yellow)}
-tbody tr{border-bottom:1px solid var(--border)}tbody tr:hover{background:var(--accent-soft)}
+thead th.col-input{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-soft, 0.10))}
+thead th.col-calc{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10))}
+thead th.col-day{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10))}
+thead th.col-day.held{background:rgb(var(--orange-rgb, 194 65 12) / var(--tint-soft, 0.10));color:var(--yellow)}
+tbody tr{border-bottom:1px solid var(--border)}tbody tr:hover{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-hover, 0.16))}
 tbody tr.no-ship{opacity:.4}
-tbody tr.dirty{background:var(--accent-soft)}
-td{padding:5px;font-size:12px;text-align:center;white-space:nowrap}
+tbody tr.dirty{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-soft, 0.10))}
+td{padding:5px;font-size:var(--fs-sm, 12px);text-align:center;white-space:nowrap}
 td.left{text-align:left}
 
 /* Frozen identity column.
@@ -219,40 +219,40 @@ th.freeze-brand, td.freeze-brand {left:346px;width:58px;  min-width:58px;  max-w
    their own background to be opaque, which would otherwise hide the hover, dirty,
    selected and excluded colouring exactly on the part of the row you are pointing
    at. */
-tbody tr:hover td.freeze{background:var(--accent-soft)}
-tbody tr.dirty td.freeze{background:var(--accent-soft)}
-tbody tr.selected td.freeze{background:var(--accent-soft)}
+tbody tr:hover td.freeze{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-hover, 0.16))}
+tbody tr.dirty td.freeze{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-soft, 0.10))}
+tbody tr.selected td.freeze{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-soft, 0.10))}
 tbody tr.excluded td.freeze{background:var(--surface2)}
 
 /* Totals row, pinned to the bottom of the scroll area for the same reason the
    header is pinned to the top: on a 200-row plan a total you have to scroll to
    find is a total you stop checking. */
 tfoot td{position:sticky;bottom:0;background:var(--surface2);font-weight:700;
-  font-size:12px;text-align:center;white-space:nowrap;
+  font-size:var(--fs-sm, 12px);text-align:center;white-space:nowrap;
   border-top:2px solid var(--border-strong);padding:7px 5px;z-index:3}
 tfoot td.freeze{z-index:6}
 tfoot td.t-label{text-align:left;color:var(--text-muted);font-weight:600;
-  text-transform:uppercase;letter-spacing:.04em;font-size:10px}
+  text-transform:uppercase;letter-spacing:.04em;font-size:var(--fs-xs, 11px)}
 td.day-cell{color:var(--text-muted)}
 td.day-cell.has{color:var(--text)}
-td input[type="number"]{background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);padding:2px 4px;width:52px;font-size:11px;text-align:center}
+td input[type="number"]{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm, 4px);color:var(--text);padding:2px 4px;width:52px;font-size:var(--fs-xs, 11px);text-align:center}
 td input[type="number"]:focus{outline:none;border-color:var(--accent)}
 td input[type="checkbox"]{width:14px;height:14px;cursor:pointer}
-.no-sku{color:var(--red);font-size:10px;font-weight:700}
+.no-sku{color:var(--red);font-size:var(--fs-xs, 11px);font-weight:700}
 .deficit-pos{color:var(--red);font-weight:700}.deficit-neg{color:var(--green)}
 .remaining-pos{color:var(--orange);font-weight:600}.remaining-zero{color:var(--green);font-weight:600}
 /* Packed beyond the plan. Tinted on the row so the named banner above is
    actionable in a 205-row table, and red on the Packed cell so it is clear WHICH
    number is the problem. */
-tbody tr.over-packed-row{background:var(--red-soft)}
-tbody tr.over-packed-row td.freeze{background:var(--red-soft)}
+tbody tr.over-packed-row{background:rgb(var(--red-rgb, 198 40 40) / var(--tint-soft, 0.10))}
+tbody tr.over-packed-row td.freeze{background:rgb(var(--red-rgb, 198 40 40) / var(--tint-soft, 0.10))}
 td.over-packed{color:var(--red);font-weight:700}
 .shippable-lt{color:var(--yellow);font-weight:600}
 .empty-state{text-align:center;padding:40px;color:var(--text-muted)}
 
 /* Draft mode. The banner is deliberately loud: the single most confusing thing
    about a draft is not knowing whether the warehouse can see it. */
-.draft-strip{background:var(--orange-soft);border:1px solid var(--orange);border-radius:8px;padding:12px 16px;margin-bottom:14px;font-size:13.5px;line-height:1.55}
+.draft-strip{background:rgb(var(--orange-rgb, 194 65 12) / var(--tint-soft, 0.10));border:1px solid var(--orange);border-radius:var(--radius, 8px);padding:12px 16px;margin-bottom:14px;font-size:var(--fs-md, 13px);line-height:1.55}
 .draft-strip strong{color:var(--orange)}
 /* Excluded rows, when the "show removed" toggle is on. Struck through and dimmed
    so they cannot be mistaken for part of the plan while still being readable
@@ -260,23 +260,23 @@ td.over-packed{color:var(--red);font-weight:700}
 tbody tr.excluded{background:var(--surface2)}
 tbody tr.excluded td{color:var(--text-dim);text-decoration:line-through}
 tbody tr.excluded td.no-strike{text-decoration:none}
-tbody tr.selected{background:var(--accent-soft)}
+tbody tr.selected{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-soft, 0.10))}
 td.pick{width:30px}
-td input[type="text"].sku-input{width:120px;font-size:11px}
+td input[type="text"].sku-input{width:120px;font-size:var(--fs-xs, 11px)}
 
 /* Sort priority editor */
 .overlay{position:fixed;inset:0;background:var(--backdrop);display:flex;align-items:center;justify-content:center;z-index:2000;padding:20px}
-.modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow-lg);padding:20px 22px;max-width:620px;width:100%;max-height:86vh;overflow:auto}
-.modal h3{font-size:16px;margin-bottom:6px}
-.modal p{font-size:12.5px;color:var(--text-muted);line-height:1.55;margin-bottom:12px}
-.cat-list{max-height:46vh;overflow:auto;border:1px solid var(--border);border-radius:8px}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg, 12px);box-shadow:var(--shadow-lg);padding:20px 22px;max-width:620px;width:100%;max-height:86vh;overflow:auto}
+.modal h3{font-size:var(--fs-xl, 16px);margin-bottom:6px}
+.modal p{font-size:var(--fs-sm, 12px);color:var(--text-muted);line-height:1.55;margin-bottom:12px}
+.cat-list{max-height:46vh;overflow:auto;border:1px solid var(--border);border-radius:var(--radius, 8px)}
 .cat-row{display:flex;align-items:center;gap:10px;padding:7px 10px;border-bottom:1px solid var(--border)}
 .cat-row:last-child{border-bottom:none}
-.cat-row .name{flex:1;font-size:13px}
-.cat-row select{background:var(--surface);border:1px solid var(--border-strong);border-radius:5px;color:var(--text);padding:4px 6px;font-size:12px}
-.cat-row .src{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;min-width:56px;text-align:right}
-.cat-row.changed{background:var(--yellow-soft)}
-#toast{position:fixed;bottom:20px;right:20px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 18px;font-size:13px;display:none;z-index:1000;max-width:420px;line-height:1.5}
+.cat-row .name{flex:1;font-size:var(--fs-md, 13px)}
+.cat-row select{background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius-sm, 4px);color:var(--text);padding:4px 6px;font-size:var(--fs-sm, 12px)}
+.cat-row .src{font-size:var(--fs-xs, 11px);color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;min-width:56px;text-align:right}
+.cat-row.changed{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10))}
+#toast{position:fixed;bottom:20px;right:20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius, 8px);padding:10px 18px;font-size:var(--fs-md, 13px);display:none;z-index:1000;max-width:420px;line-height:1.5}
 #toast.error{border-color:var(--red);color:var(--red)}#toast.success{border-color:var(--green);color:var(--green)}
 </style>
 <link rel="stylesheet" href="/static/theme.css"/>

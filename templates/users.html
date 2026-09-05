@@ -27,78 +27,78 @@
 #}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:var(--fs-xl, 16px)}
 header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
-header h1{font-size:16px;font-weight:600}
+header h1{font-size:var(--fs-xl, 16px);font-weight:600}
 .nav-links{display:flex;gap:16px;margin-left:32px}
-.nav-links a{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
+.nav-links a{color:var(--text-muted);text-decoration:none;font-size:var(--fs-md, 13px);font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
 .nav-links a:hover,.nav-links a.active{color:var(--text);border-color:var(--accent)}
-.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:13px;text-decoration:none}
+.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:var(--fs-md, 13px);text-decoration:none}
 main{max-width:1080px;margin:0 auto;padding:20px}
-h2{font-size:20px;font-weight:600;margin-bottom:4px}
-.subtitle{color:var(--text-muted);font-size:13px;margin-bottom:16px}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px;box-shadow:var(--shadow)}
-.card h3{font-size:14px;margin-bottom:4px}
-.card p.help{color:var(--text-muted);font-size:12.5px;margin-bottom:12px;line-height:1.55}
+h2{font-size:var(--fs-2xl, 20px);font-weight:600;margin-bottom:4px}
+.subtitle{color:var(--text-muted);font-size:var(--fs-md, 13px);margin-bottom:16px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg, 12px);padding:16px;margin-bottom:16px;box-shadow:var(--shadow)}
+.card h3{font-size:var(--fs-lg, 14px);margin-bottom:4px}
+.card p.help{color:var(--text-muted);font-size:var(--fs-sm, 12px);margin-bottom:12px;line-height:1.55}
 
-.banner{border-radius:8px;padding:11px 14px;font-size:13px;margin-bottom:14px;line-height:1.55}
-.banner.warn{background:var(--yellow-soft);border:1px solid var(--yellow);color:var(--yellow)}
-.banner.info{background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue)}
-.banner.error{background:var(--red-soft);border:1px solid var(--red);color:var(--red)}
-.banner.good{background:var(--green-soft);border:1px solid var(--green);color:var(--green)}
+.banner{border-radius:var(--radius, 8px);padding:11px 14px;font-size:var(--fs-md, 13px);margin-bottom:14px;line-height:1.55}
+.banner.warn{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10));border:1px solid var(--yellow);color:var(--yellow)}
+.banner.info{background:rgb(var(--blue-rgb, 29 78 216) / var(--tint-soft, 0.10));border:1px solid var(--blue);color:var(--blue)}
+.banner.error{background:rgb(var(--red-rgb, 198 40 40) / var(--tint-soft, 0.10));border:1px solid var(--red);color:var(--red)}
+.banner.good{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10));border:1px solid var(--green);color:var(--green)}
 
 .row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
 .field{display:flex;flex-direction:column;gap:4px}
-.field label{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;font-weight:700}
+.field label{font-size:var(--fs-xs, 11px);color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;font-weight:700}
 /* "(optional)" beside a label. Lighter and not uppercase, so it reads as an aside
    rather than as part of the field name. */
 .field label .opt{color:var(--text-dim);font-weight:600;text-transform:none;letter-spacing:0}
 /* The live length hint under the password box. Muted until it is actually wrong. */
-.hint{font-size:11.5px;color:var(--text-dim);margin-top:8px}
+.hint{font-size:var(--fs-xs, 11px);color:var(--text-dim);margin-top:8px}
 .hint.bad{color:var(--red);font-weight:600}
-.field input,.field select{background:var(--surface);border:1px solid var(--border-strong);border-radius:7px;color:var(--text);padding:9px 11px;font-size:14px;min-height:40px}
+.field input,.field select{background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius, 8px);color:var(--text);padding:9px 11px;font-size:var(--fs-lg, 14px);min-height:40px}
 .field input:focus,.field select:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent)}
 .field input[type=text]{min-width:190px}
-.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:7px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;min-height:40px}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:var(--radius, 8px);padding:10px 18px;font-size:var(--fs-lg, 14px);font-weight:600;cursor:pointer;min-height:40px}
 .btn:disabled{opacity:.5;cursor:not-allowed}
-.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border-strong);border-radius:7px;padding:8px 14px;font-size:13px;cursor:pointer}
+.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border-strong);border-radius:var(--radius, 8px);padding:8px 14px;font-size:var(--fs-md, 13px);cursor:pointer}
 .btn-outline:hover{border-color:var(--accent)}
-.btn-danger{background:transparent;color:var(--red);border:1px solid var(--red);border-radius:7px;padding:8px 14px;font-size:13px;cursor:pointer}
-.btn-danger:hover{background:var(--red-soft)}
+.btn-danger{background:transparent;color:var(--red);border:1px solid var(--red);border-radius:var(--radius, 8px);padding:8px 14px;font-size:var(--fs-md, 13px);cursor:pointer}
+.btn-danger:hover{background:rgb(var(--red-rgb, 198 40 40) / var(--tint-hover, 0.16))}
 
 /* The tick list. A grid so the labels line up and the help text can sit under each
    without the rows jumping about. */
 .areas{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;margin-top:12px}
-.area{display:flex;gap:9px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);cursor:pointer}
+.area{display:flex;gap:9px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius, 8px);background:var(--bg);cursor:pointer}
 .area:hover{border-color:var(--accent)}
 .area input{margin-top:2px;width:17px;height:17px;flex:none;cursor:pointer}
-.area .a-label{font-size:13.5px;font-weight:600}
-.area .a-help{font-size:11.5px;color:var(--text-muted);line-height:1.45;margin-top:2px}
+.area .a-label{font-size:var(--fs-md, 13px);font-weight:600}
+.area .a-help{font-size:var(--fs-xs, 11px);color:var(--text-muted);line-height:1.45;margin-top:2px}
 .area.implied{opacity:.75}
 .area.implied .a-help{color:var(--accent)}
 
 table{width:100%;border-collapse:separate;border-spacing:0}
-thead th{background:var(--surface2);color:var(--text-muted);padding:9px 10px;text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--border-strong);white-space:nowrap}
-tbody td{padding:11px 10px;font-size:13.5px;border-bottom:1px solid var(--border);vertical-align:top}
+thead th{background:var(--surface2);color:var(--text-muted);padding:9px 10px;text-align:left;font-size:var(--fs-xs, 11px);font-weight:700;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--border-strong);white-space:nowrap}
+tbody td{padding:11px 10px;font-size:var(--fs-md, 13px);border-bottom:1px solid var(--border);vertical-align:top}
 tbody tr.disabled{opacity:.55}
-tbody tr:hover{background:var(--accent-soft)}
-.u-name{font-weight:600;font-size:14.5px}
-.u-meta{font-size:11.5px;color:var(--text-dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:2px}
-.pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
-.pill.admin{background:var(--accent-soft);color:var(--accent)}
+tbody tr:hover{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-hover, 0.16))}
+.u-name{font-weight:600;font-size:var(--fs-lg, 14px)}
+.u-meta{font-size:var(--fs-xs, 11px);color:var(--text-dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:2px}
+.pill{display:inline-block;padding:2px 8px;border-radius:var(--radius-pill, 999px);font-size:var(--fs-xs, 11px);font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.pill.admin{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-soft, 0.10));color:var(--accent)}
 .pill.off{background:var(--surface2);color:var(--text-muted)}
-.pill.new{background:var(--yellow-soft);color:var(--yellow)}
+.pill.new{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10));color:var(--yellow)}
 .tags{display:flex;gap:5px;flex-wrap:wrap}
-.tag{background:var(--surface2);color:var(--text-muted);border-radius:5px;padding:2px 7px;font-size:11.5px}
+.tag{background:var(--surface2);color:var(--text-muted);border-radius:var(--radius-sm, 4px);padding:2px 7px;font-size:var(--fs-xs, 11px)}
 .acts{display:flex;gap:6px;flex-wrap:wrap}
 
 /* The one-time credential display. Loud on purpose: it cannot be recovered. */
-.creds{background:var(--green-soft);border:2px solid var(--green);border-radius:10px;padding:16px;margin-bottom:16px}
-.creds h3{font-size:14px;color:var(--green);margin-bottom:8px}
+.creds{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10));border:2px solid var(--green);border-radius:var(--radius-lg, 12px);padding:16px;margin-bottom:16px}
+.creds h3{font-size:var(--fs-lg, 14px);color:var(--green);margin-bottom:8px}
 .creds .pair{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
-.creds code{background:var(--surface);border:1px solid var(--border-strong);border-radius:6px;padding:8px 12px;font-size:16px;font-weight:700;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;user-select:all}
-.creds .once{font-size:12.5px;color:var(--green);line-height:1.5}
-.empty{text-align:center;padding:28px;color:var(--text-muted);font-size:13.5px;line-height:1.6}
+.creds code{background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius, 8px);padding:8px 12px;font-size:var(--fs-xl, 16px);font-weight:700;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;user-select:all}
+.creds .once{font-size:var(--fs-sm, 12px);color:var(--green);line-height:1.5}
+.empty{text-align:center;padding:28px;color:var(--text-muted);font-size:var(--fs-md, 13px);line-height:1.6}
 </style>
 <link rel="stylesheet" href="/static/theme.css"/>
 </head>

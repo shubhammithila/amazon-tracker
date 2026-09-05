@@ -9,68 +9,71 @@
     
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
     header { background: var(--surface); padding: 14px 28px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--border); }
-    header h1 { font-size: 18px; font-weight: 600; }
+    header h1 { font-size:var(--fs-2xl, 20px); font-weight: 600; }
     .nav-links { display: flex; gap: 16px; margin-left: 32px; }
-    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 13px; font-weight: 500; padding: 4px 0; border-bottom: 2px solid transparent; transition: all .2s; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; font-size:var(--fs-md, 13px); font-weight: 500; padding: 4px 0; border-bottom: 2px solid transparent; transition: all .2s; }
     .nav-links a:hover, .nav-links a.active { color: var(--text); border-color: var(--accent); }
     .header-right { margin-left: auto; }
-    .header-right a { color: var(--accent); text-decoration: none; font-size: 12px; font-weight: 600; }
+    .header-right a { color: var(--accent); text-decoration: none; font-size:var(--fs-sm, 12px); font-weight: 600; }
     main { max-width: 1400px; margin: 24px auto; padding: 0 16px; }
-    .card { background: var(--surface); border-radius: 10px; padding: 20px 22px; margin-bottom: 18px; border: 1px solid var(--border); }
-    .card h2 { font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 14px; }
-    button { padding: 8px 20px; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all .15s; }
+    .card { background: var(--surface); border-radius:var(--radius-lg, 12px); padding: 20px 22px; margin-bottom: 18px; border: 1px solid var(--border); }
+    .card h2 { font-size:var(--fs-sm, 12px); font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 14px; }
+    button { padding: 8px 20px; border: none; border-radius:var(--radius, 8px); font-size:var(--fs-md, 13px); font-weight: 600; cursor: pointer; transition: all .15s; }
     button:disabled { opacity: .4; cursor: not-allowed; }
     .btn-primary { background: var(--accent); color:var(--on-accent); }
     .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
     /* Warnings carried over from the Shipment tab — usually a line with no
        purchase rate, which would otherwise save at zero taxable value. */
-    .handoff-warning { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--warning); border-radius: 6px; font-size: 12px; line-height: 1.5; color:var(--yellow); background: var(--yellow-soft); }
+    .handoff-warning { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--warning); border-radius:var(--radius, 8px); font-size:var(--fs-sm, 12px); line-height: 1.5; color:var(--yellow); background: rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10)); }
     /* The auto-weight and its working. Deliberately quiet: the number is the answer,
        the breakdown is only there so a wrong total can be traced to a wrong line. */
-    .weight-tag { font-size: 10px; font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--green); }
+    .weight-tag { font-size:var(--fs-xs, 11px); font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--green); }
     .weight-tag.edited { color: var(--text-dim); }
-    .weight-note { margin-top: 5px; font-size: 11px; color: var(--text-dim); line-height: 1.5; }
+    .weight-note { margin-top: 5px; font-size:var(--fs-xs, 11px); color: var(--text-dim); line-height: 1.5; }
     .weight-note .warn { color: var(--yellow); font-weight: 600; }
     .weight-note details { margin-top: 3px; }
     .weight-note summary { cursor: pointer; color: var(--accent); }
     .weight-note table { border-collapse: collapse; margin-top: 5px; }
-    .weight-note td { padding: 1px 8px 1px 0; font-size: 11px; white-space: nowrap; }
-    .weight-note td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .weight-note td { padding: 1px 8px 1px 0; font-size:var(--fs-xs, 11px); white-space: nowrap; }
+    /* `font-variant-numeric` dropped: theme.css now applies tabular figures to every `td.num`
+       on every page, so this — the app's only pre-existing instance — is inherited. The
+       right-alignment stays, because that is this table's own choice rather than a shared rule. */
+    .weight-note td.num { text-align: right; }
     .btn-success { background: var(--success); color:var(--on-accent); }
     .btn-success:hover { background:var(--green); }
     .btn-warning { background: var(--warning); color: #000; }
     .btn-warning:hover { background:var(--yellow); }
 
-    .upload-area { border: 2px dashed var(--border); border-radius: 8px; padding: 30px; text-align: center; cursor: pointer; transition: all .2s; }
-    .upload-area:hover { border-color: var(--accent); background: var(--blue-soft); }
+    .upload-area { border: 2px dashed var(--border); border-radius:var(--radius, 8px); padding: 30px; text-align: center; cursor: pointer; transition: all .2s; }
+    .upload-area:hover { border-color: var(--accent); background: rgb(var(--blue-rgb, 29 78 216) / var(--tint-hover, 0.16)); }
     .upload-area input { display: none; }
-    .upload-area p { color: var(--text-muted); font-size: 14px; margin-top: 8px; }
+    .upload-area p { color: var(--text-muted); font-size:var(--fs-lg, 14px); margin-top: 8px; }
 
     .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
     .form-group { display: flex; flex-direction: column; gap: 4px; }
-    .form-group label { font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .4px; }
-    .form-group input, .form-group select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 13px; outline: none; }
+    .form-group label { font-size:var(--fs-xs, 11px); font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .4px; }
+    .form-group input, .form-group select { padding: 8px 10px; border: 1px solid var(--border); border-radius:var(--radius, 8px); background: var(--bg); color: var(--text); font-size:var(--fs-md, 13px); outline: none; }
     .form-group input:focus { border-color: var(--accent); }
 
-    .items-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 12px; }
-    .items-table thead th { background: var(--surface2); color: var(--text); padding: 8px 6px; text-align: center; font-weight: 600; font-size: 11px; white-space: nowrap; }
+    .items-table { width: 100%; border-collapse: collapse; font-size:var(--fs-sm, 12px); margin-top: 12px; }
+    .items-table thead th { background: var(--surface2); color: var(--text); padding: 8px 6px; text-align: center; font-weight: 600; font-size:var(--fs-xs, 11px); white-space: nowrap; }
     .items-table tbody td { padding: 6px; border-bottom: 1px solid var(--border); text-align: center; vertical-align: middle; }
-    .items-table tbody td input { width: 100%; padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); font-size: 12px; text-align: center; outline: none; }
+    .items-table tbody td input { width: 100%; padding: 4px 6px; border: 1px solid var(--border); border-radius:var(--radius-sm, 4px); background: var(--bg); color: var(--text); font-size:var(--fs-sm, 12px); text-align: center; outline: none; }
     .items-table tbody td input:focus { border-color: var(--accent); }
-    .items-table tbody td.title-col { text-align: left; max-width: 200px; font-size: 11px; }
+    .items-table tbody td.title-col { text-align: left; max-width: 200px; font-size:var(--fs-xs, 11px); }
     .items-table tfoot td { padding: 8px 6px; font-weight: 700; border-top: 2px solid var(--accent); }
 
     .actions { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; align-items: center; }
     .step-indicator { display: flex; gap: 24px; margin-bottom: 20px; }
-    .step { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 13px; }
+    .step { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size:var(--fs-md, 13px); }
     .step.active { color: var(--accent); }
     .step.done { color: var(--success); }
-    .step-num { width: 24px; height: 24px; border-radius: 50%; background: var(--surface2); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; }
+    .step-num { width: 24px; height: 24px; border-radius: 50%; background: var(--surface2); display: flex; align-items: center; justify-content: center; font-size:var(--fs-xs, 11px); font-weight: 700; }
     .step.active .step-num { background: var(--accent); color:var(--on-accent); }
     .step.done .step-num { background: var(--success); color:var(--on-accent); }
 
     #step2, #step3 { display: none; }
-    .status-msg { font-size: 12px; color: var(--success); margin-left: 10px; }
+    .status-msg { font-size:var(--fs-sm, 12px); color: var(--success); margin-left: 10px; }
   </style>
 <link rel="stylesheet" href="/static/theme.css"/>
 </head>

@@ -234,11 +234,27 @@ def test_the_size_is_as_prominent_as_the_product_name(source):
     body = _without_comments(source)
 
     def font_px(selector: str) -> float:
-        match = re.search(
-            re.escape(selector) + r"\{[^}]*font-size:\s*([\d.]+)px", body
-        )
-        assert match, f"no font-size found for {selector}"
-        return float(match.group(1))
+        """The rule's size in px, whether written as a literal or as a theme token.
+
+        **Both spellings are read because the templates moved onto a type scale.** This helper
+        originally matched only a literal `font-size:16px`; after the refresh the rule reads
+        `font-size:var(--fs-xl, 16px)` and the old pattern found nothing, failing a test whose
+        REQUIREMENT still held. The relation asserted below is untouched — only the parsing had to
+        learn the new spelling, which is exactly what this test's docstring promised by asserting a
+        relation rather than a literal.
+
+        The fallback inside `var(--token, 16px)` is the token's own value — theme.css and the
+        fallbacks are deliberately kept equal so a stale stylesheet degrades to today's layout —
+        so reading it gives the real rendered size without parsing theme.css here.
+        """
+        for pattern in (
+            re.escape(selector) + r"\{[^}]*font-size:\s*var\(--[a-z0-9-]+,\s*([\d.]+)px\)",
+            re.escape(selector) + r"\{[^}]*font-size:\s*([\d.]+)px",
+        ):
+            match = re.search(pattern, body)
+            if match:
+                return float(match.group(1))
+        raise AssertionError(f"no font-size found for {selector}")
 
     assert font_px(".p-size") >= font_px(".p-name"), (
         "the size is set smaller than the product name, so it reads as a footnote "

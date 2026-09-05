@@ -27,13 +27,18 @@ FONT_SIZE = {
     "10": "--fs-xs", "10.5": "--fs-xs", "11": "--fs-xs", "11.5": "--fs-xs",
     "12": "--fs-sm", "12.5": "--fs-sm",
     "13": "--fs-md", "13.5": "--fs-md",
-    "14": "--fs-lg",
+    "14": "--fs-lg", "14.5": "--fs-lg",
     "15": "--fs-xl", "16": "--fs-xl",
     #: **17px is the iOS input guard, and it is 17 rather than 16.** `ops.html` states it:
     #: "iOS silently zooms the whole page in on focus for anything under 16px", so the packing
     #: inputs sit deliberately ABOVE the threshold and lose the packer's place if tokenised down.
     #: Note this corrects the plan, which named 16px — the four 16px uses on that page are
     #: headings and product names, which are ordinary type and do convert.
+    #:
+    #: **Held back for INPUTS only.** `login.html`'s `.logo h1` is also 17px and is a heading, not
+    #: something anyone focuses, so it converts to `--fs-xl` by hand. Left as `None` here rather
+    #: than mapped, because the script cannot see which selector it is inside and getting this
+    #: wrong on the packing screen costs the packer his place in a 100-row list.
     "17": None,
     "18": "--fs-2xl", "19": "--fs-2xl", "20": "--fs-2xl", "21": "--fs-2xl", "22": "--fs-2xl",
 }
