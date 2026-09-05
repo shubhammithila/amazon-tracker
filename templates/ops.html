@@ -51,13 +51,13 @@
 #}
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px;padding-bottom:104px}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:var(--fs-xl, 16px);padding-bottom:104px}
 header{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
-header h1{font-size:16px;font-weight:600}
+header h1{font-size:var(--fs-xl, 16px);font-weight:600}
 .nav-links{display:flex;gap:16px;margin-left:24px}
-.nav-links a{color:var(--text-muted);text-decoration:none;font-size:14px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
+.nav-links a{color:var(--text-muted);text-decoration:none;font-size:var(--fs-lg, 14px);font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
 .nav-links a.active{color:var(--text);border-color:var(--accent)}
-.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:14px;text-decoration:none}
+.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:var(--fs-lg, 14px);text-decoration:none}
 /* Vertical space on this screen is the product: every pixel above the table is a
    packing row the warehouse cannot see, and on a 62-row day the packer scrolls all
    shift. The chrome below is deliberately tight — heading, subtitle, date card and
@@ -67,20 +67,20 @@ header h1{font-size:16px;font-weight:600}
 main{max-width:1100px;margin:0 auto;padding:8px 18px}
 /* Title and instructions share a baseline instead of stacking. */
 .page-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:6px}
-h2{font-size:16px;font-weight:600}
-.subtitle{color:var(--text-muted);font-size:12px}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:7px 10px;margin-bottom:6px}
+h2{font-size:var(--fs-xl, 16px);font-weight:600}
+.subtitle{color:var(--text-muted);font-size:var(--fs-sm, 12px)}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg, 12px);padding:7px 10px;margin-bottom:6px}
 .empty-state{text-align:center;padding:36px 16px;color:var(--text-muted);line-height:1.6}
 .date-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-input[type="date"]{background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:10px 12px;font-size:15px}
-.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:8px;padding:12px 20px;font-size:15px;font-weight:500;cursor:pointer;min-height:44px}
+input[type="date"]{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius, 8px);color:var(--text);padding:10px 12px;font-size:var(--fs-xl, 16px)}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:var(--radius, 8px);padding:12px 20px;font-size:var(--fs-xl, 16px);font-weight:500;cursor:pointer;min-height:44px}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .btn-green{background:var(--green);color:var(--on-green);font-weight:600}
-.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:12px 18px;font-size:14px;cursor:pointer;min-height:44px}
+.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border);border-radius:var(--radius, 8px);padding:12px 18px;font-size:var(--fs-lg, 14px);cursor:pointer;min-height:44px}
 .btn-outline:hover{border-color:var(--accent)}
 
 /* Status + hold messaging */
-.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.badge{display:inline-block;padding:3px 10px;border-radius:var(--radius-pill, 999px);font-size:var(--fs-xs, 11px);font-weight:700;text-transform:uppercase;letter-spacing:.05em}
 /* An action inside a sentence of prose. A full .btn here would break the line and
    read as the page's primary action, which reopening a verified day is not — but it
    still needs the 44px touch height, so the padding gives it that without making it
@@ -89,18 +89,18 @@ input[type="date"]{background:var(--bg);border:1px solid var(--border);border-ra
   font-weight:700;color:var(--accent);text-decoration:underline;cursor:pointer}
 .btn-link:hover{color:var(--accent-hover)}
 .badge.open{background:var(--surface2);color:var(--text-muted)}
-.badge.submitted{background:var(--blue-soft);color:var(--blue)}
-.badge.held{background:var(--yellow-soft);color:var(--yellow)}
-.badge.verified{background:var(--green-soft);color:var(--green)}
-.badge.shipped{background:var(--accent-soft);color:var(--accent)}
+.badge.submitted{background:rgb(var(--blue-rgb, 29 78 216) / var(--tint-soft, 0.10));color:var(--blue)}
+.badge.held{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10));color:var(--yellow)}
+.badge.verified{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10));color:var(--green)}
+.badge.shipped{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-soft, 0.10));color:var(--accent)}
 /* Two banners can be up at once (verified-and-locked, plus below-the-minimum), and
    at 47px each they were taking a row and a half of the table between them. Tightened
    rather than removed: both say something the packer acts on. */
-.banner{border-radius:8px;padding:7px 11px;font-size:12.5px;margin-bottom:6px;line-height:1.45}
-.banner.warn{background:var(--yellow-soft);border:1px solid var(--yellow);color:var(--yellow)}
-.banner.info{background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue)}
-.banner.good{background:var(--green-soft);border:1px solid var(--green);color:var(--green)}
-.banner.error{background:var(--red-soft);border:1px solid var(--red);color:var(--red)}
+.banner{border-radius:var(--radius, 8px);padding:7px 11px;font-size:var(--fs-sm, 12px);margin-bottom:6px;line-height:1.45}
+.banner.warn{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10));border:1px solid var(--yellow);color:var(--yellow)}
+.banner.info{background:rgb(var(--blue-rgb, 29 78 216) / var(--tint-soft, 0.10));border:1px solid var(--blue);color:var(--blue)}
+.banner.good{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10));border:1px solid var(--green);color:var(--green)}
+.banner.error{background:rgb(var(--red-rgb, 198 40 40) / var(--tint-soft, 0.10));border:1px solid var(--red);color:var(--red)}
 
 /* Progress */
 /* The three numbers are a progress glance, not the work — the work is the table
@@ -117,7 +117,7 @@ input[type="date"]{background:var(--bg);border:1px solid var(--border);border-ra
    bold number carries the emphasis instead. */
 .tot{display:flex;align-items:baseline;gap:6px;white-space:nowrap}
 .tot .num{font-size:17px;font-weight:700;line-height:1.1}
-.tot .lbl{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
+.tot .lbl{font-size:var(--fs-xs, 11px);color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
 .tot.low{border-color:var(--yellow)}.tot.low .num{color:var(--yellow)}
 .tot.ok .num{color:var(--green)}
 
@@ -158,48 +158,58 @@ input[type="date"]{background:var(--bg);border:1px solid var(--border);border-ra
    whitespace instead of rows, while on a short phone the same constant ran the table
    under the fixed savebar and hid the last row. Measuring cannot drift out of step
    with the layout the way a constant does. */
-.table-wrap{overflow:auto;max-height:var(--table-cap, calc(100vh - 300px));min-height:180px;border:1px solid var(--border);border-radius:10px;background:var(--surface);overscroll-behavior:contain}
+.table-wrap{overflow:auto;max-height:var(--table-cap, calc(100vh - 300px));min-height:180px;border:1px solid var(--border);border-radius:var(--radius-lg, 12px);background:var(--surface);overscroll-behavior:contain}
 table{width:100%;border-collapse:separate;border-spacing:0;min-width:560px}
 /* border-collapse:separate above is required, not cosmetic: with `collapse` the
    browser paints borders on the TABLE rather than the cells, so a sticky header's
    bottom border scrolls away from it and the rows slide under a naked edge. The
    per-cell borders below replace the collapsed ones. */
-thead th{background:var(--surface2);color:var(--text-muted);padding:9px 8px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:center;white-space:nowrap;border-bottom:2px solid var(--border-strong);position:sticky;top:0;z-index:4}
-thead th.col-input{background:var(--accent-soft);color:var(--accent)}
+/* **`z-index: 4` deliberately OVERRIDES theme.css's shared `thead th{z-index:2}`.**
+   This page has a frozen first column, so it needs four layers where a plain table
+   needs two:
+
+       th.freeze (5)  >  thead th (4)  >  td.freeze (3)  >  body cells
+
+   The corner cell must outrank both the header row and the frozen column, or one
+   covers the other where they intersect. The shared default is intentionally the
+   LOWEST of these, so it can never cover the frozen column at the join — which is
+   why theme.css uses 2 rather than a number that looks tidier. */
+thead th{background:var(--surface2);color:var(--text-muted);padding:9px 8px;font-size:var(--fs-xs, 11px);font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:center;white-space:nowrap;border-bottom:2px solid var(--border-strong);position:sticky;top:0;z-index:4}
+thead th.col-input{background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-soft, 0.10));color:var(--accent)}
 /* On the cells, not the row: border-collapse is `separate` (see thead above), and a
    row-level border is not painted in that mode. */
 tbody td{border-bottom:1px solid var(--border)}
-tbody tr.done{background:var(--green-soft)}
-tbody tr.dirty{background:var(--yellow-soft)}
+tbody tr.done{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10))}
+tbody tr.dirty{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10))}
 /* More boxed than the plan asked for. Red, and it outranks `dirty` and `done` in
    the class logic: it is the one row state the packer must not scroll past. */
-tbody tr.over{background:var(--red-soft)}
-tbody tr.over td.freeze{background:var(--red-soft)}
+tbody tr.over{background:rgb(var(--red-rgb, 198 40 40) / var(--tint-soft, 0.10))}
+tbody tr.over td.freeze{background:rgb(var(--red-rgb, 198 40 40) / var(--tint-soft, 0.10))}
 .over-tag{color:var(--red);font-weight:700;white-space:nowrap}
 /* 3px vertical padding, not 7px. The 46px quantity input is what sets the row
    height, and it keeps its full size — the cell padding around it was pure margin,
    8px per row, which is a whole extra row visible every seven. */
-td{padding:3px 8px;font-size:14px;text-align:center;white-space:nowrap}
+td{padding:3px 8px;font-size:var(--fs-lg, 14px);text-align:center;white-space:nowrap}
 /* Capped, not just floored. Left to size itself the product column took 405px of a
    1280px page, which put a 200px gap between "Chana Sattu" and the "1 kg" that
    completes it — the two read as unrelated cells. The reference columns to the
    right take the width instead; they are the ones it costs nothing to spread. */
 td.name,th.freeze{text-align:left;white-space:normal;min-width:150px;max-width:250px;width:250px}
-.p-name{font-weight:600;font-size:16px;line-height:1.3}
-.p-meta{font-size:11px;color:var(--text-dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:2px}
+.p-name{font-weight:600;font-size:var(--fs-xl, 16px);line-height:1.3}
+.p-meta{font-size:var(--fs-xs, 11px);color:var(--text-dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:2px}
 /* Size reads as loudly as the product name, because "Chana Sattu" alone does not
    identify anything to pack — every product here comes in three or four sizes, so
    the name and the size together are the smallest useful unit of instruction.
    Left-aligned and tight against the name for the same reason. */
-.p-size{font-weight:700;font-size:16px;text-align:left;padding-left:0}
+.p-size{font-weight:700;font-size:var(--fs-xl, 16px);text-align:left;padding-left:0}
 th.col-size{text-align:left}
 /* The reference numbers. Present so "Still needed" is checkable, deliberately
    quieter than the three columns to their left. */
-td.ref{color:var(--text-muted);font-size:13px}
-.t-left{font-weight:700;font-size:14px}
+td.ref{color:var(--text-muted);font-size:var(--fs-md, 13px)}
+.t-left{font-weight:700;font-size:var(--fs-lg, 14px)}
 .t-left.zero{color:var(--green)}
 .t-left.pos{color:var(--orange)}
-.no-sku{color:var(--red);font-weight:700;font-size:11px}
+.no-sku{color:var(--red);font-weight:700;font-size:var(--fs-xs, 11px)}
 
 /* The product name stays put while the row scrolls sideways. Needs its own opaque
    background or the numbers show through, and a z-index above the body cells it
@@ -211,19 +221,25 @@ td.ref{color:var(--text-muted);font-size:13px}
    either slides under the header or is scrolled over by the first row's name. */
 th.freeze,td.freeze{position:sticky;left:0;background:var(--surface);z-index:3}
 th.freeze{z-index:5;background:var(--surface2)}
-tbody tr.done td.freeze{background:var(--green-soft)}
-tbody tr.dirty td.freeze{background:var(--yellow-soft)}
+tbody tr.done td.freeze{background:rgb(var(--green-rgb, 20 108 52) / var(--tint-soft, 0.10))}
+tbody tr.dirty td.freeze{background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10))}
 
 /* 17px: iOS silently zooms the whole page in on focus for anything under 16px,
    which on a phone means the packer loses his place in the list every time he
-   taps a box. */
-input.qty{width:86px;background:var(--bg);border:1px solid var(--border-strong);border-radius:8px;color:var(--text);padding:11px 8px;font-size:17px;font-weight:700;text-align:center;min-height:46px}
+   taps a box.
+
+   **Deliberately NOT on the type scale**, and 17 rather than 16 so there is margin
+   above the threshold rather than sitting exactly on it. This is a device
+   constraint, not a style choice, so it is the one font-size on this page that a
+   token must not absorb — `--fs-xl` is 16px and would put the inputs back on the
+   boundary. */
+input.qty{width:86px;background:var(--bg);border:1px solid var(--border-strong);border-radius:var(--radius, 8px);color:var(--text);padding:11px 8px;font-size:17px;font-weight:700;text-align:center;min-height:46px}
 input.qty:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent)}
 input.qty:disabled{opacity:.5}
 input.qty.over{border-color:var(--red);color:var(--red);background:var(--surface)}
 
 /* Keeps its 44px height — it is tapped and typed into — but not its 12px gap. */
-.search-input{width:100%;background:var(--surface);border:1px solid var(--border-strong);border-radius:8px;color:var(--text);padding:10px 12px;font-size:15px;min-height:44px;margin-bottom:6px}
+.search-input{width:100%;background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius, 8px);color:var(--text);padding:10px 12px;font-size:var(--fs-xl, 16px);min-height:44px;margin-bottom:6px}
 .search-input:focus{outline:none;border-color:var(--accent)}
 
 /* Save bar pinned to the bottom: reachable by thumb, and it is the only way
@@ -250,8 +266,8 @@ input.qty.over{border-color:var(--red);color:var(--red);background:var(--surface
 /* Padding trimmed to 3px: the 46px input inside is the tap target and keeps its
    full size, so the panel is now only as tall as the control it wraps rather than
    setting the height of the whole bar. */
-.cartonbox{display:flex;align-items:center;gap:10px;margin-right:auto;padding:3px 12px;border:2px solid var(--accent);border-radius:10px;background:var(--accent-soft)}
-.cartonbox label{font-size:12px;color:var(--accent);text-transform:uppercase;letter-spacing:.04em;font-weight:700;line-height:1.25;text-align:right}
+.cartonbox{display:flex;align-items:center;gap:10px;margin-right:auto;padding:3px 12px;border:2px solid var(--accent);border-radius:var(--radius-lg, 12px);background:rgb(var(--accent-rgb, 29 78 216) / var(--tint-soft, 0.10))}
+.cartonbox label{font-size:var(--fs-sm, 12px);color:var(--accent);text-transform:uppercase;letter-spacing:.04em;font-weight:700;line-height:1.25;text-align:right}
 /* Slightly shorter than the in-table quantity boxes (46px), which keep their full
    size: those are typed into 62 times a day while standing, this one once. 40px is
    still a comfortable thumb target, and the 6px saved comes off the fixed bar and
@@ -260,12 +276,12 @@ input.qty.over{border-color:var(--red);color:var(--red);background:var(--surface
   min-height:40px;padding:8px 8px}
 /* Empty is the state worth flagging: a submitted day with no carton count sends
    someone back to the warehouse to recount boxes that have already gone. */
-.cartonbox.empty{border-color:var(--yellow);background:var(--yellow-soft)}
+.cartonbox.empty{border-color:var(--yellow);background:rgb(var(--yellow-rgb, 161 98 7) / var(--tint-soft, 0.10))}
 .cartonbox.empty label{color:var(--yellow)}
 .cartonbox.empty input{border-color:var(--yellow)}
 /* Pushed to the right, beside the buttons it describes. `margin-right:auto` on the
    carton panel above takes all the slack, so this and the buttons sit together. */
-.savebar .status{font-size:12.5px;color:var(--text-muted);line-height:1.4;min-width:130px;flex:0 1 auto;text-align:right}
+.savebar .status{font-size:var(--fs-sm, 12px);color:var(--text-muted);line-height:1.4;min-width:130px;flex:0 1 auto;text-align:right}
 .savebar .status.dirty{color:var(--yellow)}
 .savebar .status.saved{color:var(--green)}
 @media (max-width:560px){
