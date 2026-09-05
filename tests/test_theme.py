@@ -230,3 +230,165 @@ def test_printed_documents_were_not_lightened(path, marker):
         f"{path} no longer uses its dark document header ({marker}) — printed "
         "output should not follow the screen theme"
     )
+
+
+# ─── The token scales ────────────────────────────────────────────────────────
+#
+# **`_vars()` cannot be reused here, and that is deliberate.** It filters to values matching
+# `#rrggbb` — correct for the colour tests it was written for, and it would silently DROP every
+# `--fs-*`, `--sp-*` and `--tint-*` value, so a test built on it would pass while asserting nothing.
+# `_all_vars()` is its sibling for non-colour tokens. Note both return keys WITHOUT the `--` prefix.
+
+
+def _all_vars(theme: str) -> dict[str, str]:
+    """Every `:root` custom property, colour or not. Keys have no leading `--`."""
+    block = re.search(r":root\s*\{(.*?)\}", theme, re.S)
+    assert block, "theme.css has no :root block"
+    return {
+        name: value.strip()
+        for name, value in re.findall(r"--([a-z0-9-]+)\s*:\s*([^;]+);", block.group(1))
+    }
+
+
+def test_the_type_scale_exists_and_is_ordered(theme):
+    """**19 distinct font sizes were counted across the templates before this.**
+
+    Including both `12.5px` and `13.5px` — not a decision, accumulated per-page guessing. Six tokens
+    absorb all 19; the sizes were chosen by frequency, so `--fs-md: 13px` is what 62 declarations
+    already used.
+
+    Asserted as an ORDERED scale rather than as six independent values, because a scale whose steps
+    are out of order is worse than no scale: it reads as licence to invent a seventh.
+    """
+    tokens = _all_vars(theme)
+    sizes = []
+    for name in ("fs-xs", "fs-sm", "fs-md", "fs-lg", "fs-xl", "fs-2xl"):
+        assert name in tokens, f"{name} is missing from the type scale"
+        sizes.append(float(tokens[name].replace("px", "")))
+    assert sizes == sorted(sizes), f"the type scale is not ascending: {sizes}"
+    assert sizes[0] >= 11, "nothing below 11px: these are read all day on a warehouse phone"
+
+
+def test_the_spacing_scale_is_a_4px_base(theme):
+    """22 distinct padding values became 6. A 4px base, which our top three (4/8/12) already used."""
+    tokens = _all_vars(theme)
+    for index, name in enumerate(("sp-1", "sp-2", "sp-3", "sp-4", "sp-5", "sp-6"), 1):
+        assert name in tokens, f"{name} is missing from the spacing scale"
+        assert float(tokens[name].replace("px", "")) == index * 4, (
+            f"{name} breaks the 4px base — the point of a base is that it is predictable"
+        )
+
+
+def test_the_radius_scale_exists_and_keeps_the_existing_value(theme):
+    """11 radii became 4. `--radius` KEEPS 8px so most call sites need no edit at all."""
+    tokens = _all_vars(theme)
+    assert tokens["radius"] == "8px", "changing --radius would silently restyle every existing card"
+    for name in ("radius-sm", "radius-lg", "radius-pill"):
+        assert name in tokens, f"{name} is missing from the radius scale"
+
+
+def test_every_semantic_colour_has_an_rgb_channel_for_derived_tints(theme):
+    """**Materio's one genuinely good idea, and the reason it is worth taking.**
+
+    Today each colour needs a hand-picked partner (`--green` + `--green-soft`): six independent
+    choices that can drift, plus a seventh to match by eye when Sponsored Display arrives. With a
+    channel, every tint is DERIVED from the one hex.
+
+    The `*-soft` variables are asserted to still exist, because Phase 1 must not break the templates
+    that use them — they are retired per page in Phase 2, not all at once.
+    """
+    tokens = _all_vars(theme)
+    for colour in ("accent", "green", "red", "yellow", "orange", "blue"):
+        channel = f"{colour}-rgb"
+        assert channel in tokens, f"{channel} is missing — soft tints cannot be derived without it"
+        parts = tokens[channel].split()
+        assert len(parts) == 3, f"{channel} must be space-separated 'R G B' for rgb(... / alpha)"
+        assert all(0 <= int(p) <= 255 for p in parts), f"{channel} is not a valid RGB triplet"
+        assert f"{colour}-soft" in tokens, (
+            f"--{colour}-soft was removed too early — templates still reference it in Phase 1"
+        )
+
+    for tint in ("tint-soft", "tint-hover"):
+        assert tint in tokens, f"{tint} is missing"
+        assert 0 < float(tokens[tint]) < 1, f"{tint} must be an alpha between 0 and 1"
+    assert float(tokens["tint-soft"]) < float(tokens["tint-hover"]), (
+        "the hover tint must be stronger than the resting one, or hover is invisible"
+    )
+
+
+def test_the_rgb_channel_matches_its_own_hex(theme):
+    """A channel that disagrees with its hex is worse than no channel: the tint and the text it sits
+    behind would come from two different colours, and nothing would look obviously broken."""
+    tokens = _all_vars(theme)
+    for colour in ("accent", "green", "red", "yellow", "orange", "blue"):
+        hex_value = tokens[colour].lstrip("#")
+        expected = [int(hex_value[i:i + 2], 16) for i in (0, 2, 4)]
+        actual = [int(p) for p in tokens[f"{colour}-rgb"].split()]
+        assert actual == expected, (
+            f"--{colour}-rgb is {actual} but --{colour} is #{hex_value} = {expected}"
+        )
+
+
+# ─── The three measured fixes ────────────────────────────────────────────────
+
+
+def test_dense_table_headers_are_sticky_below_the_frozen_column_layer():
+    """**Measured on /portfolio-page: 3,766px tall, and after 900px of scroll the headers sat at
+    -289px.** 90 rows and 11 money columns, with no way to tell ACOS from TACOS.
+
+    `z-index: 2` is deliberate and not arbitrary. `ops.html` runs a four-layer stack —
+    `th.freeze: 5` (the corner), `thead th: 4`, `td.freeze: 3` — so a shared value of 3 or higher
+    would cover the frozen column where they intersect.
+    """
+    css = (REPO_ROOT / "static" / "theme.css").read_text(encoding="utf-8")
+    block = re.search(r"thead th\s*\{([^}]*)\}", css, re.S)
+    assert block, "thead th is no longer styled in theme.css"
+    body = block.group(1)
+    assert "position: sticky" in body, "dense table headers must stay put while the rows scroll"
+    assert re.search(r"z-index:\s*2\b", body), (
+        "thead th must be z-index 2 — below ops.html's frozen-column stack (3/4/5)"
+    )
+    assert "background:" in body, (
+        "a sticky header needs an opaque background or the body rows show through it"
+    )
+
+
+def test_numeric_cells_use_tabular_figures():
+    """**Measured drift over seven digits at our 13.5px table size:**
+
+        Segoe UI / system-ui   0px   <- the owner's Windows box
+        SF Pro, Inter, Roboto  3px   <- iPad, iPhone
+        Arial, Helvetica       6px   <- Android, Linux
+
+    So money columns align for the person who looks most and misalign in the warehouse on a tablet.
+    Nearly recorded as a universal bug; measuring per font is what caught that it is conditional.
+
+    Scoped to numeric cells and NEVER to `body`: tabular figures are slightly wider and worse for
+    prose, the same distinction `.chan` already makes on the Portfolio tab.
+    """
+    css = (REPO_ROOT / "static" / "theme.css").read_text(encoding="utf-8")
+    rule = re.search(r"([^}]*)\{[^}]*font-variant-numeric:\s*tabular-nums", css)
+    assert rule, "no tabular-nums rule — money columns will not align off Windows"
+    selector = rule.group(1)
+    assert ".num" in selector, "the rule must target numeric cells (.num)"
+    assert not re.search(r"(^|[\s,{])body\s*[,{]", selector), (
+        "tabular-nums must not apply to body — it is worse for reading sentences"
+    )
+
+
+def test_the_nav_wraps_rather_than_overflowing_a_phone():
+    """**Measured at 375px: 9 links totalling 587px in a nowrap row, overflowing by 212px.**
+
+    The last item sat at x=747 and the whole document scrolled sideways by 424px. CLAUDE.md records
+    this as known and unfixed.
+
+    This rule lives in `theme.css` even though `display:flex` is declared in 10 TEMPLATES, because
+    `theme.css` loads after every inline `<style>` block (verified across all 12 pages) and so wins at
+    equal specificity.
+    """
+    css = (REPO_ROOT / "static" / "theme.css").read_text(encoding="utf-8")
+    block = re.search(r"\.nav-links\s*\{([^}]*)\}", css, re.S)
+    assert block, ".nav-links is not styled in theme.css, so the wrap fix has no home"
+    assert "flex-wrap: wrap" in block.group(1), (
+        "9 nav links in a nowrap row overflow a 375px phone by 212px"
+    )

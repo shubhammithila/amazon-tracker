@@ -85,7 +85,67 @@
   /* Edge of a frozen table column: depth, so the join between the pinned and
      scrolling halves is visible while the numbers move past it. */
   --shadow-freeze: 6px 0 6px -6px rgba(16, 24, 40, .18);
+
+  /* ── Radius ─────────────────────────────────────────────────────────────
+     11 distinct radii were counted across the templates (8, 6, 10, 20, 99, 4,
+     5, 7, 12...). Four tokens absorb them. `--radius` KEEPS its 8px, so the
+     existing call sites need no edit. */
+  --radius-sm: 4px;
   --radius: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  /* ── Type scale ─────────────────────────────────────────────────────────
+     **19 distinct font sizes were counted across the templates**, including
+     both 12.5px and 13.5px — accumulated per-page guessing, not a decision.
+     Six tokens absorb all 19, and the values were chosen by FREQUENCY rather
+     than invented: 13px had 62 uses, 12px 49, 11px 43.
+
+     `body` stays at 15px and is deliberately not on this scale — see its own
+     comment below. These are for the dense grids. */
+  --fs-xs:  11px;   /* ALL-CAPS column headers */
+  --fs-sm:  12px;   /* dense cells, tags */
+  --fs-md:  13px;   /* the real body default of every table */
+  --fs-lg:  14px;   /* card titles, nav */
+  --fs-xl:  16px;   /* KPI figures */
+  --fs-2xl: 20px;   /* the one headline figure on a KPI strip */
+
+  /* ── Spacing ────────────────────────────────────────────────────────────
+     22 distinct padding values became 6, on a 4px base. Not an imported
+     convention: 4, 8 and 12 were already our three most common values. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+
+  /* ── Derived tints ──────────────────────────────────────────────────────
+     **Each colour carries its own RGB channel so soft variants are COMPUTED
+     rather than hand-picked.** Today every colour needs a matching pastel
+     chosen by eye (`--green` + `--green-soft`): six independent choices that
+     can drift apart, plus a seventh to match when Sponsored Display arrives.
+
+         background: rgb(var(--green-rgb) / var(--tint-soft));
+         color: var(--green);
+
+     Adapted from Materio's 0.08/0.16/0.24/0.32/0.38 ramp, with two changes.
+     Only two steps, because only two are used. And 0.10 rather than 0.08 for
+     the resting tint: their ramp is tuned to a purple hue on #F4F5FA, and 8%
+     of our darker green (#146c34) is close to invisible on #f6f7f9. The exact
+     figures are settled by this file's WCAG contrast tests, not by taste.
+
+     The six `--*-soft` variables above are deliberately KEPT: ten templates
+     reference them, and removing them here would break every page in the same
+     commit that introduces the ramp. They retire per page as each converts. */
+  --accent-rgb: 29 78 216;
+  --green-rgb:  20 108 52;
+  --red-rgb:    198 40 40;
+  --yellow-rgb: 161 98 7;
+  --orange-rgb: 194 65 12;
+  --blue-rgb:   29 78 216;
+  --tint-soft:  0.10;
+  --tint-hover: 0.16;
 }
 
 /* ── Base ─────────────────────────────────────────────────────────────────── */
@@ -109,9 +169,22 @@ header {
   box-shadow: var(--shadow);
 }
 
+/* **Measured at 375px: nine links totalling 587px in a nowrap row, overflowing
+   by 212px** — the last item at x=747, and the whole document scrolling sideways
+   by 424px. CLAUDE.md records it as known and unfixed.
+
+   This lives here even though `display:flex` is declared in ten TEMPLATES,
+   because theme.css loads AFTER every inline <style> block (verified across all
+   12 pages), so it wins at equal specificity. Only the wrap behaviour is shared;
+   each page keeps its own gap and margin. */
+.nav-links {
+  flex-wrap: wrap;
+  row-gap: var(--sp-1);
+}
+
 .nav-links a {
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: var(--fs-lg);
 }
 .nav-links a:hover { color: var(--text); }
 .nav-links a.active {
@@ -161,7 +234,20 @@ thead th {
   border-bottom: 1px solid var(--border-strong);
   /* 11px: these are ALL-CAPS abbreviations, which are harder to read than
      sentence case at the same size. */
-  font-size: 11px;
+  font-size: var(--fs-xs);
+  /* **Measured: /portfolio-page is 3,766px tall and after 900px of scroll the
+     headers sat at -289px** — 90 rows, 11 money columns, and no way to tell
+     ACOS from TACOS. The opaque background above is what makes this safe; a
+     transparent sticky header shows the body rows through it.
+
+     `z-index: 2` is deliberate. `ops.html` runs a four-layer stack —
+     `th.freeze: 5` (the corner cell), `thead th: 4`, `td.freeze: 3` — so a
+     shared value of 3 or more would cover the frozen column at the join.
+     ops.html and shipment.html keep their own higher values, which now read
+     as deliberate overrides of a shared default. */
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 /* The column-group tints from the dark theme, re-derived. They exist so the eye
    can find the input columns without reading the headers, which is the whole
@@ -180,7 +266,19 @@ tbody tr.dirty { background: var(--yellow-soft); }
 tbody tr.no-ship { opacity: 1; color: var(--text-dim); }
 tbody tr.no-ship td { color: var(--text-dim); }
 
-td { font-size: 13px; }
+td { font-size: var(--fs-md); }
+
+/* **Money columns must align digit-for-digit, and whether they do depends on the
+   platform.** Measured drift across seven digits at 13.5px:
+
+       Segoe UI / system-ui   0px   <- the owner's Windows box
+       SF Pro, Inter, Roboto  3px   <- iPad, iPhone
+       Arial, Helvetica       6px   <- Android, Linux
+
+   So they align for the person who looks most and misalign in the warehouse on
+   a tablet. Deliberately NOT on `body`: tabular figures are slightly wider and
+   worse for prose, the same numbers-versus-prose split `.chan` already makes. */
+td.num, th.num, .kpi-value { font-variant-numeric: tabular-nums; }
 
 /* Inputs inside the grid. Bigger than the dark theme's 11px — these are typed
    into all day, sometimes on a phone. Note 16px on the ops screen specifically:
