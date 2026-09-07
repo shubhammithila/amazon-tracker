@@ -2877,14 +2877,50 @@ banner on both screens, and the shipment file writes the SKU blank rather than
 substituting a plausible-looking ASIN) instead of being swallowed by a bare
 `except Exception: pass`. Fixing the data is a seller-central job, not a code one.
 
-### A stock CSV with no quantity column was read as an EMPTY WAREHOUSE, and it nearly cost 10,000 units
+### The FLEX SKU row overwrote the FBA row, and every product read as an empty warehouse
 Reported as *"I have uploaded new plan. why fba stock is showing 0"* — every row showing `FBA STOCK 0`
-and therefore `DEFICIT = PROJ` exactly.
+and therefore `DEFICIT = PROJ` exactly, on a plan asking for **18,955 units against a real need of
+roughly 8,000**.
 
-`parse_stock_csv` sums whichever of eight `afn-*-quantity` columns exist. The uploaded report had
-valid `asin` and `sku` — so **merchant SKUs populated and the file looked accepted** — while none of
-the eight quantity columns matched. `existing_cols` came out empty, `sum([])` is `0`, and every ASIN
-was recorded as holding nothing:
+**One ASIN appears on SEVERAL SKU rows in the FBA inventory report, and only the FBA one holds FBA
+stock.** Measured on the real file:
+
+```
+0.5kg cs 1 FBA    B0CWGXYLT6    474      <- the FBA row, the real stock
+0.5kg cs 1 flex   B0CWGXYLT6      0      <- the Flex row, holds no FBA stock
+```
+
+`parse_stock_csv` did `asin_stock[asin] = total`, so the **LAST row for an ASIN won**. With the Flex
+row last, 474 became 0. Swap those two lines in the same file and it reads 474 again — the bug was
+**order-dependent**, which is exactly why plans 1–3 were fine and plan 4 was not, and why it looked
+like a corrupt file rather than a logic error.
+
+Rows are now **summed per ASIN across FBA SKUs only**, and non-FBA rows are ignored rather than
+allowed to overwrite. Summed rather than "take the FBA row" because an ASIN can legitimately carry
+more than one FBA SKU, and picking one would under-state stock — the same reasoning behind
+`ads.logic.aggregate` collapsing a split report instead of choosing a row.
+
+**`logic._channel_of` is reused, not reimplemented.** The Portfolio tab already had this exact rule:
+split the SKU on whitespace and test whether the LAST token is `FBA`, deliberately not a substring
+test, so a product whose name contains "fba" cannot be misfiled. A second copy of that rule would
+have been a second thing to keep in step.
+
+> **`parse_sku_map` had the same bug and was right only by luck.** It used `setdefault`, so the FIRST
+> row won — and on this account that can be the Flex SKU. It happened to land on the FBA one for the
+> 07 Sep file purely by row order. **Amazon's shipment upload keys on the merchant SKU**, so a plan
+> carrying a Flex SKU for an FBA shipment is a line Amazon rejects. It now prefers the FBA SKU and
+> falls back to a non-FBA one only when the ASIN has no FBA SKU at all, since a blank is worse than
+> the wrong channel.
+
+> **The owner diagnosed this, and my first two attempts were both wrong.** I first blamed missing
+> quantity columns and shipped a guard for that; the columns were in fact correct — K, M and P–U of
+> the real report are *exactly* the eight the parser already looked for, which is why that guard passed
+> with a 200. I then blamed unparseable values. Both were plausible and both were wrong, because I was
+> reasoning about the file's shape without ever looking at two rows of it. **The lesson is the
+> ordering: ask for the actual data before theorising about it.** The all-zero guard from the second
+> attempt is kept as a backstop, since it is cheap and catches a different real failure.
+
+The history that made the order-dependence visible:
 
 | plan | date | `sum(fba_stock)` |
 |---|---|---|
@@ -2893,30 +2929,34 @@ was recorded as holding nothing:
 | 3 | 30 Aug | 10,659 |
 | **4** | **07 Sep** | **0** |
 
-`deficit = projection − fba_stock`, so the plan asked for **18,955 units against a real need of
-roughly 8,000**. **Two `POST /shipment/generate` calls returned 200 OK and the log carried no
-warning** — a missing quantity column was indistinguishable from an empty warehouse.
+**Two `POST /shipment/generate` calls returned 200 OK and the log carried no warning**, because an
+overwritten figure is indistinguishable from an empty warehouse.
 
-> **The asymmetry that allowed it is the lesson.** `parse_sku_map`, ten lines below in the same
-> module, already logged a warning when ITS columns were missing. The stock parser — whose output
-> drives how much gets manufactured — was the one of the pair that failed silently. The check now
-> mirrors the `asin` guard directly above it: a stock report the app cannot read is not a stock report
-> holding no stock.
+Two guards were added along the way and both are kept, since each catches a real failure the other
+does not:
+
+> **A stock report with no recognisable quantity column is refused.** The asymmetry that allowed the
+> silence is worth remembering: `parse_sku_map`, ten lines below in the same module, already logged a
+> warning when ITS columns were missing. The stock parser — whose output drives how much gets
+> manufactured — was the one of the pair that said nothing. The check now mirrors the `asin` guard
+> directly above it.
 
 - **ANY one of the eight columns is enough**, deliberately: the report varies by account and region
   and several are routinely absent, so requiring all eight would refuse the report most accounts
   actually get. What is refused is NONE of them.
-- **A recognisable report full of zeros still parses.** A new account or a sold-out seller genuinely
-  holds nothing, and the distinction being drawn is between "the column says 0" and "there is no
-  column".
+- **A SMALL report of all zeros still parses; a LARGE one is refused** (`ALL_ZERO_STOCK_THRESHOLD`,
+  10). Both readings are legitimate and nothing in the file distinguishes them — a new or sold-out
+  seller honestly holds nothing, while dozens of active products all at zero is a parse failure. Scale
+  is the only available signal, and 10 sits well below this account's 108 and well above a genuinely
+  new seller's handful, so neither case is decided narrowly.
 - **The refusal names the consequence, the columns it looked for, the columns it found, and the report
   to download.** "Invalid stock report" would send the owner back to Seller Central to guess between
   six inventory reports.
 - `tests/test_shipment_stock_csv.py` covers it end to end through `POST /shipment/generate`, not only
   at the parser — the route wraps the parser in `try/except`, so a unit test alone would not prove the
-  400 ever reaches the screen. **That is the gap that let this ship**: every existing fixture across
-  `test_shipment_catalogue.py` and the rest used the correct column name, so nothing exercised the
-  case where those columns are absent.
+  400 ever reaches the screen. **The pre-existing fixtures are why none of this was caught**: every one
+  across `test_shipment_catalogue.py` and the rest used a single SKU per ASIN with the correct column
+  name, so nothing exercised either an absent column or a second row for the same ASIN.
 
 ### "Nearest 10" is arithmetic, not physics
 437 → 440 is right numerically and wrong if a carton holds 12.

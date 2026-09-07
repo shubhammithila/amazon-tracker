@@ -93,6 +93,19 @@ FC_CHOICES = load_fc_choices()
 KNOWN_FC_CODES = frozenset(c["code"] for c in FC_CHOICES)
 
 
+#: How many products a stock report must list before "every total is zero" is treated as a failure to
+#: read the file rather than as an empty warehouse.
+#:
+#: **Both readings are legitimate, which is why this is a threshold and not a flat refusal.** A new
+#: account or a sold-out seller genuinely holds nothing. But a report listing dozens of active products
+#: where every single one is zero is a parse failure — measured on this account, 108 products, and the
+#: preceding plan held 10,659 units.
+#:
+#: 10 sits well below the real 108 and well above the handful a genuinely new seller would have, so
+#: neither case is decided narrowly.
+ALL_ZERO_STOCK_THRESHOLD = 10
+
+
 def _clean_number(val) -> float:
     if val is None or str(val).strip() in ("", "-", "nan"):
         return 0.0
@@ -176,13 +189,79 @@ def parse_stock_csv(content: bytes) -> dict[str, int]:
             "Download 'Manage FBA Inventory' from Reports > Fulfilment > Inventory and upload that."
         )
 
+    # **One ASIN appears on SEVERAL SKU rows, and only the FBA one holds FBA stock.**
+    #
+    # This is what made every product read zero on 07 Sep, and it is order-dependent rather than
+    # always wrong — which is why plans 1-3 were fine and plan 4 was not. Measured on the real file:
+    #
+    #     0.5kg cs 1 FBA   B0CWGXYLT6   474      <- the FBA row, the real stock
+    #     0.5kg cs 1 flex  B0CWGXYLT6     0      <- the Flex row, holds no FBA stock
+    #
+    # The loop used to do `asin_stock[asin] = total`, so the LAST row for an ASIN won. With the Flex
+    # row last, 474 became 0; swap the two rows in the same file and it reads 474 again. Every ASIN
+    # that sells on both channels was being reported as empty.
+    #
+    # So rows are SUMMED per ASIN across FBA SKUs only, and non-FBA rows are ignored rather than
+    # allowed to overwrite. Summed rather than "take the FBA row", because an ASIN can legitimately
+    # have more than one FBA SKU and dropping one would under-state stock — the same reason
+    # `logic.aggregate` collapses the ads report instead of picking a row.
+    #
+    # `logic.channel_of` is the project's existing rule (`portfolio.logic._channel_of`), reused rather
+    # than re-implemented: it splits on whitespace and tests the LAST token, so a product whose name
+    # contains "fba" cannot be misfiled.
+    from app.portfolio.logic import CHANNEL_FBA, _channel_of
+
     asin_stock: dict[str, int] = {}
+    skipped_non_fba = 0
     for _, row in df.iterrows():
         asin = str(row.get("asin", "")).strip()
         if not asin or len(asin) < 10:
             continue
+        if _channel_of(row.get("sku")) != CHANNEL_FBA:
+            skipped_non_fba += 1
+            continue
         total = sum(int(_clean_number(row.get(c, 0))) for c in existing_cols)
-        asin_stock[asin] = total
+        asin_stock[asin] = asin_stock.get(asin, 0) + total
+
+    if skipped_non_fba:
+        logger.info(
+            "Stock CSV: summed %d FBA SKU row(s), ignored %d non-FBA row(s) (Flex/Easy Ship hold no "
+            "FBA stock and were overwriting the FBA figures)",
+            len(asin_stock), skipped_non_fba,
+        )
+
+    # **The column can be present and its VALUES still unreadable, which is the second way this
+    # produced an empty warehouse.** `_clean_number` returns 0.0 for anything it cannot parse — a
+    # blank, a dash, "N/A", a quoted `"474"` — so a file with the right headers and the wrong value
+    # format sums to zero on every row and returns 200 OK. Measured: the 07 Sep upload passed the
+    # missing-column guard above and still recorded 0 for all 108 products.
+    #
+    # **Refused only above a threshold, because a genuinely empty warehouse is a real state.** A new
+    # account, or a seller who has sold out, honestly holds nothing — so "every total is zero" cannot
+    # be refused outright. What it CAN be refused for is scale: a report listing dozens of active
+    # products where every single one is zero is a parse failure, not a warehouse. Measured on this
+    # account: 108 products, and the previous plan held 10,659 units.
+    #
+    # 10 is deliberately well below the real 108 and well above the handful a genuinely new seller
+    # would have, so neither case is decided by a coin toss. `test_shipment_stock_csv.py` pins both
+    # sides.
+    if len(asin_stock) >= ALL_ZERO_STOCK_THRESHOLD and not any(asin_stock.values()):
+        sample = df[existing_cols].head(3).to_dict("records")
+        logger.warning(
+            "Stock CSV parsed %d ASIN(s) and every total came out ZERO. Columns matched: %s. "
+            "All columns in file: %s. First rows of the matched columns: %s",
+            len(asin_stock), existing_cols, list(df.columns)[:14], sample,
+        )
+        raise ValueError(
+            f"Every one of the {len(asin_stock)} FBA products in this file came out as zero stock, "
+            "so the quantities could not be read — a deficit equal to the full projection would "
+            "over-state what needs making. "
+            f"The quantity column(s) found were: {', '.join(existing_cols)}, and the first values in "
+            f"them were: {sample}. "
+            "If those look blank or non-numeric, re-download 'Manage FBA Inventory' from "
+            "Reports > Fulfilment > Inventory without opening it in Excel first, since Excel can "
+            "rewrite the number format."
+        )
 
     return asin_stock
 
@@ -213,12 +292,34 @@ def parse_sku_map(content: bytes) -> dict[str, str]:
         )
         return {}
 
+    # **The FBA SKU is PREFERRED, because an ASIN appears on several SKU rows.**
+    #
+    # `setdefault` alone means whichever row comes FIRST wins, and on this account that can be the
+    # Flex or Easy Ship SKU — measured, `0.5kg cs 1 FBA` and `0.5kg cs 1 flex` both carry ASIN
+    # B0CWGXYLT6. It happened to pick the FBA one on the 07 Sep file, by luck of row order, which is
+    # exactly the accident that made the same file report zero stock (see `parse_stock_csv`).
+    #
+    # This matters beyond tidiness: **Amazon's shipment upload keys on the merchant SKU**, and a plan
+    # carrying the Flex SKU for an FBA shipment is a line Amazon rejects. So a non-FBA SKU is only
+    # used when the ASIN has no FBA SKU at all, rather than being allowed to win on ordering.
+    from app.portfolio.logic import CHANNEL_FBA, _channel_of
+
     out: dict[str, str] = {}
+    fallback: dict[str, str] = {}
     for asin, sku in zip(df["asin"].astype(str), df["sku"].astype(str)):
         asin = asin.strip()
         sku = sku.strip()
-        if asin and sku and sku.lower() != "nan":
+        if not asin or not sku or sku.lower() == "nan":
+            continue
+        if _channel_of(sku) == CHANNEL_FBA:
             out.setdefault(asin, sku)
+        else:
+            fallback.setdefault(asin, sku)
+
+    # An ASIN sold only on Easy Ship has no FBA SKU; keeping its own SKU is better than a blank,
+    # which `missing_sku_count` would then report and Amazon would reject.
+    for asin, sku in fallback.items():
+        out.setdefault(asin, sku)
     return out
 
 
