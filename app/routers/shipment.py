@@ -126,7 +126,26 @@ def parse_sales_csv(content: bytes) -> dict[str, int]:
 
 
 def parse_stock_csv(content: bytes) -> dict[str, int]:
-    """Parse FBA stock report CSV → {ASIN: total_stock}. Sums: fulfillable + reserved + inbound columns."""
+    """Parse FBA stock report CSV → {ASIN: total_stock}. Sums: fulfillable + reserved + inbound columns.
+
+    **A file with no recognisable quantity column is REFUSED, and that refusal cost ~10,000 units of
+    over-production to learn.** On 07 Sep 2026 the owner uploaded a report whose `asin` and `sku`
+    columns matched — so merchant SKUs populated and the upload looked accepted — while none of the
+    eight quantity columns did. `existing_cols` came out empty, `sum([])` is `0`, and every ASIN was
+    recorded as holding no FBA stock:
+
+        plan 3 (30 Aug)  sum(fba_stock) = 10,659
+        plan 4 (07 Sep)  sum(fba_stock) =      0
+
+    `deficit = projection - fba_stock`, so every deficit became the full projection and the plan asked
+    for 18,955 units against a real need of roughly 8,000. **Two `POST /shipment/generate` calls
+    returned 200 OK with no warning in the log**, because a missing quantity column was indistinguishable
+    from an empty warehouse.
+
+    So the check mirrors the `asin` one directly above it: a stock report this app cannot read is not a
+    stock report holding no stock. `parse_sku_map`, immediately below, already logged a warning in the
+    equivalent situation — this function was the one place in the pair that failed silently.
+    """
     try:
         df = pd.read_csv(io.BytesIO(content))
     except Exception:
@@ -142,6 +161,20 @@ def parse_stock_csv(content: bytes) -> dict[str, int]:
         "afn-reserved-future-supply", "afn-future-supply-buyable",
     ]
     existing_cols = [c for c in stock_cols if c in df.columns]
+
+    # **ANY one of the eight is enough, and that is deliberate.** The report varies by account and
+    # region — several columns are routinely absent, and `test_shipment_catalogue.py`'s fixtures carry
+    # only `afn-fulfillable-quantity` — so requiring all eight would refuse the report most accounts
+    # actually get. What is refused is NONE of them.
+    if not existing_cols:
+        found = ", ".join(str(c) for c in list(df.columns)[:10]) or "(no columns)"
+        raise ValueError(
+            "This file has no FBA quantity column, so every product would be recorded as holding "
+            "zero stock — which would make each deficit the full projection and over-state what "
+            "needs making. "
+            f"Looked for any of: {', '.join(stock_cols[:4])}... Found: {found}. "
+            "Download 'Manage FBA Inventory' from Reports > Fulfilment > Inventory and upload that."
+        )
 
     asin_stock: dict[str, int] = {}
     for _, row in df.iterrows():

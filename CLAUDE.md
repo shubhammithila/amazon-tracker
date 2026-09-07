@@ -2877,6 +2877,47 @@ banner on both screens, and the shipment file writes the SKU blank rather than
 substituting a plausible-looking ASIN) instead of being swallowed by a bare
 `except Exception: pass`. Fixing the data is a seller-central job, not a code one.
 
+### A stock CSV with no quantity column was read as an EMPTY WAREHOUSE, and it nearly cost 10,000 units
+Reported as *"I have uploaded new plan. why fba stock is showing 0"* — every row showing `FBA STOCK 0`
+and therefore `DEFICIT = PROJ` exactly.
+
+`parse_stock_csv` sums whichever of eight `afn-*-quantity` columns exist. The uploaded report had
+valid `asin` and `sku` — so **merchant SKUs populated and the file looked accepted** — while none of
+the eight quantity columns matched. `existing_cols` came out empty, `sum([])` is `0`, and every ASIN
+was recorded as holding nothing:
+
+| plan | date | `sum(fba_stock)` |
+|---|---|---|
+| 1 | 11 Aug | 9,532 |
+| 2 | 20 Aug | 6,390 |
+| 3 | 30 Aug | 10,659 |
+| **4** | **07 Sep** | **0** |
+
+`deficit = projection − fba_stock`, so the plan asked for **18,955 units against a real need of
+roughly 8,000**. **Two `POST /shipment/generate` calls returned 200 OK and the log carried no
+warning** — a missing quantity column was indistinguishable from an empty warehouse.
+
+> **The asymmetry that allowed it is the lesson.** `parse_sku_map`, ten lines below in the same
+> module, already logged a warning when ITS columns were missing. The stock parser — whose output
+> drives how much gets manufactured — was the one of the pair that failed silently. The check now
+> mirrors the `asin` guard directly above it: a stock report the app cannot read is not a stock report
+> holding no stock.
+
+- **ANY one of the eight columns is enough**, deliberately: the report varies by account and region
+  and several are routinely absent, so requiring all eight would refuse the report most accounts
+  actually get. What is refused is NONE of them.
+- **A recognisable report full of zeros still parses.** A new account or a sold-out seller genuinely
+  holds nothing, and the distinction being drawn is between "the column says 0" and "there is no
+  column".
+- **The refusal names the consequence, the columns it looked for, the columns it found, and the report
+  to download.** "Invalid stock report" would send the owner back to Seller Central to guess between
+  six inventory reports.
+- `tests/test_shipment_stock_csv.py` covers it end to end through `POST /shipment/generate`, not only
+  at the parser — the route wraps the parser in `try/except`, so a unit test alone would not prove the
+  400 ever reaches the screen. **That is the gap that let this ship**: every existing fixture across
+  `test_shipment_catalogue.py` and the rest used the correct column name, so nothing exercised the
+  case where those columns are absent.
+
 ### "Nearest 10" is arithmetic, not physics
 437 → 440 is right numerically and wrong if a carton holds 12.
 `logic.round_to_step` takes the step as an argument precisely so
