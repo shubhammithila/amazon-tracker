@@ -725,6 +725,51 @@ wait on Google and fail when Google is unreachable.
   (the script is mode 644, so run it as `bash deploy/update-ec2.sh`; it prompts once
   about stashing `hsn_master.json` — answer `y`, which stashes rather than discards)
 
+### SQLite runs in WAL mode, and a total outage is why
+Reported as *"Internal Server Error in the app. its not running"*. Every page returned 500.
+
+The half-hourly orders refresh started at **09:14:31**, died at **09:17:58** leaving a stale
+`tracker.db-journal` — an abandoned write transaction — and from then on everything touching the
+database raised:
+
+```
+sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) database is locked
+```
+
+**15 occurrences in six minutes**, and locked tightly enough that even reading a `PRAGMA` failed. The
+service showed `active` throughout, so `systemctl` said nothing was wrong.
+
+The cause was configuration, not code:
+
+| setting | was | now |
+|---|---|---|
+| `journal_mode` | **`delete`** — one writer blocks every READER | **`WAL`** |
+| `busy_timeout` | **5000 ms** | **30000 ms** |
+| `synchronous` | `FULL` | `NORMAL` (WAL's standard companion) |
+
+An orders refresh is ~2 minutes of writes, so under a rollback journal any page load inside that
+window could be locked out — and five seconds is nowhere near long enough to wait it out. A background
+job failing turned into the whole app failing.
+
+- **The pragmas go on a `connect` EVENT, not once at startup.** SQLAlchemy opens connections lazily and
+  pools them, and `busy_timeout`/`synchronous` are per-CONNECTION — a connection created later would
+  otherwise keep SQLite's defaults and be the one that raises.
+- **An in-memory database silently refuses WAL** (SQLite keeps `:memory:` in `memory` journal mode),
+  and the whole test suite runs in memory. So a test asking a live connection would pass while proving
+  nothing; `tests/test_database_locking.py` verifies against a real temporary FILE instead, and
+  reproduces the outage — a reader blocked under `delete`, unblocked under WAL.
+- **Recovery from a stale lock is a restart**, which releases the connection and lets SQLite roll the
+  journal back. Back up the `.db` AND its `-journal` first: the journal is the uncommitted state.
+  Integrity was `ok` afterwards with no data lost.
+- **SQLite-only, deliberately.** `journal_mode` and `busy_timeout` are not Postgres syntax, so they sit
+  under the same URL branch as the pooling options. The deferred Postgres move depends on nothing
+  SQLite-specific leaking out, and a test asserts that.
+
+> **WAL raises the ceiling; it does not remove it.** SQLite still allows exactly one writer, which is
+> the constraint the shipment feature's write separation is built around and the reason the
+> PostgreSQL move is in the plan appendix. This fixes readers being blocked by a writer — the actual
+> failure — and buys headroom rather than removing the limit.
+
 ### The box has 2 GB of swap now, and the scrape is why
 **A manual product scrape WEDGED the app**, and the failure mode is worth knowing because it
 looks nothing like a crash. On 2026-08-27 a 271-ASIN scrape was started from the Dashboard;
