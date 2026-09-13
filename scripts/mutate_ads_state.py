@@ -132,6 +132,20 @@ MUTATIONS = [
         "    if False:",
         "test_a_mixed_payload_is_refused_rather_than_half_applied",
     ),
+    (
+        "save_rule puts the state back in the numeric amount column (the 500 on save)",
+        REPO,
+        "        amount, target_state = None, str(amount).strip().upper()",
+        "        target_state = str(amount).strip().upper()",
+        "test_the_two_kinds_are_stored_in_different_columns",
+    ),
+    (
+        "load_rules coerces a saved state through _f(), so a pause rule loads with no state",
+        REPO,
+        '"amount": r.target_state if r.target_state else _f(r.amount),',
+        '"amount": _f(r.amount),',
+        "test_a_pause_rule_can_be_saved_and_read_back",
+    ),
 ]
 
 

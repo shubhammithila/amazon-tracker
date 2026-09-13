@@ -1137,8 +1137,25 @@ async def save_rule(db: AsyncSession, name: str, rule: dict) -> dict:
         problem = logic.condition_error(condition)
         if problem:
             raise ValueError(problem)
-    if rule.get("action") not in logic.ACTIONS:
-        raise ValueError(f"Unknown action {rule.get('action')!r}.")
+    action = rule.get("action")
+    if action not in logic.ACTIONS:
+        raise ValueError(f"Unknown action {action!r}.")
+
+    # **A state rule's amount is a WORD, and it goes in its own column.**
+    #
+    # `amount` is `Numeric(12, 2)`, so storing "PAUSED" there raised
+    # `could not convert string to float: 'PAUSED'` and `POST /ads/rules` returned 500 — the rule
+    # never saved, which is what "I just saved a rule but it is not showing" was.
+    #
+    # Validated here rather than only at run time, the `good_rating: 99` lesson: a value accepted now
+    # and refused later is a rule the owner has to debug at the moment they want to use it. `ARCHIVED`
+    # is refused by name, because it is terminal at Amazon and has no undo.
+    amount, target_state = rule.get("amount"), None
+    if logic.is_state_action(action):
+        problem = logic.state_error(amount)
+        if problem:
+            raise ValueError(problem)
+        amount, target_state = None, str(amount).strip().upper()
 
     existing = (await db.execute(
         select(AdsRule).where(AdsRule.name == name)
@@ -1146,8 +1163,9 @@ async def save_rule(db: AsyncSession, name: str, rule: dict) -> dict:
 
     values = {
         "conditions_json": json.dumps(conditions),
-        "action": rule.get("action"),
-        "amount": rule.get("amount"),
+        "action": action,
+        "amount": amount,
+        "target_state": target_state,
         "window_days": int(rule.get("window_days") or 7),
     }
     if existing:
@@ -1157,7 +1175,9 @@ async def save_rule(db: AsyncSession, name: str, rule: dict) -> dict:
         db.add(AdsRule(name=name, created_at=datetime.utcnow(), **values))
 
     await db.commit()
-    return {"name": name, **values, "conditions": conditions}
+    # `amount` is echoed back as the caller SENT it — the state for a state rule, the number otherwise
+    # — so the screen can re-render the saved rule without knowing which column it landed in.
+    return {"name": name, **values, "amount": target_state or amount, "conditions": conditions}
 
 
 async def load_rules(db: AsyncSession) -> list[dict]:
@@ -1173,7 +1193,11 @@ async def load_rules(db: AsyncSession) -> list[dict]:
             "name": r.name,
             "conditions": conditions,
             "action": r.action,
-            "amount": _f(r.amount),
+            # **The state wins where there is one.** `_f()` on "PAUSED" would give 0.0 or None, so a
+            # saved pause rule would load into the screen with no state and silently become a
+            # different rule from the one that was saved.
+            "amount": r.target_state if r.target_state else _f(r.amount),
+            "target_state": r.target_state or "",
             "window_days": int(r.window_days or 7),
             "last_run_at": r.last_run_at.isoformat() if r.last_run_at else "",
         })

@@ -366,8 +366,10 @@ def indexes(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "target_state" in cols("ads_rule"):
+    print("793508bceef8")                           # head: a pause rule can be SAVED
 elif "new_state" in cols("ads_mutation"):
-    print("bf1c526cd768")                           # head: pause/enable from a rule
+    print("bf1c526cd768")                           # pause/enable from a rule
 elif "user_login_events" in tables:
     print("d3479a8ed8ad")                           # login-event log
 elif "projection_row" in tables and "excluded_at" in cols("projection_row"):

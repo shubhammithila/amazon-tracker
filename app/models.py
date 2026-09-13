@@ -1234,7 +1234,20 @@ class AdsRule(Base):
     #: `[{"field": "spend", "op": "gt", "value": 100}, ...]`, ANDed.
     conditions_json = Column(Text)
     action = Column(String(20))
+    #: The NUMBER a bid action moves by — a percentage or a rupee figure. Null for a state rule.
     amount = Column(Numeric(12, 2))
+    #: The STATE a `set_state` rule sets, `PAUSED` or `ENABLED`. Null for a bid rule.
+    #:
+    #: **A separate column rather than widening `amount` to text**, and the reason is the same one
+    #: `ads_mutation` needed its own `action` column for: one field holding either a number or a word
+    #: means every reader has to guess which it is, and a rule whose action says one thing while its
+    #: amount says another is unreviewable. Widening to text would also silently turn every existing
+    #: saved percentage into a string.
+    #:
+    #: Added after `POST /ads/rules` returned 500 with `could not convert string to float: 'PAUSED'` —
+    #: the pause action was built through `plan_run`, the writer and the ledger, and the saved-rules
+    #: table was the one path in the same vocabulary that nothing exercised.
+    target_state = Column(String(12))
     #: Window in days. 7/14/30 are single reports and attribution-exact; above 31 Amazon needs
     #: several reports (its measured per-report cap).
     window_days = Column(Integer, default=7)

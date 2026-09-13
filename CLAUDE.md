@@ -2639,6 +2639,22 @@ possible reason. The bid ceiling and floor are skipped for the same reason — a
 > screen discarded them) and `renderInvoiceBar` (complete, tested, and invisible because no
 > `<div id="invoice-bar">` existed).
 
+> **And it shipped broken a THIRD time, in the saved-rules table.** Reported as *"I just saved a rule
+> but it is not showing"*: `POST /ads/rules` returned 500 with
+> `ValueError: could not convert string to float: 'PAUSED'`, because `AdsRule.amount` is
+> `Numeric(12, 2)` and a state rule's amount is a WORD. The rule never saved.
+>
+> `set_state` was built through `plan_run`, `apply_changes`, the ledger and the preview — and the
+> saved-rules table was the one path sharing that vocabulary that nothing exercised. **`target_state`
+> is its own column rather than widening `amount` to text**, for the reason `ads_mutation` needed its
+> own `action` column: one field holding either a number or a word makes every reader guess, and
+> widening would silently turn every existing saved percentage into a string.
+>
+> Three shipped-broken instances of one feature is the real finding. Each fix was correct and each
+> missed a neighbour: the writer, then the client payload, then persistence. **A vocabulary change
+> touches every path that speaks it**, and "the tests pass" kept meaning "the path I was looking at
+> passes".
+
 > **The mutation harness found two real test gaps, and the second was the trap this file already
 > warns about.** `scripts/mutate_ads_state.py` runs 13 mutations; 11 were caught first time. The two
 > survivors: (1) the `Number()` check asserted on the payload CALL SITES, so moving the coercion inside
