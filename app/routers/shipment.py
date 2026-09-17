@@ -1188,12 +1188,28 @@ async def confirm_amazon_shipment(
     # **A failure here DOES fail the request, unlike the transportation step below.** Nothing
     # irreversible has happened yet, so refusing early is the safe direction — and continuing
     # would hit the confirmation's own refusal a moment later with a less specific message.
+    # The ids come from the PLACEMENT OPTION, not from the plan detail. Before the placement is
+    # confirmed the plan's own `shipments` array is EMPTY — measured — so reading it here sent
+    # nothing and Amazon refused the confirmation for missing packing information. The first
+    # version of this fix did exactly that and reported Amazon's complaint as if it were theirs.
     try:
-        packing_shipments = await spapi.plan_shipments(plan_id)
+        packing_shipment_ids = await spapi.placement_option_shipment_ids(plan_id, option_id)
     except spapi.SpApiError as exc:
         logger.warning("amazon plan read failed for %s: %s", plan_id, exc.message)
         return JSONResponse(
             {"error": exc.message, "inbound_plan_id": plan_id}, status_code=502
+        )
+    if not packing_shipment_ids:
+        # Never silently skip: the whole failure mode being fixed here is packing information
+        # not being sent and Amazon's refusal looking like an Amazon problem.
+        return JSONResponse(
+            {
+                "error": "Amazon listed no shipments for that placement option, so the box "
+                         "count cannot be declared and the shipment cannot be confirmed.",
+                "inbound_plan_id": plan_id,
+                "hint": "Nothing is confirmed yet — cancel the plan and create it again.",
+            },
+            status_code=502,
         )
 
     all_days = await repository.load_days_with_entries(db, plan.id)
@@ -1204,10 +1220,8 @@ async def confirm_amazon_shipment(
     )
 
     try:
-        for shipment in packing_shipments:
-            await spapi.set_packing_information(
-                plan_id, shipment.shipment_id, cartons
-            )
+        for shipment_id in packing_shipment_ids:
+            await spapi.set_packing_information(plan_id, shipment_id, cartons)
     except spapi.SpApiError as exc:
         logger.warning("amazon packing info failed for %s: %s", plan_id, exc.message)
         return JSONResponse(

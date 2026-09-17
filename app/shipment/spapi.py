@@ -785,6 +785,33 @@ DEFAULT_BOX = {
 BOX_CONTENT_MANUAL = "MANUAL_PROCESS"
 
 
+async def placement_option_shipment_ids(
+    inbound_plan_id: str,
+    placement_option_id: str,
+    client: httpx.AsyncClient | None = None,
+) -> list[str]:
+    """The shipment ids on one placement option. Read-only.
+
+    **`plan_shipments` cannot be used before the placement is confirmed**, and that mistake
+    shipped: measured on an unconfirmed plan, `GET /inboundPlans/{id}` returns
+    ``shipments: []`` while the placement option already carries the id. So a packing loop
+    driven by the plan detail iterated an empty list, sent nothing, and Amazon refused the
+    confirmation for missing packing information — with the app reporting Amazon's message as
+    though it were an Amazon problem.
+
+    The ids live on the option because a placement option IS a proposed division of the plan
+    into shipments; they only migrate onto the plan once one option is accepted.
+    """
+    listed = await _get(
+        f"/inbound/fba/2024-03-20/inboundPlans/{inbound_plan_id}/placementOptions",
+        client=client,
+    )
+    for option in listed.get("placementOptions") or []:
+        if str(option.get("placementOptionId") or "") == placement_option_id:
+            return [str(s) for s in (option.get("shipmentIds") or []) if s]
+    return []
+
+
 async def set_packing_information(
     inbound_plan_id: str,
     shipment_id: str,

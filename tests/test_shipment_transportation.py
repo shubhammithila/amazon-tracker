@@ -353,16 +353,46 @@ def test_packing_information_is_sent_for_EVERY_shipment_on_the_plan():
         f"the loop iterates {iterated.id!r}, which is not the plan's shipments"
     )
 
-    # And that name must be what plan_shipments returned, or it could be any empty list.
+    # And that name must come from the PLACEMENT OPTION — see the test below for why.
     assigned = [
         node for node in ast.walk(tree)
         if isinstance(node, ast.Assign)
-        and "plan_shipments" in ast.dump(node)
+        and "placement_option_shipment_ids" in ast.dump(node)
         and any(isinstance(t, ast.Name) and t.id == iterated.id for t in node.targets)
     ]
     assert assigned, (
-        f"{iterated.id!r} must come from spapi.plan_shipments — otherwise the loop can be "
-        "silently emptied and Amazon refuses the confirmation instead"
+        f"{iterated.id!r} must come from spapi.placement_option_shipment_ids — otherwise the "
+        "loop can be silently empty and Amazon refuses the confirmation instead"
+    )
+
+
+def test_the_shipment_ids_come_from_the_placement_option_not_the_plan_detail():
+    """**This shipped broken and a real end-to-end run is what caught it.**
+
+    Before a placement is confirmed the plan detail's `shipments` array is EMPTY — measured on
+    an unconfirmed plan, while the placement option already carried the id. So the first version
+    of this fix looped over `plan_shipments(...)`, iterated nothing, sent no packing
+    information, and Amazon refused the confirmation with
+
+        ERROR: Packing information is not found for inbound plan ID wf... and shipment IDs [sh...]
+
+    which the app then reported verbatim as though it were Amazon's problem. Every test passed
+    and 19/19 mutations were caught, because a fake client returns whatever it is told to and
+    cannot know that the real endpoint answers `[]` at this point in the sequence.
+
+    The empty case is now an explicit refusal rather than a silently skipped loop, since
+    "packing information was never sent" is the exact failure being fixed.
+    """
+    body = _strip_prose(_confirm_route_source())
+    packing = body.index("set_packing_information")
+    # plan_shipments may still be used AFTER the confirmation, where the ids are real.
+    assert "placement_option_shipment_ids" in body[:packing], (
+        "the shipment ids for packing must come from the placement option, because the plan "
+        "detail reports no shipments until the placement is confirmed"
+    )
+    assert "if not packing_shipment_ids:" in body, (
+        "an empty shipment list must be refused, not skipped — a skipped loop is exactly how "
+        "this shipped broken"
     )
 
 

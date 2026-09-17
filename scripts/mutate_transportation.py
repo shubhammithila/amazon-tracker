@@ -95,9 +95,24 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         "app/routers/shipment.py",
-        "        for shipment in packing_shipments:\n            await spapi.set_packing_information(",
-        "        for shipment in []:\n            await spapi.set_packing_information(",
+        "        for shipment_id in packing_shipment_ids:",
+        "        for shipment_id in []:",
         "packing info never sent — Amazon refuses the confirmation",
+    ),
+    # The bug that ACTUALLY SHIPPED: the plan detail reports no shipments until the placement
+    # is confirmed, so reading it here iterates an empty list and sends nothing. Caught only by
+    # a real end-to-end run — a fake client answers whatever it is told to.
+    (
+        "app/routers/shipment.py",
+        "await spapi.placement_option_shipment_ids(plan_id, option_id)",
+        "[s.shipment_id for s in await spapi.plan_shipments(plan_id)]",
+        "ids from the plan detail, which is EMPTY before placement is confirmed",
+    ),
+    (
+        "app/routers/shipment.py",
+        "    if not packing_shipment_ids:",
+        "    if False:",
+        "an empty shipment list is skipped silently instead of refused",
     ),
     (
         "app/routers/shipment.py",
