@@ -2898,6 +2898,94 @@ Three traps, all covered by `tests/test_scraper_deal_badge.py`:
 > here rather than silently worked around.
 
 
+### Creating an FBA shipment: seven calls, and only a real run found the last two
+Reported as *"the create shipment is not making the complete shipment. it is just making a plan
+and that too with error."* Both halves were true and had different causes.
+
+**Proven end to end on the live account** — two real shipments, from a packed day to printable
+labels, with nothing done by hand:
+
+```
+FBA15MGVT70T  ISK3 / BHIWANDI / MAHARASHTRA   3 SKUs, 410 units, 14 cartons
+FBA15MGVV335  ISK3 / BHIWANDI / MAHARASHTRA   3 SKUs,  90 units,  8 cartons
+dates.readyToShipWindow = 2026-09-17T18:30Z   <- midnight IST on the 18th, the date asked for
+labels: Thermal · A4_4 · Plain_Paper — all three download
+```
+
+The sequence, in the order Amazon demands it:
+
+| # | Call | Note |
+|---|---|---|
+| 1 | `createInboundPlan` | items, source address, marketplace |
+| 2 | `updateItemComplianceDetails` | India: HSN + declared value per SKU, or placement fails |
+| 3 | `generatePlacementOptions` | `customPlacement` names the FC; fee came back ₹0 |
+| 4 | **`setPackingInformation`** | **the box count — see below** |
+| 5 | `confirmPlacementOption` | **the commit point.** Issues the `FBA…` id |
+| 6 | `generateTransportationOptions` | **carries the ship date** |
+| 7 | `confirmTransportationOptions` | ids only. Completes the shipment |
+
+**Two assumptions were wrong, and measuring killed both.** Box labels were the feared unknown —
+they already worked, all three formats, with no appointment needed (an open question in the August
+notes: answered, no). And declaring 26 boxes of mixed contents was the feared blocker — India
+refuses `ListShipmentBoxes` outright and the transportation option carries `preconditions: []`, so
+there is no per-box manifest to build and the packer's workflow is untouched.
+
+> **`SetPackingInformation` is required even though India refuses `ListPackingOptions`.** That pair
+> of facts is the most misleading thing in this API. The module docstring said India needs no
+> packing information, citing real evidence — both list endpoints are 400 *"not supported for the
+> Indian marketplace"* (still true) and placement options genuinely generate without it. **The
+> evidence held for the step it was measured on and did not transfer to the next one**: confirming
+> refuses with *"Packing information is not found … Please set packing information through the
+> SetPackingInformation operation."* Same shape as `delete_draft_plans`, whose docstring asserted
+> an invariant a later feature invalidated and which destroyed 400 units of packed stock.
+>
+> **`MANUAL_PROCESS` is what makes it possible.** `BOX_CONTENT_PROVIDED` needs msku and quantity
+> per carton, which this app structurally cannot supply — a carton holds whatever was being packed
+> at the time, and `ShipmentPackingEntry.cartons` was REMOVED because asking the packer produced a
+> guess that then prefilled a GST invoice. `MANUAL_PROCESS` and `BARCODE_2D` require `items` to be
+> **empty**, so Amazon wants the box COUNT, dimensions and weight — exactly
+> `ShipmentPackingDay.total_cartons`. Amazon charges a manual-processing fee, which is the honest
+> trade against a fabricated manifest. The count comes from the DAYS, never from a count of plan
+> lines: cartons are per day, units are per SKU.
+
+> **The ship date belongs to GENERATE, and sending it on the confirmation fails SILENTLY.** Read
+> from Amazon's schema: `readyToShipWindow` is required on `ShipmentTransportationConfiguration`,
+> while `TransportationSelection` accepts only `shipmentId`, `transportationOptionId` and
+> `contactInformation`. Measured — posting the window on the confirmation three different ways
+> produced the *identical* error about a deliberately-invalid id, never about the field. The first
+> version did exactly that and would have shipped `dates: {}` with nothing failing.
+
+> **The packing fix itself shipped broken, and only a real run caught it.** Before the placement is
+> confirmed the plan detail's `shipments` array is **empty**, while the placement option already
+> carries the id — so a loop over `plan_shipments()` iterated nothing, sent no packing information,
+> and Amazon's refusal was reported verbatim as though it were Amazon's problem. **2,203 tests
+> passed and 19/19 mutations were caught against that code**, because a fake client returns
+> whatever it is told to and cannot know the real endpoint answers `[]` at that point. The
+> production log is what showed it: no `packingInformation` request at all. Shipment ids therefore
+> come from `placement_option_shipment_ids`, and an empty list is an explicit refusal rather than a
+> skipped loop.
+
+> **`quote.cost.amount` is the literal string `"$cost.amount"`** — an unsubstituted template
+> placeholder, on every option measured. `float()` raises on it, so reading it the obvious way
+> turns a working shipment into a 500 at the final step. Same trap as the deal badge's
+> `NO_OF_HOURS`. `option_cost` returns `None`, never `0.0`: a self-ship shipment has no Amazon
+> quote, and ₹0 reads as "Amazon is carrying this free".
+
+**A transportation failure does NOT fail the request; a packing failure DOES.** The asymmetry is
+the design. Packing runs before anything irreversible, so refusing early is safe and the plan can
+still be cancelled. By the time transportation runs the shipment exists and its labels print, so
+reporting failure there would invite a retry that creates a **second shipment for the same boxes**.
+Both rules are asserted so neither can be "tidied" into the other.
+
+`ist.utc_instant` converts the ship date once: Amazon holds `18:30Z` for a ship date of the 19th,
+so `f"{day}T00:00Z"` would declare the previous Indian day — the **seventh** instance of the defect
+`app/ist.py` exists for. A mutation swapping `ist.today()` for `date.today()` survived at first,
+because the dev box **is** in IST and the two agree there; production is UTC, where they differ for
+5.5 hours daily. Pinned at source level, since no value-based test on this machine can see it.
+
+The FC appointment (`generateSelfShipAppointmentSlots` → confirm) is deliberately **not** built:
+labels do not depend on it, so it never blocks printing.
+
 ### The invoice attach is a second request, so there is a window
 `POST /invoice/save` allocates the legally-sequential GST number and is left
 strictly untouched — the 26 tests in `tests/test_invoice_save.py` guard that
