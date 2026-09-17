@@ -30,3 +30,9 @@ projection_data.json
 app/invoice/active_products.json
 .tmp-shots/
 adsrefresh.log
+
+# Node port: dependencies and the large saved Amazon pages used as parser fixtures.
+# The .html files are 2.3 MB each and re-fetchable; the spike scripts and the
+# python_expected.json ground truth ARE tracked, because they are the differential test.
+node_modules/
+spike/*.html
