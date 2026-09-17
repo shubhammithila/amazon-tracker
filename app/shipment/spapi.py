@@ -675,6 +675,150 @@ async def confirm_placement(
     return payload
 
 
+async def list_transportation_options(
+    inbound_plan_id: str,
+    placement_option_id: str = "",
+    shipment_id: str = "",
+    client: httpx.AsyncClient | None = None,
+) -> list[dict]:
+    """The transportation options for a placed plan. Read-only.
+
+    **One of the two ids is mandatory.** With neither, Amazon answers 400::
+
+        ERROR: Operation ListTransportationOptions cannot be processed, because neither
+               shipment id nor placement option id was provided.
+
+    That reads like a malformed request rather than a missing parameter, so it is refused here
+    with a message naming the actual requirement instead of being sent and failing at Amazon.
+
+    Measured on two real plans (one still `READY_TO_SHIP`, one `IN_TRANSIT`): exactly **one**
+    option each, `carrier: {name: "Other"}`, `GROUND_SMALL_PARCEL`, `USE_YOUR_OWN_CARRIER`,
+    `preconditions: []`. The empty preconditions are why no box data is needed — consistent with
+    India refusing `ListShipmentBoxes` outright.
+    """
+    if not placement_option_id and not shipment_id:
+        raise SpApiError(
+            "Listing transportation options needs either a placementOptionId or a "
+            "shipmentId — Amazon refuses the call with neither."
+        )
+    params: dict[str, Any] = {"pageSize": 20}
+    if placement_option_id:
+        params["placementOptionId"] = placement_option_id
+    if shipment_id:
+        params["shipmentId"] = shipment_id
+    payload = await _get(
+        f"/inbound/fba/2024-03-20/inboundPlans/{inbound_plan_id}/transportationOptions",
+        params,
+        client=client,
+    )
+    return payload.get("transportationOptions") or []
+
+
+def option_cost(option: dict) -> float | None:
+    """The quoted cost of a transportation option, or ``None`` when there is not one.
+
+    **Amazon returns an UNSUBSTITUTED TEMPLATE PLACEHOLDER here.** Measured verbatim on both
+    real plans::
+
+        "quote": {"cost": {"amount": "$cost.amount", "code": ""}}
+
+    ``float("$cost.amount")`` raises, so reading this field the obvious way turns a working
+    shipment into a 500 at the last step. It is the same trap as the scraper's deal badge, where
+    the screen-reader span holds ``"Freedom Sale Deal NO_OF_HOURS hours"`` because the
+    substituting JavaScript never ran — a string that looks like data and is markup.
+
+    ``None`` rather than 0.0: a self-ship shipment on our own carrier has **no** Amazon quote,
+    and "₹0" would read as "Amazon is carrying this for free". The same three-state discipline
+    the Portfolio tab's ACOS column follows.
+    """
+    raw = ((option.get("quote") or {}).get("cost") or {}).get("amount")
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+async def generate_transportation_options(
+    inbound_plan_id: str,
+    placement_option_id: str,
+    shipment_configurations: list[dict],
+    client: httpx.AsyncClient | None = None,
+) -> None:
+    """Generate transportation options. **This is where the SHIP DATE is supplied.**
+
+    The ship date belongs HERE, not on the confirmation, and getting that wrong is a silent
+    failure. Read from Amazon's own schema (`ShipmentTransportationConfiguration`):
+    ``readyToShipWindow`` is a **required** field of a *generate* configuration, and
+    `TransportationSelection` — the confirmation's item type — accepts only three fields:
+    ``shipmentId``, ``transportationOptionId`` and ``contactInformation``.
+
+    **Amazon silently ignores the extra field rather than rejecting it.** Measured: posting a
+    confirmation carrying ``shipmentTransportationConfiguration.readyToShipWindow``,
+    ``readyToShipWindow`` at the top level, and no window at all all produced the *identical*
+    error — one about a deliberately-invalid id, never about the field. So sending the date on
+    the confirmation looks exactly like success and leaves the shipment with ``dates: {}``,
+    which is the very state this feature exists to fix.
+
+    ``shipment_configurations`` is one entry per shipment::
+
+        {"shipmentId": "sh…", "readyToShipWindow": {"start": "2026-09-18T18:30Z"},
+         "contactInformation": {...}}
+
+    `pallets` and `freightInformation` are omitted deliberately: both are optional and apply to
+    LTL/pallet freight, while every shipment this business sends is GROUND_SMALL_PARCEL on its
+    own carrier.
+    """
+    payload = await _post(
+        f"/inbound/fba/2024-03-20/inboundPlans/{inbound_plan_id}/transportationOptions",
+        {
+            "placementOptionId": placement_option_id,
+            "shipmentTransportationConfigurations": shipment_configurations,
+        },
+        client=client,
+    )
+    operation_id = str(payload.get("operationId") or "")
+    if operation_id:
+        await wait_for_operation(operation_id, client=client)
+
+
+async def confirm_transportation_options(
+    inbound_plan_id: str,
+    shipment_transportation: list[dict],
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    """Confirm the chosen carrier. **This is what completes the shipment.**
+
+    Without it a confirmed placement leaves a shipment at `READY_TO_SHIP` carrying
+    ``dates: {}`` — exactly the state the app used to leave, and why creating a shipment "only
+    made a plan". Measured against a shipment that really went out, the difference was this
+    call plus the generate above: it holds
+    ``readyToShipWindow: {"start": "2026-09-18T18:30Z"}``.
+
+    ``shipment_transportation`` is one entry per shipment, and per Amazon's schema it carries
+    **only** these three fields::
+
+        {"shipmentId": "sh…", "transportationOptionId": "to…",
+         "contactInformation": {...}}
+
+    No ship date: it was supplied to `generate_transportation_options`. Anything else added here
+    is silently dropped, so this function deliberately sends nothing more.
+
+    Less irreversible than `confirm_placement` — the shipment already exists by this point, and
+    this sets its carrier and date. Still a real write, so it is only reached from the same
+    owner click that confirmed placement.
+    """
+    payload = await _post(
+        f"/inbound/fba/2024-03-20/inboundPlans/{inbound_plan_id}"
+        "/transportationOptions/confirmation",
+        {"transportationSelections": shipment_transportation},
+        client=client,
+    )
+    operation_id = str(payload.get("operationId") or "")
+    if operation_id:
+        await wait_for_operation(operation_id, client=client)
+    return payload
+
+
 async def cancel_inbound_plan(
     inbound_plan_id: str, client: httpx.AsyncClient | None = None
 ) -> dict:

@@ -117,6 +117,27 @@ def utc_hhmm(hour: int, minute: int = 0) -> tuple[int, int]:
     return as_utc.hour, as_utc.minute
 
 
+def utc_instant(day: date, hour: int = 0, minute: int = 0) -> str:
+    """An IST wall-clock time on ``day`` as the ``YYYY-MM-DDTHH:MMZ`` string Amazon wants.
+
+    Built for `readyToShipWindow` on an inbound shipment, and it is defect 1–4 in the list above
+    waiting to happen again: read back from a real shipment that shipped, Amazon holds
+
+        readyToShipWindow: {"start": "2026-09-18T18:30Z"}
+
+    for a ship date of **19 September**. `18:30Z` is midnight IST, so the obvious
+    ``f"{day}T00:00Z"`` would tell Amazon the previous calendar day in India — the truck arrives
+    on the 19th against a shipment declared ready on the 18th.
+
+    Formatted to minutes with a literal ``Z``, matching the shape Amazon itself returns.
+    ``isoformat()`` would emit ``+00:00`` and seconds, which is a different string for the same
+    instant and not one this endpoint has been observed to accept.
+    """
+    anchored = datetime(day.year, day.month, day.day, hour, minute, tzinfo=IST)
+    as_utc = anchored.astimezone(timezone.utc)
+    return as_utc.strftime("%Y-%m-%dT%H:%MZ")
+
+
 def label(hour: int, minute: int = 0) -> str:
     """``"08:00 IST (02:30 UTC)"`` — for the startup log.
 

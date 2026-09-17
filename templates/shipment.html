@@ -1000,6 +1000,16 @@ function renderInvoiceBar(){
       <button class="btn-outline" id="ib-preview" ${chosen.length ? "" : "disabled"}
               title="Show exactly what would be sent to Amazon for the ticked days — sends nothing"
               onclick="previewAmazonShipment()">Check shipment data</button>
+      <!-- The ship date. Sent with the CONFIRM step, not the create, because it belongs to
+           transportation rather than to the plan — and it is what turns a placed shipment into
+           one with a carrier and a date. Optional: labels print without it. The minimum comes
+           from localDate(), which formats in the LOCAL calendar — see test_local_dates.py for
+           why every date string in this app goes through it. -->
+      <label style="font-size:11px;color:var(--text-muted)">Ship date
+        <input type="date" id="ib-ship-date" min="${localDate(new Date())}"
+               title="When the boxes leave. Sent to Amazon as the ready-to-ship window."
+               style="font-size:12px;padding:4px 6px"
+               onclick="try{this.showPicker()}catch(e){}"/></label>
       <!-- Creates the plan at Amazon and places it at the chosen FC. Stops before
            confirming, so nothing has shipped and the plan can still be cancelled. -->
       <button class="btn-amz" id="ib-create" ${chosen.length ? "" : "disabled"}
@@ -1346,10 +1356,18 @@ async function confirmAmazonShipment(placementOptionId){
     alert("The plan reference was lost. Reload and check Seller Central before retrying.");
     return;
   }
+  // Read at confirm time, not carried from create: the owner may set it after seeing the
+  // destination and fee, which is the whole point of the two-step flow.
+  const shipDateEl = document.getElementById("ib-ship-date");
+  const shipDate = shipDateEl ? shipDateEl.value : "";
   if(!confirm(
       "Confirm the shipment at Amazon?\n\n"
       + "This CANNOT be undone. Amazon will expect these boxes, the FBA shipment id is "
       + "issued, and any placement fee is charged.\n\n"
+      + (shipDate
+          ? `Carrier "Other" and a ship date of ${shipDate} will be set.\n\n`
+          : "NO SHIP DATE is set, so the carrier and date will be left for Seller Central. "
+            + "Box labels still print.\n\n")
       + "The shipment id and destination will be saved against the packing day(s), so the "
       + "invoice fills itself in."
   )) return;
@@ -1363,6 +1381,7 @@ async function confirmAmazonShipment(placementOptionId){
         inbound_plan_id: pendingAmazonPlan.plan_id,
         placement_option_id: placementOptionId,
         pack_dates: pendingAmazonPlan.pack_dates,
+        ship_date: shipDate,
       }),
     });
     const data = await r.json();
@@ -1383,6 +1402,26 @@ async function confirmAmazonShipment(placementOptionId){
         `Amazon split this into ${data.shipments.length} shipments — each one needs its `
         + "own box labels.", "warn"));
     }
+    /* Transportation is reported SEPARATELY from the shipment existing. The shipment is real
+       and irreversible either way; this line says whether the carrier and ship date got set.
+       Reporting them as one thing would either hide a half-finished shipment or make a real
+       one look like a failure — and a failure here must never read as "try again", because
+       retrying creates a second shipment for the same boxes. */
+    const trans = data.transportation || {};
+    if(trans.confirmed){
+      nodes.push(amazonLine(
+        `Carrier ${trans.carrier || "Other"} confirmed`
+        + (trans.ship_date ? `, shipping ${trans.ship_date}` : " (no ship date set)")
+        + (trans.cost == null ? " · no Amazon charge (your own carrier)" : ""), "good"));
+    }else if(trans.error){
+      nodes.push(amazonLine(trans.error, "warn"));
+      nodes.push(amazonLine(trans.hint || "", "muted"));
+    }else{
+      nodes.push(amazonLine(
+        "No ship date was set, so the carrier and date are still to be chosen in Seller "
+        + "Central. The box labels below already work.", "muted"));
+    }
+
     for(const shipment of (data.shipments || [])){
       nodes.push(amazonLine(
         `${shipment.confirmation_id} → ${shipment.warehouse_id || "?"}`
@@ -2297,6 +2336,14 @@ async function openPlanDetail(planId){
       </div>
     </div>`;
   }catch(e){ toast(e.message, "error"); }
+}
+
+/* A Date as YYYY-MM-DD in the LOCAL calendar. Never `toISOString()`, which formats as UTC and
+   shifted four separate dates a day early in this app — including a GST invoice date. Identical
+   to the helper in ads/portfolio/invoice/ops for the same reason it exists there. */
+function localDate(d){
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+       + `-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 /** Product names and hold reasons come from CSVs and the DB, so escape them. */

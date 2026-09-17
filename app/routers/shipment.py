@@ -37,7 +37,7 @@ from app.invoice.hsn_codes import lookup_hsn
 from app.invoice.parser import get_fc_info, get_purchase_rate
 from app.models import Invoice
 from app.routers.auth import ROLE_ADMIN, require_admin, require_ops_or_admin
-from app import products
+from app import ist, products
 from app.shipment import catalogue, documents, logic, repository
 
 router = APIRouter(prefix="/shipment")
@@ -708,6 +708,17 @@ AMAZON_SOURCE_ADDRESS = {
 }
 
 
+#: Who Amazon contacts about the truck. Required per shipment by
+#: `confirmTransportationOptions`, and deliberately built from the SAME source as the ship-from
+#: address above rather than typed a second time — two copies of a phone number is how the FC ends
+#: up ringing a line nobody answers.
+AMAZON_CONTACT_INFORMATION = {
+    "name": AMAZON_SOURCE_ADDRESS["name"],
+    "phoneNumber": AMAZON_SOURCE_ADDRESS["phoneNumber"],
+    "email": AMAZON_SOURCE_ADDRESS["email"],
+}
+
+
 async def _verified_days_for_amazon(request: Request, db: AsyncSession):
     """Validate a `{"pack_dates": [...]}` body and build the Amazon plan body from it.
 
@@ -1130,6 +1141,27 @@ async def confirm_amazon_shipment(
             {"error": f"Not a date (YYYY-MM-DD): {', '.join(invalid)}"}, status_code=400
         )
 
+    # The ship date, as an IST calendar day. Optional: a shipment with no date is still a real
+    # shipment whose labels print, so a missing date must not refuse the confirmation — it just
+    # leaves the shipment where Seller Central's own flow leaves it before the shipping step.
+    ship_date = str(body.get("ship_date") or "").strip()
+    if ship_date and not _valid_date(ship_date):
+        return JSONResponse(
+            {"error": f"Ship date is not a date (YYYY-MM-DD): {ship_date}"},
+            status_code=400,
+        )
+    if ship_date and date.fromisoformat(ship_date) < ist.today():
+        # Compared against the IST day, not the server's. On a UTC box `date.today()` is
+        # yesterday for the 5.5 hours after IST midnight, so a shipment being dated at 01:00 IST
+        # would have its own real today refused as past.
+        return JSONResponse(
+            {
+                "error": f"Ship date {ship_date} is in the past (today is "
+                         f"{ist.today().isoformat()} IST).",
+            },
+            status_code=400,
+        )
+
     plan = await repository.get_active_plan(db)
     if plan is None:
         return _no_plan()
@@ -1149,6 +1181,91 @@ async def confirm_amazon_shipment(
             },
             status_code=502,
         )
+
+    # ── Transportation: carrier and ship date. THIS is what completes the shipment ──
+    #
+    # Placement alone leaves the shipment at READY_TO_SHIP with `dates: {}` — measured, that is
+    # the only difference between a shipment this app created and one that actually went out.
+    #
+    # **It runs inside the same click, after placement, and its failure does NOT fail the
+    # request.** Both halves of that are deliberate. Confirming placement is irreversible and has
+    # already happened by this point, so returning an error here would report failure for a
+    # shipment that genuinely exists and whose labels print — the owner would reasonably retry and
+    # create a second one. Instead the shipment is recorded, and the transportation outcome is
+    # reported separately so a failure names the one step left to do in Seller Central.
+    transportation: dict = {"confirmed": False}
+    if shipments and ship_date:
+        try:
+            # 1. GENERATE, carrying the ship date. The date belongs here and nowhere else:
+            #    `readyToShipWindow` is a required field of a generate configuration, and the
+            #    confirmation's item type accepts only ids and contact details. Amazon SILENTLY
+            #    IGNORES an unknown field on the confirmation, so sending it there looks like
+            #    success and leaves `dates: {}` — the exact bug this feature fixes.
+            #
+            #    Midnight IST, converted once. `f"{ship_date}T00:00Z"` would declare the
+            #    PREVIOUS Indian day — the trap this codebase has hit six times.
+            instant = ist.utc_instant(date.fromisoformat(ship_date))
+            await spapi.generate_transportation_options(
+                plan_id,
+                option_id,
+                [
+                    {
+                        "shipmentId": shipment.shipment_id,
+                        "readyToShipWindow": {"start": instant},
+                        "contactInformation": AMAZON_CONTACT_INFORMATION,
+                    }
+                    for shipment in shipments
+                ],
+            )
+
+            # 2. LIST what generating produced, per shipment.
+            selections = []
+            chosen_options = []
+            for shipment in shipments:
+                options = await spapi.list_transportation_options(
+                    plan_id, shipment_id=shipment.shipment_id
+                )
+                if not options:
+                    raise spapi.SpApiError(
+                        f"Amazon offered no transportation option for "
+                        f"{shipment.confirmation_id or shipment.shipment_id}."
+                    )
+                # One option on every real plan measured (carrier "Other",
+                # GROUND_SMALL_PARCEL, USE_YOUR_OWN_CARRIER, no preconditions). Taking the
+                # first rather than making the owner choose between identical entries.
+                chosen = options[0]
+                chosen_options.append(chosen)
+                # **Only these three fields.** Anything else is silently dropped by Amazon, so
+                # adding "just in case" would hide a mistake rather than fail loudly.
+                selections.append({
+                    "shipmentId": shipment.shipment_id,
+                    "transportationOptionId": chosen.get("transportationOptionId"),
+                    "contactInformation": AMAZON_CONTACT_INFORMATION,
+                })
+
+            # 3. CONFIRM.
+            await spapi.confirm_transportation_options(plan_id, selections)
+            first_option = chosen_options[0]
+            transportation = {
+                "confirmed": True,
+                "ship_date": ship_date,
+                "carrier": (first_option.get("carrier") or {}).get("name") or "",
+                "shipping_mode": first_option.get("shippingMode") or "",
+                # None when Amazon quotes nothing, which is every self-ship shipment. Never 0.0:
+                # the raw field is the literal string "$cost.amount".
+                "cost": spapi.option_cost(first_option),
+            }
+        except spapi.SpApiError as exc:
+            logger.warning(
+                "amazon transportation failed for %s: %s", plan_id, exc.message
+            )
+            transportation = {
+                "confirmed": False,
+                "error": exc.message,
+                "hint": "The shipment EXISTS at Amazon and its box labels will print. Only "
+                        "the carrier and ship date are unset — finish that step in Seller "
+                        "Central. Do not create the shipment again.",
+            }
 
     # Record what Amazon actually created. The destination comes from Amazon, never from
     # the FC that was requested: they can differ, and the destination state decides which
@@ -1171,6 +1288,11 @@ async def confirm_amazon_shipment(
         # Named so the screen can say it plainly: more than one shipment means Amazon split
         # the plan, and each part needs its own labels.
         "split": len(shipments) > 1,
+        # Separate from `confirmed` on purpose. `confirmed` means the shipment exists and is
+        # irreversible; this says whether the carrier and ship date were set. They can differ,
+        # and conflating them would either hide a half-finished shipment or report a real one
+        # as a failure.
+        "transportation": transportation,
     })
 
 

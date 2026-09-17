@@ -191,6 +191,15 @@ MUTATING_FUNCTIONS = {
     # Writes GST data against a SKU at Amazon. Required before placement in India —
     # without it placement fails with "Declared value need to be provided."
     "declare_item_compliance",
+    # Supplies the ship date. `readyToShipWindow` is a REQUIRED field of a generate
+    # configuration and is silently IGNORED on the confirmation, so this call is the only place
+    # the ship date can be sent — measured, not read from documentation.
+    "generate_transportation_options",
+    # Sets the carrier and the ready-to-ship window. Less irreversible than
+    # `confirm_placement` — the shipment already exists by the time this runs — but still a real
+    # write, and it is what COMPLETES the shipment: without it Amazon leaves it at
+    # READY_TO_SHIP with `dates: {}`, which is exactly the "it only made a plan" state.
+    "confirm_transportation_options",
 }
 
 
@@ -608,6 +617,28 @@ def _shipment_router_source() -> str:
     return Path(router_module.__file__).read_text(encoding="utf-8")
 
 
+def _function_source(name: str) -> str:
+    """One route function's source, bounded by PARSING rather than a character count.
+
+    Several assertions here used ``source[start:start + N]``. That window is a guess about how
+    long the function is, and it silently becomes wrong when the function grows: adding
+    transportation confirmation pushed a real assertion past a 4000-character window, so the
+    test failed while the code it checked was correct. Enlarging the number is the obvious
+    repair and only defers the same failure.
+
+    Uses `ast` for the boundaries, so the extracted text is exactly the function — no more, and
+    never less.
+    """
+    import ast
+
+    source = _shipment_router_source()
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)) and node.name == name:
+            return ast.get_source_segment(source, node) or ""
+    raise AssertionError(f"{name} is not defined in app/routers/shipment.py")
+
+
 # ─── Creating the shipment: the guards, and the traps live testing exposed ────
 #
 # Every fact asserted here was learned by creating real (then cancelled) inbound plans
@@ -812,10 +843,16 @@ def test_cancel_will_not_forget_a_confirmed_shipment():
 
 def test_the_destination_recorded_is_amazons_not_the_request():
     """The FC asked for and the FC used can differ, and the destination state decides
-    which of the 15 GSTINs the invoice must use. So what is stored is Amazon's answer."""
-    source = _shipment_router_source()
-    start = source.index("async def confirm_amazon_shipment")
-    body = source[start:start + 4000]
+    which of the 15 GSTINs the invoice must use. So what is stored is Amazon's answer.
+
+    **The function is extracted by parsing, not by slicing a fixed number of characters.** This
+    read ``source[start:start + 4000]`` and broke when transportation confirmation was added to
+    the route — the assertion was pushed past the window, so the test failed while the code was
+    correct. A window that depends on the length of unrelated code is a test that fails for a
+    reason it is not about, and the natural repair is to enlarge the number, which only defers
+    the same failure.
+    """
+    body = _function_source("confirm_amazon_shipment")
     assert "warehouse_id=first.warehouse_id" in body, (
         "the requested FC is stored instead of the one Amazon actually chose"
     )
