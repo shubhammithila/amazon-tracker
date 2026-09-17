@@ -17,6 +17,17 @@ does not use. Three operations are refused outright::
     400  ListShipmentBoxes           "not supported for the Indian marketplace"
     400  GetDeliveryChallanDocument  "not supported for non-PCP transportation option"
 
+**`SetPackingInformation` is nevertheless REQUIRED**, and that pair of facts is the single most
+misleading thing about this API. India refuses to LIST packing options while still refusing to
+CONFIRM a placement without packing information having been SET::
+
+    400  ERROR: Packing information is not found for inbound plan ID wf... and shipment IDs
+         [sh...]. Please set packing information through the SetPackingInformation operation.
+
+Found by driving a real shipment end to end, not by reading anything. An earlier version of this
+module stated that India needs no packing information — true for the step it was measured on
+(placement options generate happily without it) and wrong for the next one.
+
 Two more traps, both of which cost real debugging time:
 
 * **``getLabels`` keys on the ``shipmentConfirmationId``** (``FBA15M59XQFZ``), not the
@@ -595,9 +606,12 @@ async def create_inbound_plan(
     until placement is confirmed, and the plan can be cancelled — but it appears in Seller
     Central immediately, so it is only ever called from an explicit owner action.
 
-    `setPackingInformation` is deliberately NOT called. India refuses both
-    `ListPackingOptions` and `ListShipmentBoxes`, and the test plan generated placement
-    options with no packing call and no box dimensions at all.
+    `setPackingInformation` is not called HERE, and that is a sequencing fact rather than a
+    claim that it is unnecessary. It keys on a `shipmentId`, which does not exist until
+    placement options have been generated — so it belongs between generating and confirming
+    them. Placement options do generate without it (which is what an earlier version of this
+    docstring mistook for "India needs no packing information"); the CONFIRMATION is what
+    refuses.
     """
     payload = await _post(
         "/inbound/fba/2024-03-20/inboundPlans",
@@ -736,6 +750,96 @@ def option_cost(option: dict) -> float | None:
         return float(raw)
     except (TypeError, ValueError):
         return None
+
+
+#: Box dimensions and weight sent with the packing information, in CM and KG.
+#:
+#: **Amazon requires these fields and this app does not hold them.** A carton here is filled with
+#: whatever is being packed at the time — the reason `ShipmentPackingEntry.cartons` was REMOVED
+#: (it asked the packer a question with no answer and his guess prefilled a GST invoice). So a
+#: representative carton is declared rather than a measurement invented per box.
+#:
+#: It is safe to be approximate because of what these numbers actually feed: `MANUAL_PROCESS`
+#: means Amazon does not use them for box contents, and every shipment this business sends is
+#: non-partnered ("Other" carrier), so Amazon is not quoting freight from them — measured, the
+#: quote comes back as the literal placeholder string "$cost.amount". They would matter for a
+#: partnered carrier, which is why this is a named constant with the reasoning attached rather
+#: than four numbers inline.
+DEFAULT_BOX = {
+    "dimensions": {"length": 40, "width": 30, "height": 25, "unitOfMeasurement": "CM"},
+    "weight": {"value": 12.0, "unit": "KG"},
+}
+
+#: How Amazon learns what is in each box. **`MANUAL_PROCESS` is the one that fits this business**,
+#: and it is what makes the whole feature possible:
+#:
+#: * `BOX_CONTENT_PROVIDED` needs an `items` array per box — msku and quantity for every carton.
+#:   This app cannot supply it: a carton holds whatever was being packed at the time, so a mixed
+#:   box belongs to several ASINs and to none of them.
+#: * `MANUAL_PROCESS` and `BARCODE_2D` require `items` to be **empty**, so Amazon wants only the
+#:   box COUNT, dimensions and weight — which is exactly `ShipmentPackingDay.total_cartons`.
+#:
+#: Measured against the live account: `MANUAL_PROCESS` + `shipmentId` with no items was accepted
+#: (202) and the operation reported SUCCESS. Amazon charges a manual-processing fee for this,
+#: which is the honest trade — the alternative is a fabricated per-box manifest.
+BOX_CONTENT_MANUAL = "MANUAL_PROCESS"
+
+
+async def set_packing_information(
+    inbound_plan_id: str,
+    shipment_id: str,
+    carton_count: int,
+    client: httpx.AsyncClient | None = None,
+) -> None:
+    """Declare how many boxes are in the shipment. **Required before confirming.**
+
+    Amazon refuses `confirmPlacementOption` without it::
+
+        ERROR: Packing information is not found for inbound plan ID wf… and shipment IDs
+               [sh…]. Please set packing information through the SetPackingInformation
+               operation.
+
+    **The module docstring's claim that India needs no packing information was true and is
+    now wrong**, and the distinction is worth keeping: `ListPackingOptions` is *still* refused
+    for the Indian marketplace (verified again on the same plan), and placement options still
+    GENERATE without this call. What changed is that CONFIRMING now requires it. So the
+    evidence gathered in August held for the step it was gathered on and did not transfer to
+    the next one — the same shape as `delete_draft_plans`, whose docstring asserted an
+    invariant a later feature invalidated.
+
+    `shipmentId` is used rather than `packingGroupId`, and that is the only option here:
+    Amazon documents `packingGroupId` as belonging to a confirmed *packing option*, which
+    India will not produce. It is documented as valid only "after placement confirmation" and
+    is nevertheless **accepted before it** — measured, on an UNCONFIRMED plan. Another case of
+    the documentation describing a flow India does not use.
+    """
+    payload = await _post(
+        f"/inbound/fba/2024-03-20/inboundPlans/{inbound_plan_id}/packingInformation",
+        {
+            "packageGroupings": [
+                {
+                    "shipmentId": shipment_id,
+                    "boxes": [
+                        {
+                            "contentInformationSource": BOX_CONTENT_MANUAL,
+                            # No `items` key at all. It MUST be empty for MANUAL_PROCESS, and
+                            # an empty list is a different thing from an absent one in an API
+                            # that has already been observed rejecting `Content-Type: ""`.
+                            "quantity": max(1, int(carton_count or 1)),
+                            **DEFAULT_BOX,
+                        }
+                    ],
+                }
+            ]
+        },
+        client=client,
+    )
+    # **Asynchronous, like every other mutation here.** A 202 means "accepted", not "done", and
+    # the failure would otherwise surface as the confirmation refusing for a reason that looks
+    # unrelated. Measured: operationId 18d20696… went IN_PROGRESS -> SUCCESS.
+    operation_id = str(payload.get("operationId") or "")
+    if operation_id:
+        await wait_for_operation(operation_id, client=client)
 
 
 async def generate_transportation_options(

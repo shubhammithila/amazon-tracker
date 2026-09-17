@@ -277,6 +277,143 @@ def test_no_ship_date_means_transportation_is_not_attempted_at_all():
     )
 
 
+def test_packing_information_uses_MANUAL_PROCESS_and_sends_no_box_contents():
+    """**This is what makes the feature possible at all.**
+
+    `BOX_CONTENT_PROVIDED` needs an `items` array per box — msku and quantity for every carton.
+    This app structurally cannot supply that: a carton is filled with whatever is being packed
+    at the time, and `ShipmentPackingEntry.cartons` was REMOVED precisely because asking the
+    packer what went in each box produced a guess that then prefilled a GST invoice.
+
+    `MANUAL_PROCESS` requires `items` to be **empty**, so Amazon wants the box COUNT, dimensions
+    and weight and nothing else. Measured: accepted 202, operation SUCCESS.
+
+    Asserted on the parsed body rather than on file text, because the constant names appear in
+    the surrounding prose and a substring check would pass with the real code reverted — the
+    deploy-detector mistake this repo has made three times.
+    """
+    source = inspect.getsource(spapi.set_packing_information)
+    assert "BOX_CONTENT_MANUAL" in source
+    assert spapi.BOX_CONTENT_MANUAL == "MANUAL_PROCESS"
+
+    tree = ast.parse(textwrap.dedent(source))
+    keys: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            for key in node.keys:
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    keys.add(key.value)
+    assert "items" not in keys, (
+        "MANUAL_PROCESS requires the box items list to be EMPTY — sending contents means "
+        "claiming to know which SKUs are in which carton, which this app cannot know"
+    )
+    for required in ("contentInformationSource", "quantity", "shipmentId", "packageGroupings"):
+        assert required in keys, f"{required} is required by Amazon's schema"
+
+
+def test_the_carton_count_comes_from_the_days_not_the_line_count():
+    """Cartons are per DAY in this app; units are per SKU. That asymmetry is deliberate.
+
+    Counting plan lines would send Amazon "3 boxes" for a 14-carton shipment, and the FC
+    reconciles received units per box.
+    """
+    body = _strip_prose(_confirm_route_source())
+    assert "total_cartons" in body, (
+        "the box count must come from the packer's own per-day carton count"
+    )
+    assert "set_packing_information" in body
+
+
+def test_packing_information_is_sent_for_EVERY_shipment_on_the_plan():
+    """Found by mutation: emptying the loop passed every other test here.
+
+    `for shipment in []:` leaves the call present, the constants right and the ordering intact
+    while sending nothing — and Amazon then refuses the confirmation with a message about
+    packing information, which reads as an API problem rather than as our bug. A plan can also
+    SPLIT into several shipments, and each needs its own packing information.
+
+    So the loop's iterable is asserted, not merely the presence of the call: it must be the
+    shipments read back from the plan.
+    """
+    body = _confirm_route_source()
+    tree = ast.parse(textwrap.dedent(body))
+
+    loops = [
+        node for node in ast.walk(tree)
+        if isinstance(node, (ast.For, ast.AsyncFor))
+        and "set_packing_information" in ast.dump(node)
+    ]
+    assert loops, "packing information must be set inside a loop over the plan's shipments"
+
+    iterated = loops[0].iter
+    assert isinstance(iterated, ast.Name), (
+        f"the loop must iterate a named collection of shipments, not {ast.dump(iterated)[:80]}"
+    )
+    assert "shipment" in iterated.id, (
+        f"the loop iterates {iterated.id!r}, which is not the plan's shipments"
+    )
+
+    # And that name must be what plan_shipments returned, or it could be any empty list.
+    assigned = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and "plan_shipments" in ast.dump(node)
+        and any(isinstance(t, ast.Name) and t.id == iterated.id for t in node.targets)
+    ]
+    assert assigned, (
+        f"{iterated.id!r} must come from spapi.plan_shipments — otherwise the loop can be "
+        "silently emptied and Amazon refuses the confirmation instead"
+    )
+
+
+def test_a_packing_failure_refuses_BEFORE_anything_irreversible():
+    """The opposite rule from the transportation step, and for a measured reason.
+
+    Nothing is committed when packing information is set, so refusing early is safe and the
+    message is specific. By the time transportation runs, placement is already irreversible, so
+    a failure there must NOT fail the request or the owner retries and creates a second
+    shipment. Both behaviours are asserted so neither can be "tidied" into the other.
+    """
+    body = _confirm_route_source()
+    packing = body.index("set_packing_information")
+    placement = body.index("confirm_placement")
+    assert packing < placement, (
+        "packing information must be set before the placement is confirmed — Amazon refuses "
+        "the confirmation otherwise"
+    )
+
+    tree = ast.parse(textwrap.dedent(body))
+    packing_tries = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Try) and "set_packing_information" in ast.dump(node)
+    ]
+    assert packing_tries, "the packing call must be guarded"
+    returns = [
+        n for handler in packing_tries[0].handlers
+        for n in ast.walk(handler) if isinstance(n, ast.Return)
+    ]
+    assert returns, (
+        "a packing failure MUST return — nothing is confirmed yet, so refusing early is the "
+        "safe direction and the plan can still be cancelled"
+    )
+
+
+def test_setting_packing_information_is_a_write_not_a_read():
+    source = inspect.getsource(spapi.set_packing_information)
+    assert "_post(" in source
+    assert "_get(" not in source
+
+
+def test_the_packing_operation_is_polled():
+    """202 means accepted, not done. Amazon's schema marks `operationId` as REQUIRED here.
+
+    Without polling, a failure surfaces later as the confirmation refusing for a reason that
+    looks unrelated to packing.
+    """
+    source = _strip_prose(inspect.getsource(spapi.set_packing_information))
+    assert "wait_for_operation" in source
+
+
 def test_confirming_transportation_is_a_write_not_a_read():
     """It must go through `_post`, the write path — `_get` cannot mutate.
 

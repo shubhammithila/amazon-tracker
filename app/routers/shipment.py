@@ -1166,6 +1166,60 @@ async def confirm_amazon_shipment(
     if plan is None:
         return _no_plan()
 
+    # ── Packing information: REQUIRED before Amazon will confirm the placement ──
+    #
+    # India refuses `ListPackingOptions` and `ListShipmentBoxes` outright, which is why this app
+    # never sent packing information — and placement options really do generate without it. But
+    # CONFIRMING refuses:
+    #
+    #   ERROR: Packing information is not found for inbound plan ID wf... and shipment IDs [sh...]
+    #
+    # Found by driving a real shipment end to end. `MANUAL_PROCESS` is what makes it possible:
+    # it requires the box `items` list to be EMPTY, so Amazon wants the carton COUNT and not a
+    # per-box manifest — which is exactly the data this app has. A carton here is filled with
+    # whatever is being packed at the time, and `ShipmentPackingEntry.cartons` was deliberately
+    # REMOVED because asking the packer what was in each box produced a guess that then
+    # prefilled a GST invoice.
+    #
+    # Cartons come from the DAYS being shipped (`total_cartons`, entered by the packer), never
+    # from a count of plan lines: cartons are per DAY in this app and units are per SKU, and that
+    # asymmetry is load-bearing.
+    #
+    # **A failure here DOES fail the request, unlike the transportation step below.** Nothing
+    # irreversible has happened yet, so refusing early is the safe direction — and continuing
+    # would hit the confirmation's own refusal a moment later with a less specific message.
+    try:
+        packing_shipments = await spapi.plan_shipments(plan_id)
+    except spapi.SpApiError as exc:
+        logger.warning("amazon plan read failed for %s: %s", plan_id, exc.message)
+        return JSONResponse(
+            {"error": exc.message, "inbound_plan_id": plan_id}, status_code=502
+        )
+
+    all_days = await repository.load_days_with_entries(db, plan.id)
+    cartons = sum(
+        int(d.get("total_cartons") or 0)
+        for d in all_days
+        if d["pack_date"] in set(pack_dates)
+    )
+
+    try:
+        for shipment in packing_shipments:
+            await spapi.set_packing_information(
+                plan_id, shipment.shipment_id, cartons
+            )
+    except spapi.SpApiError as exc:
+        logger.warning("amazon packing info failed for %s: %s", plan_id, exc.message)
+        return JSONResponse(
+            {
+                "error": exc.message,
+                "inbound_plan_id": plan_id,
+                "hint": "Nothing is confirmed yet, so this plan can still be cancelled. "
+                        "Amazon needs the number of boxes before it will confirm a shipment.",
+            },
+            status_code=502,
+        )
+
     try:
         await spapi.confirm_placement(plan_id, option_id)
         shipments = await spapi.plan_shipments(plan_id)

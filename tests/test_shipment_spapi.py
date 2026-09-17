@@ -191,6 +191,10 @@ MUTATING_FUNCTIONS = {
     # Writes GST data against a SKU at Amazon. Required before placement in India —
     # without it placement fails with "Declared value need to be provided."
     "declare_item_compliance",
+    # Declares the box count. REQUIRED before Amazon will confirm a placement, even though
+    # India refuses ListPackingOptions and ListShipmentBoxes — found by driving a real shipment
+    # end to end, not by reading documentation.
+    "set_packing_information",
     # Supplies the ship date. `readyToShipWindow` is a REQUIRED field of a generate
     # configuration and is silently IGNORED on the confirmation, so this call is the only place
     # the ship date can be sent — measured, not read from documentation.

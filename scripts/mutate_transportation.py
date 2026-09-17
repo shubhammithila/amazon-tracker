@@ -80,6 +80,31 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         '            instant = f"{ship_date}T00:00Z"',
         "the bug this feature exists to avoid, inlined at the call site",
     ),
+    # ── Packing information: required before Amazon will confirm ──
+    (
+        "app/shipment/spapi.py",
+        'BOX_CONTENT_MANUAL = "MANUAL_PROCESS"',
+        'BOX_CONTENT_MANUAL = "BOX_CONTENT_PROVIDED"',
+        "BOX_CONTENT_PROVIDED needs a per-box manifest this app cannot know",
+    ),
+    (
+        "app/shipment/spapi.py",
+        '                            "quantity": max(1, int(carton_count or 1)),',
+        '                            "quantity": max(1, int(carton_count or 1)),\n                            "items": [],',
+        "an empty items list is not the same as an absent one for MANUAL_PROCESS",
+    ),
+    (
+        "app/routers/shipment.py",
+        "        for shipment in packing_shipments:\n            await spapi.set_packing_information(",
+        "        for shipment in []:\n            await spapi.set_packing_information(",
+        "packing info never sent — Amazon refuses the confirmation",
+    ),
+    (
+        "app/routers/shipment.py",
+        '        int(d.get("total_cartons") or 0)',
+        "        1",
+        "box count from line count, not the packer's cartons — 3 boxes for a 14-carton shipment",
+    ),
     # The schema mistake that nearly shipped: Amazon silently DROPS readyToShipWindow on the
     # confirmation, so sending it there looks like success and leaves the shipment at dates: {}.
     (
