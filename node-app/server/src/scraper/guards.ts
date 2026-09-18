@@ -102,6 +102,33 @@ export function detectUnavailable($: CheerioAPI): boolean {
 }
 
 /**
+ * Amazon's bot interstitial: **HTTP 200, ~3.8 KB, "Click the button below to continue shopping".**
+ *
+ * Measured on this machine while running the port's differential test — the second request in quick
+ * succession got it, and every request after that. Both apps are affected equally; the Python one
+ * reports it as `"Parse Error (no title)"`, which is technically true and completely unhelpful:
+ * it reads as a markup change or a broken parser, when the real cause is rate limiting and the
+ * remedy is to slow down or wait.
+ *
+ * Distinguished from a CAPTCHA because the action differs. A CAPTCHA needs a human; this needs
+ * patience, and it clears by itself. Both are distinguished from a genuine parse failure, which
+ * needs the selectors looking at.
+ *
+ * Keyed on the phrase AND the small size together. The phrase alone could appear in a footer on a
+ * real page; a small page alone could be any error. Neither is sufficient, which is exactly the
+ * mistake the deal badge's always-present container taught.
+ */
+export function detectBotInterstitial($: CheerioAPI, byteLength: number): boolean {
+  if (byteLength > 50_000) return false;
+  const text = $("body").text().replace(/\s+/g, " ").toLowerCase();
+  return (
+    text.includes("continue shopping") &&
+    !text.includes("add to cart") &&
+    $("#productTitle").length === 0
+  );
+}
+
+/**
  * The page rendered a product at all.
  *
  * A missing title is the honest signal for "this is not a product page and I do not know why" —

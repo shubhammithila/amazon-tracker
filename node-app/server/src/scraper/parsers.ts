@@ -24,6 +24,7 @@ import * as cheerio from "cheerio";
 import type { CheerioAPI } from "cheerio";
 
 import {
+  detectBotInterstitial,
   detectCaptcha,
   detectDogPage,
   detectUnavailable,
@@ -36,7 +37,15 @@ export type ScrapeStatus =
   | "Blocked (CAPTCHA)"
   | "Not Found"
   | "Parse Error (no title)"
-  | "Unavailable";
+  | "Unavailable"
+  /**
+   * Amazon's "Click the button below to continue shopping" interstitial — HTTP 200, ~3.8 KB.
+   *
+   * Its own status because the ACTION differs: this one clears by waiting, where a parse error needs
+   * the selectors looking at and a CAPTCHA needs a human. The Python reports it as a parse error,
+   * which sends the reader to the wrong place.
+   */
+  | "Rate limited";
 
 export interface ProductRow {
   asin: string;
@@ -341,6 +350,9 @@ export function parseProductPage(rawHtml: string, asin: string): ProductRow {
   const $ = cheerio.load(rawHtml);
 
   if (detectCaptcha($)) return emptyRow(asin, "Blocked (CAPTCHA)");
+  // Before the dog-page and no-title checks: the interstitial has no title either, so a later check
+  // would claim it first and report the wrong cause.
+  if (detectBotInterstitial($, rawHtml.length)) return emptyRow(asin, "Rate limited");
   if (detectDogPage($)) return emptyRow(asin, "Not Found");
   if (!hasTitle($)) return emptyRow(asin, "Parse Error (no title)");
 

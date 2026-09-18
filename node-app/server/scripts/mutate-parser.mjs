@@ -56,10 +56,14 @@ const MUTATIONS = [
     "    false;",
     "priceToPay stops counting as a buy box, so buyable pages read as unavailable",
   ],
+  // Matched on the SCOPING fragment alone rather than the whole multi-line expression: the full
+  // text has to be escaped exactly, and a reformat of the surrounding lines silently turns the
+  // mutation into a SKIP — which the harness reports as a survivor, correctly, because a mutation
+  // that never applied has proved nothing.
   [
     "src/scraper/parsers.ts",
-    '  const painter = $(\n    \'[data-feature-name="dealBadge"] [data-csa-c-painter="dp-deal"], \' +\n      \'span[class*="dealBadge"][data-csa-c-painter="dp-deal"]\',\n  );',
-    '  const painter = $(\'[data-csa-c-painter="dp-deal"]\');',
+    '[data-feature-name="dealBadge"] [data-csa-c-painter="dp-deal"]',
+    "[data-csa-c-painter='dp-deal']",
     "the painter check is unscoped, so an ad carousel's deal marks this product",
   ],
   [

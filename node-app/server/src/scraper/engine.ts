@@ -139,9 +139,25 @@ async function runBatch(
         result = await fetchProductPage(pool, asin, options.signal);
       }
 
+      // A 200 can still be Amazon's bot interstitial, which the parser reports as "Rate limited".
+      // That is worth an inline retry with backoff for the same reason a 503 is — it clears by
+      // waiting — so it is re-fetched here rather than only in the next whole-run round.
+      let parsed: ProductRow | null =
+        result.status === "OK" && result.html ? parseProductPage(result.html, asin) : null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (parsed?.status !== "Rate limited" || options.signal?.aborted) break;
+        await sleep(
+          (attempt + 1) * settings.retryBackoffMs +
+            Math.random() * settings.retryBackoffMs * 0.6,
+        );
+        result = await fetchProductPage(pool, asin, options.signal);
+        parsed =
+          result.status === "OK" && result.html ? parseProductPage(result.html, asin) : null;
+      }
+
       const row: ProductRow =
-        result.status === "OK" && result.html
-          ? parseProductPage(result.html, asin)
+        parsed
+          ? parsed
           : {
               asin,
               url: `https://www.amazon.in/dp/${asin}`,

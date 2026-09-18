@@ -11,6 +11,8 @@
  * 2.5s while a fresh client per call cost ~1.2s each — the TCP and TLS handshake was the cost, not
  * the waiting. Amazon product pages are 2.3 MB over TLS, so this matters more here.
  */
+import { brotliDecompressSync, gunzipSync, inflateSync } from "node:zlib";
+
 import { Pool } from "undici";
 
 import { cookieHeader, randomHeaders } from "./stealth.js";
@@ -82,7 +84,17 @@ export async function fetchProductPage(
       return { status: `HTTP ${response.statusCode}`, html: null };
     }
 
-    const html = await response.body.text();
+    // **Decompressed explicitly, because undici does NOT do it for you.**
+    //
+    // The headers advertise `Accept-Encoding: gzip, deflate, br` (copied from the Python, where
+    // httpx decompresses transparently), so Amazon gzips the response — and `body.text()` then
+    // returns the raw compressed bytes decoded as UTF-8. Measured on a real fetch: status OK,
+    // 374 KB, and `productTitle` nowhere in it because the body began with the gzip magic `1f 8b`.
+    //
+    // The failure is the dangerous shape: a 200 with a plausible byte count and no parse error,
+    // reported as "3 rows, 3 errors" with nothing naming the cause. Only running it against the
+    // real origin showed this — the engine's faked HTTP could never have.
+    const html = await decodeBody(response);
     return { status: "OK", html };
   } catch (error) {
     // The statuses the retry loop branches on. Matched on undici's error CODES rather than
@@ -115,6 +127,42 @@ export async function fetchProductPage(
 
     const message = error instanceof Error ? error.message : String(error);
     return { status: `Error: ${message.slice(0, 80)}`, html: null };
+  }
+}
+
+/**
+ * The response body as text, decompressing whatever `Content-Encoding` says.
+ *
+ * Node's `zlib` handles all three encodings Amazon offers. `createBrotliDecompress` covers `br`,
+ * which Amazon does use — omitting it would work most of the time and fail unpredictably, which is
+ * worse than not advertising `br` at all.
+ *
+ * An UNKNOWN encoding returns the raw text rather than throwing: a body we cannot decode is a
+ * parse failure the guards will report as "no title", and that is more useful than a 500.
+ */
+async function decodeBody(response: {
+  headers: Record<string, string | string[] | undefined>;
+  body: { arrayBuffer(): Promise<ArrayBuffer> };
+}): Promise<string> {
+  const raw = Buffer.from(await response.body.arrayBuffer());
+  const header = response.headers["content-encoding"];
+  const encoding = (Array.isArray(header) ? header[0] : header)?.toLowerCase().trim();
+
+  try {
+    switch (encoding) {
+      case "gzip":
+        return gunzipSync(raw).toString("utf8");
+      case "deflate":
+        return inflateSync(raw).toString("utf8");
+      case "br":
+        return brotliDecompressSync(raw).toString("utf8");
+      default:
+        return raw.toString("utf8");
+    }
+  } catch {
+    // A truncated or mislabelled body. Returning the raw text lets the guards name it as a parse
+    // failure for that ASIN instead of aborting the batch.
+    return raw.toString("utf8");
   }
 }
 

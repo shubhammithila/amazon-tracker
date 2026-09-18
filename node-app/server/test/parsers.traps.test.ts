@@ -19,7 +19,7 @@ import { describe, expect, it } from "vitest";
 import * as cheerio from "cheerio";
 
 import { extractDeal, extractPrice, parseProductPage } from "../src/scraper/parsers.js";
-import { detectUnavailable } from "../src/scraper/guards.js";
+import { detectBotInterstitial, detectUnavailable } from "../src/scraper/guards.js";
 
 /** A buyable page: the guards must let it through so the extractors actually run. */
 function buyable(inner: string): string {
@@ -190,6 +190,48 @@ describe("detectUnavailable", () => {
     expect(row.deal).toBe("No");
     expect(row.title).toBe("A Product");
     expect(row.rating).toBe("4.3");
+  });
+});
+
+describe("Amazon's bot interstitial", () => {
+  // Measured on this machine during the port's differential test: the SECOND rapid request returns
+  // HTTP 200 with 3,793 bytes reading "Click the button below to continue shopping". Both apps hit
+  // it; the Python reports "Parse Error (no title)", which reads as a broken parser when the real
+  // cause is rate limiting.
+  const interstitial =
+    "<html><head><title>Amazon.in</title></head><body>" +
+    "<p>Click the button below to continue shopping</p>" +
+    "<button>Continue shopping</button>" +
+    "<a>Conditions of Use &amp; Sale</a><a>Privacy Notice</a>" +
+    "</body></html>";
+
+  it("is reported as rate limiting, not as a parse error", () => {
+    const row = parseProductPage(interstitial, "B0CWGXYLT6");
+    expect(row.status).toBe("Rate limited");
+  });
+
+  it("is detected by the phrase AND the small size together", () => {
+    const $ = cheerio.load(interstitial);
+    expect(detectBotInterstitial($, interstitial.length)).toBe(true);
+    // A big page carrying the same words in a footer is NOT the interstitial. Either signal alone is
+    // insufficient — the same mistake the always-present deal-badge container taught.
+    expect(detectBotInterstitial($, 2_400_000)).toBe(false);
+  });
+
+  it("does not fire on a real product page", () => {
+    const real = buyable(
+      "<p>continue shopping</p>" +
+        "<span class='priceToPay'><span class='a-price-whole'>181</span></span>",
+    );
+    expect(detectBotInterstitial(cheerio.load(real), real.length)).toBe(false);
+    expect(parseProductPage(real, "B0CWGXYLT6").status).toBe("OK");
+  });
+
+  it("is checked BEFORE the no-title guard, or the cause is misreported", () => {
+    // The interstitial has no title either, so a later check would claim it first and send the
+    // reader to the selectors instead of to the rate limit.
+    const row = parseProductPage(interstitial, "B0CWGXYLT6");
+    expect(row.status).not.toBe("Parse Error (no title)");
   });
 });
 
