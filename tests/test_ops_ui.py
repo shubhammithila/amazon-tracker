@@ -207,17 +207,38 @@ def _header_order(source: str) -> list[str]:
     ]
 
 
-def test_the_three_columns_that_matter_are_adjacent_and_first(source):
-    """Product, size, then the input — in that order, with nothing between them.
+def test_the_columns_that_matter_are_adjacent_and_first(source):
+    """Product, size, then the INPUTS — in that order, with nothing between them.
 
-    The input started at the far right, four columns from the name. Entering a count
-    then meant reading a product at the left edge and typing at the right edge, with
-    three reference numbers in between; that is how a count lands on the wrong row.
-    The reference figures are consulted, not acted on, so they come after.
+    The input started at the far right, four columns from the name. Entering a count then
+    meant reading a product at the left edge and typing at the right edge, with three
+    reference numbers in between; that is how a count lands on the wrong row. The reference
+    figures are consulted, not acted on, so they come after.
+
+    **Asserted as "product, size, then the typed columns, then the reference ones" rather than
+    against a fixed list of names.** The third column was called "packed now" until the entry
+    split into "made today" and "from stock", and a test pinned to the old label fails for a
+    reason that has nothing to do with what it protects. The requirement is adjacency and
+    position; the labels are incidental.
     """
     order = _header_order(source)
-    assert order[:3] == ["product", "size", "packed now"], (
-        f"the work columns are not adjacent and leftmost: {order}"
+    assert order[:2] == ["product", "size"], f"product and size must lead: {order}"
+
+    inputs = ["made today", "from stock"]
+    for name in inputs:
+        assert name in order, f"the table has no {name!r} column: {order}"
+
+    # Every typed column comes before the first reference column. "Total packed" is computed
+    # rather than typed, so it sits with the inputs as their sum and still ahead of the
+    # figures that are only consulted.
+    last_input = max(order.index(name) for name in inputs)
+    first_reference = min(
+        order.index(name)
+        for name in ("still needed", "plan", "packed earlier")
+        if name in order
+    )
+    assert last_input < first_reference, (
+        f"a reference column sits between the inputs: {order}"
     )
 
 
@@ -570,8 +591,23 @@ def test_the_page_never_sorts_rows_itself(source):
 # ─── The packing entry surface ───────────────────────────────────────────────
 
 def test_units_are_entered_per_product(source):
-    """One input per row, and it is the units packed."""
-    assert 'data-field="units"' in source, "no units input"
+    """Two inputs per row: what was MADE today, and what came off the SHELF.
+
+    Asked for so the packed sheet can tell the accounts team the difference. They ADD UP —
+    "if they pack 40 today and take 50 from available, then total 90 goes to fba packing" —
+    so the total is COMPUTED by the screen rather than typed, which is why there is no longer
+    a `units` input.
+
+    That matters beyond tidiness: `units` is what the hold rule, the GST invoice quantity and
+    the Amazon upload quantity all read. Letting the packer type it as well as the two parts
+    would be three numbers for one fact, and the third could disagree.
+    """
+    assert 'data-field="made_today"' in source, "no made-today input"
+    assert 'data-field="from_stock"' in source, "no from-stock input"
+    assert 'data-field="units"' not in source, (
+        "the total must be computed from made_today + from_stock, never typed — a third "
+        "input is a third number for one fact"
+    )
 
 
 def test_cartons_are_entered_once_for_the_day_not_per_product(source):

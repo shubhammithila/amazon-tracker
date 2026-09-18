@@ -2060,7 +2060,15 @@ async def get_packing(
                 "planned": planned,
                 "packed_before": prior,
                 "remaining": logic.remaining_for(planned, prior),
+                # `units` is the TOTAL boxed today — unchanged meaning, because the hold rule,
+                # the GST invoice quantity and the Amazon upload quantity all read it.
                 "units": int(mine.get("units") or 0),
+                # ...and its provenance, which is what the packer actually types. He enters
+                # `made_today` and `from_stock`; the screen adds them and sends the sum back as
+                # `units`. `made_today` is DERIVED here rather than stored, so a legacy row with
+                # no `from_stock` reads as "all of it was made", which is what the data says.
+                "from_stock": int(mine.get("from_stock") or 0),
+                "made_today": logic.made_today(mine),
                 # Beyond the plan across ALL days including this one, so the packer
                 # is warned by the total that exists rather than only by what he
                 # typed just now. `remaining` above excludes today deliberately (so
@@ -2580,14 +2588,28 @@ async def download_packed(
         if (not date_from or d["pack_date"] >= date_from)
         and (not date_to or d["pack_date"] <= date_to)
     ]
-    units = logic.units_by_asin(chosen)
+    # `split_by_asin` returns the same `units` figure `units_by_asin` does, plus the
+    # provenance beside it. One aggregation rather than two, so the total and its
+    # breakdown cannot disagree about which days counted.
+    split = logic.split_by_asin(chosen)
 
     lines = []
     for item in rows:
-        packed_units = int(units.get(item["asin"], 0))
+        counts = split.get(item["asin"]) or {}
+        packed_units = int(counts.get("units", 0))
         if packed_units <= 0:
             continue
-        lines.append(documents._identity_cells(item) + [packed_units])
+        # **Units FIRST and unchanged.** That is the figure accounts reconciles against the
+        # invoice and the FC's receipt, so it keeps its column and its meaning; the split
+        # trails it as the breakdown that was asked for.
+        lines.append(
+            documents._identity_cells(item)
+            + [
+                packed_units,
+                int(counts.get("made_today", 0)),
+                int(counts.get("from_stock", 0)),
+            ]
+        )
 
     span = (
         f"{date_from or 'start'} to {date_to or 'today'}"
@@ -2611,9 +2633,9 @@ async def download_packed(
         fmt,
         "Packed",
         f"{plan.get('label') or 'Plan'} · {span}{cartons_note}",
-        documents.IDENTITY_HEADERS + ["Units"],
+        documents.IDENTITY_HEADERS + ["Units", "Made today", "From stock"],
         lines,
-        documents.IDENTITY_WIDTHS + [12],
+        documents.IDENTITY_WIDTHS + [12, 12, 12],
         f"packed-{stamp}",
     )
 

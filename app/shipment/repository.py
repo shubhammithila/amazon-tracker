@@ -927,6 +927,14 @@ async def save_packing_entries(
 
     for asin, raw in by_asin.items():
         units = max(0, _as_int(raw.get("units")))
+        # How much of `units` came off the SHELF rather than being made today.
+        #
+        # **Clamped to `units`, and that clamp is belt-and-braces rather than the real guard.** The
+        # screen asks for "made today" and "from stock" separately and sends their SUM as `units`, so
+        # it cannot produce a larger value. A hand-built request could — and storing one would make
+        # `logic.made_today` negative, which on the accounts sheet reads as a broken report rather
+        # than as bad input.
+        from_stock = min(units, max(0, _as_int(raw.get("from_stock"))))
         note = raw.get("note") or None
         row = existing.get(asin)
 
@@ -937,10 +945,17 @@ async def save_packing_entries(
 
         if row is None:
             db.add(
-                ShipmentPackingEntry(day_id=day.id, asin=asin, units=units, note=note)
+                ShipmentPackingEntry(
+                    day_id=day.id,
+                    asin=asin,
+                    units=units,
+                    from_stock=from_stock,
+                    note=note,
+                )
             )
         else:
             row.units = units
+            row.from_stock = from_stock
             row.note = note
 
     await db.flush()
@@ -1011,6 +1026,13 @@ async def load_days_with_entries(db: AsyncSession, plan_id: int) -> list[dict]:
                 "status": day.status,
                 "hold_reason": day.hold_reason,
                 "total_units": int(day.total_units or 0),
+                # The provenance of `total_units`, summed here so the owner's day card and the
+                # accounts sheet read the same figures. `total_from_stock` is summed from the
+                # entries rather than denormalised onto the day: `total_units` is denormalised
+                # because the hold check reads it on every day list, and nothing needs this one
+                # that often — a second denormalised counter is a second thing to drift.
+                "total_from_stock": logic.from_stock_units(entries),
+                "total_made_today": logic.made_today_units(entries),
                 "total_cartons": int(day.total_cartons or 0),
                 "submitted_by": day.submitted_by,
                 "submitted_at": day.submitted_at.isoformat() if day.submitted_at else None,
@@ -1032,11 +1054,21 @@ async def load_days_with_entries(db: AsyncSession, plan_id: int) -> list[dict]:
                 # forward. The screen badges it, and a reconciliation needs it to explain
                 # why a plan holds units for a date it never opened.
                 "carried_from_plan_id": day.carried_from_plan_id,
-                # Units only. Cartons are a day-level fact and are already above as
-                # `total_cartons`; a per-entry key here would invite summing it back
-                # up into a number that means nothing.
+                # Units and their provenance. Cartons are a day-level fact and are already
+                # above as `total_cartons`; a per-entry key for them would invite summing it
+                # back up into a number that means nothing.
+                #
+                # `units` is the TOTAL boxed and `from_stock` how much of it came off the
+                # shelf. "Made today" is NOT sent: it is `units - from_stock`, and
+                # `logic.made_today` derives it in one place so the screen and the accounts
+                # sheet cannot disagree.
                 "entries": [
-                    {"asin": e.asin, "units": int(e.units or 0), "note": e.note}
+                    {
+                        "asin": e.asin,
+                        "units": int(e.units or 0),
+                        "from_stock": int(e.from_stock or 0),
+                        "note": e.note,
+                    }
                     for e in entries
                 ],
             }

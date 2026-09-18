@@ -70,6 +70,9 @@ h2{font-size:20px;font-weight:600;margin-bottom:4px}
 .day .d-date{font-size:13px;font-weight:600;margin-bottom:5px}
 .day .d-nums{font-size:11px;color:var(--text-muted);margin-bottom:8px}
 .day .d-reason{font-size:11px;color:var(--yellow);margin-bottom:8px;line-height:1.45}
+/* The made/from-stock breakdown, subordinate to the total above it: this is context for
+   reconciliation, not a figure any decision is taken on. */
+.day .d-split{font-size:11px;color:var(--text-muted);margin-bottom:6px}
 .day .d-invoiced{font-size:11px;color:var(--accent);font-weight:600;align-self:center}
 .day .d-actions{display:flex;gap:6px;flex-wrap:wrap}
 /* A ticked day is tinted, so the selection is visible without reading each box. */
@@ -918,6 +921,16 @@ function renderDays(){
     return `<div class="day ${st}${picked ? " picked" : ""}">
       <div class="d-date" title="${dt}">${dayLabel(d.pack_date)} <span class="badge ${st}">${st}</span>${carried}</div>
       <div class="d-nums">${d.total_units.toLocaleString("en-IN")} units · ${d.total_cartons.toLocaleString("en-IN")} cartons${d.submitted_by ? " · by " + esc(d.submitted_by) : ""}</div>
+      ${/* The provenance of those units, ONLY when some came off the shelf. A permanent
+            "0 from stock" on every card would be noise on the days that are the norm, and
+            the figures come from the server (`logic.from_stock_units` / `made_today_units`)
+            rather than being recomputed here — the same rule the ads campaign headers
+            follow, because a total computed in the browser drifts from the one the server
+            believes. */
+        Number(d.total_from_stock || 0) > 0
+          ? `<div class="d-split">${Number(d.total_made_today || 0).toLocaleString("en-IN")} made
+             · ${Number(d.total_from_stock || 0).toLocaleString("en-IN")} from stock</div>`
+          : ""}
       ${d.hold_reason ? `<div class="d-reason">${esc(d.hold_reason)}</div>` : ""}
       ${pick}
       <div class="d-actions">${actions.join("")}</div>

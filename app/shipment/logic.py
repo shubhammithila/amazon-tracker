@@ -404,6 +404,84 @@ def packed_units(entries: Iterable) -> int:
     return total
 
 
+def _entry_field(entry, name: str) -> int:
+    """One integer off a packing entry, whether it is a dict or an ORM row.
+
+    Both shapes reach these functions — ``load_days_with_entries`` returns dicts while the
+    repository passes ORM objects — so the accessor is written once rather than in every loop.
+    """
+    raw = entry.get(name) if isinstance(entry, Mapping) else getattr(entry, name, 0)
+    return int(raw or 0)
+
+
+def from_stock_units(entries: Iterable) -> int:
+    """Of everything boxed across these entries, how much came off the SHELF.
+
+    The companion to ``packed_units``, and deliberately its own function rather than a second return
+    value: the two are summed in different places (the packed sheet, the owner's day cards, the
+    packer's KPI strip) and one loop per question keeps them from drifting apart.
+    """
+    return sum(_entry_field(entry, "from_stock") for entry in entries)
+
+
+def made_today(entry) -> int:
+    """Units PRODUCED today on one entry: the total boxed minus what came off the shelf.
+
+    **Derived, never stored.** ``units`` is the total that goes to FBA and every downstream figure
+    already reads it — ``remaining_for``, ``over_packed``, ``_recompute_day_units``, the GST invoice
+    payload, the Amazon upload quantity. Storing "made today" alongside would be a second number for
+    one fact, which is the defect this codebase records three times over: the Orders tab's "86 orders
+    beside 87 lines", the Portfolio parent rows that exist to prevent it, and the ads campaign
+    headers rolled up in ``group_changes`` rather than in the template.
+
+    Clamped at 0. The packer enters *made* and *from stock* and the screen adds them, so a negative is
+    unreachable from the UI — but a hand-built request could store ``from_stock`` above ``units``, and
+    "made today: −10" on an accounts sheet reads as a broken report rather than as bad input.
+    """
+    return max(0, _entry_field(entry, "units") - _entry_field(entry, "from_stock"))
+
+
+def made_today_units(entries: Iterable) -> int:
+    """Total produced today across these entries. Derived from ``units`` and ``from_stock``."""
+    return sum(made_today(entry) for entry in entries)
+
+
+def split_by_asin(days: Sequence, statuses=None) -> dict[str, dict[str, int]]:
+    """Per ASIN: ``{"units": total boxed, "from_stock": off the shelf, "made_today": derived}``.
+
+    Mirrors ``units_by_asin`` deliberately — the same day/status filtering and the same blank-ASIN
+    skip — so the packed sheet cannot disagree with the screen about which days count. ``units`` here
+    is the SAME number ``units_by_asin`` returns; this only adds the breakdown beside it.
+    """
+    totals: dict[str, dict[str, int]] = {}
+    for day in days:
+        if statuses is not None:
+            status = (
+                day.get("status") if isinstance(day, Mapping)
+                else getattr(day, "status", None)
+            )
+            if status not in statuses:
+                continue
+        entries = (
+            day.get("entries") if isinstance(day, Mapping)
+            else getattr(day, "entries", [])
+        )
+        for entry in entries or []:
+            asin = (
+                entry.get("asin") if isinstance(entry, Mapping)
+                else getattr(entry, "asin", "")
+            ) or ""
+            if not asin:
+                continue
+            bucket = totals.setdefault(
+                asin, {"units": 0, "from_stock": 0, "made_today": 0}
+            )
+            bucket["units"] += _entry_field(entry, "units")
+            bucket["from_stock"] += _entry_field(entry, "from_stock")
+            bucket["made_today"] += made_today(entry)
+    return totals
+
+
 def day_cartons(day) -> int:
     """The cartons packed on one day.
 

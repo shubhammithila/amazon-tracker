@@ -375,7 +375,19 @@ function n(v){ return Number(v || 0).toLocaleString("en-IN"); }
    before he types fifty numbers rather than after. */
 function isLocked(){ return dayStatus === "verified" || dayStatus === "shipped"; }
 
-function unitsTotal(){ return rows.reduce((s, i) => s + Number(i.units || 0), 0); }
+/* **The total boxed for one row: made today PLUS taken from stock.**
+
+   The packer types the two parts and the app adds them, so there is no stored `units` on a
+   row any more — every reader goes through here. That is the point: six places used to read
+   `i.units` directly, and leaving even one of them would report the made-today figure as the
+   whole quantity, which is the number that reaches a GST invoice and the Amazon upload. */
+function rowUnits(i){
+  return Number(i.made_today || 0) + Number(i.from_stock || 0);
+}
+
+function unitsTotal(){ return rows.reduce((s, i) => s + rowUnits(i), 0); }
+function madeTotal(){ return rows.reduce((s, i) => s + Number(i.made_today || 0), 0); }
+function stockTotal(){ return rows.reduce((s, i) => s + Number(i.from_stock || 0), 0); }
 
 /* ── Loading ───────────────────────────────────────────────────────────── */
 
@@ -508,7 +520,7 @@ function renderMessages(){
      decides whether to raise To Ship or unpack. */
   const over = rows
     .map(i => ({item: i.item, size: i.weight_label,
-                by: Math.max(0, Number(i.packed_before || 0) + Number(i.units || 0)
+                by: Math.max(0, Number(i.packed_before || 0) + rowUnits(i)
                                 - Number(i.planned || 0))}))
     .filter(o => o.by > 0);
   if(over.length){
@@ -532,7 +544,7 @@ function renderTotals(){
   if(!rows.length){ $("totals").innerHTML = ""; $("hold-warning").innerHTML = ""; return; }
 
   const units = unitsTotal();
-  const done = rows.filter(i => Number(i.units || 0) > 0).length;
+  const done = rows.filter(i => rowUnits(i) > 0).length;
 
   /* The same AND rule the server applies in logic.is_held, shown live so the
      packer can see he is one carton away from the day being held instead of
@@ -543,10 +555,26 @@ function renderTotals(){
   /* Tiles only. The hold warning goes to #hold-warning below, which is full width:
      rendered in here it inherited the toolbar's ~425px column and wrapped to four
      lines, making the toolbar taller than the rows it was supposed to leave room for. */
+  /* The split is shown beside the total, not instead of it. "Units today" stays FIRST and
+     stays the total, because that is the number the hold rule uses, the number that reaches
+     a GST invoice and the number Amazon is told to expect. Made and from-stock trail it as
+     the breakdown the accounts team asked for, so the packer can check them before he
+     submits rather than after the sheet is printed.
+
+     The from-stock tile is only rendered when there is something in it: a permanent "0 from
+     stock" on a day where nothing came off the shelf is noise, and this strip sits on top of
+     the rows the packer actually needs. */
+  const made = madeTotal();
+  const stock = stockTotal();
   $("totals").innerHTML = `
     <div class="totals">
       <div class="tot ${wouldHold ? "low" : (units ? "ok" : "")}">
         <div class="num">${n(units)}</div><div class="lbl">Units today</div></div>
+      ${stock > 0 ? `
+      <div class="tot"><div class="num">${n(made)}</div>
+        <div class="lbl">Made today</div></div>
+      <div class="tot"><div class="num">${n(stock)}</div>
+        <div class="lbl">From stock</div></div>` : ""}
       <div class="tot ${wouldHold ? "low" : (cartons ? "ok" : "")}">
         <div class="num">${n(cartons)}</div><div class="lbl">Cartons today</div></div>
       <div class="tot"><div class="num">${done}/${rows.length}</div>
@@ -596,8 +624,24 @@ function renderRows(){
        Every remaining interpolation is a number, a fixed class name, or
        escaped. */
     const index = rows.indexOf(i);
-    const units = Number(i.units || 0);
-    const left = Number(i.remaining || 0);
+    /* **`made_today` and `from_stock` are what he TYPES; the total is their SUM.**
+
+       The two ADD UP — "if they pack 40 today and take 50 from available, then total 90
+       goes to fba packing" — and 90 is what every other figure in this app already means
+       by units: still-needed, the hold threshold, the GST invoice quantity, the Amazon
+       upload quantity. So the total is COMPUTED here and never typed, which is also why a
+       negative "made today" is unreachable from this screen.
+
+       `remaining` from the payload is not used for `left`: it was computed server-side
+       against the units stored at load time, and the packer must see it move as he types.
+       Recomputed from the same three numbers the server uses. */
+    const made = Number(i.made_today || 0);
+    const stock = Number(i.from_stock || 0);
+    const units = made + stock;
+    const left = Math.max(
+      0,
+      Number(i.planned || 0) - Number(i.packed_before || 0) - units
+    );
     // Live, not from the payload: the packer must see it as he types, not after a
     // save. Counts every day, so 40 over on Monday plus 40 today reads as 80.
     const over = Math.max(
@@ -618,9 +662,15 @@ function renderRows(){
         <td class="p-size">${esc(i.weight_label)}</td>
         <td><input class="qty ${over > 0 ? "over" : ""}" type="number" min="0"
                    inputmode="numeric"
-                   value="${units || ""}" placeholder="0"${locked}
-                   aria-label="Units packed"
-                   data-index="${index}" data-field="units"/></td>
+                   value="${made || ""}" placeholder="0"${locked}
+                   aria-label="Units made today"
+                   data-index="${index}" data-field="made_today"/></td>
+        <td><input class="qty stock" type="number" min="0"
+                   inputmode="numeric"
+                   value="${stock || ""}" placeholder="0"${locked}
+                   aria-label="Units taken from existing stock"
+                   data-index="${index}" data-field="from_stock"/></td>
+        <td class="t-total ${units > 0 ? "pos" : "zero"}">${n(units)}</td>
         <td class="t-left ${left === 0 ? "zero" : "pos"}">${
           over > 0 ? `<span class="over-tag">+${n(over)} over</span>` : n(left)
         }</td>
@@ -643,7 +693,9 @@ function renderRows(){
          <thead><tr>
            <th class="freeze">Product</th>
            <th class="col-size">Size</th>
-           <th class="col-input">Packed now</th>
+           <th class="col-input">Made today</th>
+           <th class="col-input">From stock</th>
+           <th>Total packed</th>
            <th>Still needed</th>
            <th>Plan</th>
            <th>Packed earlier</th>
@@ -754,7 +806,7 @@ $("packingArea").addEventListener("input", e => {
 function markOverPack(row, box){
   const over = Math.max(
     0,
-    Number(row.packed_before || 0) + Number(row.units || 0) - Number(row.planned || 0)
+    Number(row.packed_before || 0) + rowUnits(row) - Number(row.planned || 0)
   );
   const tr = box.closest("tr");
   if(!tr) return;
@@ -791,7 +843,17 @@ async function save(){
   const packDate = $("packDate").value;
   const entries = rows
     .filter(i => dirty.has(i.asin))
-    .map(i => ({asin: i.asin, units: Number(i.units || 0), note: i.note || ""}));
+    .map(i => ({
+      asin: i.asin,
+      // `units` is the TOTAL — made today plus taken from stock. The server stores it under
+      // that name because every downstream figure already reads it: the hold threshold, the
+      // GST invoice quantity, the Amazon upload quantity. `from_stock` rides alongside as the
+      // provenance, and "made today" is derived server-side rather than sent, so the two ends
+      // cannot disagree about it.
+      units: rowUnits(i),
+      from_stock: Number(i.from_stock || 0),
+      note: i.note || "",
+    }));
 
   /* `cartons` is sent only when it was actually touched. The server treats a
      missing key as "leave it alone" and 0 as "no cartons", and that distinction

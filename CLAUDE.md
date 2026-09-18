@@ -507,6 +507,70 @@ To Ship to match, or have the surplus unpacked. The packer's warning is computed
 the browser as he types, because a server figure would arrive only after a save, by
 which point he has boxed more of it.
 
+### The packer records what he MADE and what he took off the SHELF. They ADD UP.
+Asked for as *"a column to mention if they are taking the product which is available in stock — or
+the qty they are taking from the available stock and the qty they have packed today — so that they
+can inform the same to the accounts team when they give the printout of packed today sheet"*.
+
+The arithmetic settled the whole design: *"if they pack 40 today and take 50 from available, then
+total 90 goes to fba packing."* **They add up.**
+
+So **`ShipmentPackingEntry.units` keeps its exact existing meaning — the TOTAL boxed** — and only the
+provenance is new. That is not tidiness. Every downstream figure already reads `units`:
+
+| Reader | Uses it for |
+|---|---|
+| `logic.remaining_for` | what the packer must still box — the printed morning sheet |
+| `logic.over_packed` | the doubled-row warning |
+| `repository._recompute_day_units` | `total_units`, which decides `is_held` |
+| `POST /shipment/invoice-payload` | **the quantity on a GST invoice** |
+| `download/shipment-file.xlsx` | **the quantity Amazon is told to expect** |
+
+Making `units` mean "made today" and adding `from_stock` alongside would require finding and
+re-pointing every one of those at `units + from_stock`. **Miss one and it under-reports**: the Amazon
+upload declares 40 when 90 units arrive, or the GST invoice bills 40 of a 90-unit shipment — a tax
+document and an FC discrepancy, from one missed call site.
+
+- **The packer types the two PARTS; the screen computes the total.** There is no `units` input, and a
+  test asserts its absence — a typed total would be a third number for one fact and could disagree
+  with its own parts. It also makes a negative "made today" unreachable, which dissolves the
+  refuse-or-warn question entirely.
+- **`logic.made_today` is DERIVED** (`units - from_stock`), never stored. A stored third number is the
+  defect this file records three times over.
+- **`server_default="0"`**, so every row predating the column reads as "all of it was made" — which is
+  what the data actually says.
+- **The packed sheet keeps `Units` FIRST**, because that is the figure accounts reconciles against the
+  invoice; `Made today` and `From stock` trail it as the breakdown. `_totals_row` sums every trailing
+  column by header count, so both totalled for free — that generality was built for exactly this.
+
+> **This is NOT `ShipmentPlanItem.available`, and taking from stock deliberately does not decrement
+> it.** That column is the OWNER's planning figure — how much is on the shelf, so what must be made
+> (`logic.still_to_source`). The new one is ops' record of what was actually taken, per day. Writing
+> the owner's column from the packing screen would break the write separation that stopped the two
+> roles clobbering each other's work. The app reports what was taken rather than maintaining a shelf
+> balance it cannot see — stock also *arrives*, and nothing tells the app when. Recorded so nobody
+> "finishes" this by wiring them together.
+
+> **Five of thirteen mutations survived the first pass, and three were the CLIENT.** No test checked
+> what the browser actually sends, so making `rowUnits` return only `made_today` — the worst available
+> bug here, under-billing the GST invoice — passed everything. **That is the fourth time this
+> codebase has shipped that gap**: the pause feature ("Row … has no usable bid", 20 tests verifying
+> the server contract and none the client), `intakeFromShipment` (the server sent three fields and
+> the screen discarded them), and `renderInvoiceBar` (complete, tested, invisible because its target
+> div did not exist). Now asserted at source level against `templates/ops.html`.
+
+> **Two other survivors were tests asserting too little.** `row.from_stock = from_stock` could be
+> deleted because every test saved a row once — a packer correcting a mistyped shelf figure would
+> have been silently ignored, exactly like the `available` column that was editable for a whole build
+> and fed nothing. And the packed sheet's two new columns could be SWAPPED, because the test checked
+> only the headers: accounts would have read 50 made and 40 from stock, the precise reversal of what
+> happened, on the document that exists to tell them apart.
+
+> **Two pre-existing tests compared whole entry dicts** (`== [{"asin": …, "units": 400, "note": None}]`)
+> and broke the moment an entry gained a column — failing with a message about carrying days that said
+> nothing about the actual change. Rewritten to assert the fields they are about. A third pinned the
+> column label `"packed now"`, which this feature renames.
+
 ### Units are per SKU. Cartons are per DAY.
 Everything else in this feature is per-SKU; this one thing is not, and the
 asymmetry is deliberate. "carton is not item wise. it is random. like 500 units

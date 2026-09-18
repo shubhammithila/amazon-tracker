@@ -244,9 +244,12 @@ async def test_carrying_a_day_moves_it_and_stamps_its_origin(db, plan_factory):
     assert [d["pack_date"] for d in new_days] == ["2026-08-19"]
     assert new_days[0]["total_units"] == 400
     assert new_days[0]["total_cartons"] == 9, "the carton count did not travel"
-    assert new_days[0]["entries"] == [
-        {"asin": "B0AAA00001", "units": 400, "note": None}
-    ]
+    # The ASIN and the units travelled with the day. Asserted per FIELD rather than by
+    # comparing whole dicts: exact equality breaks every time an entry gains a column (it
+    # broke when `from_stock` was added) and the failure then says nothing about carrying,
+    # which is what this test is about.
+    assert [e["asin"] for e in new_days[0]["entries"]] == ["B0AAA00001"]
+    assert [e["units"] for e in new_days[0]["entries"]] == [400]
     assert new_days[0]["carried_from_plan_id"] == old.id
 
 
@@ -325,8 +328,9 @@ async def test_carrying_skips_a_date_the_target_plan_already_has(db, plan_factor
     assert len(source_days) == 1
     assert source_days[0]["pack_date"] == "2026-08-19"
     assert source_days[0]["total_units"] == 400
-    assert source_days[0]["entries"] == [
-        {"asin": "B0AAA00001", "units": 400, "note": None}
+    # Per field, not whole-dict equality — see the note in the carry test above.
+    assert [(e["asin"], e["units"]) for e in source_days[0]["entries"]] == [
+        ("B0AAA00001", 400)
     ]
 
     # The target plan must still have exactly one day for that date, with ITS OWN units,
@@ -335,8 +339,8 @@ async def test_carrying_skips_a_date_the_target_plan_already_has(db, plan_factor
     assert len(target_days) == 1
     assert target_days[0]["pack_date"] == "2026-08-19"
     assert target_days[0]["total_units"] == 100
-    assert target_days[0]["entries"] == [
-        {"asin": "B0AAA00002", "units": 100, "note": None}
+    assert [(e["asin"], e["units"]) for e in target_days[0]["entries"]] == [
+        ("B0AAA00002", 100)
     ]
 
 

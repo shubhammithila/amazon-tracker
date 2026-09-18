@@ -448,7 +448,31 @@ class ShipmentPackingEntry(Base):
     id = Column(Integer, primary_key=True)
     day_id = Column(Integer, ForeignKey("shipment_packing_days.id"), nullable=False)
     asin = Column(String(10), nullable=False)
+
+    #: **The TOTAL boxed today, whatever its provenance.** The meaning is unchanged and that is
+    #: load-bearing: ``remaining_for``, ``over_packed``, ``_recompute_day_units``, the GST invoice
+    #: payload and the Amazon upload quantity all read this column. See ``from_stock``.
     units = Column(Integer, default=0)
+
+    #: How much of ``units`` came off the SHELF rather than being made today.
+    #:
+    #: Asked for so the packed sheet can tell the accounts team the difference. The packer enters
+    #: "made today" and "from stock" and the screen ADDS them: 40 made + 50 from stock means
+    #: ``units`` is 90, and 90 is what goes to FBA. "Made today" is therefore DERIVED
+    #: (``units - from_stock``) and deliberately not stored — a stored derived value is how two
+    #: numbers for one fact start disagreeing.
+    #:
+    #: ``server_default`` as well as ``default``: the Python default only applies to rows this app
+    #: creates, and every pre-existing row needs a value at migration time. ``nullable=False`` so
+    #: "no value" cannot mean two different things.
+    #:
+    #: **This is NOT ``ShipmentPlanItem.available``, and taking from stock does not decrement it.**
+    #: That column is the OWNER's planning figure — how much is on the shelf, so what must be made
+    #: (``logic.still_to_source``). This is ops' record of what was actually taken, per day. Writing
+    #: the owner's column from the packing screen would break the write separation that stopped the
+    #: two roles clobbering each other's work.
+    from_stock = Column(Integer, default=0, nullable=False, server_default="0")
+
     note = Column(Text)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
