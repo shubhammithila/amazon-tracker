@@ -74,6 +74,58 @@ const MUTATIONS = [
     '  if (false) return emptyRow(asin, "Parse Error (no title)");',
     "a non-product page yields a row of nulls instead of a named failure",
   ],
+
+  // ── engine.ts ──
+  [
+    "src/scraper/engine.ts",
+    "        .filter((row) => row.status !== \"OK\")",
+    "        .filter(() => true)",
+    "every round re-scrapes the WHOLE set, not just the failures",
+  ],
+  [
+    "src/scraper/engine.ts",
+    "    await claim.release();",
+    "    void claim;",
+    "the claim is never released, so every later run is refused",
+  ],
+  [
+    "src/scraper/engine.ts",
+    "  const unique = [...new Set(asins)];",
+    "  const unique = asins;",
+    "a repeated ASIN is fetched twice and counted twice",
+  ],
+  [
+    "src/scraper/engine.ts",
+    "      if (options.signal?.aborted) return;\n\n      let result = await fetchProductPage",
+    "      let result = await fetchProductPage",
+    "the stop is ignored, so a cancelled scrape drains the whole queue",
+  ],
+  [
+    "src/scraper/engine.ts",
+    "  const asins = options.asins.map((a) => a.trim().toUpperCase()).filter(isValidAsin);",
+    "  const asins = options.asins.map((a) => a.trim().toUpperCase());",
+    "an FNSKU is requested from a path that cannot serve it",
+  ],
+  [
+    "src/scraper/engine.ts",
+    "          await pool.close();",
+    "          void pool;",
+    "pools are never closed, so 2.3 MB page buffers accumulate across batches",
+  ],
+
+  // ── progress.ts ──
+  [
+    "src/scraper/progress.ts",
+    "    state.total > 0\n      ? Math.min(100, Math.round((state.progress / state.total) * 100))\n      : 0;",
+    "    Math.round((state.progress / state.total) * 100);",
+    "0/0 renders as NaN% — the `100/undefined` defect class",
+  ],
+  [
+    "src/scraper/progress.ts",
+    'const tx = redis.multi().hincrby(KEY, "progress", 1).hset(KEY, "currentAsin", asin);',
+    'const tx = redis.multi().hset(KEY, "currentAsin", asin);',
+    "pages are never counted, so the bar never moves",
+  ],
 ];
 
 function runTests() {
