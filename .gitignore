@@ -36,3 +36,4 @@ adsrefresh.log
 # python_expected.json ground truth ARE tracked, because they are the differential test.
 node_modules/
 spike/*.html
+node-app/schema_dump.json

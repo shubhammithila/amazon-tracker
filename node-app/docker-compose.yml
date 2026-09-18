@@ -1,0 +1,54 @@
+# Local Postgres + Redis for the Node port.
+#
+# Its OWN database, never the Python app's. `tracker.db` is not mounted here and nothing in
+# this stack can reach it — the port is a replacement, so the two must never write one dataset.
+#
+# Versions are PINNED to a minor. `postgres:16` would silently move to 17 on a rebuild, and a
+# major upgrade refuses to start on an existing data directory — which reads as "my database is
+# gone" rather than "the image moved".
+services:
+  postgres:
+    image: postgres:16.10-alpine
+    container_name: tracker-pg
+    environment:
+      POSTGRES_USER: tracker
+      POSTGRES_PASSWORD: tracker_local_dev
+      POSTGRES_DB: tracker
+      # The app decides money precision in SQL, but the SERVER's default timezone decides what
+      # `now()` and any bare `date` mean. Forced to UTC so the container matches production's
+      # clock rather than the developer's, and every "which day is it" answer goes through
+      # ist.ts instead of the database.
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # `pg_isready` alone returns true while the server is still starting up its first init,
+      # so a real query is used. Without this, migrations race the container.
+      test: ["CMD-SHELL", "pg_isready -U tracker -d tracker && psql -U tracker -d tracker -c 'select 1' >/dev/null"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: tracker-redis
+    ports:
+      - "6379:6379"
+    # `--appendonly yes` because Redis holds the scrape LOCK and BullMQ's job state. Losing the
+    # lock on a restart is survivable; losing a queued job silently is not, and the whole point
+    # of moving off the module-level `ScrapeState` singleton is that state survives a restart.
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  pgdata:
+  redisdata:
