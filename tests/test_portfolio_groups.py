@@ -10,11 +10,17 @@ records what each cost to learn. These tests assert that the seven survive.
 
 Every test here fails against the code before this change.
 """
+import json
+from pathlib import Path
+
 import pytest
 
 from app.portfolio import logic
 
 pytestmark = pytest.mark.regression
+
+FIXTURES = Path(__file__).parent / "fixtures"
+WINDOW = ("2026-07-28", "2026-08-26")
 
 
 # ── The mapping ──────────────────────────────────────────────────────────────
@@ -270,6 +276,131 @@ def test_a_category_with_no_sales_reports_no_tacos_rather_than_zero():
     assert sattu["margin"] is None
 
 
+# ── The route: both views are computed on the SERVER ─────────────────────────
+#
+# `logic.category_totals` and `logic.group_counts` being correct is not the claim the screen relies
+# on — the claim is that `GET /portfolio` actually calls them, with the right arguments. This
+# codebase has shipped a complete, tested, correctly-wired SERVER three times over a client that
+# silently did something else (`intakeFromShipment`, `renderInvoiceBar`, the ads pause feature), and
+# once shipped a working aggregation nothing ever called.
+
+
+async def _seed(db):
+    from app.portfolio import repository
+
+    rows = json.loads((FIXTURES / "economics_rows.json").read_text(encoding="utf-8"))
+    return await repository.save_snapshot(db, WINDOW[0], WINDOW[1], rows)
+
+
+async def test_the_payload_carries_the_grouping_and_the_categories(auth_client, db):
+    """The mapping and the two flags travel, so the screen holds no second copy.
+
+    Sent from the server for the same reason `phase_labels` and `ads.MATCH_LABELS` are: a table
+    duplicated into the template is a second thing to keep in step, and the failure mode is a tab
+    whose count disagrees with the rows beneath it.
+    """
+    await _seed(db)
+    body = (await auth_client.get("/portfolio")).json()
+
+    assert body["group_order"] == list(logic.GROUP_ORDER)
+    assert body["verdict_groups"] == dict(logic.VERDICT_GROUPS), (
+        "the grouping does not reach the screen, so every row falls back to Maintain"
+    )
+    assert body["group_flags"] == dict(logic.GROUP_FLAGS), (
+        "the two flags do not reach the screen, so SURGICAL reads as a healthy product"
+    )
+    assert set(body["group_counts"]) == set(logic.GROUP_ORDER)
+    assert "categories" in body["category_totals"]
+
+
+async def test_the_payload_counts_each_grain_against_its_own_rows(auth_client, db):
+    """**"11 Scale products" and "36 Scale SKUs" are both true, and the tab must match the table.**
+
+    Two counts rather than one, each summing to its own grain's row count. Counting the wrong grain
+    would put a tab reading 36 above a table showing 11 — the "86 orders beside 87 lines" defect,
+    and it looks entirely plausible on screen because both numbers are real.
+    """
+    await _seed(db)
+    body = (await auth_client.get("/portfolio")).json()
+
+    assert sum(body["group_counts"].values()) == len(body["parents"])
+    assert sum(body["sku_group_counts"].values()) == len(body["skus"])
+    # And the fixture has to make the two DIFFER, or a swap would pass — the one-campaign-fixture
+    # mistake `test_a_group_total_is_exactly_the_sum_of_its_own_rows` already made once.
+    assert len(body["parents"]) != len(body["skus"]), (
+        "the fixture cannot tell the two counts apart, so swapping them would pass"
+    )
+
+
+async def test_the_category_strip_uses_the_shipment_tabs_own_classification(auth_client, db):
+    """ONE vocabulary: the owner classifies a product once and both tabs agree.
+
+    Asserted through the ROUTE rather than against `category_totals`, because the route is where
+    the join happens — passing `{}` there would leave every product Unclassified with the pure
+    function still perfectly correct.
+    """
+    from app.shipment import repository as ship_repository
+
+    stored = await _seed(db)
+    body = (await auth_client.get("/portfolio")).json()
+    names = [p["product"] for p in body["parents"] if p.get("product")]
+    assert names, "no products to classify"
+
+    before = {c["category"] for c in body["category_totals"]["categories"]}
+    assert before == {logic.CATEGORY_UNCLASSIFIED}, (
+        "something is already classified, so this test cannot prove the join is read"
+    )
+
+    await ship_repository.set_categories(db, {names[0]: 1})
+    after = (await auth_client.get("/portfolio")).json()["category_totals"]
+    assert "Sattu" in {c["category"] for c in after["categories"]}, (
+        "a stored category does not reach the strip, so the route is not reading "
+        "product_categories at all"
+    )
+    assert after["unclassified_total"] < body["category_totals"]["unclassified_total"]
+    assert stored  # the snapshot really was saved
+
+
+# ── The screen reads the server's answer ─────────────────────────────────────
+
+
+def test_the_table_filters_on_the_group_not_the_verdict():
+    """`filter` holds a GROUP now, so comparing it against a verdict matches nothing.
+
+    Source-level, because no runtime test here drives the browser — and the failure is silent in
+    the worst way: every tab would show an empty table while its count said otherwise.
+    """
+    source = _portfolio_template()
+    assert "verdictGroup(r.verdict) !== filter" in source, (
+        "the tab filter compares against the raw verdict, so no row can ever match a group name"
+    )
+
+
+def test_the_screen_reads_the_grouping_from_the_server_not_a_second_copy():
+    """A mapping duplicated here is how a tab count comes to disagree with its own rows."""
+    source = _portfolio_template()
+    body = _template_function(source, "verdictGroup")
+    assert "data.verdict_groups" in body, "the screen does not read the server's mapping"
+    for verdict in logic.VERDICT_ORDER:
+        assert verdict not in body, (
+            f"{verdict!r} is hardcoded in verdictGroup, which is a second copy of the mapping"
+        )
+    flags = _template_function(source, "groupFlag")
+    assert "data.group_flags" in flags, "the flag text is a second copy rather than the server's"
+
+
+def _template_function(source: str, name: str) -> str:
+    """The body of one top-level function, up to the next one.
+
+    Same helper `tests/test_portfolio_screen.py` uses, and for the same reason: "this rule is
+    followed somewhere in 1,400 lines" is a different claim from "this function follows it".
+    """
+    start = source.index(f"function {name}(")
+    rest = source[start:]
+    end = rest.find("\nfunction ", 1)
+    return rest if end == -1 else rest[:end]
+
+
 # ── The daily ratings scrape ─────────────────────────────────────────────────
 
 
@@ -385,6 +516,25 @@ def test_the_hidden_columns_are_gated_in_ALL_THREE_places():
     )
     # And no hardcoded colspan can survive, or an expanded row stops spanning the table.
     assert 'colspan="11"' not in source
+
+    # **The list must actually DROP the hidden ones, not merely be called.** A mutation returning
+    # `COLUMNS` unfiltered survived an earlier version of this test: every assertion above stayed
+    # true while the header rendered 11 columns over 8 body cells. The count is what fails.
+    body = _template_function(source, "shownColumns")
+    assert "showExtra" in body, "shownColumns does not consult the toggle at all"
+    assert ".filter(" in body, (
+        "shownColumns returns every column, so the header renders 11 headings over 8 body cells "
+        "and every figure after Net % sits under the wrong one"
+    )
+    # Scoped to the COLUMNS array, so the prose explaining the flag is not counted as a column —
+    # the deploy-detector mistake (a substring that also appears in its own explanation).
+    declaration = source[source.index("const COLUMNS = ["):]
+    declaration = declaration[: declaration.index("];")]
+    extras = declaration.count("extra: true}")
+    assert extras == 3, (
+        f"{extras} optional columns declared; the three gated blocks render exactly 3 "
+        "(Units, Returns, Rating), so a fourth would render under a hidden header"
+    )
 
 
 def test_showExtra_is_declared_AFTER_the_helper_it_calls():
