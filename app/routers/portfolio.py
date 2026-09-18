@@ -27,6 +27,10 @@ from app.database import get_db
 from app.portfolio import economics, logic, refresh, repository
 from app.routers.auth import require_area
 from app.shipment import catalogue, documents
+# The category classification lives on the SHIPMENT side, keyed on the product name. Imported
+# rather than duplicated: the owner classifies a product once and both tabs must agree, and
+# `shipment.logic`'s keyword ORDER is the rule ("Bangla Chana Sattu" is a sattu, not a chana).
+from app.shipment import repository as ship_repository
 
 router = APIRouter(prefix="/portfolio")
 logger = logging.getLogger(__name__)
@@ -82,6 +86,30 @@ async def _dashboard(db: AsyncSession, window: tuple[str, str] | None = None) ->
     # Sent from here so a phase renamed in `refresh` cannot render as a raw key on screen — the
     # template has no list of its own to fall out of step.
     result["phase_labels"] = dict(refresh.PHASE_LABELS)
+
+    # ── The three groups, and the category strip ──
+    #
+    # Both are VIEWS over `result`, computed HERE rather than in the template. A figure computed in
+    # the browser drifts from the one the server believes, and this codebase has shipped that three
+    # times: the Orders tab's "86 orders beside 87 lines", the Portfolio parent rows that exist to
+    # prevent it, and the ads campaign headers rolled up in `logic.group_changes`.
+    #
+    # The seven verdicts are untouched. The mapping travels so the screen cannot hold a second copy
+    # that falls out of step — the same reason `phase_labels` and `MATCH_LABELS` are sent.
+    result["group_order"] = list(logic.GROUP_ORDER)
+    result["verdict_groups"] = dict(logic.VERDICT_GROUPS)
+    result["group_flags"] = dict(logic.GROUP_FLAGS)
+    result["group_counts"] = logic.group_counts(result["parents"])
+    result["sku_group_counts"] = logic.group_counts(result["skus"])
+
+    # Categories come from the SHIPMENT tab's own table, keyed on the casefolded product name.
+    # Reusing that classification rather than inventing a second one is the point: the owner
+    # classifies a product once, and the packer's sort order and this strip then agree.
+    category_rows = await ship_repository.load_categories(db)
+    result["category_totals"] = logic.category_totals(
+        result["parents"],
+        {row.product_key: row.priority for row in category_rows},
+    )
     return result
 
 

@@ -439,7 +439,11 @@ def setup_scheduler():
     retention purge. Production runs with the master flag off precisely to keep those asleep on
     a 951 MB box with no swap, so the orders refresh needed its own switch.
     """
-    if not (settings.scheduler_enabled or settings.order_refresh_enabled):
+    if not (
+        settings.scheduler_enabled
+        or settings.order_refresh_enabled
+        or settings.scrape_enabled
+    ):
         return
 
     parts = []
@@ -474,6 +478,36 @@ def setup_scheduler():
             f"keywords at {keyword_hour:02d}:30",
             f"history purge at {purge_hour:02d}:15 (retention {settings.data_retention_days}d)",
         ]
+
+    elif settings.scrape_enabled:
+        # **The product scrape ALONE**, for the Portfolio tab's star ratings.
+        #
+        # `elif`, because the master flag already registers a scrape above and two jobs scraping
+        # 262 ASINs on a 951 MB box is the wedge this app has already survived once. This branch is
+        # for the configuration production actually runs: master off, one job on.
+        #
+        # The ratings feed a verdict, and they were SIX DAYS old because the master flag kept this
+        # asleep — every scrape in `rating_history` was manual. 05:00 IST so it finishes before the
+        # portfolio job reads the table at 07:30; stated in IST and converted once, because
+        # `CronTrigger` takes no timezone and this box runs UTC.
+        scrape_hour, scrape_minute = ist.utc_hhmm(
+            settings.scrape_ist_hour, settings.scrape_ist_minute
+        )
+        scheduler.add_job(
+            scheduled_product_scrape,
+            CronTrigger(hour=scrape_hour, minute=scrape_minute),
+            id="daily_product_scrape",
+            replace_existing=True,
+            # A scrape can run for minutes; a second one starting alongside is what wedged the box.
+            # `run_scrape` refuses a concurrent start anyway, but coalescing stops APScheduler
+            # queueing a missed run to fire the moment the first finishes.
+            max_instances=1,
+            coalesce=True,
+        )
+        parts.append(
+            "products at "
+            + ist.label(settings.scrape_ist_hour, settings.scrape_ist_minute)
+        )
 
     # Every 30 minutes, and jittered by starting 4 minutes in rather than on the hour, so
     # an order refresh never begins in the same second as the 06:00 product scrape on a

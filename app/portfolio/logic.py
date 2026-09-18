@@ -58,6 +58,99 @@ VERDICT_ORDER = (
 #: data, and calling that "the worst product in the portfolio" would be reading noise.
 DEAD_UNITS = 2
 
+
+# ─── Three groups over the seven verdicts ─────────────────────────────────────
+#
+# Asked for as *"lesser tabs — I want only Scale (top performers), Maintain (mid performers),
+# Kill or monitor (least performers)"*.
+#
+# **A VIEW over `verdict_for`, not a replacement for it.** The seven rules stay exactly as they
+# are and so does every reason string, because each reason is a claim the owner can check against
+# Seller Central and overrule — and CLAUDE.md records what each one cost to learn:
+#
+#   * rule 1 must stay FIRST: a product that sold 2 units reported **+505.6% net** (a refund
+#     reversal landed in the window). On margin alone it is the best product in the portfolio.
+#   * rule 3 is AND, not OR: a negative margin at low TACOS is a pricing problem worth fixing,
+#     while one sustained by heavy spend is a product being bought only because it is paid for.
+#   * rule 4 is why this tab expands to sizes at all.
+#
+# Rewriting seven rules into three would discard all of that and leave a verdict nobody can
+# verify. Mapping keeps every rule and every reason; only the tab count changes.
+
+GROUP_SCALE = "Scale"
+GROUP_MAINTAIN = "Maintain"
+GROUP_KILL = "Kill or monitor"
+
+#: Best first, unlike `VERDICT_ORDER` which is worst-first. The three-tab strip answers "where is
+#: the growth, what is steady, what needs a decision"; the old worst-first order was for a
+#: seven-chip WORKLIST, which is a different question.
+GROUP_ORDER = (GROUP_SCALE, GROUP_MAINTAIN, GROUP_KILL)
+
+#: Which group each verdict belongs to. **Total over `VERDICT_ORDER`**, asserted by a test, so a
+#: new verdict cannot be added without deciding where it goes — otherwise a product silently
+#: vanishes from all three tabs.
+VERDICT_GROUPS: dict[str, str] = {
+    VERDICT_BEST_BET: GROUP_SCALE,
+    VERDICT_SCALE: GROUP_SCALE,
+    VERDICT_MONITOR: GROUP_MAINTAIN,
+    # SURGICAL is Maintain, not Kill: the parent EARNS its place and one size does not, so the
+    # action is surgery rather than a kill. It carries a flag naming the losing size, because in
+    # Maintain without one it reads as simply fine — measured live, Cheese & Cream Roasted Chana
+    # earns +27.1% overall while one 250 g pack burns 103% TACOS at -52.7% net.
+    VERDICT_SURGICAL: GROUP_MAINTAIN,
+    VERDICT_KILL: GROUP_KILL,
+    VERDICT_DEAD: GROUP_KILL,
+    # AD DEPENDENT is here because it needs a DECISION, not because the product loses money — it
+    # is profitable and its ADS are not. Its flag is what stops a profitable product being killed
+    # when the fix is to cut the spend.
+    VERDICT_AD_DEPENDENT: GROUP_KILL,
+}
+
+
+def verdict_group(verdict: str) -> str:
+    """Which of the three tabs a verdict belongs to.
+
+    Falls back to ``Maintain`` for an unrecognised verdict rather than dropping the row. A product
+    missing from all three tabs is invisible; one in the middle tab is merely mis-sorted, and its
+    row still shows its own verdict and reason. Same deny-into-the-safe-bucket reasoning as
+    `ads.logic.manager_of` treating an unknown campaign name as ours.
+    """
+    return VERDICT_GROUPS.get(verdict, GROUP_MAINTAIN)
+
+
+#: The two verdicts whose real action is NOT what their group implies, so the row must say so.
+GROUP_FLAGS: dict[str, str] = {
+    VERDICT_SURGICAL: "some sizes lose money",
+    VERDICT_AD_DEPENDENT: "ads lose money on their own terms",
+}
+
+
+def group_flag(verdict: str) -> str:
+    """The warning a row needs because its group hides its real action, or ``""``.
+
+    Two verdicts do not fold cleanly into three groups, and folding them SILENTLY is the actual
+    risk: SURGICAL in Maintain reads as a healthy product, and AD DEPENDENT in Kill-or-monitor
+    invites killing something profitable. The flag is how the information survives the
+    simplification.
+    """
+    return GROUP_FLAGS.get(verdict, "")
+
+
+def group_counts(rows: Sequence[Mapping]) -> dict[str, int]:
+    """How many rows land in each of the three groups.
+
+    Every group is present even at zero, so a tab that matches nothing renders as an empty tab
+    rather than vanishing — the Portfolio tab already learned this with the verdict chips, where
+    dropping a zero-count chip left an empty table, nothing highlighted, and no control left to
+    click to undo the filter.
+    """
+    counts = {group: 0 for group in GROUP_ORDER}
+    for row in rows:
+        group = verdict_group(str(row.get("verdict") or ""))
+        counts[group] = counts.get(group, 0) + 1
+    return counts
+
+
 #: A return rate this high on real volume is a PRODUCT problem, not a pricing one, and money
 #: cannot fix it. Escalates on its own for that reason — a flattering margin on a product a
 #: sixth of buyers send back is not a keeper.
@@ -667,6 +760,132 @@ def channel_split(sku_rows: Sequence, ads_by_sku: Mapping | None = None) -> dict
                 bucket["ads_cost"] and not bucket["ad_attributed_sales"]
             )
     return out
+
+
+# ─── Category sales ───────────────────────────────────────────────────────────
+#
+# Asked for as *"need each category sales as well. Sattu, chana, flours, Staples, seeds, others.
+# Or you can check the category/priority thing from the shipment tab."*
+#
+# **The labels and the keyword rules are IMPORTED from `app.shipment.logic`, never copied.** That
+# module's docstring is explicit that the rule ORDER is the rule, not an implementation detail:
+# nine of the 74 real product names match several keywords and three change bucket depending on
+# which is tested first — "Bangla Chana Sattu" is a sattu, "Rice Atta" is a flour, "chana dal badi"
+# is a chana. A second copy here would be a second thing to keep in step, and the failure would be
+# a category total that disagrees with the packer's sort order.
+
+#: Products with no stored category get their own bucket rather than falling into "Rest".
+#:
+#: Measured on production: only **38 of ~90** Portfolio parents have a row in
+#: `product_categories`. Folding the rest into Rest would make Rest the largest category and stop
+#: it meaning anything, and keyword-guessing them silently would hide a wrong guess. They are
+#: counted here and NAMED on screen, the way the Shipment catalogue notes and the Projections
+#: `needs_review` list already do, so they can be classified once on the Shipment tab.
+CATEGORY_UNCLASSIFIED = "Unclassified"
+
+#: How many unclassified product names to name on screen. A list can be 52 long; the screen needs
+#: a sentence, not a column — the same cap `MISSING_DAYS_SHOWN` and the catalogue notes use.
+UNCLASSIFIED_SHOWN = 8
+
+
+def _first_category(names: Sequence[str], categories: Mapping[str, int]) -> int | None:
+    """The stored priority for the first of ``names`` that has one, or ``None``.
+
+    Tried in order, parent name first, because a multi-flavour parent's own name is DERIVED and may
+    not be a catalogue name at all — while its sizes' names are.
+
+    **Exact match only, deliberately.** `shipment.logic.category_for` does substring keyword
+    matching and is the right tool for GUESSING a category; this function reads what the owner
+    actually CHOSE. Falling back to a keyword guess here would make a wrong guess indistinguishable
+    from a decision, which is exactly what naming the unclassified products is meant to avoid.
+    """
+    for name in names:
+        key = str(name or "").casefold().strip()
+        if key and key in categories:
+            return categories[key]
+    return None
+
+
+def category_totals(
+    parents: Sequence[Mapping],
+    categories: Mapping[str, int] | None = None,
+) -> dict:
+    """Sales, ad spend and net per category, from the parent rows.
+
+    ``categories`` maps a **casefolded product name** to a 1..6 priority, exactly as
+    `product_categories` stores it — so this function stays pure and the SQL lives in the
+    repository.
+
+    Built from the PARENT rows rather than from the raw economics, so a category total is the sum
+    of the rows on screen. A separate aggregation over `econ_rows` would be a second number for
+    one thing, which is the defect this codebase records three times (the Orders tab's "86 orders
+    beside 87 lines"; the Portfolio parent rows that exist to prevent it).
+
+    **Every percentage is recomputed from the summed numerator and denominator, never averaged.**
+    The mean of twenty products' TACOS weights a product that sold 1 unit equally with one that
+    sold 400 and produces a number belonging to no product — the same rule `_sum_sizes` follows.
+    """
+    from app.shipment.logic import CATEGORY_LABELS
+
+    categories = categories or {}
+    buckets: dict[str, dict] = {}
+    unclassified_names: list[str] = []
+
+    for parent in parents:
+        name = str(parent.get("product") or parent.get("parent_product") or "").strip()
+        # **The SIZE names, not just the parent's.** The parent name is DERIVED: `family_label`
+        # renames a multi-flavour parent to what its flavours share, and disambiguates a collision
+        # by appending a count — so the row reads "Roasted Chana (5 flavours)" while
+        # `product_categories` holds "roasted chana", "peri peri roasted chana" and so on.
+        #
+        # Found on real production data: matching the parent name alone left 52 of 90 products
+        # unclassified, including several whose categories ARE stored. The size names are the real
+        # catalogue names, which is what that table is keyed on.
+        candidates = [name] + [
+            str(size.get("product") or "") for size in parent.get("sizes") or []
+        ]
+        priority = _first_category(candidates, categories)
+        if priority is None:
+            label = CATEGORY_UNCLASSIFIED
+            if name and name not in unclassified_names:
+                unclassified_names.append(name)
+        else:
+            label = CATEGORY_LABELS.get(priority, CATEGORY_LABELS[6])
+
+        bucket = buckets.setdefault(
+            label,
+            {
+                "category": label,
+                "products": 0,
+                "sales": 0.0,
+                "ad_spend": 0.0,
+                "net": 0.0,
+                "units": 0,
+            },
+        )
+        bucket["products"] += 1
+        bucket["sales"] += _num(parent.get("sales"))
+        bucket["ad_spend"] += _num(parent.get("ad_spend"))
+        bucket["net"] += _num(parent.get("net"))
+        bucket["units"] += int(parent.get("units") or 0)
+
+    for bucket in buckets.values():
+        # Recomputed from the sums, never averaged. `_ratio` returns None with no denominator,
+        # because a category with no sales has no TACOS and 0% would rank it as the most
+        # ad-efficient thing in the portfolio.
+        bucket["tacos"] = _ratio(bucket["ad_spend"], bucket["sales"])
+        bucket["margin"] = _ratio(bucket["net"], bucket["sales"])
+
+    # Biggest first: the strip is read as "where is the money", not as a fixed taxonomy. Ties
+    # broken by name so the order is stable between renders.
+    ordered = sorted(
+        buckets.values(), key=lambda b: (-b["sales"], b["category"])
+    )
+    return {
+        "categories": ordered,
+        "unclassified_names": unclassified_names[:UNCLASSIFIED_SHOWN],
+        "unclassified_total": len(unclassified_names),
+    }
 
 
 def portfolio(

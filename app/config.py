@@ -63,8 +63,33 @@ class Settings(BaseSettings):
     #: `scheduler_enabled` already defaults True, so this only matters where that was
     #: explicitly turned off — which is exactly production.
     order_refresh_enabled: bool = False
+
+    #: Run the daily PRODUCT SCRAPE alone, without waking the keyword track or the purge.
+    #:
+    #: Same shape as `order_refresh_enabled`, for the same reason: production sets
+    #: `SCHEDULER_ENABLED=false` to keep the heavy jobs asleep, which meant the 06:00 scrape had
+    #: **never run there**. Measured — the Portfolio tab's star ratings were six days old and every
+    #: scrape in `rating_history` was manual. A stale rating silently shapes a verdict, which is
+    #: why that tab carries a staleness banner at all.
+    #:
+    #: Safe to enable now in a way it was not before. The wedge that justified turning the master
+    #: flag off happened with **no swap**: 419 MB RSS on a 951 MB box, 34 connections queued on
+    #: :8000, the app answering nothing while `systemctl` reported `active`. There is now 2 GB of
+    #: swap, and the same 262-ASIN scrape re-measured at 263 MB peak with the app responding in
+    #: 0.1 s throughout.
+    scrape_enabled: bool = False
+
     daily_scrape_hour: int = 6
     daily_scrape_minute: int = 0
+
+    #: When the scrape runs under `scrape_enabled`, stated in IST and converted once through
+    #: `app.ist` — the module that exists because the same timezone bug was found seven times.
+    #:
+    #: 05:00, and the ORDER is the reason: the portfolio job reads `rating_history` at 07:30, so
+    #: the scrape must finish before it or the tab spends the day on yesterday's stars. It also
+    #: keeps two multi-minute jobs from overlapping on this box.
+    scrape_ist_hour: int = 5
+    scrape_ist_minute: int = 0
 
     data_retention_days: int = 90
 
