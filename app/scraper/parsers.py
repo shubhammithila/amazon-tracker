@@ -287,6 +287,42 @@ def detect_captcha(tree: html.HtmlElement) -> bool:
     return False
 
 
+#: The interstitial is a whole page in ~3.8 KB. A real product page is 2.2–2.4 MB, measured across
+#: dozens of fetches, so there is no ambiguity — but the threshold is generous rather than tight
+#: because the exact size varies with the footer Amazon renders.
+INTERSTITIAL_MAX_BYTES = 50_000
+
+
+def detect_bot_interstitial(tree: html.HtmlElement, raw_html: str) -> bool:
+    """Amazon's throttle page: **HTTP 200, ~3.8 KB, "Click the button below to continue shopping".**
+
+    Measured on this machine: a burst of requests gets a normal 2.4 MB page, then every subsequent
+    one comes back as this. It is not a CAPTCHA, not a 503, and not an error — it is a 200 with a
+    complete little HTML page containing a button, the Conditions of Use link and nothing else.
+
+    **Before this, it was reported as `"Parse Error (no title)"`** — technically true, because the
+    page genuinely has no `#productTitle`, and actively misleading: it reads as a markup change or a
+    broken parser, sending the reader to the selectors. The cause is rate limiting and the remedy is
+    to wait, which is a completely different action.
+
+    Found while porting the scraper to another stack, by diffing the two implementations on the same
+    ASINs: one succeeded and the other reported a parse failure, and the difference turned out to be
+    request timing rather than code. The port was abandoned; this finding was the useful part.
+
+    **Keyed on the phrase AND the small size together.** Neither is sufficient: "continue shopping"
+    could appear in a real page's footer or a recommendation strip, and a small page could be any
+    error. Requiring both, plus the absence of a product title, is what keeps it from firing on a
+    2.4 MB page that happens to contain the words — the same discipline the deal badge needs, where
+    `dealBadge_feature_div` is present on every page and so cannot be the test.
+    """
+    if len(raw_html) > INTERSTITIAL_MAX_BYTES:
+        return False
+    if tree.xpath('//*[@id="productTitle"]'):
+        return False
+    text = " ".join(tree.xpath("//body//text()")).lower()
+    return "continue shopping" in text and "add to cart" not in text
+
+
 def detect_dog_page(tree: html.HtmlElement) -> bool:
     dog_indicators = [
         '//*[contains(text(),"looking for was not found")]',
@@ -339,6 +375,15 @@ def parse_product_page(raw_html: str, asin: str) -> dict:
             "asin": asin,
             "url": f"https://www.amazon.in/dp/{asin}",
             "status": "Blocked (CAPTCHA)",
+        }
+
+    # BEFORE the dog-page and no-title checks. The interstitial has no title either, so a later
+    # check would claim it first and report the wrong cause — which is exactly the bug being fixed.
+    if detect_bot_interstitial(tree, raw_html):
+        return {
+            "asin": asin,
+            "url": f"https://www.amazon.in/dp/{asin}",
+            "status": "Rate limited",
         }
 
     if detect_dog_page(tree):

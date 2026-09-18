@@ -2853,7 +2853,93 @@ The `Ideal WH` cell carries a background tint (`.ideal-wh-cell`) distinguishing 
 other bold calculated columns (Forecast, Ideal FBA) — bold alone did not single it out as the
 number actually being watched.
 
+## The stack stays Python. A React/Node/Postgres/Redis rewrite was built and abandoned.
+
+Asked for as a copy of the app in React + Node + Express + Postgres + Redis, one slice at a time,
+starting with the scraper. The scraper slice was **finished and working** — real scrapes into
+Postgres, live progress over a WebSocket, 120 tests, 17/17 mutations caught — and then dropped.
+
+**The arithmetic is the argument.** The scraper is 832 lines: **3% of a 27,000-line app**, and the
+simplest module in it — no SP-API, no money, no GST. The other 97% is knowledge paid for in
+production incidents:
+
+- the **ads tab**, the only feature that spends real money, whose traps fill 200 lines of this file:
+  three mutually-unreadable `207` shapes, the 31-day report cap, the mid-poll token expiry, the
+  once-per-day guard that stops a −10% rule compounding to −19% on live bids
+- the **GST invoice series**, where a gap is a question answered during an audit
+- the **orders fetch**, which took five wrong attempts to bound correctly
+- the **seven-call FBA sequence**, where sending the ship date on the wrong call fails *silently*
+
+A rewrite re-risks all of it, and the failure mode is not a crash — it is a plausible wrong number on
+a tax document. Porting the *easiest* module surfaced three bugs that 120 green tests missed.
+
+**The two genuine wins never needed a rewrite:**
+
+| Win | Available to this app? |
+|---|---|
+| Postgres: no single-writer limit, managed backups, PITR | **yes** — planned in the plan appendix, tooling now built |
+| A distributed scrape lock instead of a module-level flag | **yes** — add Redis; `ScrapeState` becomes ~30 lines |
+
+**Kept:** `scripts/postgres/` — the DDL generator, the seed script and the column-by-column
+verifier, proven against a real Postgres 16 (34 tables, 344 columns, 6,811 rows, zero unexpected
+differences). That is the risky half of the SQLite→Postgres migration, already done.
+
+**Kept:** the rate-limit finding above, which is a real bug in *this* app.
+
+> **The mistake worth recording is mine: I never asked WHY a copy was wanted before writing 1,500
+> lines.** "Make a copy in this stack" has at least three different answers — concurrency headroom,
+> better tooling, dislike of the current UI — and two of them are satisfied without touching the
+> application code. The question to ask first is what the rewrite is *for*.
+
+> **If the UI is the real complaint, that is a much smaller job.** Colour lives in
+> `static/theme.css` and nowhere else, one shared light theme across seven pages, with
+> `tests/test_theme.py` computing WCAG contrast for every foreground/background pair. Restyling is
+> bounded and reversible — the Materio-inspired refresh was tried and reverted in full with one
+> `git revert`, which is exactly the property a rewrite does not have.
+
 ## Known gaps (deliberate, not oversights)
+
+### Amazon's throttle page is an HTTP 200, and it read as a parse error for the life of the project
+Measured: a burst of requests gets normal 2.2–2.4 MB pages, then every one after that comes back as a
+complete little **3,793-byte** page:
+
+```
+Amazon.in  Click the button below to continue shopping  Continue shopping
+Conditions of Use & Sale  Privacy Notice  © 1996-2025, Amazon.com, Inc. or its affiliates
+```
+
+Not a CAPTCHA, not a 503, not an error. It landed on the `no title` branch and was reported as
+**`Parse Error (no title)`** — true, and actively misleading: it reads as a markup change and sends
+the reader to the XPaths, when the cause is rate limiting and the remedy is to wait. Worse, that
+status is **not retryable**, so a throttled ASIN was abandoned after one attempt.
+
+`detect_bot_interstitial` keys on the phrase **AND** the small size **AND** the absence of a product
+title. None is sufficient alone: "continue shopping" appears legitimately in footers and
+recommendation strips on real pages, a small page could be any error, and a short-but-genuine page
+(an early render, a partial response) must still be parsed rather than silently retried. Same
+discipline the deal badge needs, where `dealBadge_feature_div` is on *every* product page and so
+cannot be the test.
+
+- **Checked BEFORE the dog-page and no-title branches.** The interstitial has no `#productTitle`
+  either, so whichever branch returns first claims it.
+- **`RETRYABLE_STATUSES` is now a named tuple** rather than an inline one, so the retry loop and any
+  future caller cannot disagree about which failures are temporary.
+- **Persistence stays an allow-list** (`status not in ("OK", "Unavailable")`), so a rate-limited row
+  is skipped rather than writing nulls over a real price. A test pins that, because widening the
+  tuple to "save everything" is a plausible tidy-up.
+
+> **Found by a Node/React rewrite that was then ABANDONED** — by diffing the two implementations on
+> the same ASINs from the same machine. One succeeded and the other reported a parse failure, and the
+> difference turned out to be request timing rather than code. The rewrite was dropped (see
+> `scripts/postgres/README.md`); this finding and the Postgres migration tooling were the useful part.
+
+> **A source-position test SURVIVED a mutation that moved the check later.** The first version
+> compared `source.index("detect_bot_interstitial")` against `source.index("Parse Error (no title)")`
+> — and a moved block still sat before the string being searched for, so the positions compared as
+> expected while proving nothing about which branch ran. Now asserted on the returned STATUS, with
+> both collisions exercised: no title element at all (rate limited) and a title element that is
+> blank (a genuine parse error). **That is the fourth time in this codebase a test has pinned an
+> incidental detail instead of the behaviour.**
 
 ### The deal badge depends on which page Amazon serves you
 `extract_deal` keys on STRUCTURE, not on the sale's name: `#dealBadgeSupportingText`

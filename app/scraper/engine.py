@@ -17,6 +17,22 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+#: Statuses worth another attempt, because each clears by itself given time.
+#:
+#: **`Rate limited` is on this list and that is the point of naming it.** Amazon's throttle page is an
+#: HTTP 200 of ~3.8 KB reading "Click the button below to continue shopping", so before it had its
+#: own status it was reported as `"Parse Error (no title)"` — which is not retryable, so a throttled
+#: ASIN was abandoned after one attempt AND the reader was pointed at the selectors instead of at the
+#: request rate. Named as a list rather than an inline tuple so the retry loop and any future caller
+#: cannot disagree about which failures are temporary.
+RETRYABLE_STATUSES = (
+    "Throttled (503)",
+    "Timeout",
+    "Connection Error",
+    "Rate limited",
+)
+
+
 class ScrapeAlreadyRunning(RuntimeError):
     """Raised when a scrape is requested while another one is in flight."""
 
@@ -131,7 +147,7 @@ async def scrape_worker(
             for attempt in range(2):
                 if result["status"] == "OK" or state.stopped:
                     break
-                if result["status"] in ("Throttled (503)", "Timeout", "Connection Error"):
+                if result["status"] in RETRYABLE_STATUSES:
                     backoff = (attempt + 1) * 5 + random.uniform(0, 3)
                     await asyncio.sleep(backoff)
                     client.headers.update(get_random_headers())
