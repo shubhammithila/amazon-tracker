@@ -255,6 +255,35 @@ def test_the_named_unclassified_list_is_capped_but_the_count_is_exact():
     assert out["unclassified_total"] == 20
 
 
+def test_unclassified_rows_and_NAMES_are_reported_separately():
+    """**Found on live production: the card read 55 while the note read 51.**
+
+    Both were right — 55 unclassified ROWS over 51 distinct NAMES, because `Singhara Atta` appears
+    four times in the catalogue and `Arwa Katarni Rice` twice (catalogue duplicates this app
+    deliberately does not invent a distinction for). Two numbers for one thing with nothing
+    explaining the gap is the "86 orders beside 87 lines" defect, so both travel and the screen
+    states the difference.
+
+    The NAMES count is the one that drives the action: a category is stored per name, so
+    classifying "Singhara Atta" once covers all four rows.
+    """
+    parents = [
+        _parent("Singhara Atta", 100.0, 10.0, 20.0),
+        _parent("Singhara Atta", 100.0, 10.0, 20.0),
+        _parent("Bengali Posta", 50.0, 5.0, 10.0),
+    ]
+    out = logic.category_totals(parents, {})
+    card = next(
+        c for c in out["categories"] if c["category"] == logic.CATEGORY_UNCLASSIFIED
+    )
+    assert card["products"] == 3, "the card must count every row, or its sales would not add up"
+    assert out["unclassified_rows"] == 3
+    assert out["unclassified_total"] == 2, (
+        "the note must count distinct NAMES, since that is what gets classified"
+    )
+    assert out["unclassified_names"] == ["Singhara Atta", "Bengali Posta"]
+
+
 def test_categories_are_ordered_biggest_first():
     """The strip answers "where is the money", not a fixed taxonomy."""
     parents = [
@@ -373,6 +402,26 @@ def test_the_table_filters_on_the_group_not_the_verdict():
     source = _portfolio_template()
     assert "verdictGroup(r.verdict) !== filter" in source, (
         "the tab filter compares against the raw verdict, so no row can ever match a group name"
+    )
+
+
+def test_the_unclassified_note_explains_the_row_and_name_counts():
+    """The card counts rows, the note counts names, and the screen must say so when they differ.
+
+    Stated only when there IS a difference: "51 names across 51 rows" is noise, and a caveat that
+    fires on every render is the kind that trains the reader to skip the one that matters.
+    """
+    body = _template_function(_portfolio_template(), "renderCategories")
+    assert "ct.unclassified_rows" in body, (
+        "the note does not read the row count, so 55 on the card beside 51 in the note is "
+        "unexplained"
+    )
+    # The whole condition, anchored to its assignment. A substring check on `rowCount > nameCount`
+    # alone survived `false && rowCount > nameCount` — the deploy-detector trap (an id that also
+    # appears in the comment explaining the bug), and the FIFTH instance of it in this codebase.
+    assert "const dupes = rowCount > nameCount" in body, (
+        "the explanation is not gated on the two counts actually differing, so it either fires "
+        "when they agree or has been disabled"
     )
 
 

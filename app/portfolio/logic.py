@@ -888,10 +888,25 @@ def category_totals(
     ordered = sorted(
         buckets.values(), key=lambda b: (-b["sales"], b["category"])
     )
+    # **Two different counts, and the screen has to say which is which.** Found on live production:
+    # the Unclassified CARD read 55 while the note read "51 product(s)" — 55 unclassified ROWS over
+    # 51 distinct NAMES, because `Singhara Atta` appears 4 times in the catalogue and
+    # `Arwa Katarni Rice` twice. Both figures are right and the pair reads as a bug, which is the
+    # "86 orders beside 87 lines" defect this codebase records three times.
+    #
+    # The names count is the one that matters for the ACTION — a category is stored per name, so
+    # classifying "Singhara Atta" once fixes all four rows — and `unclassified_rows` travels so the
+    # note can say so rather than leaving the reader to spot the difference.
+    unclassified_rows = sum(
+        bucket["products"]
+        for label, bucket in buckets.items()
+        if label == CATEGORY_UNCLASSIFIED
+    )
     return {
         "categories": ordered,
         "unclassified_names": unclassified_names[:UNCLASSIFIED_SHOWN],
         "unclassified_total": len(unclassified_names),
+        "unclassified_rows": unclassified_rows,
     }
 
 

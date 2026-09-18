@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2262 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2264 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -1591,6 +1591,21 @@ money", not a fixed taxonomy), tinted when margin is under 5%, and clickable to 
   parents had a stored category. The **count stays exact** while the list is capped, so "51 products
   have no category yet: …" is a sentence the owner can act on — same discipline as the catalogue
   notes and the Projections `needs_review` list.
+
+  > **The card counts ROWS and the note counts NAMES, and on production they differed: 55 beside
+  > 51.** Both figures were right — `Singhara Atta` appears **4 times** in the catalogue and
+  > `Arwa Katarni Rice` twice, which are the catalogue duplicates this app deliberately does not
+  > invent a distinction for. Two numbers for one thing with nothing explaining the gap is the
+  > "86 orders beside 87 lines" defect, found by reading the live payload rather than by a test.
+  > `unclassified_rows` now travels beside `unclassified_total` and the note states the difference
+  > **only when there is one** — a caveat that fires on every render is the kind that trains the
+  > reader to skip the one that matters. The NAMES count is the actionable one: a category is stored
+  > per name, so classifying "Singhara Atta" once covers all four rows.
+  >
+  > The first test for it asserted the substring `rowCount > nameCount`, which **survived**
+  > `false && rowCount > nameCount`. Fifth instance of that trap here, after the deploy detector's
+  > revision id, the SB `daily=True` fake, the scheduler guard's substring check, and
+  > `shownColumns()` returning every column.
 - **The stored choice is used, never a keyword guess.** `shipment.logic.category_for` does substring
   matching and is the right tool for guessing; falling back to it here would make a wrong guess
   indistinguishable from a decision, which is exactly what naming the unclassified products avoids.
@@ -1621,6 +1636,21 @@ the wedge this box survived once; `max_instances=1, coalesce=True` for the same 
 - **Asserted on the registered job IDS, not the flag.** `setup_scheduler`'s guard was once at the
   top of the function, and moving it back there reads as tidy while silently stopping the orders
   refresh.
+
+**Verified on production by running the job itself**, not by trusting the log line — 18 Sep, with
+`SCRAPE_ENABLED=true` live:
+
+```
+Scheduler started: products at 05:00 IST (23:30 UTC), orders every 30m,
+                   portfolio at 07:30 IST (02:00 UTC), ads at 08:00 IST (02:30 UTC), ...
+Added job "scheduled_product_scrape"   <- and NO keyword track, NO history purge
+Scheduled scrape complete: 262 results
+```
+
+262 ASINs, 413 HTTP 200s, **107 rating rows stamped that day**, and `_rating_freshness` returned
+**`stale=False` for the first time** (it had been reading 2026-09-12, six days old). Memory held at
+**517 MB available** throughout on the 951 MB box — the scrape is the job that wedged this machine
+once, so that number is the reason the flag is separate rather than folded into the master one.
 
 ### Making it simpler was four separate cuts
 Asked for as *"make it more simpler"*, and every removal is reversible in one click rather than a

@@ -662,10 +662,22 @@ function renderCategories(){
      naming the products that appeared or vanished. */
   const shown = (ct.unclassified_names || []).map(esc).join(", ");
   const more = Number(ct.unclassified_total || 0) > (ct.unclassified_names || []).length;
-  const note = Number(ct.unclassified_total || 0) > 0
-    ? `<div class="cat-note">${n(ct.unclassified_total)} product(s) have no category yet:
+  /* **The card counts ROWS and this note counts NAMES, so it says which.** Found on live
+     production: the Unclassified card read 55 while the note read "51 product(s)" — both correct,
+     because `Singhara Atta` appears 4 times in the catalogue and `Arwa Katarni Rice` twice. Two
+     numbers for one thing, with nothing on screen explaining the gap, is the "86 orders beside 87
+     lines" defect. The difference is stated only when there IS one, because "51 names across 51
+     rows" is noise. */
+  const rowCount = Number(ct.unclassified_rows || 0);
+  const nameCount = Number(ct.unclassified_total || 0);
+  const dupes = rowCount > nameCount
+    ? ` <span class="dim">(${n(rowCount)} rows — some names repeat in the catalogue, and
+        classifying a name covers all of its rows)</span>`
+    : "";
+  const note = nameCount > 0
+    ? `<div class="cat-note">${n(nameCount)} product(s) have no category yet:
          ${shown}${more ? " …" : ""} — classify them on the Shipment tab and this strip picks
-         them up.</div>`
+         them up.${dupes}</div>`
     : "";
 
   $("categories").innerHTML = `<div class="cat-strip">${cards.join("")}</div>${note}`;

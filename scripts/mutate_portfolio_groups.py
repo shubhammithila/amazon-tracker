@@ -164,6 +164,20 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         LOGIC,
+        '        "unclassified_rows": unclassified_rows,',
+        '        "unclassified_rows": len(unclassified_names),',
+        "the row count is the name count, so the card's 55 sits beside a note claiming 55 while 51 "
+        "names exist — test_unclassified_rows_and_NAMES_are_reported_separately",
+    ),
+    (
+        TEMPLATE,
+        "  const dupes = rowCount > nameCount",
+        "  const dupes = false && rowCount > nameCount",
+        "the screen never explains the gap, so 55 on the card beside 51 in the note reads as a bug "
+        "— test_the_unclassified_note_explains_the_row_and_name_counts",
+    ),
+    (
+        LOGIC,
         "        if key and key in categories:\n            return categories[key]",
         "        if key:\n            from app.shipment.logic import category_for\n"
         "            return category_for(key)",
