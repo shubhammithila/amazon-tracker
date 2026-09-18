@@ -922,22 +922,34 @@ def test_an_empty_filter_value_is_not_treated_as_a_zero_threshold():
 # Found by /qa on 2026-08-28.
 
 
-def test_the_active_verdict_chip_survives_a_grain_with_no_rows():
-    """**Switching Products → SKUs while SURGICAL was selected left an empty table and no chip.**
+def test_a_filter_tab_is_never_removed_while_it_is_selected():
+    """**The requirement, not the old implementation.**
 
-    The chips are counted for the grain on screen, which is right — "9 KILL products" and "24 KILL
-    SKUs" are both true. But the loop skipped any verdict with a zero count, and SURGICAL is
-    *structurally* zero for SKUs: it compares a parent against its own sizes, so no single size
-    can carry it. The filter stayed applied with its chip gone, so the screen read as broken
-    rather than as filtered, and there was no control left to click to undo it.
+    Originally: switching Products → SKUs while SURGICAL was selected left an empty table and no
+    chip, because the loop skipped any verdict with a zero count and SURGICAL is *structurally*
+    zero for SKUs. The filter stayed applied with its control gone, so the screen read as broken
+    rather than filtered. Found by /qa.
+
+    The seven verdict chips are now three GROUP tabs, and the guarantee is stronger: every tab
+    renders unconditionally, so a zero count can never remove the control that undoes it.
+
+    Asserted on that PROPERTY. The previous version checked for the string `filter !== v` — a
+    detail of a conditional that no longer exists — and would fail here while the requirement is
+    better met than before. That is the fifth time in this codebase a test has pinned an
+    incidental detail instead of the behaviour.
     """
     source = _template()
     start = source.index("function renderVerdicts(")
-    body = source[start:start + 1400]
-    assert "filter !== v" in body, (
-        "renderVerdicts drops a zero-count verdict unconditionally, so selecting a parent-only "
-        "verdict and switching to SKUs removes the only control that could undo the filter"
+    body = source[start:start + 1800]
+
+    # No skip on a zero count: that is precisely what removed a control mid-filter.
+    assert "if(!counts[" not in body, (
+        "a tab must not be skipped on a zero count — that is what removed the only control "
+        "capable of undoing the filter"
     )
+    # A zero tab still has to LOOK different from a populated one, or "selected, 0 rows" and
+    # "selected, 24 rows" are identical apart from the digit.
+    assert "zero" in body
 
 
 def test_an_empty_table_names_the_control_that_emptied_it():
@@ -953,9 +965,15 @@ def test_an_empty_table_names_the_control_that_emptied_it():
     body = source[start:start + 1800]
     assert "custom filter(s)" in body, "the empty note does not mention the custom filters"
     assert "search" in body, "the empty note does not mention the search box"
-    assert 'filter === "SURGICAL" && isSkus' in body, (
-        "the one structurally-impossible combination is not explained, so it reads as a dead end"
+    # SURGICAL is no longer a selectable chip — it is a ⚠ flag inside the Maintain group — so the
+    # note now explains the product-level nature of the flags rather than a filter combination
+    # that can no longer be chosen. The REQUIREMENT is unchanged: the SKU grain must say why it
+    # can look emptier than the product grain, instead of reading as a dead end.
+    assert "SURGICAL" in body, (
+        "the SKU grain does not explain that the ⚠ flags are product-level, so an emptier table "
+        "reads as a dead end"
     )
+    assert "Switch to Products" in body
 
 
 # ─── Regression: ISSUE-004 — the table dragged the whole page sideways ─────────

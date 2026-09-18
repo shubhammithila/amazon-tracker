@@ -861,9 +861,16 @@ def category_totals(
                 "ad_spend": 0.0,
                 "net": 0.0,
                 "units": 0,
+                # Which parents landed here, so the SCREEN can filter its table by category
+                # without re-deriving the classification. Re-deriving would be a second rule, and
+                # it would disagree on exactly the rows hardest to notice — the multi-flavour
+                # parents whose displayed name is not a catalogue name at all.
+                "products_named": [],
             },
         )
         bucket["products"] += 1
+        if name:
+            bucket["products_named"].append(name)
         bucket["sales"] += _num(parent.get("sales"))
         bucket["ad_spend"] += _num(parent.get("ad_spend"))
         bucket["net"] += _num(parent.get("net"))

@@ -76,6 +76,36 @@ h2{font-size:19px;font-weight:600;margin-bottom:2px}
 .kpi.bad .v{color:var(--red)}
 .kpi.warn .v{color:var(--yellow)}
 
+/* ── The category strip ───────────────────────────────────────────────────────
+   Cards rather than a table: five to seven buckets is a glance, and a table of seven rows
+   above the real table would read as a second dataset. Each is a button because it filters. */
+.cat-strip{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.cat{flex:1 1 150px;text-align:left;background:var(--surface);border:1px solid var(--border);
+  border-radius:10px;padding:8px 11px;cursor:pointer;font:inherit;color:inherit}
+.cat:hover{border-color:var(--accent)}
+.cat.on{border-color:var(--accent);background:var(--accent-soft)}
+/* A thin margin is the reason to look at this strip at all: measured, Seeds runs 51.4% TACOS for
+   2.8% margin while Rice earns 44.3% at 21.2%. */
+.cat.low{border-color:var(--yellow)}
+.cat.low .cat-sales{color:var(--yellow)}
+.cat-name{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+  color:var(--text-muted)}
+.cat-n{font-weight:600;opacity:.8}
+.cat-sales{font-size:17px;font-weight:700;line-height:1.2;margin-top:1px}
+.cat-meta{font-size:10.5px;color:var(--text-muted);margin-top:1px}
+.cat-note{font-size:11.5px;color:var(--text-muted);margin:-2px 0 8px;line-height:1.5}
+
+/* The two standing caveats, collapsed to one line with an ⓘ. Both were full-width banners
+   costing ~90px before any data, on every visit. */
+.banner.caveats{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;padding:7px 12px}
+.caveat-line{font-weight:600}
+.caveat-more{background:none;border:none;font:inherit;cursor:pointer;color:inherit;
+  padding:0 2px;opacity:.75}
+.caveat-more:hover{opacity:1}
+.caveat-full{flex:1 1 100%;margin-top:6px;font-weight:400}
+.caveat-full p{margin-bottom:6px;line-height:1.55}
+.caveat-full p:last-child{margin-bottom:0}
+
 /* The verdict strip IS the worklist, so it doubles as a filter. */
 .verdicts{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
 .vchip{border:1px solid var(--border-strong);background:var(--surface);border-radius:20px;
@@ -266,7 +296,10 @@ th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 
 <div class="kpis" id="kpis"></div>
 
-<!-- Verdict chips double as filters. Each carries an ⓘ that explains its rule in words. -->
+<!-- Sales per category, from the SHIPMENT tab's own classification. Clickable to filter. -->
+<div id="categories"></div>
+
+<!-- Three group tabs: Scale | Maintain | Kill or monitor. They double as filters. -->
 <div class="verdicts" id="verdicts"></div>
 
 <!-- The rule panel: what each verdict means, and the thresholds behind it, editable. -->
@@ -283,6 +316,10 @@ th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
       <button class="seg-btn" data-view="skus">SKUs</button>
     </div>
     <button class="btn-outline" id="filter-btn">+ Filter</button>
+    <!-- Units, Returns and Rating. Context rather than the four figures a kill-or-scale call is
+         made on, so they are one click away instead of always on screen. The choice is remembered,
+         because someone who wants them wants them every visit. -->
+    <button class="btn-outline" id="cols-btn"></button>
   </div>
   <div id="filter-area"></div>
 </div>
@@ -291,7 +328,8 @@ th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 
 <script>
 let data = null;
-let filter = "";                 // the active verdict chip, "" = all
+let filter = "";                 // the active GROUP tab: Scale | Maintain | Kill or monitor, "" = all
+let category = "";               // the active category card, "" = all
 let poll = null;
 const open = new Set();          // expanded parents, kept across re-renders
 const saving = new Set();        // decisions in flight, to stop a double-save
@@ -312,6 +350,7 @@ let view = remembered("view", "products");        // "products" | "skus"
 let window_ = remembered("window", null);         // {start, end} or null = whatever is stored
 let sort = remembered("sort", {key: "sales", dir: -1});
 let filters = remembered("filters", []);          // [{field, op, value}], ANDed
+let showExtra = remembered("showExtra", false);    // the Units / Returns / Rating columns
 let rulesOpen = false;
 
 /* The columns a filter can be built on, and how each is read from a row. ONE definition, so the
@@ -413,6 +452,8 @@ function render(){
   renderSubtitle();
   renderBanners();
   renderKpis();
+  renderCategories();
+  renderColsButton();
   renderWindowBar();
   renderVerdicts();
   renderFilters();
@@ -508,24 +549,44 @@ function renderBanners(){
       cached so this page always loads instantly.</div>`);
   }
 
-  /* Stated on screen rather than left implicit: netProceeds is Amazon's figure and excludes
-     manufacturing cost, so a size at +8.8% may still lose money. The fix is data entry in
-     Seller Central, which is where Amazon reads it from — so this app does not offer a second
-     cost field that could disagree with it. */
-  if(data.pre_cogs){
-    out.push(`<div class="banner warn"><strong>Every margin here is pre-COGS.</strong>
-      It is Amazon's net proceeds — sales minus Amazon's fees minus ads — and does
-      <strong>not</strong> include what it costs to make the product. A size showing a small
-      profit may still lose money. Enter your cost per unit in Seller Central
-      (SKU Central / Revenue Calculator) and Amazon returns it here, making these true margins.
-      </div>`);
-  }
+  /* **The two standing caveats collapse to ONE line with an ⓘ.** Asked for as part of "make it
+     more simpler": they were two full-width banners taking ~90px before any data, on every visit,
+     saying the same thing every time.
 
-  if(data.ratings_stale){
+     Neither is dropped, and that matters — a pre-COGS margin read as profit is how a
+     money-losing SKU looks like a keeper, and a stale star rating silently shapes a verdict. The
+     ratings one is what revealed that the scrape had never run on production. So the facts stay,
+     one click from full text, and the ratings DATE stays on the visible line because that is the
+     part that changes. */
+  const notes = [];
+  if(data.pre_cogs){
+    notes.push({
+      short: "Margins are pre-COGS",
+      full: `<strong>Every margin here is pre-COGS.</strong> It is Amazon's net proceeds — sales
+        minus Amazon's fees minus ads — and does <strong>not</strong> include what it costs to make
+        the product. A size showing a small profit may still lose money. Enter your cost per unit in
+        Seller Central (SKU Central / Revenue Calculator) and Amazon returns it here, making these
+        true margins.`,
+    });
+  }
+  if(data.ratings_as_of || data.ratings_stale){
     const when = data.ratings_as_of ? String(data.ratings_as_of).slice(0, 10) : "never";
-    out.push(`<div class="banner warn"><strong>Ratings are from ${esc(when)}.</strong>
-      Star ratings come from our own scraper, not this API, so a stale figure would quietly
-      shape a verdict. Run a product scrape from the Dashboard to refresh them.</div>`);
+    notes.push({
+      short: `ratings from ${esc(when)}`,
+      stale: !!data.ratings_stale,
+      full: `<strong>Ratings are from ${esc(when)}.</strong> Star ratings come from our own scraper,
+        not Amazon's API, so a stale figure would quietly shape a verdict. They refresh nightly;
+        you can also run a product scrape from the Dashboard.`,
+    });
+  }
+  if(notes.length){
+    const stale = notes.some(x => x.stale);
+    out.push(`<div class="banner ${stale ? "warn" : "info"} caveats">
+      <span class="caveat-line">${notes.map(x => x.short).join(" · ")}</span>
+      <button class="caveat-more" type="button" data-caveats="1"
+        aria-expanded="false" title="what these mean">ⓘ</button>
+      <div class="caveat-full" hidden>${notes.map(x => `<p>${x.full}</p>`).join("")}</div>
+    </div>`);
   }
 
   if(data.catalogue_warning){
@@ -543,49 +604,152 @@ function renderBanners(){
   $("messages").innerHTML = out.join("");
 }
 
+/* FOUR tiles, not seven. Asked for as *"make it more simpler"*.
+
+   Sales, ad spend, net and margin are the four that drive an account-level decision. TACOS and
+   ACOS moved into the TABLE, where they are per-product and actionable — an account-wide TACOS of
+   31.7% does not tell you which product to fix. Units joined the row-count line under the heading.
+
+   **Nothing is lost.** TACOS and ACOS are columns, Units is in the subtitle, and the export still
+   carries every figure. The measured point that TACOS 33.1% against ACOS 89.9% is a GAP worth
+   seeing survives — per product, which is the grain where the gap can be acted on. */
 function renderKpis(){
   const t = data.totals;
   const netCls = (t.net_pct !== null && t.net_pct < 0) ? "bad" : "good";
-  /* TACOS and ACOS side by side, with the difference spelled out in the label rather than left
-     for the reader to remember. Measured: 33.1% against 89.9% — they are not variants of one
-     number, they answer different questions, and the gap is the point. */
-  const acosCls = (t.acos !== null && t.acos !== undefined && t.acos > 1) ? "bad" : "warn";
   $("kpis").innerHTML = `
     <div class="kpi"><div class="v">${money(t.sales)}</div><div class="k">Sales</div></div>
     <div class="kpi warn"><div class="v">${money(t.ad_spend)}</div><div class="k">Ad spend</div></div>
-    <div class="kpi warn"><div class="v">${t.tacos === null ? "—" : (t.tacos*100).toFixed(1)+"%"}</div>
-      <div class="k" title="ad spend over TOTAL sales">TACOS</div></div>
-    <div class="kpi ${acosCls}"><div class="v">${
-      t.acos === null || t.acos === undefined ? "—" : (t.acos*100).toFixed(1)+"%"}</div>
-      <div class="k" title="ad spend over ad-ATTRIBUTED sales">ACOS</div></div>
     <div class="kpi ${netCls}"><div class="v">${money(t.net)}</div><div class="k">Net (pre-COGS)</div></div>
-    <div class="kpi ${netCls}"><div class="v">${t.net_pct === null ? "—" : (t.net_pct*100).toFixed(1)+"%"}</div><div class="k">Net margin</div></div>
-    <div class="kpi"><div class="v">${n(t.units).toLocaleString("en-IN")}</div><div class="k">Units</div></div>`;
+    <div class="kpi ${netCls}"><div class="v">${
+      t.net_pct === null ? "—" : (t.net_pct*100).toFixed(1)+"%"}</div>
+      <div class="k">Net margin</div></div>`;
 }
 
-/* Verdict chips, counted for the CURRENT grain — "9 KILL products" and "24 KILL SKUs" are both
-   true and the chip must agree with the table beneath it. Each carries an ⓘ that opens the rule. */
+/* ── Category sales ────────────────────────────────────────────────────────────
+   Asked for as *"need each category sales as well. Sattu, chana, flours, Staples, seeds,
+   others. Or you can check the category/priority thing from the shipment tab."*
+
+   The classification IS the Shipment tab's: the owner classifies a product once, and the packer's
+   sort order and this strip then agree. Every figure comes from the server
+   (`logic.category_totals`) — nothing here recomputes a total, because a figure computed in the
+   browser drifts from the one the server believes, which this codebase has shipped three times.
+
+   Clickable to filter the table, so "why is Seeds' margin 2.8%" is one click rather than a search
+   through 90 products. */
+function renderCategories(){
+  const ct = data.category_totals || {};
+  const rows = ct.categories || [];
+  if(!rows.length){ $("categories").innerHTML = ""; return; }
+
+  const pct = v => (v === null || v === undefined) ? "—" : (v*100).toFixed(1) + "%";
+  const cards = rows.map(c => {
+    // Tinted when the margin is thin, because that is the whole reason to look at this strip:
+    // measured on the real account, Seeds runs 51.4% TACOS for 2.8% margin while Rice earns
+    // 44.3% at 21.2% — a comparison that was not visible anywhere before.
+    const low = c.margin !== null && c.margin !== undefined && c.margin < 0.05;
+    return `<button class="cat${category === c.category ? " on" : ""}${low ? " low" : ""}"
+       data-cat="${esc(c.category)}"
+       title="${esc(c.category)} — ${c.products} product(s), TACOS ${pct(c.tacos)}">
+      <div class="cat-name">${esc(c.category)} <span class="cat-n">${c.products}</span></div>
+      <div class="cat-sales">${money(c.sales)}</div>
+      <div class="cat-meta">TACOS ${pct(c.tacos)} · margin ${pct(c.margin)}</div>
+    </button>`;
+  });
+
+  /* The unclassified products are NAMED, not merely counted. 51 of 90 parents had no stored
+     category when this shipped, and a bare number gives the owner nothing to act on — a name is
+     one click from being classified on the Shipment tab. Same reasoning as the catalogue notes
+     naming the products that appeared or vanished. */
+  const shown = (ct.unclassified_names || []).map(esc).join(", ");
+  const more = Number(ct.unclassified_total || 0) > (ct.unclassified_names || []).length;
+  const note = Number(ct.unclassified_total || 0) > 0
+    ? `<div class="cat-note">${n(ct.unclassified_total)} product(s) have no category yet:
+         ${shown}${more ? " …" : ""} — classify them on the Shipment tab and this strip picks
+         them up.</div>`
+    : "";
+
+  $("categories").innerHTML = `<div class="cat-strip">${cards.join("")}</div>${note}`;
+}
+
+/* THREE tabs, not seven chips. Asked for as *"lesser tabs — I want only Scale (top performers),
+   Maintain (mid performers), Kill or monitor (least performers)"*.
+
+   The seven verdicts are untouched: `logic.verdict_group` maps them, and each row still shows its
+   own verdict and the reason behind it, because a reason is a claim the owner can check against
+   Seller Central. What changed is how many controls sit above the table.
+
+   Counted for the CURRENT grain — "11 Scale products" and "36 Scale SKUs" are both true, and the
+   tab must agree with the table beneath it.
+
+   **Every tab renders even at zero.** A tab that vanished would leave an empty table with nothing
+   highlighted and no control to click to undo the filter — the exact bug /qa found when a
+   zero-count verdict chip was dropped while it was the active filter. */
 function renderVerdicts(){
   const isSkus = view === "skus";
-  const counts = (isSkus ? data.totals.sku_verdicts : data.totals.verdicts) || {};
+  const counts = (isSkus ? data.sku_group_counts : data.group_counts) || {};
   const total = isSkus ? data.totals.skus : data.totals.parents;
-  const order = (data.verdict_order || ["KILL","SURGICAL","AD DEPENDENT","DEAD","MONITOR","SCALE","BEST BET"]);
-  const chips = [`<button class="vchip ${filter === "" ? "on" : ""}" data-v="">
+  const order = data.group_order || ["Scale", "Maintain", "Kill or monitor"];
+
+  const tabs = [`<button class="vchip${filter === "" ? " on" : ""}" data-v="">
       <span class="n">${n(total)}</span>All</button>`];
-  order.forEach(v => {
-    /* **A verdict with no rows in THIS grain is still shown when it is the active filter.**
-       Otherwise switching Products -> SKUs while SURGICAL is selected left an empty table with
-       nothing highlighted: the filter was still applied but its chip had vanished, so the screen
-       read as broken rather than as filtered. SURGICAL is the case that bites, because it is a
-       parent-only verdict and is always 0 for SKUs. Found by /qa. */
-    if(!counts[v] && filter !== v) return;
-    const zero = !counts[v];
-    chips.push(`<button class="vchip ${filter === v ? "on" : ""}${zero ? " zero" : ""}"
-      data-v="${esc(v)}"${zero ? ' title="no rows at this grain — click All, or switch back to Products"' : ""}>
-      <span class="n">${n(counts[v])}</span>${esc(v)}<span class="info" data-help="${esc(v)}">ⓘ</span></button>`);
+  order.forEach(g => {
+    const count = Number(counts[g] || 0);
+    tabs.push(`<button class="vchip${filter === g ? " on" : ""}${count ? "" : " zero"}"
+      data-v="${esc(g)}"${count ? "" : ' title="no products in this group for this window"'}>
+      <span class="n">${n(count)}</span>${esc(g)}</button>`);
   });
-  $("verdicts").innerHTML = chips.join("");
+  $("verdicts").innerHTML = tabs.join("");
 }
+
+/* The ⚠ a row needs because its GROUP hides its real action.
+
+   Two of the seven verdicts do not fold cleanly into three, and folding them silently is the
+   actual risk:
+
+     SURGICAL      in Maintain reads as a healthy product — but one of its sizes loses money.
+                   Measured: Cheese & Cream Roasted Chana earns +27.1% overall while one 250 g
+                   pack burns 103% TACOS at -52.7% net.
+     AD DEPENDENT  in Kill-or-monitor reads as "kill it" — but the product is profitable and its
+                   ADS are not. The fix is to cut the spend.
+
+   The text comes from the server (`logic.GROUP_FLAGS`) so the screen cannot hold a second copy
+   that falls out of step, and the row's own verdict and reason are still shown beside it. */
+function groupFlag(verdict){
+  const flags = data.group_flags || {};
+  return flags[verdict] || "";
+}
+
+/* Which of the three groups a verdict belongs to.
+
+   **The mapping comes from the server**, so there is exactly one copy of it. A second table here
+   would be a second thing to keep in step, and the failure mode is a product appearing in a tab
+   whose count says it should not be there — the "86 orders beside 87 lines" defect again.
+
+   Falls back to Maintain, matching `logic.verdict_group`: a row missing from all three tabs is
+   invisible, while one in the middle tab is merely mis-sorted and still shows its own verdict. */
+function verdictGroup(verdict){
+  const map = data.verdict_groups || {};
+  return map[verdict] || "Maintain";
+}
+
+/* The category a row belongs to, for the category-card filter.
+
+   Computed here from the same `category_totals` the strip renders, rather than by re-deriving the
+   classification: the server already decided, including the size-name fallback that a multi-flavour
+   parent needs ("Roasted Chana (5 flavours)" against a stored "roasted chana"). Re-deriving would
+   be a second rule, and it would disagree on exactly the rows that are hardest to notice. */
+function rowCategory(row){
+  if(!categoryByProduct){
+    categoryByProduct = new Map();
+    const ct = data.category_totals || {};
+    for(const c of ct.categories || []){
+      for(const name of c.products_named || []) categoryByProduct.set(name, c.category);
+    }
+  }
+  // A SKU row carries its parent's name; a parent row its own.
+  return categoryByProduct.get(row.parent_product || row.product) || "";
+}
+let categoryByProduct = null;
 
 /* ── The rule panel: what each verdict means, and the numbers behind it ─────────
    Editable, because the thresholds are measured from this account rather than laws — but the
@@ -694,7 +858,11 @@ function rows(){
 function visible(){
   const q = $("search").value.trim().toLowerCase();
   const out = rows().filter(r => {
-    if(filter && r.verdict !== filter) return false;
+    /* Matched on the GROUP, not the verdict. `filter` holds "Scale" / "Maintain" /
+       "Kill or monitor" now, and the mapping comes from the server so the screen cannot hold a
+       second copy that falls out of step. */
+    if(filter && verdictGroup(r.verdict) !== filter) return false;
+    if(category && rowCategory(r) !== category) return false;
     if(!passesFilters(r)) return false;
     if(!q) return true;
     // Built for matching only and never inserted into the DOM, so it needs no escaping.
@@ -730,6 +898,16 @@ function sizeName(s){
 }
 
 /* The header cells, driven by FIELDS so a sortable column and its filter agree about the key. */
+/* `extra: true` means the column is behind the "More columns" toggle.
+
+   Asked for as part of *"make it more simpler"*: eleven columns of money and percentages is a lot
+   to read past to find the four that drive a decision. The seven shown by default are the ones a
+   kill-or-scale call is actually made on; Units, Returns and Rating are context, and the export
+   still carries every one of them.
+
+   TACOS and ACOS stay VISIBLE by default even though they left the KPI strip — per product they are
+   the whole point (measured: TACOS 33.1% account-wide against a true ACOS of 89.9%, and the gap is
+   only actionable per product). */
 const COLUMNS = [
   {key: null,           label: "Product"},
   {key: null,           label: "Verdict"},
@@ -738,11 +916,24 @@ const COLUMNS = [
   {key: "tacos",        label: "TACOS",    num: true, tip: "ad spend over TOTAL sales"},
   {key: "acos",         label: "ACOS",     num: true, tip: "ad spend over ad-ATTRIBUTED sales"},
   {key: "net_pct",      label: "Net %",    num: true},
-  {key: "units",        label: "Units",    num: true},
-  {key: "returns_pct",  label: "Returns",  num: true},
-  {key: "rating",       label: "Rating"},
+  {key: "units",        label: "Units",    num: true, extra: true},
+  {key: "returns_pct",  label: "Returns",  num: true, extra: true},
+  {key: "rating",       label: "Rating",   extra: true},
   {key: null,           label: "Decision"},
 ];
+
+/* The columns actually rendered, in order. ONE list, used by the header, every body row and the
+   colspan on the expanded detail row — three places that must agree about the column count, and a
+   mismatch shows up as a detail row that does not span the table. */
+function shownColumns(){
+  return COLUMNS.filter(c => !c.extra || showExtra);
+}
+
+/* Which COLUMNS indices are currently shown, so a row builder can skip the hidden cells without
+   knowing which ones they are. */
+function isShown(column){
+  return !column.extra || showExtra;
+}
 
 /* `scope="col"` on every header, and the sortable ones are real controls.
 
@@ -756,7 +947,7 @@ const COLUMNS = [
    `aria-label` carrying the same words. Otherwise "ad spend over TOTAL sales" — the one
    thing that distinguishes them — is sighted-mouse-only. */
 function headerHtml(){
-  return COLUMNS.map(c => {
+  return shownColumns().map(c => {
     if(!c.key) return `<th scope="col"${c.num ? ' class="num"' : ""}>${esc(c.label)}</th>`;
     const on = sort.key === c.key;
     const aria = on ? (sort.dir < 0 ? "descending" : "ascending") : "none";
@@ -766,6 +957,28 @@ function headerHtml(){
       aria-label="Sort by ${esc(name)}"${c.tip ? ` title="${esc(c.tip)}"` : ""}>${esc(c.label)}${
       on ? `<span class="arrow" aria-hidden="true">${sort.dir < 0 ? "▼" : "▲"}</span>` : ""}</th>`;
   }).join("");
+}
+
+/* The money cells a DETAIL row carries — used by both the size rows and the flavour-group rows,
+   which had identical copies of this block. Two copies is two things to keep in step with
+   `showExtra`, and the failure mode is a body cell rendered under a hidden header, shifting every
+   cell after it one column left.
+
+   The trailing "rating is per product" cell spans whatever is left, because Amazon pools reviews
+   per family: a per-size star rating would be the parent's number repeated, implying a precision
+   the review data does not have. */
+function detailCells(row){
+  const trailing = showExtra ? 2 : 1;
+  return `
+    <td class="num">${money(row.sales)}</td>
+    <td class="num">${money(row.ad_spend)}</td>
+    <td class="num">${pct(row.tacos)}</td>
+    <td class="num">${acosCell(row)}</td>
+    <td class="num">${pct(row.net_pct, {sign: true})}</td>
+    ${showExtra ? `
+    <td class="num">${n(row.units).toLocaleString("en-IN")}</td>
+    <td class="num">${row.returns_pct ? pct(row.returns_pct) : '<span class="dim">—</span>'}</td>` : ""}
+    <td colspan="${trailing}" class="dim" style="font-size:11px">rating is per product</td>`;
 }
 
 /* The merchant/FBA split for one size, shown on expand.
@@ -795,17 +1008,28 @@ function channelHtml(row){
     <span class="dim">— combined above; Amazon reports these as separate SKUs</span></div>`;
 }
 
+/* ONE cell builder for every row type, so a hidden column cannot be hidden in the header and still
+   rendered in the body — which would shift every cell after it one column left. The three optional
+   cells are gated by the same `showExtra` the header reads.
+
+   The verdict cell also carries the ⚠ for the two verdicts whose GROUP hides their real action.
+   SURGICAL in Maintain reads as a healthy product, and AD DEPENDENT in Kill-or-monitor reads as
+   "kill it" when the fix is to cut the spend — so the flag is what keeps the three-tab
+   simplification from losing information. The text comes from the server. */
 function dataCells(r){
+  const flag = groupFlag(r.verdict);
   return `
-    <td><span class="tag ${verdictClass(r.verdict)}">${esc(r.verdict)}</span></td>
+    <td><span class="tag ${verdictClass(r.verdict)}">${esc(r.verdict)}</span>${
+      flag ? ` <span class="gflag" title="${esc(flag)}">⚠</span>` : ""}</td>
     <td class="num">${money(r.sales)}</td>
     <td class="num">${money(r.ad_spend)}</td>
     <td class="num">${pct(r.tacos)}</td>
     <td class="num">${acosCell(r)}</td>
     <td class="num">${pct(r.net_pct, {sign: true})}</td>
+    ${showExtra ? `
     <td class="num">${n(r.units).toLocaleString("en-IN")}</td>
     <td class="num">${r.returns_pct ? pct(r.returns_pct) : '<span class="dim">—</span>'}</td>
-    <td>${stars(r.rating, r.rating_count)}</td>
+    <td>${stars(r.rating, r.rating_count)}</td>` : ""}
     <td>${r.decision
           ? `<span class="tag d-${esc(r.decision)}">${esc(r.decision.toUpperCase())}</span>`
           : '<span class="dim">—</span>'}</td>`;
@@ -885,11 +1109,15 @@ function totalsRow(list, isSkus){
     <td class="num">${acosCell({acos: adsCost ? ratio(adsCost, attributed) : null,
                                 acos_infinite: infinite})}</td>
     <td class="num">${pct(ratio(net, sales), {sign: true})}</td>
+    ${/* Gated by the same `showExtra` as the header and the body rows. A totals cell rendered
+         under a hidden header shifts the whole footer one column left, which is the sort of thing
+         that looks like a rounding error rather than a layout bug. */ ""}
+    ${showExtra ? `
     <td class="num">${n(units).toLocaleString("en-IN")}</td>
     <td class="num">${pct(ratio(refunded, ordered))}</td>
     <td>${rating === null
           ? '<span class="dim">—</span>'
-          : `${stars(rating, reviews)}<span class="tnote">weighted by reviews</span>`}</td>
+          : `${stars(rating, reviews)}<span class="tnote">weighted by reviews</span>`}</td>` : ""}
     <td>${decided
           ? `<span class="dim">${n(decided)} decided</span>`
           : '<span class="dim">—</span>'}</td>
@@ -903,17 +1131,7 @@ function sizeRowHtml(s, nested){
   return `<tr class="size${nested ? " nested" : ""}">
     <td>${esc(sizeName(s))} <span class="asin">${esc(s.asin)}</span>${channelHtml(s)}</td>
     <td></td>
-    <td class="num">${money(s.sales)}</td>
-    <td class="num">${money(s.ad_spend)}</td>
-    <td class="num">${pct(s.tacos)}</td>
-    <td class="num">${acosCell(s)}</td>
-    <td class="num">${pct(s.net_pct, {sign: true})}</td>
-    <td class="num">${n(s.units).toLocaleString("en-IN")}</td>
-    <td class="num">${s.returns_pct ? pct(s.returns_pct) : '<span class="dim">—</span>'}</td>
-    <td colspan="2" class="dim" style="font-size:11px">
-      ${/* Ratings are pooled per family by Amazon, so a per-size star rating would be the
-           parent's number repeated — implying a precision the review data lacks. */ ""}
-      rating is per product</td>
+    ${detailCells(s)}
   </tr>`;
 }
 
@@ -937,12 +1155,13 @@ function renderTable(){
       why = bits.length
         ? `No ${isSkus ? "pack sizes" : "products"} match ${bits.join(" + ")}.`
         : `No ${isSkus ? "pack sizes" : "products"} to show.`;
-      // SURGICAL compares a parent against its own sizes, so it can never describe a single
-      // size row. Saying so is the difference between an explanation and a dead end.
-      if(filter === "SURGICAL" && isSkus){
-        why += ` <span class="dim">SURGICAL is a product-level verdict — it means one pack size
-          loses money while the product overall does not, so no single size can carry it.
-          Switch to Products to see them.</span>`;
+      /* The ⚠ flags are PRODUCT-level: SURGICAL compares a parent against its own sizes, so no
+         single size row can carry it. Worth saying when the SKU grain looks emptier than
+         expected — the difference between an explanation and a dead end. */
+      if(isSkus){
+        why += ` <span class="dim">Note that the ⚠ warnings are product-level — SURGICAL means one
+          pack size loses money while the product overall does not, so no single size can carry
+          it. Switch to Products to see those.</span>`;
       }
     }
     $("table-area").innerHTML =
@@ -965,7 +1184,7 @@ function renderTable(){
         ${dataCells(s)}
       </tr>`;
       if(isOpen){
-        html += `<tr class="size"><td colspan="11">
+        html += `<tr class="size"><td colspan="${shownColumns().length}">
           <div class="reason"><strong>Why ${esc(s.verdict)}:</strong> ${esc(s.verdict_reason)}</div>
           ${channelHtml(s)}
           <div class="dim" style="font-size:11.5px;margin-top:4px">
@@ -994,7 +1213,7 @@ function renderTable(){
 
       /* The reason row: the verdict's own numbers, so the owner can check it rather than take
          it on trust. Spans the table because it is prose, not a column. */
-      html += `<tr class="size"><td colspan="11">
+      html += `<tr class="size"><td colspan="${shownColumns().length}">
         <div class="reason"><strong>Why ${esc(p.verdict)}:</strong> ${esc(p.verdict_reason)}</div>
         <div class="decide" style="margin-top:8px">
           <select data-decide="${esc(p.parent_asin)}">
@@ -1026,14 +1245,7 @@ function renderTable(){
             <td>${esc(g.flavour)}
               <span class="fcount">${g.sizes.length} size(s)</span></td>
             <td></td>
-            <td class="num">${money(g.sales)}</td>
-            <td class="num">${money(g.ad_spend)}</td>
-            <td class="num">${pct(g.tacos)}</td>
-            <td class="num">${acosCell(g)}</td>
-            <td class="num">${pct(g.net_pct, {sign: true})}</td>
-            <td class="num">${n(g.units).toLocaleString("en-IN")}</td>
-            <td class="num">${g.returns_pct ? pct(g.returns_pct) : '<span class="dim">—</span>'}</td>
-            <td colspan="2" class="dim" style="font-size:11px">rating is per product</td>
+            ${detailCells(g)}
           </tr>`;
           g.sizes.forEach(s => { html += sizeRowHtml(s, true); });
         });
@@ -1110,8 +1322,37 @@ $("verdicts").addEventListener("click", e => {
   }
   const chip = e.target.closest(".vchip");
   if(!chip) return;
-  filter = chip.dataset.v || "";
+  // Clicking the active tab again clears it, so there is always a way back to All without
+  // hunting for the All tab — the same reason the empty-state note names which control filtered.
+  const picked = chip.dataset.v || "";
+  filter = (picked && filter === picked) ? "" : picked;
   render();
+});
+
+/* ── The category strip: filter, and the caveat toggle ───────────────────────── */
+$("categories").addEventListener("click", e => {
+  const card = e.target.closest(".cat");
+  if(!card) return;
+  const picked = card.dataset.cat || "";
+  // Clicking the selected category again clears it. Without that the only way out is the All tab,
+  // which clears the GROUP filter too and silently undoes a second choice.
+  category = (category === picked) ? "" : picked;
+  render();
+});
+
+/* The collapsed caveats expand in place.
+
+   `hidden` toggled rather than re-rendering: `renderBanners` rebuilds this block on every load and
+   an expansion held in `data` would reopen on its own after a refresh, which reads as the panel
+   being stuck. `aria-expanded` travels because the control is a button that owns a region. */
+$("messages").addEventListener("click", e => {
+  const more = e.target.closest("[data-caveats]");
+  if(!more) return;
+  const full = more.parentElement.querySelector(".caveat-full");
+  if(!full) return;
+  const open_ = full.hasAttribute("hidden");
+  if(open_) full.removeAttribute("hidden"); else full.setAttribute("hidden", "");
+  more.setAttribute("aria-expanded", open_ ? "true" : "false");
 });
 
 $("table-area").addEventListener("click", e => {
@@ -1183,6 +1424,19 @@ $("filter-btn").addEventListener("click", () => {
   renderFilters();
   renderTable();
 });
+
+/* The extra columns. Remembered, because someone who wants Units and Rating wants them on every
+   visit — and `render()` rather than `renderTable()` because the HEADER changes too, and a body
+   rebuilt against a stale header shifts every cell after the hidden one. */
+$("cols-btn").addEventListener("click", () => {
+  showExtra = !showExtra;
+  remember("showExtra", showExtra);
+  render();
+});
+
+function renderColsButton(){
+  $("cols-btn").textContent = showExtra ? "− Fewer columns" : "+ More columns";
+}
 
 $("filter-area").addEventListener("input", e => {
   const t = e.target;

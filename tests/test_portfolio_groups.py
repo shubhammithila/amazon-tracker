@@ -350,3 +350,71 @@ def test_the_scrape_time_is_stated_in_IST(monkeypatch):
     assert "05:00 IST" in ist.label(
         settings.scrape_ist_hour, settings.scrape_ist_minute
     )
+
+
+# ── The screen ───────────────────────────────────────────────────────────────
+#
+# Source-level, because no runtime test here drives a browser — but these three properties were
+# each verified by opening the page and clicking, which is how the temporal-dead-zone bug below was
+# found. CLAUDE.md records three prior instances of a server contract passing while the client
+# silently did something else (the pause feature, `intakeFromShipment`, `renderInvoiceBar`).
+
+
+def _portfolio_template() -> str:
+    from pathlib import Path
+
+    return Path("templates/portfolio.html").read_text(encoding="utf-8")
+
+
+def test_the_hidden_columns_are_gated_in_ALL_THREE_places():
+    """Header, body and footer must agree about the column count.
+
+    A cell rendered under a hidden header shifts every cell after it one column left, which reads
+    as a rounding error rather than a layout bug. Verified in the browser: 8/8/8 collapsed and
+    11/11/11 expanded, with the detail row's colspan following.
+
+    Asserted at source because the three are built by three different functions, and only a
+    convention keeps them in step.
+    """
+    source = _portfolio_template()
+    # The header derives its list; the body and footer gate on the same flag.
+    assert "shownColumns()" in source, "the header must derive its columns from one list"
+    assert source.count("showExtra ?") >= 3, (
+        "the body cells, the detail cells and the totals row must each gate on showExtra — "
+        "otherwise a hidden column still renders in one of them"
+    )
+    # And no hardcoded colspan can survive, or an expanded row stops spanning the table.
+    assert 'colspan="11"' not in source
+
+
+def test_showExtra_is_declared_AFTER_the_helper_it_calls():
+    """**Found by opening the page: it rendered "Loading…" for ever.**
+
+    `remembered` is a `const` arrow function, so it is NOT hoisted. Declaring
+    `let showExtra = remembered(...)` above it threw `Cannot access '$' before initialization` —
+    from inside the error handler, which needs `$` — so the real cause never reached the console and
+    the page simply never finished loading.
+
+    Nothing in the test suite could have caught this; it needed the page. Asserted on ORDER so the
+    declaration cannot drift back above its helper.
+    """
+    source = _portfolio_template()
+    assert source.index("const remembered =") < source.index("let showExtra ="), (
+        "showExtra reads remembered(), which is a const arrow function and therefore not hoisted"
+    )
+
+
+def test_the_two_standing_banners_collapse_to_one_line():
+    """Both facts survive; the ~90px of banner before any data does not.
+
+    The pre-COGS caveat and the ratings date are what stop a money-losing SKU reading as a keeper
+    and a stale star rating silently shaping a verdict — the ratings one is what revealed the scrape
+    had never run. So they are collapsed, not dropped, and the ratings DATE stays on the visible
+    line because that is the part that changes.
+    """
+    source = _portfolio_template()
+    assert "caveat-line" in source and "caveat-full" in source
+    assert "aria-expanded" in source, "the expander is a button that owns a region"
+    # The full text of both is still present.
+    assert "pre-COGS" in source
+    assert "own scraper" in source

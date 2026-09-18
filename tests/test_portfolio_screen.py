@@ -169,9 +169,16 @@ def test_every_size_row_still_renders_its_units():
 
     Kept even though the cause turned out to be layout: had the markup ever been the problem, this
     is the assertion that would have caught it, and it costs nothing to hold both ends.
+
+    The cells moved into `detailCells` when Units, Returns and Rating became optional columns:
+    `sizeRowHtml` and the flavour-group row held identical copies of the same seven cells, which is
+    two things to keep in step with the toggle. Asserted there now, which covers BOTH grains rather
+    than only the flat one.
     """
-    body = _function(_template(), "sizeRowHtml")
-    assert "n(s.units)" in body, "a size row does not render its units at all"
+    body = _function(_template(), "detailCells")
+    assert "row.units" in body, "a detail row does not render its units at all"
+    # ...and the row builders must go through it rather than keeping a copy.
+    assert "detailCells(s)" in _function(_template(), "sizeRowHtml")
 
 
 # ─── The two nesting levels ──────────────────────────────────────────────────
