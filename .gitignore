@@ -37,3 +37,6 @@ adsrefresh.log
 node_modules/
 spike/*.html
 node-app/schema_dump.json
+node-app/server/node_modules/
+node-app/server/dist/
+node-app/web/node_modules/
