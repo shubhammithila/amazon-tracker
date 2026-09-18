@@ -1,6 +1,6 @@
 """Compare the Postgres schema against the SQLite original, COLUMN BY COLUMN.
 
-Run from the repo root:  venv/Scripts/python node-app/scripts/verify_schema.py
+Run from the repo root:  venv/Scripts/python scripts/postgres/verify_schema.py
 
 Counting tables proves almost nothing. 34 tables and 344 columns can match in total while a
 `NUMERIC(12,2)` has become `NUMERIC(10,2)`, a `NOT NULL` has been dropped, or a UNIQUE index that
@@ -19,8 +19,8 @@ import pathlib
 import subprocess
 import sys
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
-DUMP = ROOT / "schema_dump.json"
+HERE = pathlib.Path(__file__).resolve().parent
+DUMP = HERE / "schema_dump.json"
 CONTAINER = "tracker-pg"
 
 #: Deliberate mapping decisions, stated so an UNEXPECTED difference cannot hide among them.
@@ -36,12 +36,29 @@ ALLOWED = {
 
 
 def psql(sql: str) -> list[list[str]]:
-    out = subprocess.run(
+    """One query through the container, with a readable failure.
+
+    `check=True` alone raises `CalledProcessError` carrying the whole SQL string, which buries the
+    actual cause — "the daemon is not running" reads as a broken script. Reported plainly instead,
+    because the most likely reason this fails is that Docker simply is not up.
+    """
+    result = subprocess.run(
         ["docker", "exec", CONTAINER, "psql", "-U", "tracker", "-d", "tracker",
          "-t", "-A", "-F", "\t", "-c", sql],
-        capture_output=True, text=True, check=True,
-    ).stdout
-    return [line.split("\t") for line in out.strip().splitlines() if line.strip()]
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        first = detail[0] if detail else "no output"
+        raise SystemExit(
+            f"Could not query Postgres in container {CONTAINER!r}: {first}\n\n"
+            "Start it first, from scripts/postgres/:\n"
+            "    docker compose up -d\n"
+            "...then apply the schema:\n"
+            "    docker exec -i tracker-pg psql -U tracker -d tracker -v ON_ERROR_STOP=1 "
+            "-f - < scripts/postgres/schema.sql"
+        )
+    return [line.split("\t") for line in result.stdout.strip().splitlines() if line.strip()]
 
 
 def sqlite_type_to_pg(raw: str) -> str:

@@ -41,3 +41,4 @@ node-app/server/node_modules/
 node-app/server/dist/
 node-app/web/node_modules/
 node-app/python_live.json
+scripts/postgres/schema_dump.json

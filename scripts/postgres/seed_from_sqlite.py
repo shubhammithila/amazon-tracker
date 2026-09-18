@@ -1,6 +1,6 @@
 """Copy tracker.db into the Node stack's Postgres, and VERIFY the copy.
 
-Run from the repo root:  venv/Scripts/python node-app/scripts/seed_from_sqlite.py
+Run from the repo root:  venv/Scripts/python scripts/postgres/seed_from_sqlite.py
 
 **Reads tracker.db read-only and never writes to it.** Opened via a `mode=ro` URI so a bug here
 cannot touch the running app's database — the Python app must remain untouched, and "I was
@@ -42,13 +42,13 @@ import sys
 import psycopg
 from psycopg.types.json import Jsonb
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
-REPO = ROOT.parent
-DUMP = ROOT / "schema_dump.json"
+HERE = pathlib.Path(__file__).resolve().parent
+REPO = HERE.parent.parent
+DUMP = HERE / "schema_dump.json"
 SQLITE = REPO / "tracker.db"
 DSN = "postgresql://tracker:tracker_local_dev@localhost:5432/tracker"
 
-sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(HERE))
 from gen_schema import JSON_COLUMNS, dependency_order  # noqa: E402
 
 
