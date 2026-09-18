@@ -1139,16 +1139,23 @@ function renderTable(){
   const list = visible();
   const isSkus = view === "skus";
   if(!list.length){
-    /* The empty note NAMES which control emptied the table, because three of them can and
+    /* The empty note NAMES which control emptied the table, because FOUR of them can and
        "Nothing matches that filter" points at none of them. The case that sent me here: a
        parent-only verdict (SURGICAL) still selected after switching to SKUs, where the
-       honest answer is not "no matches" but "this verdict only exists for products". */
+       honest answer is not "no matches" but "this verdict only exists for products".
+
+       **The category card is the fourth, and it was missing.** It is the newest of the four and
+       the easiest to leave on by accident — it is a card in a strip rather than a control that
+       looks like a filter — so "Seeds + Scale" reaching zero rows said nothing about either. */
     let why = "Nothing matches.";
     if(!rows().length){
       why = "No products yet.";
     } else {
       const bits = [];
-      if(filter) bits.push(`verdict <strong>${esc(filter)}</strong>`);
+      // `filter` is a GROUP now, not a verdict — naming it "verdict Scale" would point the owner
+      // at the ⚙ rules panel looking for a rule called Scale, which is three rules.
+      if(filter) bits.push(`the <strong>${esc(filter)}</strong> tab`);
+      if(category) bits.push(`category <strong>${esc(category)}</strong>`);
       if(filters.length) bits.push(`${filters.length} custom filter(s)`);
       const q = ($("search").value || "").trim();
       if(q) bits.push(`search &ldquo;${esc(q)}&rdquo;`);
@@ -1309,17 +1316,11 @@ function applySort(key){
   const again = document.querySelector(`[data-sort="${CSS.escape(key)}"]`);
   if(again) again.focus();
 }
+/* The per-chip ⓘ is GONE with the seven chips. A tab is a GROUP, not a verdict, so there is no one
+   rule for it to explain — "what does Kill or monitor mean" is three rules, which is the ⚙ Verdict
+   rules panel's whole job. Removed rather than left as a dead branch: a handler for markup that no
+   longer exists reads as a feature someone broke. */
 $("verdicts").addEventListener("click", e => {
-  // The ⓘ opens the rule rather than filtering, so "what does KILL mean" and "show me the
-  // KILLs" are separate gestures on the same chip.
-  const info = e.target.closest("[data-help]");
-  if(info){
-    rulesOpen = true;
-    $("rules-panel").style.display = "";
-    renderRules();
-    $("rules-panel").scrollIntoView({behavior: "smooth", block: "nearest"});
-    return;
-  }
   const chip = e.target.closest(".vchip");
   if(!chip) return;
   // Clicking the active tab again clears it, so there is always a way back to All without

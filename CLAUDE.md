@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (1915 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2262 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -131,7 +131,8 @@ app/
 ├── database.py          # Async SQLAlchemy engine
 ├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry, AmazonOrder/AmazonOrderItem/OrderPackedEntry/OrderPackedState/ProductRawStock, EconomicsSnapshot/EconomicsRefresh/ProductDecision/AdsSnapshot/PortfolioSettings/AdsRefresh)
 ├── scheduler.py         # APScheduler. Times STATED IN IST via app/ist.py (the box is UTC):
-│                        # portfolio 07:30 IST, ads 08:00 IST, orders every 30m, scrape 06:00 server
+│                        # portfolio 07:30 IST, ads 08:00 IST, orders every 30m,
+│                        # product scrape 05:00 IST under its OWN flag (SCRAPE_ENABLED)
 ├── ist.py               # THE offset and THE definition of "today". Six bugs came from not having this.
 ├── utils.py             # Date parsing helpers
 ├── routers/
@@ -953,19 +954,27 @@ no console, so they are the only way back in if the `users` table is damaged by 
 They just have to be set deliberately. For day-to-day access prefer a named Packer account
 from `/users-page`, which can be revoked per person.
 
-**`SCHEDULER_ENABLED=false` on production, and `ORDER_REFRESH_ENABLED=true`.** The master flag
-stays off to keep the 06:00 product scrape (10 async workers), the 07:30 keyword track and the
-09:15 purge asleep on a 951 MB box (2 GB swap now, but a scrape still costs real memory). The
-orders refresh has its own flag so it can
-run alone — see "The orders refresh has its own flag" under the Orders tab. Enable it AFTER
-deploying the code, so the first scheduled run finds the new tables:
+**`SCHEDULER_ENABLED=false` on production, with `ORDER_REFRESH_ENABLED=true` and
+`SCRAPE_ENABLED=true`.** The master flag stays off to keep the 07:30 keyword track and the
+09:15 purge asleep on a 951 MB box (2 GB swap now, but a scrape still costs real memory). The two
+jobs production actually needs each have their own flag so they can run without waking those —
+see "The orders refresh has its own flag" under the Orders tab and "The star ratings had NEVER been
+scraped on a schedule" under Portfolio. Enable them AFTER deploying the code, so the first
+scheduled run finds the new tables:
 
 ```bash
-echo 'ORDER_REFRESH_ENABLED=true' >> /opt/amazon-tracker/.env && sudo systemctl restart tracker
+printf 'ORDER_REFRESH_ENABLED=true\nSCRAPE_ENABLED=true\n' >> /opt/amazon-tracker/.env \
+  && sudo systemctl restart tracker
 ```
 
-`journalctl -u tracker | grep Scheduler` should then read `Scheduler started: orders every 30m`
-with no mention of products.
+`journalctl -u tracker | grep Scheduler` should then read
+`Scheduler started: products at 05:00 IST (23:30 UTC), orders every 30m, portfolio at 07:30 IST
+(02:00 UTC), ads at 08:00 IST (02:30 UTC)` — with **no** keyword track and no history purge.
+
+> **`SCRAPE_ENABLED` registers the product scrape ALONE**, at 05:00 IST rather than the master
+> flag's 06:00 server time, so the Portfolio tab's star ratings are current before the portfolio
+> job reads `rating_history` at 07:30 IST. Before this they were **six days old**: every scrape in
+> that table had been started by hand.
 
 **SP-API credentials ARE set** (`SP_API_CLIENT_ID`, `SP_API_CLIENT_SECRET`,
 `SP_API_REFRESH_TOKEN`, `SP_API_MARKETPLACE_ID`), and the `.env` is `chmod 600`. The
@@ -1478,9 +1487,14 @@ while "net −56.8%, TACOS 78%" is a claim he can verify against Seller Central 
 **The thresholds are editable and saved** (`portfolio_settings`, one JSON row), because they are
 measured from this account rather than laws — net 25% and TACOS 30% are where *these* healthy
 products sit. `verdict_for` takes them as a parameter and `DEFAULT_THRESHOLDS` is what Reset
-restores. Clicking a verdict chip's ⓘ shows the rule in words with the live numbers substituted,
+restores. The **⚙ Verdict rules** panel shows every rule in words with the live numbers substituted,
 so an edited threshold and its explanation cannot drift apart. Editing recomputes from stored rows
 — no Amazon call, instant.
+
+> It used to be a per-chip ⓘ. That went with the seven chips: a **tab is a GROUP, not a verdict**,
+> so "what does Kill or monitor mean" is three rules rather than one, and the panel already answers
+> it. The dead `[data-help]` branch was removed with the markup rather than left behind — a handler
+> for markup that no longer exists reads as a feature someone broke.
 
 > **Rule 1 must stay first, and the live data proves why.** A product sold 2 units for ₹608 and
 > reported **+505.6% net** (a refund reversal landed in the window). On margin alone it is the best
@@ -1500,6 +1514,144 @@ so an edited threshold and its explanation cannot drift apart. Editing recompute
 > +31.9% net at **104% ACOS**, Moringa Sattu +17.4% at **182%**. Under TACOS alone both read as
 > MONITOR or BEST BET, because TACOS' denominator includes the organic sales carrying them. The
 > action differs from `KILL`: cut the spend, keep the product. Six products land here.
+
+### Three tabs over the seven verdicts — a VIEW, not a rewrite
+Asked for as *"lesser tabs — I want only Scale (top performers), Maintain (mid performers), Kill or
+monitor (least performers)"*.
+
+**The seven rules and every reason string are untouched**, and that is the whole decision.
+`logic.VERDICT_GROUPS` maps them; `verdict_for` still returns "net −56.8%, TACOS 78%" and the row
+still shows it. Collapsing seven rules into three would turn that into "Kill" and leave the owner
+nothing to check against Seller Central — the same argument that rejected a 0–100 composite score
+in the first place. What changed is how many controls sit above the table: seven chips became three
+tabs plus All.
+
+| Group | Verdicts | |
+|---|---|---|
+| **Scale** | BEST BET · SCALE | |
+| **Maintain** | MONITOR · **SURGICAL** | ⚠ *some sizes lose money* |
+| **Kill or monitor** | KILL · DEAD · **AD DEPENDENT** | ⚠ *ads lose money on their own terms* |
+
+**Two of the seven do not fold cleanly, and folding them SILENTLY is the actual risk** — so exactly
+those two carry a flag, asserted in both directions so a third cannot quietly appear:
+
+- **SURGICAL is Maintain, not Kill.** The parent EARNS its place and one size does not, so the
+  action is surgery. Measured live: Cheese & Cream Roasted Chana earns +27.1% overall while one
+  250 g pack burns 103% TACOS at −52.7% net. In "Kill or monitor" it would invite killing a
+  profitable product; in Maintain without a flag it reads as simply fine.
+- **AD DEPENDENT is Kill-or-monitor, but needs a DECISION rather than a kill** — the product is
+  profitable and its ADS are not, and the fix is to cut the spend. Six products land there.
+
+**An unrecognised verdict lands in Maintain rather than vanishing.** Deny into the SAFE bucket, like
+`ads.logic.manager_of` treating an unknown campaign as ours: a product missing from all three tabs
+is invisible, while one in the middle tab is merely mis-sorted and its row still shows its own
+verdict and reason. `VERDICT_GROUPS` is asserted TOTAL over `VERDICT_ORDER`, so an eighth verdict
+fails a test rather than silently falling through that default.
+
+**Every tab renders at zero, dashed.** The verdict chips already learned this: dropping a zero-count
+chip while it was the active filter left an empty table, nothing highlighted, and no control left to
+click to undo the filter.
+
+**The mapping and the counts come from the SERVER** (`group_order`, `verdict_groups`, `group_flags`,
+`group_counts`, `sku_group_counts`), like `phase_labels` and `ads.MATCH_LABELS`. A copy in the
+template is a second thing to keep in step, and the failure mode is a tab whose count disagrees with
+the rows beneath it — the "86 orders beside 87 lines" defect. **Two counts, not one**, because "11
+Scale products" and "36 Scale SKUs" are both true and the tab must match the grain on screen.
+
+### Category sales come from the SHIPMENT tab's own classification
+Asked for as *"need each category sales as well. Sattu, chana, flours, Staples, seeds, others…
+or you can check the category/priority thing from the shipment tab."*
+
+`logic.category_totals` imports `shipment.logic.CATEGORY_LABELS` rather than holding a second copy,
+and reads the owner's stored `product_categories` rows. **ONE vocabulary**: the owner classifies a
+product once and the packer's sort order and this strip then agree. A test asserts the import at
+source level, because a second copy's failure is a category total that disagrees with the order the
+packer actually visits locations in. P4 stays **"Rice"** rather than the requested "Staples", so the
+two screens keep the same word.
+
+Measured on the real account, verified both ways to the rupee (**₹44,33,606**):
+
+```
+Sattu 1,556,319 | Rice 759,326 | Chana 661,026 | Rest 589,270
+Flours 498,960 | Seeds 209,864 (51.4% TACOS, 2.8% margin) | Unclassified 158,840
+```
+
+Seeds running **51.4% TACOS for 2.8% margin** against Rice's 44.3% for 21.2% was not visible
+anywhere before — which is what the strip is for. Cards are ordered biggest-first ("where is the
+money", not a fixed taxonomy), tinted when margin is under 5%, and clickable to filter the table.
+
+- **Built from the PARENT rows**, never a second aggregation over the economics, so a category total
+  is the sum of the rows on screen. The third time this codebase has had to say that.
+- **Percentages recomputed from the sums, never averaged** — `_sum_sizes`' rule. One product selling
+  1 unit at 100% TACOS beside one selling 400 at 10% averages to 55%, which belongs to no product.
+  A category with no sales reports a **dash, not 0%**, or it would rank as the most ad-efficient
+  thing in the portfolio.
+- **Unclassified is its own bucket and its products are NAMED**, capped at 8. Folding them into Rest
+  would make Rest the largest category and stop it meaning anything; measured, only **38 of ~90**
+  parents had a stored category. The **count stays exact** while the list is capped, so "51 products
+  have no category yet: …" is a sentence the owner can act on — same discipline as the catalogue
+  notes and the Projections `needs_review` list.
+- **The stored choice is used, never a keyword guess.** `shipment.logic.category_for` does substring
+  matching and is the right tool for guessing; falling back to it here would make a wrong guess
+  indistinguishable from a decision, which is exactly what naming the unclassified products avoids.
+
+> **A renamed multi-flavour parent has to match on its SIZE names, and this was found on real
+> production data.** `family_label` renames a parent to what its flavours share and appends a count
+> to break a collision, so the row reads "Roasted Chana (5 flavours)" while `product_categories`
+> holds "roasted chana". Matching the parent name alone left **52 of 90** products unclassified —
+> including several whose categories ARE stored — and moved **₹2.33 lakh of Chana sales** into
+> Unclassified. Chana went ₹4.28L → ₹6.61L once the size names were tried too.
+
+### The star ratings had NEVER been scraped on a schedule
+Asked for as *"live fetching of reviews from scraper every day and account it while making the
+bifurcation"* — and the finding was that the job was dormant. `SCHEDULER_ENABLED=false` keeps the
+06:00 scrape, the keyword track and the purge asleep on a 951 MB box, so the Portfolio tab's ratings
+were **six days old** and every row in `rating_history` came from someone pressing the button. A
+stale rating silently shapes a verdict (rule 6 splits BEST BET from SCALE on rating ≥ 4.0).
+
+`SCRAPE_ENABLED` is its own flag, exactly like `ORDER_REFRESH_ENABLED`, registering
+`daily_product_scrape` **alone** at **05:00 IST** — before the portfolio job reads the table at
+07:30. `elif`, because the master flag already registers a scrape and two jobs scraping 262 ASINs is
+the wedge this box survived once; `max_instances=1, coalesce=True` for the same reason.
+
+- **Stated in IST and converted once** through `ist.utc_hhmm` (05:00 IST = 23:30 UTC, the previous
+  UTC day). Tests assert the **IST** value and the ORDER relative to the portfolio job, never the
+  UTC hour — asserting 23:30 would pin the arithmetic instead of the intent, which is how
+  *"03:20 IST-ish (the box is UTC…)"* came to be written while the job fired at 09:20 IST.
+- **Asserted on the registered job IDS, not the flag.** `setup_scheduler`'s guard was once at the
+  top of the function, and moving it back there reads as tidy while silently stopping the orders
+  refresh.
+
+### Making it simpler was four separate cuts
+Asked for as *"make it more simpler"*, and every removal is reversible in one click rather than a
+loss of information:
+
+| Before | After |
+|---|---|
+| 8 KPI tiles | **4** — sales, ad spend, net, TACOS |
+| two standing banners, ~90px before any data | **one collapsed line**, with an ⓘ expander |
+| 11 columns always | **8**, with `+ More columns` for Units / Returns / Rating |
+| filter builder always open | behind a toggle |
+| 7 verdict chips | **3 tabs + All** |
+
+The pre-COGS caveat and the ratings date both survive — they are what stop a money-losing SKU
+reading as a keeper and a stale rating shaping a verdict — and the ratings DATE stays on the visible
+line, because that is the part that changes.
+
+> **The column toggle shipped with a temporal-dead-zone bug that made the page render "Loading…"
+> for ever.** `remembered` is a `const` arrow function and therefore NOT hoisted, so
+> `let showExtra = remembered("showExtra", false)` above it threw `Cannot access '$' before
+> initialization` — **from inside the error handler**, which needs `$`. So the real cause never
+> reached the console and the page simply never finished loading. Nothing in the suite could have
+> caught it; it needed the page. A test now asserts the declaration ORDER.
+
+> **Header, body and footer must agree about the column count, and a mutation proved the test was
+> asserting the wrong thing.** `shownColumns()` returning `COLUMNS` unfiltered kept every assertion
+> true — the helper was still called, the gates still existed, no hardcoded colspan — while the
+> header rendered 11 headings over 8 body cells, shifting every figure one column left. It now
+> asserts the `.filter` and counts the optional columns, scoped to the `COLUMNS` array so the prose
+> explaining the flag cannot satisfy the substring. Verified in the browser as 8/8/8 collapsed and
+> 11/11/11 expanded. Fourth instance of that trap here.
 
 ### TACOS and ACOS are different questions, and both stay on screen
 `TACOS = ad spend ÷ TOTAL sales` — how ad-dependent is this product?
@@ -1605,9 +1757,11 @@ ACOS, and one 500 g pack runs **105% ACOS on Easy Ship against 242% on FBA**.
   is marked with a dot and loads instantly; an uncached one shows `Fetch (~12 min)`. **A GET never
   blocks on a fetch** — it returns empty and offers the button.
 - **Add-a-condition filters**, ANDed, over sales / ad spend / net / TACOS / ACOS / units / returns
-  / rating. Reproduces the shortlists previously built by hand — `TACOS > 50` + `sales < 100000`
-  returns the same 12 products in two clicks. A row with no value for the field is EXCLUDED rather
-  than treated as 0, or every unadvertised product would match "ACOS < 50".
+  / rating — **behind a toggle** since the simplification, because the builder is a power tool and
+  it sat open above the table on every visit. Reproduces the shortlists previously built by hand —
+  `TACOS > 50` + `sales < 100000` returns the same 12 products in two clicks. A row with no value
+  for the field is EXCLUDED rather than treated as 0, or every unadvertised product would match
+  "ACOS < 50".
 
   > **An EMPTY filter box is not a zero, and `Number("")` is 0 rather than NaN.** A new row is
   > seeded at `TACOS > 50`; the bug bit on the next gesture — clearing that 50 to type your own
@@ -1626,17 +1780,18 @@ ACOS, and one 500 g pack runs **105% ACOS on Easy Ship against 242% on FBA**.
   focus is restored after `renderTable` rebuilds the thead, without which every sort threw the caret
   back to the top of the document and made the keyboard path present but unusable. `aria-sort`
   carries the direction, because the ▲/▼ glyph is decoration and is `aria-hidden`.
-- **`Products` / `SKUs` toggle inside every verdict filter**, because "KILL, by SKU" is the actual
-  question. The counts differ per grain (9 KILL products against 24 KILL sizes) and each chip
-  shows the count for the grain on screen.
+- **`Products` / `SKUs` toggle inside every group tab**, because "the kills, by SKU" is the actual
+  question. The counts differ per grain (15 Scale products against 36 Scale sizes) and each tab
+  shows the count for the grain on screen — see "Three tabs over the seven verdicts" above for why
+  two separate counts travel from the server.
 
-  > **A zero-count verdict chip is still rendered while it is the ACTIVE filter**, dashed to show it
-  > matches nothing at this grain. **SURGICAL is structurally zero for SKUs** — it means a parent
-  > earns its place while one of its sizes does not, so no single size row can carry it — and
-  > dropping the chip left an empty table, nothing highlighted, and no control left to click to undo
-  > the filter. The empty note names *which* of the three controls (chip, custom filters, search)
-  > emptied the grid, and says outright that SURGICAL-by-SKU is impossible rather than reading as a
-  > dead end.
+  > **A zero-count tab is still rendered**, dashed, and this was found by /qa on the seven chips it
+  > replaced: **SURGICAL is structurally zero for SKUs** — it means a parent earns its place while
+  > one of its sizes does not, so no single size row can carry it — and dropping the chip while it
+  > was the active filter left an empty table, nothing highlighted, and no control left to click to
+  > undo the filter. With three groups a tab can no longer be structurally empty (SURGICAL is inside
+  > Maintain), but the rule is kept: a control that vanishes is a dead end. The empty note names
+  > *which* of the four controls (tab, category card, custom filters, search) emptied the grid.
 
 **The thresholds are range-checked, not merely parsed as floats.** `good_rating: 99` saved cleanly
 under a finite-float check, and since Amazon rates out of 5 nothing could ever reach it: **BEST BET

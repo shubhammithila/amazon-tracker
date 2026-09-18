@@ -953,18 +953,35 @@ def test_a_filter_tab_is_never_removed_while_it_is_selected():
 
 
 def test_an_empty_table_names_the_control_that_emptied_it():
-    """Three controls can empty this grid, and "Nothing matches that filter" points at none.
+    """FOUR controls can empty this grid, and "Nothing matches that filter" points at none.
 
-    The verdict chip, the custom filters and the search box are three separate ways to reach zero
-    rows, and the owner has to be able to tell which one did it. The SURGICAL-under-SKUs case gets
-    a sentence of its own, because there the honest answer is not "no matches" but "this verdict
-    cannot describe a single size".
+    The group tab, the category card, the custom filters and the search box are four separate ways
+    to reach zero rows, and the owner has to be able to tell which one did it. The
+    SURGICAL-under-SKUs case gets a sentence of its own, because there the honest answer is not
+    "no matches" but "this verdict cannot describe a single size".
+
+    **The category card was the one missing.** It is the newest of the four and the easiest to leave
+    on by accident — a card in a strip rather than something that looks like a filter — so "Seeds"
+    plus the "Scale" tab reaching zero rows said nothing about either.
     """
     source = _template()
+    # Scoped to the empty branch rather than a fixed character slice. A `start + 1800` window broke
+    # once already on unrelated growth inside `renderTable`, which is a test failing for a reason
+    # that has nothing to do with what it asserts.
     start = source.index("function renderTable(")
-    body = source[start:start + 1800]
+    body = source[start : source.index('let html = "";', start)]
     assert "custom filter(s)" in body, "the empty note does not mention the custom filters"
     assert "search" in body, "the empty note does not mention the search box"
+    assert "esc(category)" in body, (
+        "the empty note does not name the category card, so filtering to Seeds and reaching zero "
+        "rows reads as a broken table"
+    )
+    assert "esc(filter)" in body, "the empty note does not name the active group tab"
+    # `filter` holds a GROUP now, so calling it a verdict would send the owner to the ⚙ rules panel
+    # looking for a rule named "Scale" — which is two rules, not one.
+    assert "verdict <strong>" not in body, (
+        "the note calls a group tab a verdict, naming something the rules panel cannot explain"
+    )
     # SURGICAL is no longer a selectable chip — it is a ⚠ flag inside the Maintain group — so the
     # note now explains the product-level nature of the flags rather than a filter combination
     # that can no longer be chosen. The REQUIREMENT is unchanged: the SKU grain must say why it

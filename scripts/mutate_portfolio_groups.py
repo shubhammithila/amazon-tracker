@@ -258,6 +258,20 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         TEMPLATE,
+        "      if(category) bits.push(`category <strong>${esc(category)}</strong>`);",
+        "",
+        "the empty note never names the category card, so filtering to Seeds and reaching zero rows "
+        "reads as a broken table — test_an_empty_table_names_the_control_that_emptied_it",
+    ),
+    (
+        TEMPLATE,
+        "      if(filter) bits.push(`the <strong>${esc(filter)}</strong> tab`);",
+        "      if(filter) bits.push(`verdict <strong>${esc(filter)}</strong>`);",
+        "the note calls a GROUP tab a verdict, sending the owner to the rules panel for a rule that "
+        "is two rules — test_an_empty_table_names_the_control_that_emptied_it",
+    ),
+    (
+        TEMPLATE,
         "  const map = data.verdict_groups || {};\n  return map[verdict] || \"Maintain\";",
         "  const map = {\"BEST BET\": \"Scale\", \"SCALE\": \"Scale\"};\n"
         "  return map[verdict] || \"Maintain\";",
