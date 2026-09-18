@@ -20,8 +20,13 @@
  * cannot coexist with its own explanation forces the explanation out — and the explanation is the
  * part that stops the next occurrence.
  *
- * `src/ist.ts` is the single exemption, and it is exempt for `new Date(Date.UTC(...))` only, which
- * is numeric-argument construction rather than string parsing. It may not use `toISOString` either.
+ * `new Date(Date.UTC(...))` is allowed in `src/ist.ts`, which owns the offset, and in `test/`, which
+ * must be able to build a known instant in order to assert a conversion — otherwise `dayOf` could
+ * only be checked against `ist`'s own output and the test would agree with the code by
+ * construction. Both are numeric construction, not string parsing.
+ *
+ * **`toISOString` has no exemption anywhere, including tests**, because there is no legitimate use
+ * of it in this codebase at all — and a single exemption is how a ban stops being one.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, dirname } from "node:path";
@@ -99,10 +104,16 @@ for (const file of walk(ROOT)) {
 
   // `new Date(` with anything that is not a numeric expression or Date.UTC(...). A date-only
   // STRING is the dangerous case; `new Date()` and `new Date(ms)` are fine.
-  const isIst = rel === "src/ist.ts";
+  // `new Date(Date.UTC(...))` — numeric construction with no string parsing — is allowed in
+  // `src/ist.ts`, which owns the offset, and in TESTS, which must be able to build a known instant
+  // in order to assert a conversion. Forbidding it in tests would mean `dayOf` could only be
+  // checked against `ist`'s own output, so the test would agree with the code by construction and
+  // prove nothing. The `toISOString` ban applies EVERYWHERE, including tests, because there is no
+  // legitimate use of it in this codebase at all.
+  const mayBuildUtc = rel === "src/ist.ts" || rel.startsWith("test/");
   for (const arg of dateArguments(source)) {
     if (arg === "") continue; // new Date() — now, fine
-    if (isIst && arg.startsWith("Date.UTC")) continue; // numeric construction, the one exemption
+    if (mayBuildUtc && arg.startsWith("Date.UTC")) continue;
     if (/^Date\.UTC/.test(arg)) {
       problems.push(
         `${rel}: new Date(Date.UTC(...)) outside ist.ts — build dates through src/ist.ts so the ` +
