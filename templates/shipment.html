@@ -745,17 +745,50 @@ function renderBanners(){
      There are only two ways out and both are the owner's call: raise To Ship to
      match the boxes that physically exist, or have the surplus unpacked. So this
      names the rows and the excess and then leaves the decision alone. */
-  const over = items
-    .filter(i => !i.excluded_at && Number(i.over_packed || 0) > 0)
+  /* `over_packed` is the UNAPPROVED excess — the server nets the owner's sign-off into it
+     (`logic.unapproved_over_pack`), so an approved row drops out of this filter with no
+     approval logic here at all. Approving 62 approves 62, not the row for ever: pack 20 more
+     and this is 20 again. */
+  const overRows = items.filter(i => !i.excluded_at && Number(i.over_packed || 0) > 0);
+  const over = overRows
     .map(i => `<strong>${esc(i.item)} ${esc(i.weight_label || "")}</strong> `
               + `planned ${Number(i.shipment_plan || 0).toLocaleString("en-IN")}, `
               + `packed ${Number(i.packed || 0).toLocaleString("en-IN")} `
               + `(+${Number(i.over_packed).toLocaleString("en-IN")})`);
   if(over.length){
+    /* **Approve the extra** is the third way out, and the one that actually happened:
+       "extra packing kar diya to theek hai na. puch hi ke kiya" — the packer asked first.
+       It is NOT a hide button. The banner is telling the truth (the invoice bills what was
+       packed), so approving records the decision and silences exactly the quantity approved,
+       leaving the next overage to warn again. The two original ways out still apply and are
+       still named, because for an UNapproved row they are still the right advice. */
+    const asins = overRows.map(i => i.asin);
     out.push(`<div class="banner error"><strong>More packed than planned on
       ${over.length} row(s).</strong> ${over.join(" · ")}.
       The invoice bills what was packed, not what was planned — either raise
-      <em>To Ship</em> to match the boxes, or have the extra unpacked.</div>`);
+      <em>To Ship</em> to match the boxes, or have the extra unpacked.
+      If this was agreed beforehand, record it:
+      <button class="btn-outline" id="approve-over" data-asins="${esc(asins.join(","))}">
+        Approve the extra</button></div>`);
+  }
+
+  /* Already approved, so it is no longer an error — but it must stay VISIBLE, or the
+     approval is invisible state with no way to undo it (the `available` column defect).
+     Quiet, informational, and it carries the Revoke. */
+  const approved = items.filter(
+    i => !i.excluded_at && Number(i.over_pack_approved_units || 0) > 0
+  );
+  if(approved.length){
+    const list = approved
+      .map(i => `<strong>${esc(i.item)} ${esc(i.weight_label || "")}</strong> `
+                + `${Number(i.over_pack_approved_units).toLocaleString("en-IN")}`
+                + `${i.over_pack_approved_at
+                      ? " on " + esc(String(i.over_pack_approved_at).slice(0, 10)) : ""}`)
+      .join(" · ");
+    out.push(`<div class="banner info"><strong>Over-pack you approved:</strong> ${list}.
+      The invoice still bills what was packed. Packing more than this warns again.
+      <button class="btn-outline" id="revoke-over"
+        data-asins="${esc(approved.map(i => i.asin).join(","))}">Revoke</button></div>`);
   }
 
   /* The carry-over banner answers the question "N days on hold" does not:
@@ -1681,6 +1714,17 @@ document.getElementById("days").addEventListener("change", (e) => {
   renderDays();
 });
 
+/* Delegated on #banners, which is stable, because renderBanners() replaces its innerHTML on
+   every load — a listener bound to the button itself would die on the first re-render. And
+   never an inline onclick: the ASINs come from an uploaded sheet, the same reason the day tick
+   boxes above are delegated. */
+document.getElementById("banners").addEventListener("click", (e) => {
+  const btn = e.target.closest("#approve-over, #revoke-over");
+  if(!btn) return;
+  const asins = (btn.dataset.asins || "").split(",").filter(Boolean);
+  setOverPackApproved(asins, btn.id === "approve-over");
+});
+
 function pickAllVerified(on){
   invoicePick = new Set(
     on ? days.filter(d => d.status === "verified").map(d => d.pack_date) : []
@@ -1901,6 +1945,59 @@ async function excludeSelected(excluded){
     if(!r.ok) throw new Error(data.error || "Could not update the plan");
     toast(`${data.count} row(s) ${excluded ? "removed" : "restored"}`, "success");
     selected.clear();
+    await load();
+  }catch(e){ toast(e.message, "error"); }
+}
+
+/* Approve or revoke an over-pack.
+   "abhi ye kya tha ki extra packing kar diya to theek hai na. puch hi ke kiya."
+
+   The PACKED FIGURE ON SCREEN travels with the approval, per ASIN, and the server refuses with
+   a 409 if it has moved. Approving is a decision about a specific quantity: if the packer saved
+   20 more while this page sat open, approving "what is current" would sign off a number the
+   owner never saw. Same reason /ads/apply re-reads the live bid before writing.
+
+   Confirmed, because it silences an error about a figure that reaches a GST invoice. */
+async function setOverPackApproved(asins, approved){
+  if(!asins.length) return;
+  if(approved){
+    /* Built by CONCATENATION, not template interpolation, and deliberately.
+       `confirm()` renders plain text, so there is nothing to escape here — but
+       `test_raw_item_fields_are_not_interpolated_directly` denies the raw
+       interpolation of a CSV-derived field ANYWHERE in this file, because that form
+       is exactly what gets copied into the table later, where it IS a hole. Wrapping
+       it in esc() would satisfy the test and print "Cheese &amp; Cream" in the
+       dialog, so the string is assembled instead.
+
+       (The deny-list is a substring check, so it also fires on a comment quoting the
+       form it forbids — which is the trap this codebase has recorded five times.) */
+    const rows = items.filter(i => asins.includes(i.asin));
+    const detail = rows
+      .map(i => "  " + String(i.item || "") + " " + String(i.weight_label || "")
+                + " — planned " + Number(i.shipment_plan || 0)
+                + ", packed " + Number(i.packed || 0))
+      .join("\n");
+    if(!confirm(
+        `Approve the extra on ${asins.length} row(s)?\n\n${detail}\n\n`
+        + "The warning clears here and on the packing screen. Nothing else changes: "
+        + "the invoice still bills what was packed, and packing more than this warns "
+        + "again.")) return;
+  }
+
+  // Keyed per ASIN, because the drift check is per row.
+  const packed = {};
+  items.filter(i => asins.includes(i.asin))
+       .forEach(i => { packed[i.asin] = Number(i.packed || 0); });
+
+  try{
+    const r = await fetch(`/shipment/plan/${plan.id}/items/approve-over-pack`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({asins, approved, packed}),
+    });
+    const data = await r.json();
+    // A 409 names which row moved and both numbers, so show it as-is.
+    if(!r.ok) throw new Error(data.error || "Could not record the approval");
+    toast(`${data.count} row(s) ${approved ? "approved" : "revoked"}`, "success");
     await load();
   }catch(e){ toast(e.message, "error"); }
 }

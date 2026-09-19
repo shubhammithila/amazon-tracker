@@ -517,11 +517,16 @@ function renderMessages(){
 
      A warning and not a block: he may genuinely have boxed 100, and refusing the
      entry would leave him unable to record stock that physically exists. The owner
-     decides whether to raise To Ship or unpack. */
+     decides whether to raise To Ship or unpack.
+
+     **Netted against the owner's approval, and nothing replaces it once approved.**
+     Asked for that way: "give admin right to remove this error by his page and
+     warehouse page also" — no grey confirmation line, the message simply goes. It
+     needs no special case, because `unapprovedOver` returning 0 already drops the row
+     from this array and from the row's own tag. An approval is a CEILING though, so
+     boxing more than he approved warns again on the new units. */
   const over = rows
-    .map(i => ({item: i.item, size: i.weight_label,
-                by: Math.max(0, Number(i.packed_before || 0) + rowUnits(i)
-                                - Number(i.planned || 0))}))
+    .map(i => ({item: i.item, size: i.weight_label, by: unapprovedOver(i)}))
     .filter(o => o.by > 0);
   if(over.length){
     const list = over
@@ -644,10 +649,13 @@ function renderRows(){
     );
     // Live, not from the payload: the packer must see it as he types, not after a
     // save. Counts every day, so 40 over on Monday plus 40 today reads as 80.
-    const over = Math.max(
-      0,
-      Number(i.packed_before || 0) + units - Number(i.planned || 0)
-    );
+    //
+    // Through `unapprovedOver` like the other two readers, so the owner's approval
+    // clears the tag on FIRST RENDER too. Found by opening the page: the banner had
+    // gone quiet while every row still showed "+2 over" from this third copy of the
+    // rule — the fourth time this codebase has had a correct server contract and a
+    // client doing something else.
+    const over = unapprovedOver(i);
     const cls = over > 0
       ? "over"
       : (dirty.has(i.asin) ? "dirty" : (units > 0 ? "done" : ""));
@@ -802,12 +810,28 @@ $("packingArea").addEventListener("input", e => {
   renderSaveBar();
 });
 
+/* How many units beyond the plan are boxed and NOT yet signed off by the owner.
+   ONE definition, used by both the row marking and the banner — two copies is how the tag on a
+   row comes to disagree with the message above it.
+
+   `over_pack_approved` is the packed TOTAL the owner approved ("extra packing kar diya to theek
+   hai na. puch hi ke kiya"), 0 when he has not. The server sends the NUMBER rather than a
+   ready-made excess, because the excess depends on what the packer is typing right now and a
+   server figure would be stale on his first keystroke — which is the whole reason this is
+   computed live.
+
+   `max`, never `planned + approved`: an approval of 62 is a CEILING at 62. Type 80 and this is
+   18, so approving does not blind the screen to the next mistake. */
+function unapprovedOver(row){
+  const threshold = Math.max(
+    Number(row.planned || 0), Number(row.over_pack_approved || 0)
+  );
+  return Math.max(0, Number(row.packed_before || 0) + rowUnits(row) - threshold);
+}
+
 /** Update one row's over-pack marking without re-rendering the table. */
 function markOverPack(row, box){
-  const over = Math.max(
-    0,
-    Number(row.packed_before || 0) + rowUnits(row) - Number(row.planned || 0)
-  );
+  const over = unapprovedOver(row);
   const tr = box.closest("tr");
   if(!tr) return;
 

@@ -700,15 +700,33 @@ def test_the_over_pack_warning_is_computed_live_not_from_the_payload(source):
 
     A server-side figure would only refresh on the next load, by which point he has
     moved on down the list and boxed more of it. So the row totals are recomputed in
-    the browser, from `packed_before + units` against `planned`.
+    the browser, from `packed_before + units` against the plan.
+
+    **The REQUIREMENT, not the shape.** This asserted
+    ``re.search(r"packed_before[\\s\\S]{0,80}planned")`` — the two names within 80 characters of
+    each other — and broke when the comparison moved into ``unapprovedOver`` so the owner's
+    approval could be netted into it. The rule was intact; only the distance changed. A test that
+    fails for a reason unrelated to what it is about is the pattern CLAUDE.md records three times
+    in the Orders feature, so it now asserts that the live computation reads BOTH the typed units
+    and the plan, wherever it lives.
     """
     body = _without_comments(source)
     assert "markOverPack" in body, (
         "there is no live recompute, so the warning waits for a save"
     )
-    assert re.search(r"packed_before[\s\S]{0,80}planned", body), (
-        "the live check does not compare the day's total against the plan"
+    # Whichever function holds it, the live check must read the day's prior packing, what is being
+    # typed NOW, and the plan. `rowUnits` is what makes it live — a server figure has no access to
+    # an unsaved input.
+    live = re.search(
+        r"function (unapprovedOver|markOverPack)\([\s\S]*?\n\}\n", body
     )
+    assert live, "no live over-pack computation found at all"
+    scope = live.group(0)
+    assert "packed_before" in scope, "the live check ignores what was packed on other days"
+    assert "rowUnits(" in scope, (
+        "the live check does not read the unsaved input, so it cannot appear as he types"
+    )
+    assert "planned" in scope, "the live check does not compare against the plan"
 
 
 def test_the_live_recompute_does_not_rebuild_the_input_being_typed_into(source):

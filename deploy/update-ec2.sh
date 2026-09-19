@@ -366,8 +366,10 @@ def indexes(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "over_pack_approved_units" in cols("shipment_plan_items"):
+    print("c5e2a91f47b3")                           # head: owner-approved over-pack
 elif "from_stock" in cols("shipment_packing_entries"):
-    print("a3f1c72d8e94")                           # head: packed split made vs from stock
+    print("a3f1c72d8e94")                           # packed split made vs from stock
 elif "target_state" in cols("ads_rule"):
     print("793508bceef8")                           # a pause rule can be SAVED
 elif "new_state" in cols("ads_mutation"):

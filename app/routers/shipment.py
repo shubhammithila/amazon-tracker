@@ -361,11 +361,34 @@ def _item_payload(item, packed: int, shippable: int) -> dict:
         # the one that reacts when the owner types into the In-stock column.
         "remaining": logic.remaining_for(planned, packed),
         "to_source": logic.still_to_source(planned, packed, available),
-        # Units boxed beyond the plan. Sent as its own number because `remaining`
-        # clamps at 0, so an over-pack is otherwise indistinguishable from a row
-        # that is exactly finished — and the invoice bills what was PACKED, not
-        # what was planned.
-        "over_packed": logic.over_packed(planned, packed),
+        # Units boxed beyond the plan **that the owner has not signed off**. Sent as
+        # its own number because `remaining` clamps at 0, so an over-pack is
+        # otherwise indistinguishable from a row that is exactly finished — and the
+        # invoice bills what was PACKED, not what was planned.
+        #
+        # **This is the UNAPPROVED excess, not the raw one**, so the banner and the
+        # row tint both go quiet on an approved row without either of them learning
+        # about approvals. The raw figure is still derivable on screen
+        # (`packed - shipment_plan`) and the approved total travels beside this, which
+        # is the `packed`/`shippable` pattern: what still needs attention, next to
+        # what was decided. Packing more later makes this non-zero again, because
+        # `unapproved_over_pack` compares against `max(planned, approved)`.
+        "over_packed": logic.unapproved_over_pack(
+            planned, packed, item.over_pack_approved_units
+        ),
+        # The decision itself, so the row can show `approved 62 · 19 Sep` with a
+        # Revoke control. Without it an approval is invisible state and there is no
+        # way to undo one — the `available` column defect.
+        "over_pack_approved_units": (
+            int(item.over_pack_approved_units)
+            if item.over_pack_approved_units is not None
+            else None
+        ),
+        "over_pack_approved_at": (
+            item.over_pack_approved_at.isoformat()
+            if item.over_pack_approved_at
+            else None
+        ),
         # Only ever non-null on the owner's draft view, which is the single caller
         # that asks for excluded rows. Everywhere else they are filtered out in
         # SQL, so this is None and the frontend renders nothing special.
@@ -1912,6 +1935,116 @@ async def exclude_items(
     )
 
 
+@router.post("/plan/{plan_id}/items/approve-over-pack")
+async def approve_over_pack(
+    plan_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    role: str = Depends(require_admin),
+):
+    """Sign off on packing more than the plan asked for. Body: {"asins": [...], "approved": bool}
+
+    Asked for as *"extra packing kar diya to theek hai na. puch hi ke kiya"* — the
+    packer asked before boxing the extra, and there was no way to record that, so a
+    decision already taken kept rendering as an unresolved red error on the owner's
+    dashboard AND the warehouse screen.
+
+    **This is an approval, not a hide button, and the distinction is load-bearing.**
+    The banner is telling the truth: ``/shipment/invoice-payload`` bills
+    ``logic.units_by_asin`` — the PACKED units — so 62 boxed against a plan of 60
+    really does put 62 on a GST invoice. A blanket dismiss would also silence the
+    next overage, which might be a 200-unit miscount heading for a tax document.
+
+    So the **packed total is stored**, not a flag: approving 62 approves 62, and 20
+    more boxed later shows ``+20`` again. See ``logic.unapproved_over_pack``.
+
+    **It changes no quantity anywhere.** Amazon is already told 62 by
+    ``verified_units_by_asin`` and the invoice already bills 62 — both read packed
+    units and both are correct. This only silences a screen.
+
+    **Refuses on drift (409), naming both numbers.** The owner clicks approve on the
+    62 he can see; if the packer saved 80 thirty seconds ago, storing 80 approves
+    more than he ever looked at and storing 62 approves a figure that no longer
+    exists. Same reason ``/ads/apply`` re-reads the live bid before writing. The
+    client sends the ``packed`` it rendered, and a mismatch is reported rather than
+    resolved.
+    """
+    body, error = await _json_object(request)
+    if error:
+        return error
+    asins = [str(a).strip() for a in (body.get("asins") or []) if str(a).strip()]
+    approved = bool(body.get("approved", True))
+    # What the SCREEN believed was packed, per ASIN. Optional: a revoke needs no
+    # figure, and an approval sent without one is refused below rather than silently
+    # approving whatever is current.
+    seen_raw = body.get("packed") or {}
+
+    if not asins:
+        return JSONResponse({"error": "Select at least one row."}, status_code=400)
+
+    plan = await repository.get_plan(db, plan_id)
+    if plan is None:
+        return JSONResponse({"error": "Plan not found"}, status_code=404)
+
+    days = await repository.load_days_with_entries(db, plan.id)
+    live = logic.packed_units_by_asin(days)
+
+    approvals: dict[str, int | None] = {}
+    if not approved:
+        approvals = {asin: None for asin in asins}
+    else:
+        if not isinstance(seen_raw, dict):
+            return JSONResponse(
+                {"error": "packed must be an object mapping ASIN to the packed units shown."},
+                status_code=400,
+            )
+        drifted = []
+        for asin in asins:
+            current = int(live.get(asin, 0))
+            try:
+                seen = int(seen_raw.get(asin))
+            except (TypeError, ValueError):
+                return JSONResponse(
+                    {
+                        "error": (
+                            f"No packed figure was sent for {asin}, so there is nothing to "
+                            "approve — reload the plan and try again."
+                        )
+                    },
+                    status_code=400,
+                )
+            if seen != current:
+                drifted.append({"asin": asin, "shown": seen, "now": current})
+                continue
+            approvals[asin] = current
+
+        if drifted:
+            detail = "; ".join(
+                f"{d['asin']} showed {d['shown']} but {d['now']} is packed now"
+                for d in drifted
+            )
+            return JSONResponse(
+                {
+                    "error": (
+                        f"The packed count changed while you were looking: {detail}. "
+                        "Nothing was approved — reload so you are signing off the "
+                        "quantity that actually exists."
+                    ),
+                    "drifted": drifted,
+                },
+                status_code=409,
+            )
+
+    changed = await repository.set_over_pack_approved(db, plan.id, approvals)
+    return JSONResponse(
+        {
+            "status": "approved" if approved else "revoked",
+            "changed": changed,
+            "count": len(changed),
+        }
+    )
+
+
 # ─── Product sort priority (admin) ───────────────────────────────────────────
 
 @router.get("/categories")
@@ -2074,8 +2207,26 @@ async def get_packing(
                 # typed just now. `remaining` above excludes today deliberately (so
                 # the target does not appear to move as he types); this must not,
                 # because 40 over on Monday plus 40 today is 80 over.
-                "over_packed": logic.over_packed(
-                    planned, prior + int(mine.get("units") or 0)
+                #
+                # Netted against the owner's approval for the same reason the owner's
+                # own payload is: leaving one raw and the other netted would be two
+                # numbers for one thing, the "86 orders beside 87 lines" defect. The
+                # BANNER does not read this — it recomputes live from what is being
+                # typed — but the two must still agree.
+                "over_packed": logic.unapproved_over_pack(
+                    planned,
+                    prior + int(mine.get("units") or 0),
+                    item.over_pack_approved_units,
+                ),
+                # **The threshold, not a pre-computed excess.** An excess computed here
+                # is a function of a packed total the packer is at that moment
+                # changing, so it would be stale on his first keystroke — which is
+                # exactly what the live recompute exists to avoid. The screen folds
+                # this into its own `max(planned, approved)` comparison.
+                "over_pack_approved": (
+                    int(item.over_pack_approved_units)
+                    if item.over_pack_approved_units is not None
+                    else 0
                 ),
                 "note": mine.get("note") or "",
             }

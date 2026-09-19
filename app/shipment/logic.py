@@ -546,8 +546,48 @@ def over_packed(planned, packed: int) -> int:
 
     A typo is the common cause (500 for 50), and it reaches a GST invoice through
     the invoice bridge, which aggregates what was PACKED.
+
+    **Two parameters on purpose.** The owner's approval goes through
+    ``unapproved_over_pack`` rather than a third argument here, so this function
+    keeps stating the raw arithmetic — the reconciliation between the plan and
+    reality — with nothing that can silence it.
     """
     return max(0, _as_count(packed) - _as_count(planned))
+
+
+def unapproved_over_pack(planned, packed: int, approved=None) -> int:
+    """Over-pack the owner has NOT signed off yet. **Screen-only.**
+
+    Asked for as *"extra packing kar diya to theek hai na. puch hi ke kiya"* — the
+    packer asked before boxing the extra, so a decision already taken was still
+    rendering as an unresolved red error on two screens. A banner that is
+    permanently present is the kind that trains its reader to skip the one that
+    matters.
+
+    ``approved`` is the packed TOTAL the owner signed off, ``None`` for "never
+    approved". **Never the excess**, and the comparison is ``max`` and never a sum:
+
+        planned 60, packed 62, approved 62  -> 0    the decision is recorded
+        planned 60, packed 80, approved 62  -> 18   a CEILING, not a mute
+        planned 100, packed 105, approved 62 -> 5   the raised plan SUPERSEDES it
+
+    That last line is the whole reason the stored figure is a total. Store ``+2``
+    and compare against ``planned + approved``, and the owner raising the plan
+    60 -> 100 for a bigger truck silently moves the threshold to 102 — two units
+    approved against a 60-unit plan have followed the row onto a 100-unit plan and
+    authorised an overage nobody looked at. ``max`` self-corrects in the safe
+    direction; ``+`` compounds. Same defect the Ads tab's once-per-day guard exists
+    for: an approval expressed as a delta against a mutable base compounds with
+    every change to that base.
+
+    **It reaches no quantity, deliberately.** ``units_by_asin`` bills the GST
+    invoice and ``verified_units_by_asin`` declares what Amazon should expect —
+    both read PACKED units, both are already correct at 62, and neither may ever
+    take this into account. An approval acknowledges a discrepancy; it does not
+    resolve it. Capping a declared quantity here would make Amazon expect a
+    different count from what arrives at the FC.
+    """
+    return over_packed(max(_as_count(planned), _as_count(approved)), packed)
 
 
 def still_to_source(planned, packed: int, available=0) -> int:

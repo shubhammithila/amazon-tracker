@@ -540,6 +540,62 @@ async def set_item_excluded(
     return changed
 
 
+async def set_over_pack_approved(
+    db: AsyncSession, plan_id: int, approvals: dict[str, int | None]
+) -> list[str]:
+    """Record or clear the owner's sign-off on over-packing. Returns ASINs changed.
+
+    ``approvals`` maps ASIN -> the packed TOTAL being approved, or ``None`` to
+    revoke. A dict rather than a list plus a flag — unlike ``set_item_excluded``,
+    which is a boolean per row, each approval carries its own quantity, and that
+    quantity is the whole safety property: approving 62 approves 62, so packing 20
+    more later shows ``+20`` again.
+
+    **Deliberately NOT in ``EDITABLE_ITEM_FIELDS``.** ``saveItems()`` posts every
+    dirty row's ``shipment_plan``/``available``/``fba_sku`` from client state that
+    may be minutes old; an approval in that whitelist would mean editing an
+    unrelated SKU field silently re-approves a row from a stale figure.
+
+    **An excluded row is skipped** — it is not in the plan, so there is nothing to
+    approve, and letting it through would store a decision that reappears if the
+    row is ever restored.
+
+    Nothing auto-clears this. Not a packer correcting downwards, not re-verifying:
+    absence of a row is the single representation of "no decision", and clearing it
+    on the owner's behalf is a write nobody asked for.
+    """
+    if not approvals:
+        return []
+
+    result = await db.execute(
+        select(ShipmentPlanItem).where(
+            ShipmentPlanItem.plan_id == plan_id,
+            ShipmentPlanItem.asin.in_(list(approvals)),
+        )
+    )
+    now = datetime.utcnow()
+    changed = []
+    for item in result.scalars():
+        if item.excluded_at is not None:
+            continue
+        units = approvals.get(item.asin)
+        if units is None:
+            if item.over_pack_approved_units is None:
+                continue
+            item.over_pack_approved_units = None
+            item.over_pack_approved_at = None
+        else:
+            if item.over_pack_approved_units == int(units):
+                continue
+            item.over_pack_approved_units = int(units)
+            item.over_pack_approved_at = now
+        changed.append(item.asin)
+
+    if changed:
+        await db.commit()
+    return changed
+
+
 async def delete_plan(db: AsyncSession, plan_id: int) -> bool:
     """Delete a plan and, by cascade, its items, days and packing entries."""
     plan = await get_plan(db, plan_id)

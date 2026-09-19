@@ -253,6 +253,34 @@ class ShipmentPlanItem(Base):
     # Reversible on purpose — an accidental multi-row exclude is one click back.
     excluded_at = Column(DateTime)
 
+    # The owner's sign-off on packing MORE than the plan asked for. Reported as
+    # "extra packing kar diya to theek hai na. puch hi ke kiya" — the packer asked
+    # first, so a decision already taken kept rendering as an unresolved red error
+    # on two screens, which is how a banner trains its reader to skip it.
+    #
+    # **The packed TOTAL he approved, never the excess.** Store +2 and compare
+    # against `planned + approved`, and raising the plan 60 -> 100 for a bigger
+    # truck silently moves the threshold to 102 — two units approved against a
+    # 60-unit plan have followed the row onto a 100-unit plan and authorised an
+    # overage nobody looked at. Storing 62 and comparing against
+    # `max(planned, 62)` makes the larger decision SUPERSEDE the approval instead
+    # of compounding with it. Same defect as the Ads tab's once-per-day guard: an
+    # approval expressed as a delta against a mutable base compounds with every
+    # change to that base.
+    #
+    # **NULL rather than server_default="0"**, the `excluded_at` property: every
+    # pre-migration row reads "no decision" with no backfill, and "not approved"
+    # cannot be confused with "approved zero".
+    #
+    # It reaches NO quantity. `units_by_asin` bills the invoice and
+    # `verified_units_by_asin` tells Amazon what to expect — both read packed
+    # units and both are already right. This only silences a screen.
+    over_pack_approved_units = Column(Integer)
+    # Rendered on the row beside the approved figure, with a Revoke control — which
+    # is also how the owner finds an approved row to undo. A column that feeds
+    # nothing is the `available` defect, so if that display ever goes, this goes.
+    over_pack_approved_at = Column(DateTime)
+
     # Snapshot of the CSV upload. Never rewritten after /generate, so the plan
     # always shows the numbers it was actually built from.
     sales_7d = Column(Integer, default=0)

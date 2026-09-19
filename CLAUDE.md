@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2264 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2287 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -503,10 +503,109 @@ pack", so a doubled row looked exactly like a finished one on both screens.
 appear on a GST invoice at the packed quantity, discovered at reconciliation.
 
 It warns and never blocks — the boxes physically exist, and refusing the entry would
-leave real stock unrecorded. Only the owner can resolve it, and only two ways: raise
-To Ship to match, or have the surplus unpacked. The packer's warning is computed in
+leave real stock unrecorded. Only the owner can resolve it, and there were only two ways:
+raise To Ship to match, or have the surplus unpacked. The packer's warning is computed in
 the browser as he types, because a server figure would arrive only after a save, by
 which point he has boxed more of it.
+
+### The third way out: the owner APPROVES the over-pack, and both screens go quiet
+Reported as *"error on shipments page… give option to hide this error. abhi ye kya tha ki extra
+packing kar diya to theek hai na. **puch hi ke kiya**"* — the packer asked before boxing the
+extra. That third thing had no representation, so a decision already taken kept rendering as an
+unresolved red error on two screens, and a permanently-present banner is the kind that trains its
+reader to skip the one that matters.
+
+**It is an approval, not a hide button, and the banner being RIGHT is what forces that.**
+`/shipment/invoice-payload` bills `logic.units_by_asin` — the **packed** units — so 62 boxed
+against a plan of 60 really does put 62 on a GST invoice. A blanket dismiss would also silence the
+next overage, which might be a 200-unit miscount heading for a tax document.
+
+**`logic.unapproved_over_pack(planned, packed, approved)` is a SIBLING of `over_packed`**, not a
+third parameter on it — `over_packed` keeps stating the raw reconciliation with nothing able to
+silence it, the same reason `remaining_for` refuses an `available` argument, and a test pins its
+two-parameter signature.
+
+**`ShipmentPlanItem.over_pack_approved_units` stores the packed TOTAL, never the excess**, and the
+comparison is `max(planned, approved)` and never a sum:
+
+```
+planned  60, packed  62, approved 62  ->  0    the decision is recorded
+planned  60, packed  80, approved 62  -> 18    a CEILING, not a mute
+planned 100, packed 105, approved 62  ->  5    the raised plan SUPERSEDES the approval
+```
+
+That last line is the whole reason for the total. Store `+2` and compare against
+`planned + approved`, and the owner raising the plan 60 → 100 for a bigger truck silently moves the
+threshold to **102** — two units approved against a 60-unit plan have followed the row onto a
+100-unit plan and authorised an overage nobody looked at. `max` self-corrects in the safe
+direction; `+` compounds. Same defect as the Ads tab's once-per-day guard: **an approval expressed
+as a delta against a mutable base compounds with every change to that base.**
+
+**NULL rather than `server_default="0"`** — deliberately the opposite of the `from_stock` column
+added one migration earlier. There, every pre-existing row had a real fact to read as ("all of it
+was made today"). Here the fact is "nobody has decided", and a default of 0 would make that
+indistinguishable from "approved zero units".
+
+**The approval reaches NO quantity, and that is what makes it safe.** Traced before building:
+
+| Reader | Quantity | With an approved over-pack |
+|---|---|---|
+| `invoice-payload` | `units_by_asin` (packed) | **62** — unchanged |
+| `shipment-file.xlsx?mode=verified` | `verified_units_by_asin` (packed) | **62** — unchanged |
+| `amazon_plan_items` (SP-API) | `units_by_asin` (packed) | **62** — unchanged |
+| `download/packed.{xlsx,pdf}` | `units` | **62**, and no new column |
+| `download/plan.{xlsx,pdf}` | `shipment_plan` | **60** — unchanged |
+
+Amazon is **already** told 62 and the invoice **already** bills 62. An approval acknowledges a
+discrepancy; it does not resolve it. A test asserts the Amazon upload CELL rather than that the
+code is unchanged — capping a declared quantity would make the FC expect fewer units than arrive.
+
+> **Why not just raise To Ship to 62, which already worked with no new code?** Because
+> `shipment_plan` is the *decision* and `over_packed` is the *reconciliation between that decision
+> and reality*. Editing the decision to match reality destroys the only record they ever differed:
+> `still_to_source` starts telling him to manufacture 2 more of something he holds 62 of, the plan
+> PDF is rewritten to claim the week always asked for 62, and after a close `/plans` reads "planned
+> 62, packed 62 — nothing happened". `ProductDecision` exists for exactly this reason: absence of a
+> row must never be mistaken for absence of an event.
+
+- **Admin only**, and **not in `EDITABLE_ITEM_FIELDS`**: `saveItems()` posts every dirty row's plan
+  fields from client state that may be minutes old, so an approval in that whitelist would mean
+  editing an unrelated SKU field silently re-approves a row from a stale figure.
+- **The screen sends the packed figure it DISPLAYED and the server refuses drift with a 409**,
+  naming both numbers. Approving is a decision about a specific quantity: if the packer saved 80
+  thirty seconds ago, storing 80 approves more than the owner saw and storing 62 approves a figure
+  that no longer exists. Same reason `/ads/apply` re-reads the live bid before writing.
+- **Nothing auto-clears it**, and an **excluded row cannot be approved**.
+- **The approved row stays visible** with `approved 62 · 19 Sep` and a Revoke control — an approval
+  the owner cannot see is invisible state with no way out, which is the `available` column defect.
+
+> **The warehouse screen shows NOTHING after approval**, as asked — no grey confirmation. It needs
+> no special case: `unapprovedOver` returning 0 already drops the row from the banner array and
+> from its own tag.
+>
+> **And that is where it shipped broken, found by opening the page.** The banner had gone quiet
+> while every row still read **"+2 over"**, because `renderRows` held a *third* copy of the
+> arithmetic for the FIRST render — the one `markOverPack` never touches, since that only runs on a
+> keystroke. 21 tests and the first 18 mutations all passed. **Fifth instance in this codebase of a
+> correct server contract over a client doing something else** (the pause feature,
+> `intakeFromShipment`, `renderInvoiceBar`, the from_stock split). The test now asserts the three
+> readers BY NAME and that the subtraction appears nowhere outside the shared helper — an earlier
+> version counted call sites and passed at 3 while one of them was a duplicate.
+
+> **`tests/test_ops_ui.py`'s live-recompute test asserted a DISTANCE and had to be rewritten.** It
+> matched `packed_before[\s\S]{0,80}planned` — the two names within 80 characters — and broke when
+> the comparison moved into `unapprovedOver`. The rule was intact; only the distance changed. It now
+> asserts the requirement: whichever function holds it reads the prior packing, the unsaved input
+> (`rowUnits`) and the plan. Third time in this codebase a test has pinned an incidental detail
+> instead of the behaviour.
+
+**The Orders tab gets a per-day DISMISS instead, and no column.** Its warning compares packed units
+against **today's orders**, reaches no invoice and no plan, and **self-clears** — two more orders
+arriving makes it disappear with nobody doing anything — and the whole row expires at midnight
+(`order_packed_entries` is UNIQUE on `(pack_date, asin)`). A stored approval would outlive the thing
+it was about. So an **×** writes the IST pack date to `sessionStorage`: keyed on the date so
+tomorrow's genuine over-pack is not hidden by today's shrug, and session rather than local storage
+because a dismissal surviving into next week is indistinguishable from a broken warning.
 
 ### The packer records what he MADE and what he took off the SHELF. They ADD UP.
 Asked for as *"a column to mention if they are taking the product which is available in stock — or
@@ -3320,6 +3419,19 @@ because the dev box **is** in IST and the two agree there; production is UTC, wh
 
 The FC appointment (`generateSelfShipAppointmentSlots` → confirm) is deliberately **not** built:
 labels do not depend on it, so it never blocks printing.
+
+### An over-pack approval does not survive a plan close
+`POST /plan/{id}/close` carries packed-but-unshipped days onto the next plan and inserts fresh
+`To-Ship-0` rows for ASINs the new plan lacks. Those are **new `ShipmentPlanItem` rows**, so the
+approval does not travel: the carried 62 sits against a plan row of 0, `over_packed` is 62, and the
+banner returns on the carrier plan. The owner has to re-approve after a close.
+
+Left as a known limit rather than fixed, deliberately. Copying the approval inside `close_plan`
+means a second write path into the function whose own history is the worst incident in this
+codebase — `delete_draft_plans` destroying 400 units of packed stock under a docstring asserting it
+was safe, and *"a comment stating an invariant is not the same as enforcing one"*. A test
+**documents** the re-approve behaviour rather than asserting it away, so whoever changes it sees
+what today's behaviour is.
 
 ### The invoice attach is a second request, so there is a window
 `POST /invoice/save` allocates the legally-sequential GST number and is left

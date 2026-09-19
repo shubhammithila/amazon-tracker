@@ -324,10 +324,25 @@ function esc(s){
     .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 }
 
-function message(text, cls){
+/* `opts.dismiss` adds an × that hides the message for the rest of the day. Only the over-pack
+   warning passes it: the others report a parse or fetch problem the owner has to act on, and a
+   dismissable "ASINs are not in the product sheet" would just get dismissed. */
+function message(text, cls, opts){
+  const x = (opts && opts.dismiss)
+    ? ` <button class="btn-outline" id="dismiss-over"
+         aria-label="Hide this warning for the rest of today"
+         title="Hide until tomorrow">&times;</button>`
+    : "";
   $("messages").innerHTML = text
-    ? `<div class="banner ${cls || "info"}">${esc(text)}</div>` : "";
+    ? `<div class="banner ${cls || "info"}">${esc(text)}${x}</div>` : "";
 }
+
+/* Delegated on #messages, which is stable — `message()` replaces its innerHTML, so a listener
+   bound to the button itself would die the moment the packer types another digit and the
+   warning re-renders. */
+$("messages").addEventListener("click", e => {
+  if(e.target.closest("#dismiss-over")) dismissOver();
+});
 
 function ago(iso){
   if(!iso) return "never";
@@ -863,15 +878,43 @@ function refreshWeightDerived(product){
 /* Over-packing warns and never blocks: the boxes physically exist, and refusing the entry would
    leave real stock unrecorded. Only the owner can resolve it, and only two ways — the surplus
    ships and appears on an invoice at the packed quantity, or it comes back. */
+
+/* Dismissed for the REST OF TODAY, in sessionStorage, keyed on the server's IST pack date.
+   Asked for alongside the Shipment tab's over-pack approval — but deliberately NOT the same
+   mechanism, and the difference is the point:
+
+     * the Shipment warning compares packed against a PLAN and reaches a GST invoice, so it
+       earns a stored, revocable approval of a specific quantity;
+     * this one compares packed against TODAY'S ORDERS, reaches no invoice and no plan, and
+       SELF-CLEARS — two more orders arriving makes it disappear with nobody doing anything.
+
+   A stored approval would outlive the thing it was about: `order_packed_entries` is UNIQUE on
+   (pack_date, asin) and the whole row expires at midnight. So this is a dismissal, not a
+   decision, and it needs no column — the pattern CLAUDE.md's "unused columns invite a future
+   reader to wire them up" argues for.
+
+   Keyed on the DATE so tomorrow's genuine over-pack is not hidden by today's shrug. Session
+   rather than local storage, because a dismissal surviving into next week is indistinguishable
+   from the warning being broken. */
+function overDismissed(){
+  try{ return sessionStorage.getItem("ord.overDismissed") === String(data.pack_date); }
+  catch(e){ return false; }
+}
+function dismissOver(){
+  try{ sessionStorage.setItem("ord.overDismissed", String(data.pack_date)); }catch(e){}
+  renderOverWarning();
+}
+
 function renderOverWarning(){
   const over = [];
   skuRows().forEach(r => {
     const excess = n(packed[r.asin]) - n(r.units);
     if(excess > 0) over.push(`${r.parent} ${r.weight_label || r.asin}: +${excess}`);
   });
-  if(!over.length){ message("", "info"); return; }
+  if(!over.length || overDismissed()){ message("", "info"); return; }
   message(`Packed more than today's orders need — ${over.join("; ")}. The counts are kept as `
-          + "entered; check whether those parcels belong to tomorrow.", "warn");
+          + "entered; check whether those parcels belong to tomorrow.", "warn",
+          {dismiss: true});
 }
 
 /* ── Undo and save ──────────────────────────────────────────────────────────
