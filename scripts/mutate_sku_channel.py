@@ -156,6 +156,45 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "the column is located but never stored, which looks identical to an empty sheet "
         "— test_the_sheets_fba_sku_column_is_read",
     ),
+
+    # ── Inactive products that still sold ──
+    (
+        ROUTER,
+        '        "inactive_sales_units": sum(u for _, u in inactive_with_sales),',
+        '        "inactive_sales_units": 0,',
+        "the excluded demand is reported as zero, so the 3,337-vs-3,259 gap is unexplainable "
+        "again — test_an_inactive_product_that_still_SELLS_is_named_with_its_units",
+    ),
+    (
+        ROUTER,
+        "        sold_7d = int(sales.get(asin, 0))",
+        "        sold_7d = 0",
+        "no inactive product is ever reported as selling, which is the original silent gap "
+        "— test_an_inactive_product_that_still_SELLS_is_named_with_its_units",
+    ),
+    (
+        ROUTER,
+        "            for a, u in sorted(inactive_with_sales, key=lambda x: (-x[1], x[0]))",
+        "            for a, u in sorted(inactive_with_sales, key=lambda x: (x[1], x[0]))",
+        "the list is smallest-first, so a 1-unit run-down leads and the 36-unit mistake is "
+        "pushed past the 8-name cap "
+        "— test_an_inactive_product_that_still_SELLS_is_named_with_its_units",
+    ),
+    (
+        ROUTER,
+        "            if sold_7d > 0:\n                inactive_with_sales.append((asin, sold_7d))\n            continue\n        if not sheet_row and not catalogue.is_active(",
+        "            continue\n        if not sheet_row and not catalogue.is_active(",
+        "the FIRST skip branch stops reporting, and that is the branch the real Active=N rows take "
+        "— test_an_inactive_product_that_still_SELLS_is_named_with_its_units",
+    ),
+    (
+        "templates/shipment.html",
+        "    const stale = c.inactive_with_sales || [];",
+        "    const stale = [];",
+        "the screen never renders the warning, so the server knows and the owner does not — the "
+        "defect shape this codebase has shipped five times "
+        "— test_the_banner_names_inactive_products_that_still_sold",
+    ),
 ]
 
 
@@ -173,6 +212,7 @@ def run_tests() -> bool:
             "tests/test_shipment_catalogue.py",
             "tests/test_portfolio_logic.py",
             "tests/test_shipment_plan_db.py",
+            "tests/test_shipment_admin_ui.py",
         ],
         cwd=ROOT,
         capture_output=True,

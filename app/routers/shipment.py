@@ -518,20 +518,40 @@ async def generate_plan(
     items: list[dict] = []
     skipped_inactive = 0
     from_sheet_only = []
+    # **Inactive AND still selling**, which is a question rather than a fact.
+    #
+    # `Active = N` correctly keeps a product out of the plan, and its sales out of the
+    # totals with it. But a product marked inactive that sold 36 units last week is
+    # either a mis-set flag or a deliberate run-down, and only the owner can say which —
+    # so the ASINs are collected here and NAMED on screen with their units.
+    #
+    # Found by the owner reconciling by hand: the Business Report totalled 3,337 units
+    # and the tab showed 3,259. The 78-unit gap was five Active=N products, two of which
+    # (both Bengali Posta) should have been live. Nothing on screen pointed at them —
+    # the banner said "163 skipped as inactive" and never that any of them had sales.
+    inactive_with_sales: list[tuple[str, int]] = []
 
     for asin in sorted(candidates):
         info = FAMILIES.get(asin) or {}
         sheet_row = sheet_products.get(asin) or {}
 
+        # Read once here rather than inside the two skip branches, so neither can be
+        # extended later without it.
+        sold_7d = int(sales.get(asin, 0))
+
         # is_active() treats an unknown ASIN as active, which is what keeps a
         # file-only product in the plan rather than silently dropping it.
         if sheet_row and not sheet_row.get("active"):
             skipped_inactive += 1
+            if sold_7d > 0:
+                inactive_with_sales.append((asin, sold_7d))
             continue
         if not sheet_row and not catalogue.is_active(
             {a: bool(r["active"]) for a, r in sheet_products.items()}, asin
         ):
             skipped_inactive += 1
+            if sold_7d > 0:
+                inactive_with_sales.append((asin, sold_7d))
             continue
 
         # Sheet first for every displayed field, then the static file, then a default.
@@ -683,6 +703,18 @@ async def generate_plan(
         "added": [_label(a) for a in added],
         "removed": [_label(a) for a in removed],
         "new_to_the_catalogue": sorted(from_sheet_only),
+        # Inactive products that nevertheless SOLD, biggest first — the actionable ones
+        # lead, because 36 units and 1 unit call for different attention. Named with
+        # their units, never a bare count: "5 products were skipped" is what the banner
+        # already said, and it is what let a 78-unit gap go unnoticed.
+        #
+        # The UNITS total travels too, so the note can state the figure the owner would
+        # otherwise reconcile by hand against the Business Report.
+        "inactive_with_sales": [
+            {"label": _label(a), "units": u}
+            for a, u in sorted(inactive_with_sales, key=lambda x: (-x[1], x[0]))
+        ],
+        "inactive_sales_units": sum(u for _, u in inactive_with_sales),
     }
 
     warnings = []

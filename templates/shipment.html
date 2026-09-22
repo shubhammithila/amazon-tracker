@@ -717,6 +717,36 @@ function renderBanners(){
     out.push(
       `<div class="banner ${c.source === "sheet" ? "info" : "warn"}">${bits.join(" ")}</div>`
     );
+
+    /* **Inactive AND still selling — a question, not a fact, so it gets its own banner.**
+
+       Found by the owner reconciling by hand: the Business Report totalled 3,337 units
+       while this tab showed 3,259. The 78-unit gap was five `Active = N` products, and two
+       of them (both Bengali Posta) should have been live. The banner above said "163 skipped
+       as inactive" and never that any of those had SALES, so there was nothing to notice.
+
+       Named with units, biggest first, because the action differs per product: 36 units is
+       probably a mis-set flag, 1 unit is probably a genuine run-down. A bare count is what
+       let this through in the first place.
+
+       `warn` rather than `info`, separate from the catalogue summary: this one may need a
+       change to the sheet before the plan is finalised. */
+    const stale = c.inactive_with_sales || [];
+    if(stale.length){
+      // `toLocaleString("en-IN")` inline, matching the banners around this one. `n()` is
+      // declared inside renderFootTotals and is NOT in scope here — using it would throw
+      // "n is not defined" and this banner would never render, which is the shape of bug
+      // CLAUDE.md records five times (a server contract passing over a broken client).
+      const units = v => Number(v || 0).toLocaleString("en-IN");
+      const shown = stale.slice(0, LIST_CAP)
+        .map(s => `${esc(s.label)} (${units(s.units)})`).join(", ");
+      const rest = stale.length - LIST_CAP;
+      out.push(`<div class="banner warn"><strong>${stale.length} inactive product(s) sold
+        ${units(c.inactive_sales_units)} unit(s) in this report</strong>, so that demand is NOT
+        in this plan: ${shown}${rest > 0 ? ` and ${rest} more` : ""}.
+        If any of those should still be selling, set <em>Active</em> to Y in the MRP sheet and
+        generate again — otherwise this is the run-down working as intended.</div>`);
+    }
   }
 
   // Then, in the loudest style available: this is stock that is physically

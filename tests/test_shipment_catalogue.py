@@ -750,6 +750,146 @@ async def test_generate_says_where_the_product_list_came_from(auth_client, monke
     )
 
 
+async def test_an_inactive_product_that_still_SELLS_is_named_with_its_units(
+    auth_client, monkeypatch
+):
+    """**Found by the owner reconciling two totals by hand.**
+
+    The Business Report totalled 3,337 units while the Shipment tab showed 3,259. The 78-unit gap
+    was five `Active = N` products — and two of them (both Bengali Posta) should have been live.
+    The banner said *"163 skipped as inactive"* and never that any of those had SALES, so there was
+    nothing on screen to notice.
+
+    `Active = N` correctly keeps a product out of the plan and its sales out of the totals. But a
+    product marked inactive that sold 36 units last week is either a mis-set flag or a deliberate
+    run-down, and **only the owner can say which** — so it is named rather than silently dropped.
+    The same reasoning as the Triphala Sattu fix, in the opposite direction: a product invisible
+    for a reason nobody can see.
+
+    Named with UNITS, biggest first, because the action differs per product: 36 units is probably
+    a mistake, 1 unit is probably a genuine run-down. A bare count is exactly what let this
+    through.
+    """
+    async def _catalogue():
+        return catalogue.parse_catalogue(CATALOGUE_CSV), None, "sheet"
+
+    monkeypatch.setattr("app.shipment.catalogue.load_catalogue", _catalogue, raising=True)
+
+    # B0RETIRED1 is the fixture's `Active = N` row. A SECOND inactive row is added below so the
+    # ORDERING is observable: with one product, biggest-first and smallest-first are the same list
+    # and a sort mutation passes. That is the one-campaign-fixture mistake this codebase has
+    # already made twice.
+    csv_two_inactive = CATALOGUE_CSV.replace(
+        "Bad Weight,not-a-number,50,,,,,,B0BADWEIGH,,,,,,,,zipper,Sticker,No,,Mithila Foods,Y\n",
+        "Quiet Thing,1,120,,,,,,B0QUIET001,,,,,,,,zipper,Sticker,No,,Mithila Foods,N\n",
+    )
+
+    async def _two():
+        return catalogue.parse_catalogue(csv_two_inactive), None, "sheet"
+
+    monkeypatch.setattr("app.shipment.catalogue.load_catalogue", _two, raising=True)
+
+    sales = (
+        b"(Child) ASIN,Units Ordered\n"
+        b"B0H8NPDB88,10\n"
+        b"B0QUIET001,1\n"       # the run-down: 1 unit
+        b"B0RETIRED1,36\n"      # the probable mistake: 36 units
+    )
+    stock = b"asin,sku,afn-fulfillable-quantity\nB0H8NPDB88,T FBA,0\n"
+    r = await auth_client.post(
+        "/shipment/generate",
+        files={"sales_csv": ("s.csv", sales, "text/csv"),
+               "stock_csv": ("k.csv", stock, "text/csv")},
+        data={"multiplier": "5"},
+    )
+    assert r.status_code == 200, r.text
+    info = r.json()["catalogue"]
+
+    assert info["inactive_sales_units"] == 37, (
+        "the excluded demand is not totalled, so it cannot be reconciled against the report"
+    )
+    labels = [s["label"] for s in info["inactive_with_sales"]]
+    assert any("Retired Thing" in label for label in labels), (
+        "the inactive product that sold is not NAMED, which is what let a 78-unit gap go "
+        f"unnoticed: {labels}"
+    )
+    # **BIGGEST FIRST**, because the action differs by size: 36 units is probably a mis-set flag
+    # worth acting on today, 1 unit is probably a genuine run-down. Smallest-first would also push
+    # the important one past the 8-name cap on a real account.
+    assert [s["units"] for s in info["inactive_with_sales"]] == [36, 1], (
+        "the list is not ordered biggest-first, so the product most likely to be a mistake does "
+        "not lead"
+    )
+
+    # The row itself must still be OUT of the plan — this is a warning, not a change of rule.
+    assert not any(i["asin"] == "B0RETIRED1" for i in r.json()["items"]), (
+        "naming the product also put it back in the plan, which overrides the owner's Active flag"
+    )
+
+
+async def test_an_inactive_product_with_NO_sales_is_not_reported(auth_client, monkeypatch):
+    """163 inactive products are normal; listing them all would be noise nobody reads.
+
+    Only the ones with sales pose a question, so only those are named — the same discipline the
+    catalogue's 8-name cap and the Projections `needs_review` list follow.
+    """
+    async def _catalogue():
+        return catalogue.parse_catalogue(CATALOGUE_CSV), None, "sheet"
+
+    monkeypatch.setattr("app.shipment.catalogue.load_catalogue", _catalogue, raising=True)
+
+    r = await auth_client.post(
+        "/shipment/generate",
+        files={"sales_csv": ("s.csv", b"(Child) ASIN,Units Ordered\nB0H8NPDB88,10\n", "text/csv"),
+               "stock_csv": ("k.csv", b"asin,sku,afn-fulfillable-quantity\nB0H8NPDB88,T FBA,0\n",
+                             "text/csv")},
+        data={"multiplier": "5"},
+    )
+    assert r.status_code == 200, r.text
+    info = r.json()["catalogue"]
+    assert info["skipped_inactive"] >= 1, "the fixture has no inactive row to test with"
+    assert info["inactive_with_sales"] == []
+    assert info["inactive_sales_units"] == 0
+
+
+async def test_the_plan_total_plus_the_excluded_units_equals_the_report(
+    auth_client, monkeypatch
+):
+    """**The reconciliation the owner had to do by hand.**
+
+    This is the property that matters: every unit in the Business Report is either in the plan or
+    named as excluded. Nothing disappears unaccounted for. Verified on the real 22 Sep report too
+    — 3,317 in the plan + 20 excluded = 3,337 in the file, exactly.
+    """
+    async def _catalogue():
+        return catalogue.parse_catalogue(CATALOGUE_CSV), None, "sheet"
+
+    monkeypatch.setattr("app.shipment.catalogue.load_catalogue", _catalogue, raising=True)
+
+    sales = (
+        b"(Child) ASIN,Units Ordered\n"
+        b"B0H8NPDB88,10\n"
+        b"B0H8NPVN6Z,7\n"
+        b"B0RETIRED1,36\n"
+    )
+    stock = b"asin,sku,afn-fulfillable-quantity\nB0H8NPDB88,T FBA,0\n"
+    r = await auth_client.post(
+        "/shipment/generate",
+        files={"sales_csv": ("s.csv", sales, "text/csv"),
+               "stock_csv": ("k.csv", stock, "text/csv")},
+        data={"multiplier": "5"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    in_plan = sum(i["sales_7d"] for i in body["items"])
+    excluded = body["catalogue"]["inactive_sales_units"]
+    assert in_plan + excluded == 53, (
+        f"{53 - in_plan - excluded} unit(s) of the report are neither in the plan nor reported "
+        "as excluded, so a gap between the two totals would be unexplainable"
+    )
+
+
 async def test_generate_names_what_appeared_and_what_vanished(
     auth_client, monkeypatch, plan_factory
 ):

@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2296 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2301 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -296,6 +296,28 @@ Because a hand-edited Active flag can now add or remove a row, `generate` return
 `catalogue` block and the page reports it: source, counts, and the products that
 appeared or vanished **by name**, capped at 8. A row count alone gives no way to notice
 that a product quietly left.
+
+> **An inactive product that is still SELLING gets its own banner, because a count was not
+> enough.** Found by the owner reconciling two totals by hand: the Business Report said
+> **3,337 units** and the Shipment tab said **3,259**. The 78-unit gap was five `Active = N`
+> products — and two of them (both Bengali Posta) should have been live. The banner said
+> *"163 skipped as inactive"* and never that any of those had sales, so there was nothing to
+> notice.
+>
+> `Active = N` correctly keeps a product out of the plan and its sales out of the totals with
+> it. But **inactive-and-still-selling is a question, not a fact**: a mis-set flag and a
+> deliberate run-down look identical, and only the owner can tell them apart. So
+> `inactive_with_sales` names them with their units, **biggest first** — 36 units is probably a
+> mistake worth acting on today, 1 unit is probably a genuine run-down — alongside
+> `inactive_sales_units` so the figure reconciles against the report without arithmetic.
+>
+> **Every unit in the report is now either in the plan or named as excluded.** A test asserts
+> that property directly, since it is the one that makes a gap between the two totals
+> impossible to misread. Verified on the real 22 Sep file: 3,317 in the plan + 20 excluded =
+> 3,337.
+>
+> The warning does NOT put the row back. Overriding the owner's own Active flag would be the
+> opposite failure, and a test pins it.
 
 ### Why the plan is in the database
 It used to be one JSON blob at repo root, overwritten wholesale by

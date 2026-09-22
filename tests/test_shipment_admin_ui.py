@@ -776,6 +776,45 @@ def test_raw_item_fields_are_not_interpolated_directly(source):
     )
 
 
+def test_the_banner_names_inactive_products_that_still_sold(source):
+    """**Source-level, because a server contract passing over a broken client is this codebase's
+    most-repeated defect** — five recorded instances (the pause feature, `intakeFromShipment`,
+    `renderInvoiceBar`, the from_stock split, the over-pack first render).
+
+    The route now returns `inactive_with_sales`, and a payload nothing reads is exactly as
+    invisible as the 78-unit gap it exists to explain.
+    """
+    assert "c.inactive_with_sales" in source, (
+        "the screen never reads the inactive-but-selling list, so the excluded demand stays "
+        "invisible"
+    )
+    assert "c.inactive_sales_units" in source, "the unit total is not shown"
+    assert "inactive product(s) sold" in source
+    assert "set <em>Active</em> to Y" in source, (
+        "the banner does not say what to DO about it, so it reads as a complaint"
+    )
+
+
+def test_the_banner_does_not_call_a_helper_that_is_out_of_scope(source):
+    """`n()` is declared inside `renderFootTotals`, NOT at module level.
+
+    Calling it from `renderBanners` throws `n is not defined`, and the whole banner block then
+    stops rendering — silently, because the caller has no try/catch. I wrote exactly that bug while
+    adding this warning and caught it by checking where the helper was declared rather than
+    assuming a one-letter name was global.
+    """
+    start = source.index("function renderBanners(")
+    body = source[start : source.index("\nfunction ", start + 10)]
+    # Comments are stripped first: the explanation above names `n()`, and an assertion that cannot
+    # coexist with its own documentation forces the documentation out.
+    code = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+    code = re.sub(r"^\s*//.*$", "", code, flags=re.M)
+    assert not re.search(r"[^\w.$]n\(", code), (
+        "renderBanners calls n(), which is local to renderFootTotals — that throws at runtime and "
+        "the banners never render"
+    )
+
+
 # ─── It still renders, and only for the owner ───────────────────────────────
 
 async def test_the_shipment_page_renders_for_admin(auth_client):
