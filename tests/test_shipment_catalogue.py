@@ -52,15 +52,24 @@ SHEET_CSV = (
 
 #: The same layout with the numeric weights the real sheet actually uses, for the
 #: tests that care about the product record rather than the Active flag.
-CATALOGUE_CSV = (
+#: The REAL 22-column layout of the master sheet, measured 22 Sep 2026. Kept faithful to production
+#: on purpose: the previous fixture carried a different, shorter layout, which is how the positional
+#: fallbacks came to point at S/T while the live sheet had moved `Brand Name` and `Active` to U/V.
+#: A fixture that does not resemble the sheet cannot catch a sheet that has moved.
+#:
+#: Column letters: I=ASIN, K=Amazon FBA SKU, U=Brand Name, V=Active.
+CATALOGUE_HEADER = (
     "Name,Net Weight,M.R.P,M.F.G. DATE,Use By Date,FSSAI,Expiry ,Batch Code,ASIN,"
-    "FNSKU,FK SKU,FSN,Amazon FBA SKU,Split Into,Packet Size,Packet used,"
-    "Product label,Blinkit UPC Code,Brand Name,Active\n"
-    "Triphala Sattu,0.5,400,,,,,,B0H8NPDB88,,,,,,zipper,Sticker,No,,Mithila Foods,Y\n"
-    "Triphala Sattu,1,650,,,,,,B0H8NPVN6Z,,,,,,zipper,Sticker,No,,Mithila Foods,Y\n"
-    "Retired Thing,1,200,,,,,,B0RETIRED1,,,,,,zipper,Sticker,No,,Mithila Foods,N\n"
-    "Howrah Rice,2,300,,,,,,B0HOWRAH01,,,,,,zipper,Sticker,No,,Howrah Foods,Y\n"
-    "Bad Weight,not-a-number,50,,,,,,B0BADWEIGH,,,,,,zipper,Sticker,No,,Mithila Foods,Y\n"
+    "FNSKU,Amazon FBA SKU,Sellerflex FNSKU,FK SKU,FSN,SHOPIFY_SKU,Split Into,"
+    "Packet Size,Packet used,Product label,Blinkit UPC Code,Brand Name,Active\n"
+)
+
+CATALOGUE_CSV = CATALOGUE_HEADER + (
+    "Triphala Sattu,0.5,400,,,,,,B0H8NPDB88,,,,,,,,zipper,Sticker,No,,Mithila Foods,Y\n"
+    "Triphala Sattu,1,650,,,,,,B0H8NPVN6Z,,,,,,,,zipper,Sticker,No,,Mithila Foods,Y\n"
+    "Retired Thing,1,200,,,,,,B0RETIRED1,,,,,,,,zipper,Sticker,No,,Mithila Foods,N\n"
+    "Howrah Rice,2,300,,,,,,B0HOWRAH01,,,,,,,,zipper,Sticker,No,,Howrah Foods,Y\n"
+    "Bad Weight,not-a-number,50,,,,,,B0BADWEIGH,,,,,,,,zipper,Sticker,No,,Mithila Foods,Y\n"
 )
 
 
@@ -108,6 +117,64 @@ def test_columns_are_found_by_name_not_position():
         "an inserted column broke the lookup — every product would read inactive"
     )
     assert flags.get("B0BBBBBBBB") is False
+
+
+def test_the_positional_fallbacks_match_where_the_columns_ACTUALLY_are():
+    """**The live landmine this fixture was updated to catch.**
+
+    Header-name matching is the primary lookup and was finding everything correctly, so nothing was
+    broken — but the fallbacks are what run when a header is renamed, and they still pointed at
+    S/T while the sheet had moved `Brand Name` and `Active` to **U/V** (a new `Blinkit UPC Code`
+    took T). Rename the `Active` header and the fallback would read T, find it blank, and mark
+    **all 110 active products inactive** — an empty plan, for a baffling reason.
+
+    Asserted against the real header row rather than against the constants themselves, so the
+    constants cannot be "corrected" to agree with a wrong fixture.
+    """
+    header = CATALOGUE_HEADER.rstrip("\n").split(",")
+    assert header[catalogue.ASIN_COLUMN_FALLBACK] == "ASIN"
+    assert header[catalogue.BRAND_COLUMN_FALLBACK] == "Brand Name"
+    assert header[catalogue.ACTIVE_COLUMN_FALLBACK] == "Active"
+    assert header[catalogue.FBA_SKU_COLUMN_FALLBACK] == "Amazon FBA SKU"
+    assert header[catalogue.NAME_COLUMN_FALLBACK] == "Name"
+    assert header[catalogue.WEIGHT_COLUMN_FALLBACK] == "Net Weight"
+
+
+def test_a_RENAMED_active_header_still_finds_the_flag():
+    """The failure mode the fallbacks exist for, exercised rather than assumed.
+
+    With the header renamed there is nothing to match by name, so the positional fallback decides —
+    and if it is stale, every product reads inactive and the plan comes out empty.
+    """
+    renamed = CATALOGUE_CSV.replace(",Brand Name,Active\n", ",Brand Name,Still Selling?\n", 1)
+    products = catalogue.parse_catalogue(renamed)
+    assert products["B0H8NPDB88"]["active"] is True, (
+        "a renamed Active header fell back to the wrong column, so the whole catalogue reads "
+        "inactive and the next plan would be empty"
+    )
+    assert products["B0RETIRED1"]["active"] is False, (
+        "the fallback is not reading the Active column at all — everything reads the same"
+    )
+    assert products["B0HOWRAH01"]["brand"] == "Howrah Foods", (
+        "the brand fallback is stale too"
+    )
+
+
+def test_the_sheets_fba_sku_column_is_read():
+    """Column K, as a FALLBACK for an ASIN the stock CSV has no FBA SKU for.
+
+    Empty on all 370 live rows today, so this changes nothing until the owner fills it — which is
+    exactly why it is worth a test: an unread column and an empty one look identical on screen.
+    """
+    filled = CATALOGUE_CSV.replace(
+        "Triphala Sattu,0.5,400,,,,,,B0H8NPDB88,,,",
+        "Triphala Sattu,0.5,400,,,,,,B0H8NPDB88,,TRI-500G FBA,",
+        1,
+    )
+    products = catalogue.parse_catalogue(filled)
+    assert products["B0H8NPDB88"]["fba_sku"] == "TRI-500G FBA"
+    # And a blank column stays blank rather than becoming something invented.
+    assert products["B0H8NPVN6Z"]["fba_sku"] == ""
 
 
 def test_an_empty_sheet_is_not_a_catastrophe():
@@ -479,7 +546,11 @@ async def test_a_product_only_in_the_sheet_reaches_the_plan(auth_client, monkeyp
     )
 
     sales = f"(Child) ASIN,Units Ordered\n{new_asin},40\n"
-    stock = f"asin,sku,afn-fulfillable-quantity\n{new_asin},TRI-500G,0\n"
+    # `TRI-500G FBA`, not the bare `TRI-500G` this fixture used to carry. The bare form has no FBA
+    # token, so it is a MERCHANT SKU — it only reached the plan because `parse_sku_map` used to fall
+    # back to any SKU when an ASIN had no FBA one, which is the bug that wrote Flex SKUs onto FBA
+    # shipment lines. Amazon rejects those, so the fixture now names a real FBA SKU.
+    stock = f"asin,sku,afn-fulfillable-quantity\n{new_asin},TRI-500G FBA,0\n"
     r = await auth_client.post(
         "/shipment/generate",
         files={
@@ -502,8 +573,93 @@ async def test_a_product_only_in_the_sheet_reaches_the_plan(auth_client, monkeyp
     assert row["brand"] == "MF", "brand was not mapped from the sheet"
     # 40 sold * 5 = 200 projected, 0 stock -> 200 to ship.
     assert row["shipment_plan"] == 200
-    # The merchant SKU comes from the uploaded stock CSV, not the sheet blank column M.
-    assert row["fba_sku"] == "TRI-500G"
+    # The merchant SKU comes from the uploaded stock CSV, which is Amazon's own export and
+    # therefore authoritative; the sheet's column K is only a fallback for an ASIN the CSV has
+    # no FBA SKU for.
+    assert row["fba_sku"] == "TRI-500G FBA"
+
+
+async def test_a_flex_only_asin_gets_a_BLANK_sku_and_is_counted(auth_client, monkeypatch):
+    """**The reported bug, end to end: "in many sku's I am seeing that flex sku is being written".**
+
+    The row must still REACH the plan — dropping it would be the Triphala Sattu bug in reverse, with
+    140 units of Pea Isolate silently never packed. It just carries no SKU, and is counted so the
+    banner can say so.
+    """
+    asin = "B0H8NPDB88"
+
+    async def _catalogue():
+        return catalogue.parse_catalogue(CATALOGUE_CSV), None, "sheet"
+
+    monkeypatch.setattr("app.shipment.catalogue.load_catalogue", _catalogue, raising=True)
+
+    sales = f"(Child) ASIN,Units Ordered\n{asin},40\n"
+    stock = f"asin,sku,afn-fulfillable-quantity\n{asin},Triphala_Sattu_0.5kg flex,0\n"
+    r = await auth_client.post(
+        "/shipment/generate",
+        files={
+            "sales_csv": ("s.csv", sales.encode(), "text/csv"),
+            "stock_csv": ("k.csv", stock.encode(), "text/csv"),
+        },
+        data={"multiplier": "5"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    row = next((i for i in body["items"] if i["asin"] == asin), None)
+    assert row is not None, "the row was dropped; a product missing from a plan is never reviewed"
+    assert row["fba_sku"] == "", (
+        "the Flex SKU was written onto an FBA shipment line, which Amazon rejects"
+    )
+    assert row["shipment_plan"] == 200, "the quantity must be unaffected by the missing SKU"
+    assert body["missing_sku_count"] >= 1, (
+        "the blank is not reported, so it is invisible rather than merely absent"
+    )
+
+
+async def test_the_sheets_column_K_fills_a_blank_but_never_overrides_the_csv(
+    auth_client, monkeypatch
+):
+    """Precedence: the stock CSV's FBA SKU, then the sheet's column K, then blank.
+
+    The CSV wins because it is Amazon's own export and therefore authoritative about what Amazon
+    will accept. The sheet is the owner's record, which is the right thing to fill a gap with — and
+    the wrong thing to override a live value with.
+    """
+    asin = "B0H8NPDB88"
+    filled = CATALOGUE_CSV.replace(
+        "Triphala Sattu,0.5,400,,,,,,B0H8NPDB88,,,",
+        "Triphala Sattu,0.5,400,,,,,,B0H8NPDB88,,SHEET-500G FBA,",
+        1,
+    )
+
+    async def _catalogue():
+        return catalogue.parse_catalogue(filled), None, "sheet"
+
+    monkeypatch.setattr("app.shipment.catalogue.load_catalogue", _catalogue, raising=True)
+    sales = f"(Child) ASIN,Units Ordered\n{asin},40\n"
+
+    async def _generate(stock_csv: str):
+        r = await auth_client.post(
+            "/shipment/generate",
+            files={
+                "sales_csv": ("s.csv", sales.encode(), "text/csv"),
+                "stock_csv": ("k.csv", stock_csv.encode(), "text/csv"),
+            },
+            data={"multiplier": "5"},
+        )
+        assert r.status_code == 200, r.text
+        return next(i for i in r.json()["items"] if i["asin"] == asin)
+
+    # Only a flex SKU in the CSV -> the sheet fills the gap.
+    row = await _generate(f"asin,sku,afn-fulfillable-quantity\n{asin},tri 500g flex,0\n")
+    assert row["fba_sku"] == "SHEET-500G FBA", "the sheet's column K did not fill the blank"
+
+    # A real FBA SKU in the CSV -> the CSV wins.
+    row = await _generate(f"asin,sku,afn-fulfillable-quantity\n{asin},CSV-500G FBA,0\n")
+    assert row["fba_sku"] == "CSV-500G FBA", (
+        "the sheet overrode Amazon's own export, which is authoritative about what Amazon accepts"
+    )
 
 
 async def test_the_sheet_brand_drives_the_mithila_howrah_split(auth_client, monkeypatch):

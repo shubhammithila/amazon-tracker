@@ -559,11 +559,16 @@ async def test_generate_captures_the_merchant_sku(
 
     Amazon's shipment upload keys on the merchant SKU, so a blank one means the
     row is rejected on their side. It is now parsed explicitly and counted.
+
+    The fixture SKU gained its ` FBA` token, because only an FBA SKU is captured now: a Flex or
+    Easy Ship SKU on an FBA shipment line is rejected just as a blank is, and the bare
+    `MF-CHANA-1KG` this used to pass is a MERCHANT SKU that only survived via the old catch-all
+    fallback. See `test_an_asin_with_no_fba_sku_gets_NO_sku_rather_than_the_flex_one`.
     """
     first, _ = real_asins
     r = await auth_client.post(
         "/shipment/generate",
-        files=_csvs([(first, 10, "MF-CHANA-1KG")]),
+        files=_csvs([(first, 10, "MF-CHANA-1KG FBA")]),
         data={"multiplier": "5"},
     )
     assert r.status_code == 200, r.text
@@ -571,7 +576,7 @@ async def test_generate_captures_the_merchant_sku(
     items = await read_committed(repository.load_plan_items, r.json()["plan"]["id"])
     match = next((i for i in items if i.asin == first), None)
     assert match is not None, f"{first} produced no plan row"
-    assert match.fba_sku == "MF-CHANA-1KG", f"merchant SKU lost: {match.fba_sku!r}"
+    assert match.fba_sku == "MF-CHANA-1KG FBA", f"merchant SKU lost: {match.fba_sku!r}"
 
 
 async def test_generate_reports_items_missing_a_merchant_sku(auth_client, real_asins):

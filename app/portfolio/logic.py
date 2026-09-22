@@ -29,6 +29,7 @@ rather than implying a precision the input does not have.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from datetime import date
 
@@ -340,15 +341,29 @@ def _ratio(part: float, whole: float) -> float | None:
     return part / whole
 
 
-#: Merchant SKUs on this account mark FBA with a trailing " FBA": `0.25 fc np` is the
-#: merchant/Easy Ship listing, `0.25 fc np FBA` the Amazon-fulfilled one. Verified across all
-#: 453 MSKU economics rows and all 213 advertised SKUs — the suffix is the only marker Amazon
-#: gives at this grain.
+#: Merchant SKUs on this account mark FBA with a trailing "FBA" token: `0.25 fc np` is the
+#: merchant/Easy Ship listing, `0.25 fc np FBA` the Amazon-fulfilled one. The suffix is the only
+#: marker Amazon gives at this grain.
 #:
-#: **This is a convention of THIS account, not an Amazon rule.** If the naming ever changes,
-#: `_channel_of` is the single function to fix, which is why the check lives in one place rather
-#: than being inlined wherever a channel is needed.
+#: **This is a convention of THIS account, not an Amazon rule** — and it is TWO conventions, which
+#: is what the first version of this note missed. It said the suffix was "verified across all 453
+#: MSKU economics rows and all 213 advertised SKUs", which was true and still concluded the wrong
+#: thing: the brands separate the token differently.
+#:
+#:     Mithila Foods   0.5kg cs 1 FBA          space-separated
+#:     Howrah Foods    HF_CBchana_0.25kg_FBA   UNDERSCORE-separated
+#:     Prayagraj       PR_BP_0.2_FBA           underscore-separated
+#:
+#: Splitting on whitespace alone therefore read the whole Howrah string as one token and classified
+#: every HF and PR listing as merchant. Measured on the 22 Sep inventory file: **27 SKUs misfiled,
+#: hiding 798 units of real FBA stock** from `parse_stock_csv` — so `deficit = projection - fba_stock`
+#: told the owner to manufacture stock he already held. On the Portfolio tab the same fault put
+#: **41 of 558 SKUs** and Rs 80,839 of sales in the wrong channel bucket.
 FBA_SKU_SUFFIX = "FBA"
+
+#: Whitespace, underscore and hyphen all separate tokens in a merchant SKU. Widening the separator
+#: set is NOT the same as widening to a substring test — see `_channel_of`.
+_SKU_SEPARATORS = re.compile(r"[\s_\-]+")
 
 CHANNEL_FBA = "fba"
 CHANNEL_MERCHANT = "merchant"
@@ -357,11 +372,17 @@ CHANNEL_MERCHANT = "merchant"
 def _channel_of(seller_sku) -> str:
     """Which fulfilment channel a merchant SKU belongs to. See `FBA_SKU_SUFFIX`.
 
-    Split on whitespace rather than a substring test, so a product whose name happens to contain
-    "fba" cannot be misfiled — the same care `shipment.logic.is_easy_ship` takes with its "EZ"
-    token, and for the same reason.
+    **A TOKEN test, never a substring test**, and that distinction is the whole reason this function
+    exists rather than an inline ``"FBA" in sku``: a product whose name happens to contain "fba" —
+    ``fbagel 1kg`` — must stay merchant. The same care `shipment.logic.is_easy_ship` takes with its
+    "EZ" token, for the same reason.
+
+    The separator set covers space, underscore and hyphen because this account uses two naming
+    conventions (Mithila space-separated, Howrah/Prayagraj underscore-separated). That widens which
+    characters END a token; it does not weaken the test to a substring match, so ``fbagel 1kg`` is
+    still merchant and a test asserts it.
     """
-    parts = str(seller_sku or "").upper().split()
+    parts = _SKU_SEPARATORS.split(str(seller_sku or "").upper().strip())
     return CHANNEL_FBA if parts and parts[-1] == FBA_SKU_SUFFIX else CHANNEL_MERCHANT
 
 

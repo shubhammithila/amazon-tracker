@@ -167,11 +167,29 @@ def parse_stock_csv(content: bytes) -> dict[str, int]:
     if "asin" not in df.columns:
         raise ValueError("Could not find 'asin' column in stock report.")
 
+    # The columns the owner named, as of the 22 Sep report: K, M and P-V. Matched BY HEADER NAME and
+    # never by position — Amazon added two columns between the Sep 07 and Sep 22 exports (the file
+    # went 22 -> 24 wide), and reading letters is how plan 4 came to ask for 18,955 units against a
+    # real need of ~8,000.
+    #
+    # **Three columns are deliberately EXCLUDED, and each would be wrong in its own way:**
+    #
+    #   N  afn-total-quantity          Amazon's own total — adding it double-counts everything.
+    #   W  afn-onhand-buyable-quantity duplicates K. Measured: equal on 237 of 246 rows
+    #                                  (106,819 vs 106,768), so including it nearly doubles stock.
+    #   L  afn-unsellable-quantity     damaged stock. It cannot be shipped, so counting it as held
+    #                                  would under-state what must be made.
+    #
+    # Checked against the real file: these nine sum to 113,826 against Amazon's own N of 113,921, and
+    # the 95-unit gap is exactly `afn-unsellable-quantity`.
     stock_cols = [
         "afn-fulfillable-quantity", "afn-reserved-quantity",
         "afn-inbound-working-quantity", "afn-inbound-shipped-quantity",
         "afn-inbound-receiving-quantity", "afn-researching-quantity",
         "afn-reserved-future-supply", "afn-future-supply-buyable",
+        # V, new in the 22 Sep export: stock in transit between fulfilment centres. It is held and
+        # will become sellable, so it counts — 51 units on the measured file.
+        "afn-fc-transfer-quantity",
     ]
     existing_cols = [c for c in stock_cols if c in df.columns]
 
@@ -292,20 +310,25 @@ def parse_sku_map(content: bytes) -> dict[str, str]:
         )
         return {}
 
-    # **The FBA SKU is PREFERRED, because an ASIN appears on several SKU rows.**
+    # **ONLY the FBA SKU, and an ASIN without one gets NOTHING.**
     #
     # `setdefault` alone means whichever row comes FIRST wins, and on this account that can be the
     # Flex or Easy Ship SKU — measured, `0.5kg cs 1 FBA` and `0.5kg cs 1 flex` both carry ASIN
     # B0CWGXYLT6. It happened to pick the FBA one on the 07 Sep file, by luck of row order, which is
     # exactly the accident that made the same file report zero stock (see `parse_stock_csv`).
     #
-    # This matters beyond tidiness: **Amazon's shipment upload keys on the merchant SKU**, and a plan
-    # carrying the Flex SKU for an FBA shipment is a line Amazon rejects. So a non-FBA SKU is only
-    # used when the ASIN has no FBA SKU at all, rather than being allowed to win on ordering.
+    # **This function used to fall back to a non-FBA SKU, and that reasoning was wrong.** It read:
+    # "a blank SKU is a line Amazon rejects, so a non-FBA SKU is better than nothing". The premise is
+    # right and the conclusion inverted — **a flex SKU on an FBA shipment is rejected too**, so the
+    # fallback traded a rejection the app REPORTS for one it hides. Reported as "in many sku's I am
+    # seeing that flex sku is being written"; measured on the live draft, 9 rows carried one,
+    # including a 140-unit `pea_isolate_sattu1kg flex` line.
+    #
+    # A blank is visible: `count_items_missing_sku` -> `missing_sku_count` -> a banner on both
+    # screens, and the cell is editable. A wrong SKU looks correct until Amazon refuses the upload.
     from app.portfolio.logic import CHANNEL_FBA, _channel_of
 
     out: dict[str, str] = {}
-    fallback: dict[str, str] = {}
     for asin, sku in zip(df["asin"].astype(str), df["sku"].astype(str)):
         asin = asin.strip()
         sku = sku.strip()
@@ -313,13 +336,6 @@ def parse_sku_map(content: bytes) -> dict[str, str]:
             continue
         if _channel_of(sku) == CHANNEL_FBA:
             out.setdefault(asin, sku)
-        else:
-            fallback.setdefault(asin, sku)
-
-    # An ASIN sold only on Easy Ship has no FBA SKU; keeping its own SKU is better than a blank,
-    # which `missing_sku_count` would then report and Amazon would reject.
-    for asin, sku in fallback.items():
-        out.setdefault(asin, sku)
     return out
 
 
@@ -541,11 +557,16 @@ async def generate_plan(
             # file's values are compared exactly. Anything not Mithila is Howrah, which
             # matches the sheet's only two brand values.
             "brand": "MF" if "mithila" in brand_name.lower() else "HF",
-            # NOT from the sheet. Column M ("Amazon FBA SKU") is blank on all 108 active
-            # rows, and the real value arrives in the uploaded stock CSV — Amazon's own
-            # export. Reading the sheet's empty column would blank the SKU on every row,
-            # and Amazon rejects those lines.
-            "fba_sku": sku_map.get(asin, ""),
+            # **The CSV first, the sheet as a fallback, then blank.**
+            #
+            # The uploaded stock CSV is Amazon's own export and therefore authoritative about
+            # what Amazon will accept, so it wins. The sheet's column K covers the case the CSV
+            # cannot: an ASIN with no FBA SKU in it at all — 9 of them on the 22 Sep file, which
+            # used to receive the Flex SKU and be rejected on upload.
+            #
+            # Column K is blank on all 370 sheet rows today, so this changes nothing until the
+            # owner fills it; `missing_sku_count` reports the blanks meanwhile.
+            "fba_sku": sku_map.get(asin) or (sheet_row.get("fba_sku") or ""),
             "asin": asin,
             "item": product_name,
             "weight": weight,

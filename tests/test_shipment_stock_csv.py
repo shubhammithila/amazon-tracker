@@ -260,37 +260,108 @@ def test_the_sku_map_prefers_the_fba_sku_over_the_flex_one():
     assert parse_sku_map(flex_first) == {"B0CWGXYLT6": "0.5kg cs 1 FBA"}
 
 
-def test_an_easy_ship_only_asin_keeps_its_own_sku_rather_than_blank():
-    """A blank SKU is a line Amazon rejects, so a non-FBA SKU is better than nothing.
+def test_an_asin_with_no_fba_sku_gets_NO_sku_rather_than_the_flex_one():
+    """**This assertion is the REVERSE of what it was, and the flip IS the fix.**
 
-    Used only when the ASIN has no FBA SKU at all — a fallback, not a competitor for ordering.
+    It used to read "a blank SKU is a line Amazon rejects, so a non-FBA SKU is better than nothing"
+    and returned the Easy Ship SKU. The premise was right and the conclusion inverted: **a Flex or
+    Easy Ship SKU on an FBA shipment is rejected too**, so the fallback swapped a rejection the app
+    REPORTS for one it hides behind a plausible-looking value.
+
+    Reported as *"in many sku's I am seeing that flex sku is being written. It shouldnt be the
+    case."* Measured on the live draft: 9 rows carried one, including a 140-unit
+    `pea_isolate_sattu1kg flex` line.
+
+    A blank is visible — `count_items_missing_sku` -> `missing_sku_count` -> a banner on both
+    screens, and the cell is editable. The MRP sheet's column K fills it once populated.
     """
     assert parse_sku_map(
         b"sku,asin,afn-fulfillable-quantity\n0.25 fc ch,B0CY84RYRG,0\n"
-    ) == {"B0CY84RYRG": "0.25 fc ch"}
+    ) == {}, "a non-FBA SKU was written, and Amazon rejects that line"
+
+    # The real shape from the file: a flex row and no FBA row anywhere for that ASIN.
+    assert parse_sku_map(
+        b"sku,asin,afn-fulfillable-quantity\nBeetroot_Sattu_2kg flex,B0GW3MMJSQ,0\n"
+    ) == {}
+
+
+def test_an_UNDERSCORE_separated_fba_sku_is_recognised():
+    """**Howrah Foods separates the FBA token with underscores, and 27 SKUs were misfiled.**
+
+    `HF_CBchana_0.25kg_FBA` is unmistakably an FBA SKU, but `_channel_of` split on whitespace only —
+    so the "last token" was the whole string and every HF and PR listing read as merchant. Measured
+    on the 22 Sep file: **798 units of real FBA stock discarded**, which
+    `deficit = projection - fba_stock` then turns into an instruction to manufacture stock already
+    held. Same shape as the 07 Sep incident, but per product rather than account-wide, so nothing
+    looked obviously wrong.
+    """
+    csv = (
+        b"sku,asin,afn-fulfillable-quantity\n"
+        b"HF_TalMishri_0.5kg_FBA,B0GHKH2VSF,231\n"
+        b"PR_BP_0.2_FBA,B0G1SX5X4S,1\n"
+    )
+    assert parse_stock_csv(csv) == {"B0GHKH2VSF": 231, "B0G1SX5X4S": 1}, (
+        "underscore-separated FBA stock is being thrown away"
+    )
+    assert parse_sku_map(csv) == {
+        "B0GHKH2VSF": "HF_TalMishri_0.5kg_FBA",
+        "B0G1SX5X4S": "PR_BP_0.2_FBA",
+    }
+
+
+#: The header of the real 22 Sep export, verbatim. **24 columns, not the 22 the previous fixture
+#: carried** — Amazon added `afn-fc-transfer-quantity` (V) and `afn-onhand-buyable-quantity` (W)
+#: between the 07 Sep and 22 Sep files, which is the concrete argument for matching by NAME.
+REAL_HEADER_24 = (
+    b"sku,fnsku,asin,product-name,condition,your-price,mfn-listing-exists,"
+    b"mfn-fulfillable-quantity,afn-listing-exists,afn-warehouse-quantity,"
+    b"afn-fulfillable-quantity,afn-unsellable-quantity,afn-reserved-quantity,"
+    b"afn-total-quantity,per-unit-volume,afn-inbound-working-quantity,"
+    b"afn-inbound-shipped-quantity,afn-inbound-receiving-quantity,"
+    b"afn-researching-quantity,afn-reserved-future-supply,afn-future-supply-buyable,"
+    b"afn-fc-transfer-quantity,afn-onhand-buyable-quantity,store\n"
+)
 
 
 def test_the_owners_real_column_layout_parses():
-    """Columns K, M and P-U of the real report, named by the owner as the ones to sum.
+    """Columns K, M and **P-V** of the real 22 Sep report, named by the owner as the ones to sum.
 
-    Verified against the actual file's header: those eight are exactly the eight this parser already
-    looked for, which is why the missing-column guard passed and the zeros came from the Flex rows
-    instead.
+    Nine columns now, not eight: `afn-fc-transfer-quantity` (V) is new and is stock in transit
+    between fulfilment centres — held, and it will become sellable, so it counts.
+
+    Checked against the whole real file before changing anything: the nine sum to 113,826 against
+    Amazon's own `afn-total-quantity` of 113,921, and the 95-unit gap is exactly
+    `afn-unsellable-quantity` (damaged stock, correctly excluded).
     """
-    header = (
-        b"sku,fnsku,asin,product-name,condition,your-price,mfn-listing-exists,"
-        b"mfn-fulfillable-quantity,afn-listing-exists,afn-warehouse-quantity,"
-        b"afn-fulfillable-quantity,afn-unsellable-quantity,afn-reserved-quantity,"
-        b"afn-total-quantity,per-unit-volume,afn-inbound-working-quantity,"
-        b"afn-inbound-shipped-quantity,afn-inbound-receiving-quantity,"
-        b"afn-researching-quantity,afn-reserved-future-supply,afn-future-supply-buyable,store\n"
-    )
-    #                                             K=100  M=7   P=0 Q=170 R=0 S=0 T=0 U=0
+    #                                             K=100 L=0 M=7  N=227      P=0 Q=170 R=0 S=0 T=0
+    #                                                                                 U=0 V=9 W=100
     row = (
         b"0.5kg cs 1 FBA,X002BZGZ,B0CWGXYLT6,MITHILA,New,179,No,0,Yes,57,"
-        b"100,0,7,227,1378.97,0,170,0,0,0,0,store\n"
+        b"100,0,7,227,1378.97,0,170,0,0,0,0,9,100,store\n"
     )
-    # afn-fulfillable(100) + afn-reserved(7) + inbound-shipped(170) = 277.
-    # afn-warehouse-quantity(57) and afn-total-quantity(227) are deliberately NOT summed: they
-    # double-count the others, which is why the eight-column list excludes them.
-    assert parse_stock_csv(header + row) == {"B0CWGXYLT6": 277}
+    # fulfillable(100) + reserved(7) + inbound-shipped(170) + fc-transfer(9) = 286.
+    assert parse_stock_csv(REAL_HEADER_24 + row) == {"B0CWGXYLT6": 286}
+
+
+def test_the_three_double_counting_columns_are_never_summed():
+    """**Each of these would be wrong in its own way, and all three look plausible.**
+
+    * `afn-total-quantity` (N) is Amazon's own total — adding it double-counts everything.
+    * `afn-onhand-buyable-quantity` (W) duplicates `afn-fulfillable-quantity`. Measured on the real
+      file: equal on 237 of 246 rows (106,819 against 106,768), so including it nearly DOUBLES
+      reported stock — and a doubled stock figure makes every deficit too small, so the shipment
+      goes out short.
+    * `afn-unsellable-quantity` (L) is damaged stock. It cannot ship, so counting it as held would
+      under-state what must be made.
+    * `afn-warehouse-quantity` (J) is another Amazon rollup.
+    """
+    # Only the three excluded columns carry anything. A correct parser reports ZERO stock here.
+    #                                        J=57 K=0 L=99 M=0 N=999  P..V=0        W=888
+    row = (
+        b"0.5kg cs 1 FBA,X002BZGZ,B0CWGXYLT6,MITHILA,New,179,No,0,Yes,57,"
+        b"0,99,0,999,1378.97,0,0,0,0,0,0,0,888,store\n"
+    )
+    assert parse_stock_csv(REAL_HEADER_24 + row) == {"B0CWGXYLT6": 0}, (
+        "a rollup or unsellable column is being summed, which over-states stock and makes every "
+        "deficit too small"
+    )

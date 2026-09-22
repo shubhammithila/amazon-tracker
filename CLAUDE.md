@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2287 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2296 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3497,24 +3497,107 @@ more than one FBA SKU, and picking one would under-state stock — the same reas
 `ads.logic.aggregate` collapsing a split report instead of choosing a row.
 
 **`logic._channel_of` is reused, not reimplemented.** The Portfolio tab already had this exact rule:
-split the SKU on whitespace and test whether the LAST token is `FBA`, deliberately not a substring
-test, so a product whose name contains "fba" cannot be misfiled. A second copy of that rule would
-have been a second thing to keep in step.
+split the SKU into tokens and test whether the LAST one is `FBA`, deliberately not a substring test,
+so a product whose name contains "fba" cannot be misfiled. A second copy of that rule would have been
+a second thing to keep in step.
 
 > **`parse_sku_map` had the same bug and was right only by luck.** It used `setdefault`, so the FIRST
 > row won — and on this account that can be the Flex SKU. It happened to land on the FBA one for the
 > 07 Sep file purely by row order. **Amazon's shipment upload keys on the merchant SKU**, so a plan
-> carrying a Flex SKU for an FBA shipment is a line Amazon rejects. It now prefers the FBA SKU and
-> falls back to a non-FBA one only when the ASIN has no FBA SKU at all, since a blank is worse than
-> the wrong channel.
+> carrying a Flex SKU for an FBA shipment is a line Amazon rejects. It now takes the FBA SKU and
+> **nothing else** — see below for why the original fallback was wrong.
+
+### The FBA token is separated TWO ways, and one brand's SKUs were all misfiled
+Reported as *"in many sku's I am seeing that flex sku is being written"*, which turned out to be the
+least damaging of three faults in the same area. Measured against the 22 Sep inventory file (24
+columns, 246 rows) and the live database rather than reasoned about.
+
+**`_channel_of` split on WHITESPACE only.** Mithila SKUs are space-separated (`0.5kg cs 1 FBA`) so
+they worked; Howrah and Prayagraj use **underscores**:
+
+```
+Mithila Foods   0.5kg cs 1 FBA          space
+Howrah Foods    HF_CBchana_0.25kg_FBA   UNDERSCORE
+Prayagraj       PR_BP_0.2_FBA           underscore
+```
+
+The "last token" of an underscore SKU is the whole string, so every HF and PR listing read as
+merchant. `parse_stock_csv` then discarded their stock: **27 SKUs, 798 units** — `HF_TalMishri_0.5kg_FBA`
+alone held 231. Since `deficit = projection − fba_stock`, the plan told the owner to manufacture
+stock he already had. Same shape as the 07 Sep incident but PER PRODUCT rather than account-wide, so
+nothing looked obviously wrong. It also mislabelled **41 of 558** SKUs on the Portfolio tab, moving
+**₹80,839** of sales into the wrong channel bucket (the total was unchanged — purely a mislabel).
+
+`_SKU_SEPARATORS` now covers space, underscore and hyphen. **Still a TOKEN test, and that is the
+property to protect**: widening which characters END a token is one character away from a substring
+match, which would file `fbagel 1kg` as FBA. Audited before changing it — across 558 stored SKUs and
+246 in the file, every reclassified one genuinely ends in an FBA token, and **no SKU on this account
+contains "FBA" mid-token**. Two tests keep the directions apart, and a mutation to `.startswith()`
+is caught.
+
+> **The docstring was the source of the error.** It said the suffix was *"verified across all 453
+> MSKU economics rows and all 213 advertised SKUs"* — true, and it never asked HOW the token was
+> separated. A claim can be thoroughly verified and still be the wrong claim.
+
+### A blank SKU beats a Flex one, which is the reverse of what this file used to say
+`parse_sku_map` fell back to a non-FBA SKU when an ASIN had none, reasoning *"a blank SKU is a line
+Amazon rejects, so a non-FBA SKU is better than nothing"*. The premise is right and the conclusion
+inverted: **a Flex SKU on an FBA shipment is rejected too**, so the fallback swapped a rejection the
+app REPORTS for one it hides behind a plausible value. Nine rows carried one, including a 140-unit
+`pea_isolate_sattu1kg flex` line.
+
+The fallback is **deleted**. A blank flows through machinery that already exists —
+`count_items_missing_sku` → `missing_sku_count` → a banner on both screens — and the cell is
+editable. The row is never dropped: that would be the Triphala Sattu bug, with 140 units silently
+never packed.
+
+**The MRP sheet's column K `Amazon FBA SKU` is now read as a FALLBACK**, so the order is: the
+inventory CSV's FBA SKU → the sheet → blank. The CSV wins because it is Amazon's own export and
+therefore authoritative about what Amazon will accept; the sheet is the owner's record, which is the
+right thing to fill a gap with and the wrong thing to override a live value with.
+
+> `catalogue.py` used to say the SKU was *"deliberately NOT taken from here"* because the column was
+> blank on every row — measured true, 0 of 370 filled. That reasoning covered "should it replace the
+> CSV" (no) and not "should it fill a gap the CSV cannot" (yes). The owner filled **234 rows** the
+> same day, and all nine flex-only ASINs resolved to real FBA SKUs on the next generate. Note the
+> column has also moved from M to **K**.
+
+> **`Brand Name` and `Active` moved from S/T to U/V**, with a new `Blinkit UPC Code` at T.
+> Header-name matching was finding them correctly so nothing was broken — but the positional
+> fallbacks still said S/T, and renaming the `Active` header would have read column T, found it
+> blank, and marked **all 110 active products inactive**, producing an empty plan. The test fixture
+> now mirrors the real 22-column sheet, because a fixture that does not resemble production cannot
+> catch production moving.
+
+### The inventory file gained two columns; only one belongs in the sum
+Asked for as *"we have to sum now K, M, P to V"*. Those nine letters map onto eight headers the
+parser already summed plus **`afn-fc-transfer-quantity` (V)**, new in the 22 Sep export — stock in
+transit between fulfilment centres, which is held and will become sellable.
+
+```
+the nine columns (K,M,P–V) : 113,826
+the eight before this      : 113,775   difference 51 = afn-fc-transfer-quantity
+Amazon's own total (N)     : 113,921   the 95-unit gap = afn-unsellable-quantity
+```
+
+**Three columns stay excluded, and each would be wrong differently.** `afn-total-quantity` (N) is
+Amazon's own rollup and double-counts everything. `afn-onhand-buyable-quantity` (W) is also new and
+**duplicates `afn-fulfillable-quantity`** — measured equal on 237 of 246 rows — so including it
+nearly doubles stock, which makes every deficit too small and ships short. `afn-unsellable-quantity`
+(L) is damaged stock that cannot ship.
+
+**Matched by header NAME, never by position.** Amazon added two columns between the 07 Sep and
+22 Sep exports, which is the abstract argument for name-matching made concrete: reading letters is
+how plan 4 came to ask for 18,955 units against a real need of ~8,000.
 
 > **The owner diagnosed this, and my first two attempts were both wrong.** I first blamed missing
 > quantity columns and shipped a guard for that; the columns were in fact correct — K, M and P–U of
-> the real report are *exactly* the eight the parser already looked for, which is why that guard passed
-> with a 200. I then blamed unparseable values. Both were plausible and both were wrong, because I was
-> reasoning about the file's shape without ever looking at two rows of it. **The lesson is the
-> ordering: ask for the actual data before theorising about it.** The all-zero guard from the second
-> attempt is kept as a backstop, since it is cheap and catches a different real failure.
+> the **07 Sep** report were *exactly* the eight the parser already looked for, which is why that
+> guard passed with a 200. (The current file is P–**V**; see the section above.) I then blamed
+> unparseable values. Both were plausible and both were wrong, because I was reasoning about the
+> file's shape without ever looking at two rows of it. **The lesson is the ordering: ask for the
+> actual data before theorising about it.** The all-zero guard from the second attempt is kept as a
+> backstop, since it is cheap and catches a different real failure.
 
 The history that made the order-dependence visible:
 

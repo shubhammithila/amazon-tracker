@@ -20,11 +20,21 @@ Columns used, resolved BY HEADER NAME with positional fallback:
     S  Brand Name   Mithila Foods / Howrah Foods, drives brand_rank
     T  Active       Y/N — the owner's own record of what he still sells
 
-The merchant SKU is deliberately NOT taken from here. Column M ("Amazon FBA SKU")
-is blank for all 108 active rows, and the real value already arrives in the uploaded
-stock CSV, which is Amazon's own export and therefore authoritative. Reading the
-sheet's empty column instead would blank the SKU on every row and Amazon rejects
-those lines.
+The merchant SKU is read from here as a **FALLBACK ONLY**, never as a replacement.
+
+That is a change of degree, not of mind: the original note said the SKU was "deliberately
+NOT taken from here" because the column was blank for every active row and reading it
+would blank the SKU everywhere. **The blankness is still true** — measured 22 Sep, empty
+on all 370 rows — and the uploaded stock CSV remains authoritative, because it is Amazon's
+own export and therefore states what Amazon will actually accept.
+
+What changed is the case the old reasoning did not cover: an ASIN with **no FBA SKU in the
+CSV at all**. There were 9 of those, and the code used to fall back to the Flex SKU —
+which Amazon rejects on an FBA shipment just as surely as a blank does, only invisibly.
+So the order is: the CSV's FBA SKU, then this column, then blank-and-reported. An empty
+column K therefore changes nothing today, and a filled one fixes those 9 rows.
+
+Note it has also moved: "Amazon FBA SKU" is column **K**, not M.
 
 Four decisions, each a failure mode if reversed:
 
@@ -73,11 +83,17 @@ CACHE_FILE = Path(__file__).parent.parent / "invoice" / "active_products.json"
 #: possible and only falling back to these — a column inserted in the middle of the
 #: sheet would otherwise silently shift the Active flag onto the Brand column and
 #: mark the entire catalogue inactive.
-ASIN_COLUMN_FALLBACK = 8     # I
-ACTIVE_COLUMN_FALLBACK = 19  # T
-NAME_COLUMN_FALLBACK = 0     # A
-WEIGHT_COLUMN_FALLBACK = 1   # B
-BRAND_COLUMN_FALLBACK = 18   # S
+#: **Brand and Active MOVED, and the stale values were a live landmine.** Measured 22 Sep: the sheet
+#: is 22 columns wide, `Brand Name` and `Active` sit at U and V (they were S and T), and a new
+#: `Blinkit UPC Code` occupies T. Header-name matching was finding them correctly, so nothing was
+#: broken — but had anyone renamed the `Active` header, the fallback would have read column T, found
+#: it blank, and marked **all 110 active products inactive**, producing an empty plan.
+ASIN_COLUMN_FALLBACK = 8      # I
+ACTIVE_COLUMN_FALLBACK = 21   # V  (was T, before Blinkit UPC Code was inserted)
+NAME_COLUMN_FALLBACK = 0      # A
+WEIGHT_COLUMN_FALLBACK = 1    # B
+BRAND_COLUMN_FALLBACK = 20    # U  (was S)
+FBA_SKU_COLUMN_FALLBACK = 10  # K
 
 #: Header name -> (attribute, positional fallback). Kept as one table so adding a
 #: column means one line here rather than edits in three functions.
@@ -87,9 +103,11 @@ _COLUMNS = {
     "name": ("name", NAME_COLUMN_FALLBACK),
     "net weight": ("weight", WEIGHT_COLUMN_FALLBACK),
     "brand name": ("brand", BRAND_COLUMN_FALLBACK),
+    # Read as a FALLBACK for the merchant SKU, never as a replacement — see the module docstring.
+    "amazon fba sku": ("fba_sku", FBA_SKU_COLUMN_FALLBACK),
 }
 
-#: Values in column T that mean "still selling". Anything else — including blank
+#: Values in the Active column that mean "still selling". Anything else — including blank
 #: — means inactive. Checked case-insensitively.
 ACTIVE_VALUES = frozenset({"y", "yes", "active", "true", "1"})
 
@@ -182,13 +200,15 @@ def parse_catalogue(csv_text: str) -> dict[str, dict]:
                 "weight": weight,
                 "brand": _cell(row, columns["brand"]),
                 "active": is_active,
+                "fba_sku": _cell(row, columns["fba_sku"]),
             }
         else:
             existing["active"] = existing["active"] or is_active
             # Fill gaps from a later duplicate row, but never overwrite a value the
             # first row already supplied.
             for key, value in (("name", _cell(row, columns["name"])),
-                               ("brand", _cell(row, columns["brand"]))):
+                               ("brand", _cell(row, columns["brand"])),
+                               ("fba_sku", _cell(row, columns["fba_sku"]))):
                 if not existing.get(key) and value:
                     existing[key] = value
             if existing.get("weight") is None and weight is not None:

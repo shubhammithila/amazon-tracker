@@ -763,6 +763,46 @@ def test_the_fba_suffix_is_what_marks_the_channel():
     assert logic._channel_of("fbagel 1kg") == logic.CHANNEL_MERCHANT
 
 
+def test_the_fba_token_is_also_separated_by_UNDERSCORES_and_hyphens():
+    """**This account uses TWO naming conventions, and the whitespace-only split missed one.**
+
+    The note above ("verified across all 453 MSKU rows and 213 advertised SKUs") was true and still
+    reached the wrong conclusion — it never asked HOW the token was separated:
+
+        Mithila Foods   0.5kg cs 1 FBA          space
+        Howrah Foods    HF_CBchana_0.25kg_FBA   UNDERSCORE
+        Prayagraj       PR_BP_0.2_FBA           underscore
+
+    So `str(sku).split()` saw the whole Howrah string as one token and filed every HF and PR listing
+    as merchant. Measured: **41 of 558 stored SKUs mislabelled**, moving Rs 80,839 of sales into the
+    wrong channel bucket, and on the shipment side **798 units of real FBA stock discarded**.
+
+    Audited for false positives before widening: of 558 stored SKUs and 246 in the inventory file,
+    every single reclassified one genuinely ends in an FBA token, and NO SKU on this account contains
+    "FBA" mid-token.
+    """
+    assert logic._channel_of("HF_CBchana_0.25kg_FBA") == logic.CHANNEL_FBA
+    assert logic._channel_of("PR_BP_0.2_FBA") == logic.CHANNEL_FBA
+    assert logic._channel_of("HF-Rchana-1kg-FBA") == logic.CHANNEL_FBA
+    # The non-FBA Howrah listings must stay merchant.
+    assert logic._channel_of("HF_PanPho_0.2kg_flex") == logic.CHANNEL_MERCHANT
+    assert logic._channel_of("Beetroot_Sattu_2kg flex") == logic.CHANNEL_MERCHANT
+
+
+def test_widening_the_separators_did_NOT_widen_it_to_a_substring_test():
+    """The property the original whitespace split was protecting, asserted on its own.
+
+    Widening WHICH characters end a token is not the same as dropping the token test — but the two
+    are one character apart in the implementation, and a substring test would look like a
+    simplification. `fbagel` is the case that tells them apart, so it is asserted here as well as
+    above, where it could be read as incidental.
+    """
+    for merchant in ("fbagel 1kg", "FBA_gel_1kg", "HF_fbaflour_1kg", "afba", "1kg_FBAX"):
+        assert logic._channel_of(merchant) == logic.CHANNEL_MERCHANT, (
+            f"{merchant!r} was classified FBA, so the rule is matching substrings"
+        )
+
+
 def test_the_channel_split_carries_per_channel_acos():
     """The reason the split is worth showing at all.
 
