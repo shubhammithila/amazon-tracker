@@ -1077,6 +1077,13 @@ class ProductDecision(Base):
     note = Column(Text)
     #: The figures at the moment of the decision, so a later review can compare against them
     #: rather than trusting memory. JSON for the same reason `fees_json` is.
+    #:
+    #: **A stored `verdict` here may name a verdict the code no longer has.** Rows written before
+    #: ACOS stopped deciding anything can say `"AD DEPENDENT"`, which `logic.VERDICT_ORDER` has
+    #: retired. Deliberately NOT back-filled: this is an audit trail, and rewriting it to what it
+    #: would say today would destroy the only record of what the owner was actually looking at when
+    #: he decided. Safe to read, because nothing looks a snapshot verdict UP, and both verdict-keyed
+    #: maps in `logic` are total-with-fallback — a retired name degrades to "Maintain, no flag".
     snapshot_json = Column(Text)
     decided_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     decided_by = Column(String(50))

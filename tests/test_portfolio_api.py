@@ -745,6 +745,40 @@ async def test_a_non_numeric_threshold_is_refused(auth_client, db):
     assert response.status_code == 400, response.text
 
 
+async def test_the_retired_acos_threshold_is_REFUSED_not_merely_absent(auth_client, db):
+    """`break_even_acos` went with the AD DEPENDENT rule it was the only threshold for.
+
+    **"Removed from the dict" and "refused by the route" are two claims**, and only the second stops
+    a stale browser tab — or a bookmarked request — storing a setting that now decides nothing while
+    appearing to have saved. It comes free from the unknown-key branch; asserted because free is not
+    the same as guarded.
+    """
+    response = await auth_client.post(
+        "/portfolio/settings", json={"thresholds": {"break_even_acos": 1.5}}
+    )
+    assert response.status_code == 400, response.text
+
+    offered = (await auth_client.get("/portfolio/settings")).json()
+    assert "break_even_acos" not in offered["thresholds"]
+    assert "break_even_acos" not in offered["defaults"]
+
+
+async def test_the_settings_route_ships_the_threshold_grouping(auth_client, db):
+    """So the panel groups its inputs under Scale / Kill without holding a copy of the mapping.
+
+    Asserted TOTAL over the thresholds here as well as in the pure-logic test, because the route is
+    what the browser actually reads: a mapping correct in `logic.py` but dropped from the payload
+    would leave every input rendering under "Other" with nothing failing.
+    """
+    body = (await auth_client.get("/portfolio/settings")).json()
+    assert set(body["threshold_groups"]) == set(body["thresholds"]), (
+        "a threshold reaches the panel with no group, so its input renders outside every section"
+    )
+    assert set(body["threshold_groups"].values()) <= set(body["group_order"])
+    # Maintain has no number of its own: MONITOR is "everything else".
+    assert "Maintain" not in set(body["threshold_groups"].values())
+
+
 async def test_edited_thresholds_reach_the_dashboard(auth_client, db):
     """The whole point: change a rule, and the verdicts recompute from the stored rows.
 

@@ -533,42 +533,97 @@ def test_acos_uses_the_ads_apis_own_cost_not_the_economics_ad_spend():
     assert parent["ad_spend"] == 9000.0, "the economics ad charge was overwritten"
 
 
-# ─── AD DEPENDENT: a verdict only ACOS makes expressible ──────────────────────
+# ─── ACOS is DISPLAYED, never DECIDED on ──────────────────────────────────────
+#
+# This block used to be headed "AD DEPENDENT: a verdict only ACOS makes expressible", and it held
+# three tests asserting that a profitable product with losing ads got its own verdict. **They were
+# right when written**: the rule existed, and one of them is the reason it was trusted.
+#
+# The rule was removed on the owner's instruction — *"TACOS play a role, ACOS doesnt in deciding
+# the kill scale maintain. as ACOS might not be perfectly captured by online tools. but TACOS
+# is."* — so those three would now keep a deleted rule alive. Two are gone; the third inverted, and
+# is below. `test_an_efficiently_advertised_product_is_still_a_best_bet` survives UNCHANGED and has
+# changed job: it is now the pin that ACOS still reaches the reason string.
 
 
-def test_a_profitable_product_whose_ads_lose_money_is_ad_dependent():
-    """**The verdict the Advertising API added.**
+def test_no_verdict_rule_reads_acos():
+    """**The requirement, asserted as a property rather than as the absence of a name.**
 
-    Measured live: Roasted Chana earns +31.9% net at 104% ACOS, and Moringa Sattu +17.4% at 182%.
-    Under TACOS alone both read as MONITOR or BEST BET, because TACOS' denominator includes the
-    organic sales that are carrying them. The action differs from KILL: cut the spend, keep the
-    product.
+    One product, four ad shapes: never advertised, efficient ACOS, catastrophic ACOS, and spend
+    with zero attributed sales. The verdict must be IDENTICAL in all four, because no rule may
+    branch on ACOS — while `acos` and `acos_infinite` genuinely differ between them, proving the
+    figures reached the row and were simply not consulted.
+
+    Asserting `"AD DEPENDENT" not in VERDICT_ORDER` would be the weaker test: it passes the moment
+    the constant is deleted, and says nothing about an ACOS branch reintroduced under another name.
     """
     row = _row("B0AAA00002", "B0PARENT01", sales=100000.0, ads=25000.0, net=30000.0,
                units=300, ordered=300)
-    parent = logic.portfolio([row], CATALOGUE, ratings={}, decisions={}, today=TODAY,
-                             ads_by_asin={"B0AAA00002": _ads(25000.0, 20000.0)})["parents"][0]
-    assert parent["verdict"] == logic.VERDICT_AD_DEPENDENT, (
-        f"net {parent['net_pct']:.1%} at ACOS {parent['acos']:.0%} was judged {parent['verdict']}"
+    shapes = {
+        "never advertised": None,
+        "ACOS 50%": _ads(25000.0, 50000.0),
+        "ACOS 401%": _ads(25000.0, 6234.0),
+        "spend, no attributed sales": _ads(25000.0, 0.0),
+    }
+
+    seen = {}
+    for label, ads_row in shapes.items():
+        parent = logic.portfolio(
+            [row], CATALOGUE, ratings={}, decisions={}, today=TODAY,
+            ads_by_asin={"B0AAA00002": ads_row} if ads_row else {},
+        )["parents"][0]
+        seen[label] = (parent["verdict"], parent["acos"], parent["acos_infinite"])
+
+    verdicts = {label: v for label, (v, _, _) in seen.items()}
+    assert len(set(verdicts.values())) == 1, (
+        f"the verdict moved with ACOS alone, so a rule is still branching on it: {verdicts}"
     )
-    assert "cut the spend" in parent["verdict_reason"]
+    # ...and the figures really were different, or the test above is vacuous.
+    assert seen["ACOS 50%"][1] == 0.5
+    assert seen["ACOS 401%"][1] and seen["ACOS 401%"][1] > 4.0
+    assert seen["spend, no attributed sales"][2] is True
+    assert seen["never advertised"][1] is None
 
 
-def test_spend_with_no_attributed_sales_also_makes_a_product_ad_dependent():
-    """Worse than a bad ratio, and it must not fall through to MONITOR for lack of one."""
+def test_the_retired_acos_verdict_and_its_threshold_are_gone():
+    """Cheap, and fails loudly if either is resurrected without the argument being remade."""
+    assert "AD DEPENDENT" not in logic.VERDICT_ORDER
+    assert not hasattr(logic, "VERDICT_AD_DEPENDENT")
+    assert "break_even_acos" not in logic.DEFAULT_THRESHOLDS
+    assert "break_even_acos" not in logic.THRESHOLD_RANGES
+
+
+def test_spend_with_no_attributed_sales_no_longer_changes_the_verdict():
+    """**This assertion FLIPPED, and it is the sharp edge of the owner's decision.**
+
+    It used to assert this product was AD DEPENDENT — "worse than a bad ratio, and it must not fall
+    through for lack of one" — which was correct while the rule existed.
+
+    The same row is now **BEST BET**, on net 30% at 5% TACOS, while its advertising produced *zero*
+    attributed sales. That is not a bug and it is not softened here: the owner's instruction was that
+    ACOS must not decide, and asserting the uncomfortable answer verbatim is how the cost stays
+    visible to whoever reads this next. Measured live, the same shape moves ABC Sattu to BEST BET at
+    106% ACOS and Makhana Powder to SCALE at 401%.
+
+    What must NOT change is that `acos_infinite` still travels. The screen renders it as "ads, no
+    sales" rather than a dash or a 0%, so the column beside the green tag still tells the truth —
+    three distinct states, which is the only reason this is a tolerable trade.
+    """
     row = _row("B0AAA00002", "B0PARENT01", sales=100000.0, ads=5000.0, net=30000.0,
                units=300, ordered=300)
     parent = logic.portfolio([row], CATALOGUE, ratings={}, decisions={}, today=TODAY,
                              ads_by_asin={"B0AAA00002": _ads(5000.0, 0.0)})["parents"][0]
-    assert parent["verdict"] == logic.VERDICT_AD_DEPENDENT
-    assert "no attributed sales" in parent["verdict_reason"]
+    assert parent["verdict"] == logic.VERDICT_BEST_BET
+    assert parent["acos_infinite"] is True, "the flag must still reach the row to be rendered"
+    assert parent["acos"] is None, "a ratio cannot express spend with no attributed sales"
 
 
-def test_a_loss_making_product_is_still_KILL_rather_than_ad_dependent():
-    """Rule ORDER: KILL outranks AD DEPENDENT, because the product itself is the problem.
+def test_a_loss_making_product_is_KILL_on_its_MARGIN_and_TACOS():
+    """Rule ORDER: the loss rules outrank the positive ones.
 
-    AD DEPENDENT means "the product earns money but the ads do not" — it cannot apply to a
-    product that is losing money, where cutting ads alone would not fix it.
+    This test once proved KILL outranked AD DEPENDENT. With that rule gone it proves something
+    still worth pinning — that a product losing money at high TACOS is KILL and not MONITOR — and
+    the ads row is kept deliberately: a catastrophic ACOS must not rescue it either.
     """
     row = _row("B0AAA00001", "B0PARENT01", sales=32898.0, ads=25660.0, net=-18686.0,
                units=204, ordered=208, refunded=4)
@@ -578,7 +633,13 @@ def test_a_loss_making_product_is_still_KILL_rather_than_ad_dependent():
 
 
 def test_an_efficiently_advertised_product_is_still_a_best_bet():
-    """AD DEPENDENT must not swallow the healthy case, or the verdict means nothing."""
+    """**Unchanged, and its JOB changed.**
+
+    It used to prove AD DEPENDENT did not swallow the healthy case. It is now the pin that **ACOS
+    survives in the reason string** — the owner's decision was that no rule may branch on ACOS, not
+    that the number should leave the screen. Deleting the `ACOS 21%` assertion would let the figure
+    quietly disappear from every reason with nothing failing.
+    """
     row = _row("B0AAA00003", "B0PARENT01", sales=100000.0, ads=25000.0, net=40000.0,
                units=400, ordered=400)
     parent = logic.portfolio([row], CATALOGUE,
@@ -592,26 +653,33 @@ def test_an_efficiently_advertised_product_is_still_a_best_bet():
 # ─── Editable thresholds ─────────────────────────────────────────────────────
 
 
-def test_a_raised_acos_threshold_moves_a_product_out_of_ad_dependent():
+def test_a_raised_good_tacos_threshold_promotes_a_product_to_best_bet():
     """The thresholds are a PARAMETER, not module constants.
 
-    Verified live: dropping break-even ACOS from 100% to 60% moved AD DEPENDENT from 6 products to
-    18. A mutation that ignores the passed dict and reads the constants must fail here.
+    **This test used to raise `break_even_acos` to move a product out of AD DEPENDENT**, which was a
+    fine way to prove the point until both the threshold and the verdict were retired. The property
+    it guards is unchanged and still load-bearing: a mutation that ignores the passed dict and reads
+    the module constants must fail here.
+
+    Rebuilt on `good_tacos` because that is now the ad threshold that decides anything. The product
+    sits at 35% TACOS — above the measured 30% default, below a raised 40% — so it must move, and it
+    is rated well enough that BEST BET rather than SCALE is the destination.
     """
-    row = _row("B0AAA00002", "B0PARENT01", sales=100000.0, ads=25000.0, net=30000.0,
+    row = _row("B0AAA00002", "B0PARENT01", sales=100000.0, ads=35000.0, net=30000.0,
                units=300, ordered=300)
-    ads_rows = {"B0AAA00002": _ads(25000.0, 20000.0)}          # ACOS 125%
+    ratings = {"B0AAA00002": {"rating": 4.4, "rating_count": 300}}
 
-    strict = logic.portfolio([row], CATALOGUE, ratings={}, decisions={}, today=TODAY,
-                             ads_by_asin=ads_rows)["parents"][0]
-    assert strict["verdict"] == logic.VERDICT_AD_DEPENDENT
+    strict = logic.portfolio([row], CATALOGUE, ratings=ratings, decisions={},
+                             today=TODAY)["parents"][0]
+    assert strict["verdict"] == logic.VERDICT_MONITOR, (
+        f"35% TACOS should exceed the default {logic.GOOD_TACOS:.0%}, got {strict['verdict']}"
+    )
 
-    lenient = logic.portfolio([row], CATALOGUE, ratings={}, decisions={}, today=TODAY,
-                              ads_by_asin=ads_rows,
-                              thresholds={"break_even_acos": 1.5})["parents"][0]
-    assert lenient["verdict"] != logic.VERDICT_AD_DEPENDENT, (
-        "raising the break-even threshold above this product's ACOS did not change its verdict, "
-        "so the saved thresholds are being ignored"
+    lenient = logic.portfolio([row], CATALOGUE, ratings=ratings, decisions={}, today=TODAY,
+                              thresholds={"good_tacos": 0.40})["parents"][0]
+    assert lenient["verdict"] == logic.VERDICT_BEST_BET, (
+        "raising the efficient-TACOS threshold above this product's TACOS did not change its "
+        "verdict, so the saved thresholds are being ignored"
     )
 
 
@@ -922,3 +990,29 @@ def test_every_threshold_has_a_declared_range():
         assert logic.threshold_error(key, value) is None, (
             f"the measured default for {key} ({value}) is outside its own range"
         )
+
+
+def test_every_threshold_is_filed_under_exactly_one_DECISION():
+    """The settings panel groups its inputs by the decision each number serves.
+
+    **Total over `DEFAULT_THRESHOLDS`**, the same discipline `VERDICT_GROUPS` carries over
+    `VERDICT_ORDER`: a new threshold then cannot be added without deciding which decision it serves.
+    Left partial, the panel files the new number under whichever heading renders last — visible only
+    to someone who already knows where it should have been.
+    """
+    assert set(logic.THRESHOLD_GROUPS) == set(logic.DEFAULT_THRESHOLDS), (
+        f"unfiled thresholds: {set(logic.DEFAULT_THRESHOLDS) - set(logic.THRESHOLD_GROUPS)}"
+    )
+    assert set(logic.THRESHOLD_GROUPS.values()) <= set(logic.GROUP_ORDER), (
+        "a threshold is filed under a group the tabs do not have, so its input renders nowhere"
+    )
+
+
+def test_maintain_deliberately_has_no_threshold_of_its_own():
+    """MONITOR is the last rule — "everything else" — so it genuinely has no number.
+
+    Asserted rather than left implicit, because an empty group looks exactly like a threshold
+    someone forgot to file. The panel explains it in words for the same reason; this test is what
+    stops a future reader "fixing" the gap by inventing a MONITOR threshold that decides nothing.
+    """
+    assert logic.GROUP_MAINTAIN not in set(logic.THRESHOLD_GROUPS.values())

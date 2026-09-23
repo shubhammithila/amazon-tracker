@@ -36,26 +36,16 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "SURGICAL is filed under Kill or monitor, inviting a kill on a parent that earns +27.1% "
         "— test_surgical_is_maintain_not_kill",
     ),
-    (
-        LOGIC,
-        "    VERDICT_AD_DEPENDENT: GROUP_KILL,",
-        "    VERDICT_AD_DEPENDENT: GROUP_MAINTAIN,",
-        "AD DEPENDENT reads as steady, so six profitable products keep burning 104-316% ACOS "
-        "— test_ad_dependent_is_kill_or_monitor_but_carries_its_flag",
-    ),
+    # Two mutations here targeted AD DEPENDENT — its group and its flag. **Deleted with the verdict
+    # itself**, when ACOS stopped deciding anything. They had to go rather than be left: a mutation
+    # whose target text no longer exists is reported as a SURVIVOR by the harness (the "target not
+    # found" branch), so a stale one reads as a missing test rather than as retired work.
     (
         LOGIC,
         '    VERDICT_SURGICAL: "some sizes lose money",',
         "",
         "SURGICAL loses its flag, so in Maintain it reads as simply fine "
-        "— test_exactly_the_two_odd_verdicts_carry_flags",
-    ),
-    (
-        LOGIC,
-        '    VERDICT_AD_DEPENDENT: "ads lose money on their own terms",',
-        "",
-        "AD DEPENDENT loses its flag, so in Kill or monitor it reads as 'kill it' when the fix is "
-        "to cut the spend — test_ad_dependent_is_kill_or_monitor_but_carries_its_flag",
+        "— test_exactly_ONE_verdict_carries_a_group_flag",
     ),
     (
         LOGIC,

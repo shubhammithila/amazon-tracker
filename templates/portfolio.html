@@ -748,17 +748,17 @@ function renderVerdicts(){
 
 /* The ⚠ a row needs because its GROUP hides its real action.
 
-   Two of the seven verdicts do not fold cleanly into three, and folding them silently is the
+   One of the six verdicts does not fold cleanly into three, and folding it silently is the
    actual risk:
 
      SURGICAL      in Maintain reads as a healthy product — but one of its sizes loses money.
                    Measured: Cheese & Cream Roasted Chana earns +27.1% overall while one 250 g
                    pack burns 103% TACOS at -52.7% net.
-     AD DEPENDENT  in Kill-or-monitor reads as "kill it" — but the product is profitable and its
-                   ADS are not. The fix is to cut the spend.
 
-   The text comes from the server (`logic.GROUP_FLAGS`) so the screen cannot hold a second copy
-   that falls out of step, and the row's own verdict and reason are still shown beside it. */
+   There were TWO of seven; AD DEPENDENT was the other, and it went with the verdict itself when
+   ACOS stopped deciding anything. Nothing here changed to accommodate that: the text comes from
+   the server (`logic.GROUP_FLAGS`) so the screen cannot hold a second copy that falls out of
+   step, and the row's own verdict and reason are still shown beside it. */
 function groupFlag(verdict){
   const flags = data.group_flags || {};
   return flags[verdict] || "";
@@ -798,14 +798,50 @@ let categoryByProduct = null;
 
 /* ── The rule panel: what each verdict means, and the numbers behind it ─────────
    Editable, because the thresholds are measured from this account rather than laws — but the
-   defaults are evidence, so Reset restores them rather than clearing to nothing. */
+   defaults are evidence, so Reset restores them rather than clearing to nothing.
+
+   The inputs are grouped under the DECISION each one serves — asked for as "give me editabel
+   metrics for what to put in kill, maintain and scale". The grouping comes from the server
+   (`logic.THRESHOLD_GROUPS`, total over the thresholds), never from a list here: a second copy
+   would fall out of step the first time a threshold is added, and it would do so silently, by
+   filing the new number under whichever heading renders last. */
+const THRESHOLD_HINTS = {
+  good_net:          ["0.01", "net margin, e.g. 0.25 = 25%"],
+  good_tacos:        ["0.01", "TACOS at or below this is efficient"],
+  good_rating:       ["0.1",  "stars needed for BEST BET"],
+  kill_tacos:        ["0.01", "loss + TACOS above this = KILL"],
+  returns_kill_rate: ["0.01", "return rate that forces a KILL"],
+  returns_min_units: ["1",    "minimum units for the returns rule"],
+  dead_units:        ["1",    "units at or below this = DEAD"],
+};
+
 function renderRules(){
   const t = data.thresholds || {};
   const help = data.verdict_help || {};
   const order = data.verdict_order || Object.keys(help);
-  const num = (key, step, suffix) =>
-    `<label>${esc(key)}</label><input type="number" step="${step}" data-th="${esc(key)}"
-       value="${t[key]}"/>${suffix ? `<span class="dim">${suffix}</span>` : ""}`;
+  const groups = data.threshold_groups || {};
+  const groupOrder = data.group_order || [];
+  const num = key => {
+    const [step, suffix] = THRESHOLD_HINTS[key] || ["any", ""];
+    return `<label>${esc(key)}</label><input type="number" step="${step}" data-th="${esc(key)}"
+       value="${t[key]}"/>${suffix ? `<span class="dim">${esc(suffix)}</span>` : ""}`;
+  };
+  // Any threshold the server sent but did not map lands here rather than vanishing — the same
+  // deny-into-the-visible-bucket rule `verdict_group` follows. A test asserts the mapping is total,
+  // so this should always be empty; it exists so that if it is not, the number is still editable.
+  const unmapped = Object.keys(t).filter(k => THRESHOLD_HINTS[k] && !groups[k]);
+
+  const section = g => {
+    const keys = Object.keys(groups).filter(k => groups[k] === g && k in t);
+    // **An empty group is explained, not hidden.** Maintain genuinely has no number: MONITOR is
+    // the last rule, "everything else". A heading with no inputs reads as broken; a heading with
+    // a sentence reads as the design.
+    const body = keys.length
+      ? keys.map(k => `<div class="thresh">${num(k)}</div>`).join("")
+      : `<div class="section-sub" style="margin:0 0 6px">No number of its own — a product lands
+           here when none of the rules above or below fire.</div>`;
+    return `<div class="section-title" style="margin-top:12px">${esc(g)}</div>${body}`;
+  };
 
   $("rules-panel").innerHTML = `
     <div class="section-title">What each verdict means</div>
@@ -818,15 +854,9 @@ function renderRules(){
         <p>${esc(help[v] || "")}</p>
       </div>`).join("")}
     </div>
-    <div class="section-title" style="margin-top:12px">Thresholds</div>
-    <div class="thresh">${num("good_net", "0.01", "net margin, e.g. 0.25 = 25%")}</div>
-    <div class="thresh">${num("good_tacos", "0.01", "TACOS at or below this is efficient")}</div>
-    <div class="thresh">${num("kill_tacos", "0.01", "loss + TACOS above this = KILL")}</div>
-    <div class="thresh">${num("break_even_acos", "0.05", "ACOS above this = AD DEPENDENT (1.0 = break-even)")}</div>
-    <div class="thresh">${num("good_rating", "0.1", "stars needed for BEST BET")}</div>
-    <div class="thresh">${num("dead_units", "1", "units at or below this = DEAD")}</div>
-    <div class="thresh">${num("returns_kill_rate", "0.01", "return rate that forces a KILL")}</div>
-    <div class="thresh">${num("returns_min_units", "1", "minimum units for the returns rule")}</div>
+    ${groupOrder.map(section).join("")}
+    ${unmapped.length ? `<div class="section-title" style="margin-top:12px">Other</div>${
+      unmapped.map(k => `<div class="thresh">${num(k)}</div>`).join("")}` : ""}
     <div class="controls" style="margin:10px 0 0">
       <button class="btn" id="rules-save">Save thresholds</button>
       <button class="btn-outline" id="rules-reset">Reset to measured defaults</button>
@@ -1057,10 +1087,9 @@ function channelHtml(row){
    rendered in the body — which would shift every cell after it one column left. The three optional
    cells are gated by the same `showExtra` the header reads.
 
-   The verdict cell also carries the ⚠ for the two verdicts whose GROUP hides their real action.
-   SURGICAL in Maintain reads as a healthy product, and AD DEPENDENT in Kill-or-monitor reads as
-   "kill it" when the fix is to cut the spend — so the flag is what keeps the three-tab
-   simplification from losing information. The text comes from the server. */
+   The verdict cell also carries the ⚠ for a verdict whose GROUP hides its real action: SURGICAL
+   in Maintain reads as a healthy product when one of its sizes loses money — so the flag is what
+   keeps the three-tab simplification from losing information. The text comes from the server. */
 function dataCells(r){
   const flag = groupFlag(r.verdict);
   return `

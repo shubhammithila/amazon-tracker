@@ -64,25 +64,20 @@ def test_dead_and_kill_are_kill_or_monitor():
     assert logic.verdict_group(logic.VERDICT_DEAD) == logic.GROUP_KILL
 
 
-def test_ad_dependent_is_kill_or_monitor_but_carries_its_flag():
-    """It needs a DECISION, not a kill: the product is profitable and its ADS are not.
-
-    Six products land here on the real account. Without the flag, "Kill or monitor" reads as
-    "kill it" and the actual fix — cut the spend, keep the product — is invisible.
-    """
-    assert logic.verdict_group(logic.VERDICT_AD_DEPENDENT) == logic.GROUP_KILL
-    assert logic.group_flag(logic.VERDICT_AD_DEPENDENT)
-    assert "ads" in logic.group_flag(logic.VERDICT_AD_DEPENDENT).lower()
-
-
-def test_exactly_the_two_odd_verdicts_carry_flags():
+def test_exactly_ONE_verdict_carries_a_group_flag():
     """A flag on every row is noise; a flag on none loses the information.
 
-    Only the two whose group hides their real action need one. Asserted in both directions so a
-    flag cannot quietly be added to a verdict whose group already says the right thing.
+    **This asserted TWO — `{SURGICAL, AD_DEPENDENT}` — and it was right when written.** AD DEPENDENT
+    was retired along with its rule when ACOS stopped deciding anything, so there is one left. The
+    property is unchanged and is the reason the test exists: asserted in BOTH directions, so a flag
+    cannot quietly be added to a verdict whose group already says the right thing, and the surviving
+    one cannot quietly be dropped.
+
+    A companion test, `test_ad_dependent_is_kill_or_monitor_but_carries_its_flag`, was deleted
+    outright rather than adapted — keeping it would have kept a deleted verdict alive.
     """
     flagged = {v for v in logic.VERDICT_ORDER if logic.group_flag(v)}
-    assert flagged == {logic.VERDICT_SURGICAL, logic.VERDICT_AD_DEPENDENT}
+    assert flagged == {logic.VERDICT_SURGICAL}
 
 
 def test_an_unknown_verdict_lands_in_maintain_rather_than_vanishing():
@@ -95,14 +90,19 @@ def test_an_unknown_verdict_lands_in_maintain_rather_than_vanishing():
     assert logic.verdict_group("") == logic.GROUP_MAINTAIN
 
 
-def test_the_seven_verdicts_still_exist_so_this_is_a_view_not_a_rewrite():
-    """`verdict_for`'s rules and reasons are untouched.
+def test_the_six_verdicts_still_exist_so_this_is_a_view_not_a_rewrite():
+    """`verdict_for`'s rules and reasons are untouched by the three-group VIEW over them.
 
     The whole argument for mapping rather than rewriting is that each reason is verifiable against
-    Seller Central. If the seven collapsed into three, "net -56.8%, TACOS 78%" would become "Kill"
-    and the owner would have nothing to check.
+    Seller Central. If the six collapsed into three, "net -56.8%, TACOS 78%" would become "Kill" and
+    the owner would have nothing to check.
+
+    **This asserted SEVEN, and it was right when written.** AD DEPENDENT was removed deliberately —
+    it was the only rule reading ACOS, and the owner does not trust ACOS to be captured correctly.
+    That is a rule the owner retired, not a rewrite of the remaining six, which is exactly the
+    distinction this test exists to defend. Six is now the number that must not drift.
     """
-    assert len(logic.VERDICT_ORDER) == 7
+    assert len(logic.VERDICT_ORDER) == 6
     assert set(logic.VERDICT_HELP) >= set(logic.VERDICT_ORDER) - {logic.VERDICT_DEAD}
 
 
@@ -121,11 +121,15 @@ def test_group_counts_covers_every_group_even_at_zero():
 
 
 def test_group_counts_sums_to_the_row_count():
-    """A re-arrangement, never a filter. Every row lands in exactly one group."""
+    """A re-arrangement, never a filter. Every row lands in exactly one group.
+
+    The literal was 2/2/3 while AD DEPENDENT existed in Kill-or-monitor. The `sum` assertion above
+    it is the one that carries the property; the literal is what makes a silent re-mapping visible.
+    """
     rows = [{"verdict": v} for v in logic.VERDICT_ORDER]
     counts = logic.group_counts(rows)
     assert sum(counts.values()) == len(rows)
-    assert counts == {"Scale": 2, "Maintain": 2, "Kill or monitor": 3}
+    assert counts == {"Scale": 2, "Maintain": 2, "Kill or monitor": 2}
 
 
 # ── Category sales ───────────────────────────────────────────────────────────

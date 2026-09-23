@@ -123,11 +123,15 @@ async def _dashboard(db: AsyncSession, window: tuple[str, str] | None = None) ->
     # times: the Orders tab's "86 orders beside 87 lines", the Portfolio parent rows that exist to
     # prevent it, and the ads campaign headers rolled up in `logic.group_changes`.
     #
-    # The seven verdicts are untouched. The mapping travels so the screen cannot hold a second copy
+    # The six verdicts are untouched. The mapping travels so the screen cannot hold a second copy
     # that falls out of step — the same reason `phase_labels` and `MATCH_LABELS` are sent.
     result["group_order"] = list(logic.GROUP_ORDER)
     result["verdict_groups"] = dict(logic.VERDICT_GROUPS)
     result["group_flags"] = dict(logic.GROUP_FLAGS)
+    # Which decision each editable threshold serves, so the rules panel can group its inputs under
+    # Scale / Kill. Sent from here as well as from GET /settings because the panel renders inline
+    # from the dashboard payload, and two sources for one mapping is the defect this list avoids.
+    result["threshold_groups"] = dict(logic.THRESHOLD_GROUPS)
     result["group_counts"] = logic.group_counts(result["parents"])
     result["sku_group_counts"] = logic.group_counts(result["skus"])
 
@@ -278,6 +282,11 @@ async def get_settings_route(
             for verdict, text in logic.VERDICT_HELP.items()
         },
         "verdict_order": list(logic.VERDICT_ORDER),
+        # Which decision each threshold serves, so the panel groups its inputs under Scale / Kill
+        # without holding a copy of that mapping. `group_order` travels too, so the headings run in
+        # the same order as the tabs.
+        "threshold_groups": dict(logic.THRESHOLD_GROUPS),
+        "group_order": list(logic.GROUP_ORDER),
     })
 
 

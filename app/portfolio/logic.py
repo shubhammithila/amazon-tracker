@@ -42,15 +42,34 @@ from datetime import date
 VERDICT_DEAD = "DEAD"           # no volume, so no signal — just cost
 VERDICT_KILL = "KILL"           # losing money, or being returned
 VERDICT_SURGICAL = "SURGICAL"   # the parent works, some sizes do not
-VERDICT_AD_DEPENDENT = "AD DEPENDENT"   # profitable, but the ads themselves lose money
 VERDICT_BEST_BET = "BEST BET"   # profitable, cheap to advertise, well reviewed
 VERDICT_SCALE = "SCALE"         # profitable and cheap, but the reviews are a problem
 VERDICT_MONITOR = "MONITOR"     # everything else
 
+# **There were SEVEN, and the one removed was the only rule that read ACOS.** Taken out on the
+# owner's instruction: *"TACOS play a role, ACOS doesnt in deciding the kill scale maintain. as
+# ACOS might not be perfectly captured by online tools. but TACOS is."*
+#
+# ACOS is still computed, still a sortable and filterable COLUMN, and still named in the BEST BET
+# and MONITOR reasons. The rule is that no verdict may **branch** on it — `verdict_for` reads
+# `acos` only to print it. `test_no_verdict_rule_reads_acos` is the guard, and it varies the ads
+# figures rather than asserting a retired name is absent, so reintroducing an ACOS branch under
+# some other name fails too.
+#
+# **The cost was measured before agreeing to it**, on the live 30-day window: 5 of 90 parents
+# move, and two move from a warning to an endorsement — ABC Sattu becomes BEST BET at 106% ACOS,
+# Makhana Powder becomes SCALE at 401%. That is an accepted trade rather than an oversight, and
+# what makes it acceptable is that ACOS stays on screen beside them, red above break-even, so the
+# number is visible even though nothing decides on it.
+#
+# Historical `product_decision.snapshot_json` rows may still carry the retired string. Nothing
+# looks a snapshot verdict up, and both verdict-keyed maps below are total-with-fallback, so a
+# legacy value degrades to "Maintain, no flag" rather than raising.
+
 #: Display order for the verdict summary strip: worst first, because the strip is a worklist
 #: and the killable products are what the owner opened the tab to find.
 VERDICT_ORDER = (
-    VERDICT_KILL, VERDICT_SURGICAL, VERDICT_AD_DEPENDENT, VERDICT_DEAD,
+    VERDICT_KILL, VERDICT_SURGICAL, VERDICT_DEAD,
     VERDICT_MONITOR, VERDICT_SCALE, VERDICT_BEST_BET,
 )
 
@@ -101,10 +120,6 @@ VERDICT_GROUPS: dict[str, str] = {
     VERDICT_SURGICAL: GROUP_MAINTAIN,
     VERDICT_KILL: GROUP_KILL,
     VERDICT_DEAD: GROUP_KILL,
-    # AD DEPENDENT is here because it needs a DECISION, not because the product loses money — it
-    # is profitable and its ADS are not. Its flag is what stops a profitable product being killed
-    # when the fix is to cut the spend.
-    VERDICT_AD_DEPENDENT: GROUP_KILL,
 }
 
 
@@ -119,20 +134,24 @@ def verdict_group(verdict: str) -> str:
     return VERDICT_GROUPS.get(verdict, GROUP_MAINTAIN)
 
 
-#: The two verdicts whose real action is NOT what their group implies, so the row must say so.
+#: The verdicts whose real action is NOT what their group implies, so the row must say so.
+#:
+#: **One entry, and it used to be two.** The other was AD DEPENDENT, retired with its rule — see
+#: the note beside `VERDICT_ORDER`. Deliberately still a DICT rather than collapsed into a single
+#: `if verdict == VERDICT_SURGICAL` check: the mechanism is what makes adding the next awkward
+#: verdict a one-line change, and the `dict` is what `test_exactly_ONE_verdict_carries_a_group_flag`
+#: asserts in both directions so a second cannot appear unnoticed.
 GROUP_FLAGS: dict[str, str] = {
     VERDICT_SURGICAL: "some sizes lose money",
-    VERDICT_AD_DEPENDENT: "ads lose money on their own terms",
 }
 
 
 def group_flag(verdict: str) -> str:
     """The warning a row needs because its group hides its real action, or ``""``.
 
-    Two verdicts do not fold cleanly into three groups, and folding them SILENTLY is the actual
-    risk: SURGICAL in Maintain reads as a healthy product, and AD DEPENDENT in Kill-or-monitor
-    invites killing something profitable. The flag is how the information survives the
-    simplification.
+    SURGICAL does not fold cleanly into three groups, and folding it SILENTLY is the actual risk:
+    in Maintain it reads as a healthy product, when in fact the parent earns its place while one
+    pack size does not. The flag is how that survives the simplification.
     """
     return GROUP_FLAGS.get(verdict, "")
 
@@ -176,14 +195,18 @@ KILL_TACOS = 0.50
 #: 3.7-3.9.
 GOOD_RATING = 4.0
 
-#: ACOS above this means the advertising loses money on its own terms: more is spent on ads
-#: than the sales they are credited with. 100% is not a tuning choice, it is break-even —
-#: which is why it is the threshold rather than something like 80%.
-#:
-#: Measured account-wide: TACOS 33.1% against a true ACOS of **89.9%**, so Rs 1 of ads returns
-#: Rs 1.11 of attributed sales. Individual products run far worse: B0GW388QP6 spends Rs 36,514
-#: to earn Rs 12,815 (285%).
-BREAK_EVEN_ACOS = 1.00
+# **`BREAK_EVEN_ACOS = 1.00` was here**, and it went with the AD DEPENDENT rule it was the only
+# threshold for. Not replaced by anything: it was break-even rather than a tuning choice, so there
+# is no equivalent number to make editable on the TACOS side.
+#
+# The measurement it recorded is still true and still worth knowing — account-wide TACOS 33.1%
+# against a true ACOS of **89.9%**, so Rs 1 of ads returns Rs 1.11 of attributed sales, and
+# individual products run far worse (B0GW388QP6 spends Rs 36,514 to earn Rs 12,815, 285%). It is
+# now context a human reads off the ACOS column rather than a line the code draws.
+#
+# A settings row stored before the removal may still hold a `break_even_acos` key. Both
+# `thresholds_or_default` and `save_settings` gate on `key in DEFAULT_THRESHOLDS`, so it is inert
+# rather than harmful, and rewriting stored JSON to tidy it away would be a migration for no gain.
 
 #: **The editable rules, and the single source of their names.**
 #:
@@ -200,7 +223,6 @@ DEFAULT_THRESHOLDS = {
     "good_tacos": GOOD_TACOS,
     "kill_tacos": KILL_TACOS,
     "good_rating": GOOD_RATING,
-    "break_even_acos": BREAK_EVEN_ACOS,
 }
 
 #: What each rule means, in words, for the "what does KILL mean?" panel. Kept beside the
@@ -217,11 +239,6 @@ VERDICT_HELP = {
         "The product earns its place but at least one pack size does not. Kill those sizes, "
         "keep the rest — measured, one product earned +27.1% overall while a 250 g pack burned "
         "103% TACOS for -52.7% net."
-    ),
-    VERDICT_AD_DEPENDENT: (
-        "Profitable overall, but the ads lose money on their own terms: ACOS above "
-        "{break_even_acos:.0%}, meaning more is spent on advertising than the sales Amazon "
-        "credits to it. Worth cutting the spend rather than the product."
     ),
     VERDICT_DEAD: (
         "Fewer than {dead_units} net units sold in the window, so there is no signal to read. "
@@ -252,8 +269,8 @@ VERDICT_HELP = {
 #:
 #: Ratings are bounded by Amazon's own scale (1-5). Ratios are bounded at 0 below — a negative
 #: margin or TACOS threshold is not a stricter rule, it is a broken one — and generously above,
-#: because a 300% ACOS ceiling is a legitimate thing to want on this account where products run
-#: at 316%.
+#: because a 200% TACOS ceiling is a legitimate thing to want on an account where products run
+#: that high.
 THRESHOLD_RANGES = {
     "dead_units": (0, 1000),
     "returns_kill_rate": (0.0, 1.0),        # a return rate cannot exceed 100%
@@ -262,7 +279,35 @@ THRESHOLD_RANGES = {
     "good_tacos": (0.0, 5.0),
     "kill_tacos": (0.0, 5.0),
     "good_rating": (1.0, 5.0),              # Amazon's star scale, so 99 is not a stricter bar
-    "break_even_acos": (0.0, 20.0),         # 316% ACOS exists here, so the ceiling is generous
+}
+
+
+#: Which DECISION each threshold serves, so the settings panel can be grouped the way the owner
+#: asked for it: *"give me editabel metrics for what to put in kill, maintain and scale."*
+#:
+#: **Total over `DEFAULT_THRESHOLDS`, asserted by a test** — the same discipline `VERDICT_GROUPS`
+#: carries over `VERDICT_ORDER`. A new threshold then cannot be added without deciding which
+#: decision it serves; the alternative is a silent fall-through into whichever heading happens to
+#: render last, which is how a rule ends up filed under the wrong question.
+#:
+#: **`Maintain` is deliberately absent, and the panel says so in words rather than rendering an
+#: empty heading.** MONITOR is the last rule — "everything else" — so it genuinely has no number
+#: of its own. That is a fact about the rules, not a gap in this dict: a heading with no inputs
+#: reads as broken, while a heading with one sentence explaining why reads as the design. Same
+#: reasoning as every group tab rendering at zero, dashed, rather than disappearing.
+#:
+#: Shipped to the screen rather than hardcoded there, like `verdict_groups` and `phase_labels`,
+#: because a second copy of the grouping is a second thing to keep in step.
+THRESHOLD_GROUPS: dict[str, str] = {
+    # Scale: what makes a product worth spending MORE on.
+    "good_net": GROUP_SCALE,
+    "good_tacos": GROUP_SCALE,
+    "good_rating": GROUP_SCALE,
+    # Kill: what makes a product worth stopping.
+    "kill_tacos": GROUP_KILL,
+    "returns_kill_rate": GROUP_KILL,
+    "returns_min_units": GROUP_KILL,
+    "dead_units": GROUP_KILL,
 }
 
 
@@ -509,6 +554,10 @@ def verdict_for(
     units = int(row.get("units") or 0)
     net_pct = row.get("net_pct")
     tacos = row.get("tacos")
+    # **`acos` is read to PRINT, never to compare.** No rule below may branch on it — see the note
+    # where the fifth rule used to be. It stays in the reason because "net 31.5% at 29.5% TACOS,
+    # ACOS 106%" is a claim the owner can check against Seller Central, and a verdict he can
+    # overrule, which is the whole reason these reasons carry numbers.
     acos = row.get("acos")
     returns_pct = row.get("returns_pct")
     units_ordered = int(row.get("units_ordered") or 0)
@@ -561,23 +610,16 @@ def verdict_for(
             f"lose money ({names}) — kill those, keep the rest"
         )
 
-    # FIFTH: the product makes money but the ADVERTISING does not. **Only expressible with
-    # attributed sales**, which is what the Advertising API added — TACOS cannot distinguish
-    # "ad-dependent" from "advertised alongside strong organic sales", because its denominator
-    # includes the organic sales.
+    # **There was a FIFTH rule here — AD DEPENDENT — and it was the only rule in this function
+    # that branched on ACOS.** Removed on the owner's instruction, because he does not trust ACOS
+    # to be captured correctly while he does trust TACOS. See the note beside `VERDICT_ORDER` for
+    # the measured cost.
     #
-    # Below the positive verdicts so a profitable, efficiently-advertised product is still a
-    # best bet, and above MONITOR so this does not disappear into "everything else". The action
-    # differs from KILL: cut the spend, not the product.
-    if net_pct > 0 and (row.get("acos_infinite") or (acos is not None and acos > limits["break_even_acos"])):
-        detail = (
-            "the ads produced no attributed sales at all"
-            if row.get("acos_infinite") else f"ACOS {acos * 100:.0f}%"
-        )
-        return VERDICT_AD_DEPENDENT, (
-            f"the product earns {net_pct * 100:.1f}%, but {detail} — the advertising is losing "
-            "money on its own terms, so cut the spend rather than the product"
-        )
+    # `acos` is still read below, twice, to PRINT it. That is the whole distinction: the number
+    # informs the owner, it does not decide. Nothing between here and the end of the function may
+    # compare it against anything — `test_no_verdict_rule_reads_acos` varies the ads figures
+    # across four shapes and asserts the verdict does not move, so an ACOS branch reintroduced
+    # under any name fails.
 
     if net_pct >= limits["good_net"] and tacos is not None and tacos <= limits["good_tacos"]:
         if rating is not None and rating < limits["good_rating"]:

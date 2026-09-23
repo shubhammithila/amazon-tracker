@@ -289,3 +289,49 @@ def test_the_rating_count_is_deduplicated_per_family():
     assert "seen.has(family)" in body, "families are not deduplicated before the review count"
     # And the sum still runs over the deduplicated list, not the raw one.
     assert "rated.reduce((a, r) => a + n(r.rating_count), 0)" in body
+
+
+# ─── The rules panel, grouped by the decision each threshold serves ──────────
+
+
+def test_the_rules_panel_reads_its_GROUPING_from_the_server():
+    """Asked for as "give me editabel metrics for what to put in kill, maintain and scale".
+
+    The grouping is `logic.THRESHOLD_GROUPS`, shipped as `threshold_groups`. A list of group names
+    written into the template would be a second copy of a mapping the server already owns — the
+    defect this codebase has shipped four times ("86 orders beside 87 lines", `insideDailyCoverage`,
+    the verdict groups this panel sits beside) — and it would fail SILENTLY here: a threshold added
+    on the server but missing from the template's list still renders, under whichever heading comes
+    last, which nobody notices without already knowing where it belonged.
+    """
+    body = _function(_template(), "renderRules")
+    assert "data.threshold_groups" in body, (
+        "the panel does not read the server's threshold grouping"
+    )
+    assert "data.group_order" in body, "the panel does not read the group order from the server"
+    for name in ("Scale", "Maintain", "Kill or monitor"):
+        assert f'"{name}"' not in body and f"'{name}'" not in body, (
+            f"the panel hardcodes the group name {name!r} instead of reading group_order"
+        )
+
+
+def test_an_unmapped_threshold_is_still_EDITABLE_rather_than_vanishing():
+    """Deny into the VISIBLE bucket, the rule `verdict_group` already follows.
+
+    A test asserts the mapping is total, so this branch should never fire. It exists because the
+    failure it guards is worse than the mess it makes: a threshold with no group would otherwise be
+    filtered out of every section and become an un-editable saved setting that still changes every
+    verdict — invisible state with no way to reach it, which is the `available`-column defect.
+    """
+    body = _function(_template(), "renderRules")
+    assert "unmapped" in body, "an unmapped threshold has nowhere to render"
+    assert "!groups[k]" in body, "the unmapped set is not derived from the server's mapping"
+
+
+def test_the_retired_acos_threshold_has_no_input_left_behind():
+    """`break_even_acos` went with the AD DEPENDENT rule it was the only threshold for.
+
+    An input for a threshold the server no longer accepts would POST a key `save_settings` refuses,
+    so the whole save fails with an error naming a number the owner cannot see the purpose of.
+    """
+    assert "break_even_acos" not in _template()
