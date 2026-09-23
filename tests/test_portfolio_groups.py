@@ -558,8 +558,13 @@ def test_the_hidden_columns_are_gated_in_ALL_THREE_places():
     """Header, body and footer must agree about the column count.
 
     A cell rendered under a hidden header shifts every cell after it one column left, which reads
-    as a rounding error rather than a layout bug. Verified in the browser: 8/8/8 collapsed and
-    11/11/11 expanded, with the detail row's colspan following.
+    as a rounding error rather than a layout bug. Verified in the browser: **10/10/10 collapsed and
+    12/12/12 expanded**, with the detail row's colspan following.
+
+    **Those numbers were 8/8/8 and 11/11/11**, and the literal moving is the whole reason this test
+    is worth having. Units came out from behind the toggle and Weight was added beside it, both
+    asked for in one message — so the optional count went 3 -> 2 and the total 11 -> 12, and every
+    one of the three functions had to change together.
 
     Asserted at source because the three are built by three different functions, and only a
     convention keeps them in step.
@@ -573,25 +578,33 @@ def test_the_hidden_columns_are_gated_in_ALL_THREE_places():
     )
     # And no hardcoded colspan can survive, or an expanded row stops spanning the table.
     assert 'colspan="11"' not in source
+    assert 'colspan="12"' not in source
 
     # **The list must actually DROP the hidden ones, not merely be called.** A mutation returning
     # `COLUMNS` unfiltered survived an earlier version of this test: every assertion above stayed
-    # true while the header rendered 11 columns over 8 body cells. The count is what fails.
+    # true while the header rendered more columns than the body. The count is what fails.
     body = _template_function(source, "shownColumns")
     assert "showExtra" in body, "shownColumns does not consult the toggle at all"
     assert ".filter(" in body, (
-        "shownColumns returns every column, so the header renders 11 headings over 8 body cells "
-        "and every figure after Net % sits under the wrong one"
+        "shownColumns returns every column, so the header renders 12 headings over 10 body cells "
+        "and every figure after Weight sits under the wrong one"
     )
     # Scoped to the COLUMNS array, so the prose explaining the flag is not counted as a column —
-    # the deploy-detector mistake (a substring that also appears in its own explanation).
+    # the deploy-detector mistake (a substring that also appears in its own explanation). The
+    # trailing brace is load-bearing: the comment above the Units column contains the words
+    # "extra: true" and would otherwise be counted as a fourth optional column.
     declaration = source[source.index("const COLUMNS = ["):]
     declaration = declaration[: declaration.index("];")]
     extras = declaration.count("extra: true}")
-    assert extras == 3, (
-        f"{extras} optional columns declared; the three gated blocks render exactly 3 "
-        "(Units, Returns, Rating), so a fourth would render under a hidden header"
+    assert extras == 2, (
+        f"{extras} optional columns declared; the three gated blocks render exactly 2 "
+        "(Returns, Rating), so a third would render under a hidden header"
     )
+    # And the two columns the owner asked to see are NOT optional — the point of the change.
+    for always in ('{key: "units"', '{key: "weight_kg"'):
+        line = declaration[declaration.index(always):]
+        line = line[: line.index("\n")]
+        assert "extra" not in line, f"{always} is still gated behind the + More columns toggle"
 
 
 def test_showExtra_is_declared_AFTER_the_helper_it_calls():

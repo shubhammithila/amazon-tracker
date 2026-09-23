@@ -122,14 +122,19 @@ def test_the_totals_row_covers_the_filtered_rows_not_the_whole_account():
 
 
 def test_the_totals_row_has_one_cell_per_column():
-    """Eleven columns, so eleven cells — a short row silently shifts every figure left.
+    """Twelve columns, so twelve cells — a short row silently shifts every figure left.
 
     Counted rather than eyeballed: a totals row misaligned by one column would put ad spend under
     TACOS and still look like a plausible table.
+
+    **The literal was 11**, and moved when Units came out from behind the "+ More columns" toggle and
+    Weight was added beside it. Deliberately NOT derived from the `COLUMNS` array: this test exists
+    to catch the footer and the header disagreeing, so counting the same list both are meant to
+    follow would make it self-fulfilling.
     """
     body = _function(_template(), "totalsRow")
     cells = body.count("<td")
-    assert cells == 11, f"the totals row has {cells} cells for 11 columns"
+    assert cells == 12, f"the totals row has {cells} cells for 12 columns"
 
 
 # ─── Why the child rows appeared to have no units ────────────────────────────
@@ -335,3 +340,66 @@ def test_the_retired_acos_threshold_has_no_input_left_behind():
     so the whole save fails with an error naming a number the owner cannot see the purpose of.
     """
     assert "break_even_acos" not in _template()
+
+
+# ─── Units and Weight are always visible ─────────────────────────────────────
+
+
+def test_units_and_weight_are_OUTSIDE_the_showExtra_gate_in_ALL_THREE_functions():
+    """Asked for as "also add number of units sold" and a total-weight column.
+
+    Units existed but was `extra: true`, so the figure the owner judges a row by was invisible until
+    he found the "+ More columns" toggle. Both are now permanent — and that has to be true in all
+    three render functions at once, because a cell that is always rendered in the body while the
+    header still gates it shifts every column after it.
+
+    Scoped per FUNCTION rather than searched across the file: "this rule holds somewhere in 1,600
+    lines" is a different claim from "this function follows it", and the 4th instance of this trap in
+    this codebase was a test that passed while one of three call sites disagreed.
+    """
+    source = _template()
+    for name in ("dataCells", "detailCells", "totalsRow"):
+        body = _function(source, name)
+        # `${showExtra ? ` — the template-literal gate that wraps the optional CELLS. Deliberately
+        # not a bare `showExtra ?`: `detailCells` also computes `const trailing = showExtra ? 2 : 1`,
+        # which is the colspan rather than a cell, and splitting on that would test the wrong block.
+        assert "${showExtra ? `" in body, f"{name} no longer gates the optional columns at all"
+        gated = body.split("${showExtra ? `", 1)[1].split('` : ""', 1)[0]
+        always = body.replace(gated, "")
+        # Asserted on the IDENTIFIERS rather than on the words. The gated block legitimately contains
+        # the string "weighted by reviews" — the rating note — so a `"weight" in gated` check fails
+        # on prose that has nothing to do with the column. Sixth instance of that substring trap in
+        # this codebase, and the first to bite a test I was writing to catch it.
+        for cell in ("units", "kg("):
+            assert cell not in gated, (
+                f"{name} renders {cell!r} inside the showExtra gate, so the column is invisible by "
+                "default again"
+            )
+            assert cell in always, (
+                f"{name} renders no {cell!r} cell at all, so the assertion above passes vacuously"
+            )
+
+
+def test_the_weight_total_does_not_COERCE_an_unknown_weight_to_zero():
+    """The shared `sum` helper does `n(r[key])`, and `n(null)` is 0 — right for money, wrong here.
+
+    A row whose pack weight the sheet does not carry has an UNKNOWN weight sold. Folded in as 0 kg it
+    is the silent shortfall `shipment_weight` names: "a 130 kg shipment reports 90". So weight needs
+    its own accumulator, and the excluded rows must be counted and named in the cell.
+    """
+    body = _function(_template(), "totalsRow")
+    assert "weighed" in body, "the weight total has no accumulator of its own"
+    assert "r.weight_kg !== null" in body, (
+        "the weight total does not filter unknown weights, so nulls are summed as 0 kg"
+    )
+    assert "weightUnknown" in body, "the excluded rows are not counted"
+    # And the count is actually rendered, not merely computed — a working calculation nothing
+    # consumes is the defect this codebase has shipped five times.
+    assert "no pack weight" in body, "the excluded rows are counted but never named on screen"
+
+
+def test_the_kg_formatter_shows_a_DASH_and_never_zero_kg():
+    """`null` reaches the browser precisely so this distinction survives to the screen."""
+    body = _function(_template(), "kg")
+    assert "null" in body and "undefined" in body, "kg() does not test for a missing value"
+    assert "—" in body, "kg() has no dash for an unknown weight"

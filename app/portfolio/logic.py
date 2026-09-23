@@ -487,13 +487,35 @@ def size_row(econ: Mapping, catalogue: Mapping, ads: Mapping | None = None) -> d
     attributed = _num(ad_row.get("attributed_sales")) if ad_row else 0.0
     ads_cost = _num(ad_row.get("cost")) if ad_row else 0.0
 
+    # ── Weight SOLD: units × the pack size, from the MRP sheet's column B ──
+    #
+    # Asked for as *"total weight sold also should be column… multiplying the number of units to the
+    # weight of the item/sku"*. Computed HERE, per child ASIN, because a pack size only exists at
+    # this grain: a parent holds 0.5 kg, 1 kg and 2 kg packs and has no single weight to multiply
+    # by, so `_sum_sizes` adds these up rather than recomputing — the construction that already
+    # makes `sales` and `net` agree between a parent and the rows beneath it.
+    #
+    # **`line_weight` rather than `units * weight`**, imported from the shipment tab like
+    # `weight_label` and `CATEGORY_LABELS` already are. It carries the 3-decimal rounding, and
+    # without it a 0.15 kg pack × 200 units is `30.000000000000004` — a number that would reach a
+    # spreadsheet cell. A second copy of the multiplication is also a second place for the rule.
+    from app.shipment.logic import line_weight
+
+    pack_weight = float(entry.get("weight") or 0)
     return {
         "asin": asin,
         "parent_asin": (econ.get("parentAsin") or "").strip().upper(),
         "product": entry.get("name") or "",
         "brand": entry.get("brand") or "",
-        "weight": float(entry.get("weight") or 0),
+        "weight": pack_weight,
         "known": bool(entry),
+        # **An unknown pack size is EXCLUDED and COUNTED, never treated as 0 kg.** Exactly
+        # `shipment_weight`'s rule, and its docstring says why: "a line silently contributing
+        # nothing is how a 130 kg shipment reports 90 kg". `None` rather than 0.0 so the screen
+        # shows a dash — `_ratio`'s discipline — because a product that sold 245 units of something
+        # the sheet has no weight for has an UNKNOWN weight sold, not a zero one.
+        "weight_kg": line_weight(units, pack_weight) if pack_weight > 0 else None,
+        "weight_unknown": 1 if (units > 0 and pack_weight <= 0) else 0,
         "sales": round(ordered, 2),
         "refunded": round(refunded, 2),
         "units": units,
@@ -1171,6 +1193,23 @@ def _sum_sizes(sizes: Sequence[Mapping]) -> dict:
     ad_clicks = sum(int(s.get("ad_clicks") or 0) for s in sizes)
     ad_impressions = sum(int(s.get("ad_impressions") or 0) for s in sizes)
 
+    # ── Weight sold: added up from the sizes, because only a size has a pack weight ──
+    #
+    # `None` when NO size has a usable weight, not 0.0 — a dash rather than a zero, `_ratio`'s rule.
+    # A parent that sold 245 units of packs the sheet has no weight for has an unknown weight sold,
+    # and "0.0 kg" beside 245 units is a claim rather than an absence.
+    #
+    # `weight_unknown` travels so the shortfall is COUNTED. Half the pin is that a parent summing 8
+    # of its 9 sizes reports a total that looks complete; the count is what makes it say otherwise.
+    #
+    # **No family deduplication here**, unlike `rating_count` in the totals row. A parent IS the sum
+    # of its sizes by construction, so the sum over parents equals the sum over SKUs. Stated because
+    # the rating dedup solves a genuinely different problem — Amazon pools reviews across a family,
+    # so the same reviews appear on every size — and copying it here would undercount real weight.
+    known_weights = [s.get("weight_kg") for s in sizes if s.get("weight_kg") is not None]
+    weight_kg = round(sum(_num(w) for w in known_weights), 3) if known_weights else None
+    weight_unknown = sum(int(s.get("weight_unknown") or 0) for s in sizes)
+
     fees: dict[str, float] = {}
     for size in sizes:
         for name, amount in (size.get("fees") or {}).items():
@@ -1185,6 +1224,8 @@ def _sum_sizes(sizes: Sequence[Mapping]) -> dict:
         "units": units,
         "units_ordered": units_ordered,
         "units_refunded": units_refunded,
+        "weight_kg": weight_kg,
+        "weight_unknown": weight_unknown,
         "ads_cost": ads_cost,
         "ad_attributed_sales": attributed,
         "ad_clicks": ad_clicks,

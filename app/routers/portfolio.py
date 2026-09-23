@@ -459,7 +459,7 @@ async def download_portfolio(
             "", _pct(size["net_pct"]), _pct(size["tacos"]), _acos(size),
             size["sales"], size["ad_spend"],
             size.get("ad_attributed_sales") or 0,
-            size["net"], size["units"],
+            size["net"], size["units"], _kg(size.get("weight_kg")),
             "", "", "",
         ]
 
@@ -472,7 +472,7 @@ async def download_portfolio(
             _pct(parent["net_pct"]), _pct(parent["tacos"]), _acos(parent),
             parent["sales"], parent["ad_spend"],
             parent.get("ad_attributed_sales") or 0,
-            parent["net"], parent["units"],
+            parent["net"], parent["units"], _kg(parent.get("weight_kg")),
             _stars(parent["rating"], parent["rating_count"]),
             parent["decision"] or "",
             # The flavour count belongs in the reason column on the parent line, because in a
@@ -491,7 +491,7 @@ async def download_portfolio(
                     "", _pct(group["net_pct"]), _pct(group["tacos"]), _acos(group),
                     group["sales"], group["ad_spend"],
                     group.get("ad_attributed_sales") or 0,
-                    group["net"], group["units"],
+                    group["net"], group["units"], _kg(group.get("weight_kg")),
                     "", "", f"{len(group['sizes'])} size(s)",
                 ])
                 for size in group["sizes"]:
@@ -510,7 +510,10 @@ async def download_portfolio(
         _pct(totals["net_pct"]), _pct(totals["tacos"]), _acos(totals),
         totals["sales"], totals["ad_spend"],
         totals.get("ad_attributed_sales") or 0,
-        totals["net"], totals["units"],
+        # `totals["weight_kg"]` is `_sum_sizes`' own figure, NEVER a re-sum over `rows` — each
+        # parent row already contains its sizes, so re-summing would double-count. The same reason
+        # `build_portfolio_xlsx` has no `_totals_row`.
+        totals["net"], totals["units"], _kg(totals.get("weight_kg")),
         "", "",
         "Money and units are summed; percentages are recomputed from those sums, never averaged.",
     ])
@@ -519,9 +522,15 @@ async def download_portfolio(
         f"{window[0]} to {window[1]} (IST) · " if window else ""
     ) + (
         f"{totals['parents']} products · {totals['units']} units · "
+        f"{_kg(totals.get('weight_kg'))} · "
         f"net {_pct(totals['net_pct'])} of sales · TACOS {_pct(totals['tacos'])}"
         + (f" · ACOS {_pct(totals.get('acos'))}" if totals.get("acos") else "")
         + " · TACOS is ad spend over TOTAL sales; ACOS is over ad-ATTRIBUTED sales"
+        + " · no verdict is decided on ACOS"
+        # The excluded rows are NAMED in the subtitle, because a workbook leaves the app without the
+        # screen's banner beside it — the same reason the pre-COGS caveat is written into row 1.
+        + (f" · {totals['weight_unknown']} pack size(s) have no weight in the MRP sheet and are "
+           "excluded from the weight total" if totals.get("weight_unknown") else "")
         + " · margins are PRE-COGS (they exclude what it costs to make the product)"
     )
 
@@ -529,9 +538,10 @@ async def download_portfolio(
         "Portfolio review",
         subtitle,
         ["Product", "Brand", "ASIN", "Verdict", "Net %", "TACOS", "ACOS",
-         "Sales", "Ad spend", "Ad sales", "Net", "Units", "Rating", "Decision", "Why"],
+         "Sales", "Ad spend", "Ad sales", "Net", "Units", "Weight (kg)",
+         "Rating", "Decision", "Why"],
         rows,
-        [30, 16, 12, 10, 9, 8, 8, 12, 11, 12, 12, 8, 14, 10, 52],
+        [30, 16, 12, 10, 9, 8, 8, 12, 11, 12, 12, 8, 12, 14, 10, 52],
     )
     filename = f"portfolio-{(window or ('', ''))[1] or 'latest'}.xlsx"
     return StreamingResponse(
@@ -548,6 +558,17 @@ def _pct(value) -> str:
     among the most ad-efficient products in the portfolio.
     """
     return "—" if value is None else f"{value * 100:.1f}%"
+
+
+def _kg(value) -> str:
+    """Weight sold for a spreadsheet cell, or a dash where the sheet carries no pack weight.
+
+    **A dash rather than 0**, for the reason `shipment_weight` states: a row silently contributing
+    nothing is how a 130 kg shipment reports 90. Its own helper rather than `_pct`'s cousin because
+    the unit belongs in the cell — a bare number in a column of kilograms beside a column of units
+    is two counts with nothing saying which is which.
+    """
+    return "—" if value is None else f"{value:,.1f} kg"
 
 
 def _stars(rating, count) -> str:

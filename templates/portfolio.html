@@ -130,14 +130,17 @@ h2{font-size:19px;font-weight:600;margin-bottom:2px}
    `min-width` on the table is what makes the wrapper do anything at all: without it the
    table obeys `width:100%`, squeezes to the container, and the nowrap cells overflow their
    own gridlines instead — the same class of bug as the PDF cells that printed SKUs over
-   product names. The value is the sum of the 11 columns' natural widths, rounded down.
+   product names. The value is the sum of the 12 columns' natural widths, rounded down — it
+   was 900px for 11 columns, and grew when Units came out from behind the "+ More columns"
+   toggle and Weight joined it. **A min-width left behind when a column is added is the same
+   defect as no min-width at all**, applied to the last column or two.
 
    No sticky header and no max-height, unlike ops.html: this grid expands rows inline, so
    capping the height would put a scroll region inside a page that also scrolls. ops.html
    records what a sticky thead does inside such a box. */
 .table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border);
   -webkit-overflow-scrolling:touch}
-table{width:100%;border-collapse:separate;border-spacing:0;min-width:900px}
+table{width:100%;border-collapse:separate;border-spacing:0;min-width:1040px}
 thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;font-size:10.5px;
   font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:left;white-space:nowrap;
   border-bottom:2px solid var(--border-strong)}
@@ -363,6 +366,10 @@ const FIELDS = {
   tacos:        {label: "TACOS",        get: r => r.tacos,        kind: "pct"},
   acos:         {label: "ACOS",         get: r => r.acos,         kind: "pct"},
   units:        {label: "Units",        get: r => r.units,        kind: "int"},
+  // Weight sold, so it sorts and filters like any other number. Nulls already sort last in both
+  // directions and a null row is already excluded from a numeric filter — both correct here for
+  // free, and both for the same reason: "the sheet has no weight" is not a small weight.
+  weight_kg:    {label: "Weight (kg)",  get: r => r.weight_kg,    kind: "num"},
   returns_pct:  {label: "Returns %",    get: r => r.returns_pct,  kind: "pct"},
   rating:       {label: "Rating",       get: r => r.rating,       kind: "num"},
 };
@@ -423,6 +430,14 @@ function acosCell(row){
 
 function verdictClass(v){
   return "v-" + (v === "BEST BET" ? "BEST" : v.replace(/\s+/g, ""));
+}
+
+/* Weight sold, in kg. **A dash where the sheet has no pack weight, never 0 kg** — the same rule
+   `shipment_weight` states: a row silently contributing nothing is how a 130 kg shipment reports 90.
+   `null` reaches here from the server precisely so this distinction survives to the screen. */
+function kg(value){
+  if(value === null || value === undefined) return '<span class="dim">—</span>';
+  return value.toLocaleString("en-IN", {maximumFractionDigits: 1}) + " kg";
 }
 
 /* The querystring for the current window, shared by the payload fetch and the Excel link so the
@@ -989,9 +1004,14 @@ const COLUMNS = [
   {key: "sales",        label: "Sales",    num: true},
   {key: "ad_spend",     label: "Ad spend", num: true},
   {key: "tacos",        label: "TACOS",    num: true, tip: "ad spend over TOTAL sales"},
-  {key: "acos",         label: "ACOS",     num: true, tip: "ad spend over ad-ATTRIBUTED sales"},
+  {key: "acos",         label: "ACOS",     num: true, tip: "ad spend over ad-ATTRIBUTED sales — shown for context; no verdict is decided on it"},
   {key: "net_pct",      label: "Net %",    num: true},
-  {key: "units",        label: "Units",    num: true, extra: true},
+  // **Units and Weight are ALWAYS shown**, asked for in the same message that asked for the size
+  // rows to be simplified. Units was `extra: true` and therefore invisible by default — a figure
+  // the owner had to go looking for in order to read the row he was judging. Weight is
+  // units × the pack size from the MRP sheet, summed up from the sizes on a parent row.
+  {key: "units",        label: "Units",    num: true},
+  {key: "weight_kg",    label: "Weight",   num: true, tip: "units × pack size, from the MRP sheet — a dash where the sheet has no weight"},
   {key: "returns_pct",  label: "Returns",  num: true, extra: true},
   {key: "rating",       label: "Rating",   extra: true},
   {key: null,           label: "Decision"},
@@ -1050,8 +1070,9 @@ function detailCells(row){
     <td class="num">${pct(row.tacos)}</td>
     <td class="num">${acosCell(row)}</td>
     <td class="num">${pct(row.net_pct, {sign: true})}</td>
-    ${showExtra ? `
     <td class="num">${n(row.units).toLocaleString("en-IN")}</td>
+    <td class="num">${kg(row.weight_kg)}</td>
+    ${showExtra ? `
     <td class="num">${row.returns_pct ? pct(row.returns_pct) : '<span class="dim">—</span>'}</td>` : ""}
     <td colspan="${trailing}" class="dim" style="font-size:11px">rating is per product</td>`;
 }
@@ -1100,8 +1121,9 @@ function dataCells(r){
     <td class="num">${pct(r.tacos)}</td>
     <td class="num">${acosCell(r)}</td>
     <td class="num">${pct(r.net_pct, {sign: true})}</td>
-    ${showExtra ? `
     <td class="num">${n(r.units).toLocaleString("en-IN")}</td>
+    <td class="num">${kg(r.weight_kg)}</td>
+    ${showExtra ? `
     <td class="num">${r.returns_pct ? pct(r.returns_pct) : '<span class="dim">—</span>'}</td>
     <td>${stars(r.rating, r.rating_count)}</td>` : ""}
     <td>${r.decision
@@ -1138,6 +1160,20 @@ function totalsRow(list, isSkus){
   const sales = sum("sales"), spend = sum("ad_spend"), net = sum("net");
   const adsCost = sum("ads_cost"), attributed = sum("ad_attributed_sales");
   const units = sum("units"), ordered = sum("units_ordered"), refunded = sum("units_refunded");
+
+  /* Weight needs its OWN accumulator, and `sum` above is exactly why.
+
+     `n()` coerces null to 0, which is right for every money column — a row with no ad spend really
+     did spend nothing — and wrong here: a row whose pack weight the sheet does not carry has an
+     UNKNOWN weight sold, and folding it in as 0 kg is the silent shortfall `shipment_weight`'s
+     docstring names ("a 130 kg shipment reports 90"). So the known rows are counted, and the rest
+     are COUNTED SEPARATELY and named in the cell.
+
+     Unlike `rating_count` below, this needs no per-family deduplication: a parent is the sum of its
+     sizes by construction, so the same kilogram is never on two rows of one view. */
+  const weighed = list.filter(r => r.weight_kg !== null && r.weight_kg !== undefined);
+  const weight = weighed.reduce((a, r) => a + r.weight_kg, 0);
+  const weightUnknown = list.length - weighed.length;
 
   // A ratio with no denominator is a dash, never 0% — `_ratio`'s rule on the server, and for the
   // same reason: 0% TACOS would read as the most ad-efficient set of products on the account.
@@ -1183,11 +1219,14 @@ function totalsRow(list, isSkus){
     <td class="num">${acosCell({acos: adsCost ? ratio(adsCost, attributed) : null,
                                 acos_infinite: infinite})}</td>
     <td class="num">${pct(ratio(net, sales), {sign: true})}</td>
+    <td class="num">${n(units).toLocaleString("en-IN")}</td>
+    <td class="num">${weighed.length ? kg(weight) : '<span class="dim">—</span>'}${
+      weightUnknown ? `<span class="tnote">${n(weightUnknown)} row(s) have no pack weight in the
+        sheet and are excluded</span>` : ""}</td>
     ${/* Gated by the same `showExtra` as the header and the body rows. A totals cell rendered
          under a hidden header shifts the whole footer one column left, which is the sort of thing
          that looks like a rounding error rather than a layout bug. */ ""}
     ${showExtra ? `
-    <td class="num">${n(units).toLocaleString("en-IN")}</td>
     <td class="num">${pct(ratio(refunded, ordered))}</td>
     <td>${rating === null
           ? '<span class="dim">—</span>'
