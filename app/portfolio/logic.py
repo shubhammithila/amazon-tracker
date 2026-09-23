@@ -509,6 +509,25 @@ def size_row(econ: Mapping, catalogue: Mapping, ads: Mapping | None = None) -> d
         "brand": entry.get("brand") or "",
         "weight": pack_weight,
         "known": bool(entry),
+        # **Nothing is hidden unless the sheet SAYS so**, and that default is the whole safety
+        # property. `catalogue.is_active` already states the reason — "missing data is not a
+        # decision" — and here it is load-bearing three times over:
+        #
+        #   * all three decisions stored on production are on ASINs ABSENT from the sheet, so
+        #     treating an unknown ASIN as inactive would make every one of them unreachable at once;
+        #   * `load_catalogue()` returns an EMPTY dict when the sheet is unreachable, so the same
+        #     reading would empty the tab from 90 products to 0 during a Google outage — the worst
+        #     outcome available here, and one the existing `catalogue_warning` would explain only to
+        #     somebody who already knew to look for it;
+        #   * an entry that exists but carries NO `active` key is the same case one level down. Every
+        #     `load_catalogue` path sets it explicitly, so in production this cannot happen — but
+        #     "cannot happen" is how the `delete_draft_plans` docstring came to be wrong, and the
+        #     honest reading of a missing key is "the sheet did not say", not "the sheet said no".
+        #
+        # Only an EXPLICIT falsy flag hides a row. Measured: 0 of 267 selling SKUs are absent from
+        # the live sheet, so no real row exercises the unknown-ASIN branch and no value-based test
+        # would catch its loss by accident.
+        "active": bool(entry.get("active", True)),
         # **An unknown pack size is EXCLUDED and COUNTED, never treated as 0 kg.** Exactly
         # `shipment_weight`'s rule, and its docstring says why: "a line silently contributing
         # nothing is how a 130 kg shipment reports 90 kg". `None` rather than 0.0 so the screen
@@ -872,6 +891,12 @@ CATEGORY_UNCLASSIFIED = "Unclassified"
 #: a sentence, not a column — the same cap `MISSING_DAYS_SHOWN` and the catalogue notes use.
 UNCLASSIFIED_SHOWN = 8
 
+#: How many inactive-but-still-selling products to NAME in the banner. Same cap, same reason.
+#:
+#: Measured live there are exactly 8 of them, so the "and N more" branch does not fire on today's
+#: data — which is precisely why a test has to construct nine or that path ships unexercised.
+INACTIVE_SHOWN = 8
+
 
 def _first_category(names: Sequence[str], categories: Mapping[str, int]) -> int | None:
     """The stored priority for the first of ``names`` that has one, or ``None``.
@@ -1005,6 +1030,7 @@ def portfolio(
     ads_by_asin: Mapping | None = None,
     channels: Mapping | None = None,
     thresholds: Mapping | None = None,
+    include_inactive: bool = False,
 ) -> dict:
     """The whole dashboard: parent products, their sizes, verdicts and totals.
 
@@ -1021,6 +1047,16 @@ def portfolio(
     ``ads_by_asin`` carries the Advertising API figures, ``channels`` the merchant/FBA split, and
     ``thresholds`` the owner's edited rules. All optional: without ads credentials the tab shows
     margins and TACOS exactly as it did before ACOS existed.
+
+    **A size marked ``Active = N`` in the MRP sheet is excluded, and every rupee it holds is NAMED
+    rather than merely dropped.** That is the 3,337-vs-3,259 lesson the Shipment tab already paid
+    for: an inactive product that is still SELLING is a question, not a fact — a mis-set flag and a
+    deliberate run-down look identical, and only the owner can tell them apart. Measured live, 11
+    inactive SKUs across 8 parents still sold Rs 67,193, so this is not a hypothetical.
+
+    ``include_inactive=True`` restores them, and the totals then satisfy
+    ``full == active_only + inactive_sales`` to the paisa — the property that makes the banner a
+    reconciliation rather than a warning.
     """
     decisions = decisions or {}
     limits = thresholds_or_default(thresholds)
@@ -1050,24 +1086,76 @@ def portfolio(
             parent["brand"] = size["brand"]
 
     parents = []
+    #: Parents whose every size is inactive, so they leave the table entirely. Kept with their own
+    #: figures so the banner can state what was excluded rather than only that something was.
+    hidden_parents: list[dict] = []
+    #: **Every excluded SIZE, wherever it came from** — including the ones removed from a parent that
+    #: is otherwise still shown. Collected separately from `hidden_parents` because a mixed parent
+    #: contributes hidden sizes without disappearing, and summing only the vanished parents leaves
+    #: those rupees neither on screen NOR named. Caught by asserting the reconciliation rather than
+    #: by reading the code: it was short by exactly one mixed parent's inactive size.
+    hidden_sizes: list[dict] = []
+
     for parent_asin, parent in by_parent.items():
-        sizes = sorted(parent["sizes"], key=lambda s: (-s["sales"], s["asin"]))
-        agg = _sum_sizes(sizes)
-        rating_row = _rating_for(sizes, ratings)
+        all_sizes = sorted(parent["sizes"], key=lambda s: (-s["sales"], s["asin"]))
+
+        # ── The Active flag, from the MRP sheet's column V ──
+        #
+        # Asked for as *"whether the sku/parent is killed or not can be taken from the MRP sheet… in
+        # which column V has the data in terms of Y and N"*. Measured live: 157 of 267 SKUs are
+        # marked N, and **55 of 90 parents are inactive in every size**, so the tab goes from 90
+        # products to 35.
+        #
+        # **A product carrying a stored DECISION is never hidden.** `ProductDecision` exists to
+        # answer "I marked Moori KILL on 27 Aug at -56.8% net; what is it now?", and that question
+        # needs the row present — Bengali Moori is one of the products this filter would otherwise
+        # remove. Hiding a decided product would make the table unable to answer the one question the
+        # decision was recorded for.
+        keep_all = include_inactive or parent_asin in decisions
+        sizes = [s for s in all_sizes if s["active"] or keep_all]
+        hidden = [s for s in all_sizes if not s["active"]]
+        if not keep_all:
+            hidden_sizes.extend(hidden)
+
+        agg = _sum_sizes(sizes if sizes else all_sizes)
+        rating_row = _rating_for(sizes or all_sizes, ratings)
         rating = rating_row.get("rating")
 
+        # **The name is derived from the sizes SHOWN when any remain**, because the row has to
+        # describe the rows beneath it — a family label naming a flavour that is not on screen is
+        # the same defect as a SURGICAL reason naming a hidden size. A wholly-hidden parent has no
+        # shown sizes to name it from, so it uses all of them.
+        naming = sizes or all_sizes
         # The flavour dimension. `groups` is empty for the 85 single-flavour parents, so the
         # screen only grows a heading level where there is genuinely a second dimension.
-        groups = flavour_groups(sizes)
+        groups = flavour_groups(naming)
         # Names are passed BIGGEST SELLER FIRST (`sizes` is already sorted that way), because
         # `family_label` returns the leading name's casing when nothing is shared and its
         # spelling of the shared tokens when something is.
-        flavour_names = list(dict.fromkeys(s["product"] for s in sizes if s["product"]))
+        flavour_names = list(dict.fromkeys(s["product"] for s in naming if s["product"]))
         product = (
             family_label(flavour_names) if len(groups) > 1
             else (flavour_names[0] if flavour_names else "")
         )
 
+        if not sizes:
+            # Every size inactive: the parent leaves the table, carrying its own figures so the
+            # banner can say what it was. Its aggregate is over ALL its sizes — the excluded total
+            # has to be the real one, or the reconciliation the banner exists for does not add up.
+            hidden_parents.append({
+                "parent_asin": parent_asin,
+                "product": product or parent_asin,
+                "brand": parent["brand"],
+                "skus": len(all_sizes),
+                "flavours": [g["flavour"] for g in groups],
+                **agg,
+            })
+            continue
+
+        # **`sizes=sizes`, not `all_sizes`, and this is load-bearing.** Rule 4 (SURGICAL) walks the
+        # list looking for loss-making sizes and NAMES them in its reason. Given the full list it
+        # can judge a parent SURGICAL because of a 250 g pack that is not on screen — a verdict the
+        # owner cannot check, which is the one thing these reasons exist to prevent.
         verdict, reason = verdict_for(agg, rating=rating, sizes=sizes, thresholds=limits)
         decision = decisions.get(parent_asin) or {}
         parents.append({
@@ -1085,6 +1173,10 @@ def portfolio(
             "decision": decision.get("decision") or "",
             "decision_note": decision.get("note") or "",
             "decision_at": decision.get("decided_at") or "",
+            # Inactive in the sheet but shown anyway — either because the toggle is on, or because
+            # this product carries a decision. The row says so rather than looking like any other.
+            "inactive": bool(hidden) and not any(s["active"] for s in all_sizes),
+            "inactive_sizes": len(hidden),
             "sizes": sizes,
             **agg,
         })
@@ -1105,11 +1197,16 @@ def portfolio(
     # (`Singhara Atta` appears four times and `Govindbhog Rice` twice, both from the catalogue
     # itself and neither introduced here — real separate listings with the same name, left alone
     # because renaming what Amazon and the sheet agree on would be this function overreaching.)
-    derived = {p["parent_asin"] for p in parents if p["flavours"]}
+    # **Run over the shown AND hidden parents together**, because a name is ambiguous whether the
+    # two rows carrying it are on screen or one is in the banner. A hidden "Roasted Chana" named in
+    # the banner beside a shown derived "Roasted Chana" in the grid is the same collision, harder to
+    # spot for being in two places.
+    named = parents + hidden_parents
+    derived = {p["parent_asin"] for p in named if p["flavours"]}
     taken: dict[str, int] = {}
-    for parent in parents:
+    for parent in named:
         taken[parent["product"]] = taken.get(parent["product"], 0) + 1
-    for parent in parents:
+    for parent in named:
         if parent["parent_asin"] in derived and taken.get(parent["product"], 0) > 1:
             parent["product"] = f"{parent['product']} ({len(parent['flavours'])} flavours)"
 
@@ -1167,6 +1264,64 @@ def portfolio(
         },
         "thresholds": limits,
         "unmatched_asins": sorted(unmatched),
+        # ── What the Active flag excluded, stated so the figures above reconcile ──
+        #
+        # The counts and both money figures are EXACT; only the named list is capped. "8 products
+        # were hidden" is a sentence the owner can act on, "some products were hidden" is not — the
+        # same discipline as the catalogue notes, the missing-days list and the Projections
+        # `needs_review` list.
+        #
+        # **Only the ones that SOLD are named.** Measured live, 55 parents are wholly inactive and 8
+        # of them sold: naming all 55 would bury those 8 in a list of dead products, which is the
+        # opposite of the point. The 47 silent ones are still counted.
+        #
+        # **Ordered biggest SALES first**, where the Shipment tab's equivalent sorts by units. A
+        # plan IS a unit count; this tab is about money, so Bengali Moori (121u, Rs 21,633) belongs
+        # below Moringa Powder (70u, Rs 31,845) — and every other sort on this page agrees.
+        # `inactive_sales` sums the excluded SIZES, not the vanished parents — see `hidden_sizes`.
+        # That is what makes `active_only + inactive_sales == full` hold to the paisa, and a test
+        # asserts exactly that: every rupee is either on screen or named as excluded.
+        "include_inactive": include_inactive,
+        "inactive_hidden_parents": len(hidden_parents),
+        "inactive_hidden_skus": len(hidden_sizes),
+        "inactive_sales": round(sum(_num(s.get("sales")) for s in hidden_sizes), 2),
+        "inactive_sales_units": sum(int(s.get("units_ordered") or 0) for s in hidden_sizes),
+        "inactive_with_sales": [
+            {
+                "product": p["product"],
+                "units": int(p.get("units_ordered") or 0),
+                "sales": p.get("sales") or 0.0,
+                "skus": p.get("skus") or 0,
+            }
+            for p in sorted(hidden_parents, key=lambda p: -_num(p.get("sales")))
+            if int(p.get("units_ordered") or 0) > 0
+        ][:INACTIVE_SHOWN],
+        "inactive_with_sales_count": sum(
+            1 for p in hidden_parents if int(p.get("units_ordered") or 0) > 0
+        ),
+        # **Sizes dropped from a parent that is STILL SHOWN**, named separately because they are a
+        # different question. A vanished product asks "should this be selling at all"; a vanished
+        # SIZE under a live product asks "is this pack size really retired" — and the parent row
+        # beside it looks entirely normal, which is what makes it the easier one to miss. Measured
+        # live: 6 parents are mixed, all with zero sales on their inactive sizes today, so this is
+        # empty on the current data and a fixture has to construct it.
+        "inactive_sizes_of_shown": sorted(
+            (
+                {
+                    "product": p["product"],
+                    "sizes": p["inactive_sizes"],
+                }
+                for p in parents
+                if p.get("inactive_sizes") and not p.get("inactive")
+            ),
+            key=lambda item: -item["sizes"],
+        )[:INACTIVE_SHOWN],
+        # Shown despite being inactive, because a decision is recorded against them. Named
+        # separately: "why is this dead product still here" has an answer, and it is this.
+        "decided_but_inactive": sorted(
+            p["product"] for p in parents
+            if p.get("inactive") and p["parent_asin"] in decisions
+        ),
     }
 
 

@@ -177,6 +177,10 @@ tr.size td:first-child{padding-left:30px}
 tr.flav td{background:var(--surface2);font-weight:700;font-size:12.5px;color:var(--text)}
 tr.flav td:first-child{padding-left:30px}
 .fcount{font-size:10.5px;color:var(--text-muted);font-weight:600;margin-left:6px}
+/* A product that is inactive in the MRP sheet but on screen anyway. Muted rather than struck
+   through: the figures are real and still worth reading — it is the product's STATUS that is
+   retired, not its sales. Colour from the theme, never a literal, per tests/test_theme.py. */
+tr.parent.row-inactive td{color:var(--text-muted)}
 tr.size.nested td:first-child{padding-left:52px}
 
 /* The totals row. Heavier than the data and pinned to the bottom of the grid, so a long list
@@ -327,6 +331,9 @@ th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
          wants them wants them every visit. Units and Weight LEFT this toggle: they are what the
          owner reads a row by, and a figure behind a toggle is a figure he has to go looking for. -->
     <button class="btn-outline" id="cols-btn"></button>
+    <!-- Products marked Active = N in the MRP sheet. Re-FETCHES rather than filtering client-side,
+         so the server stays the only place that decides what the flag excludes. -->
+    <button class="btn-outline" id="inactive-btn"></button>
   </div>
   <div id="filter-area"></div>
 </div>
@@ -357,7 +364,12 @@ let view = remembered("view", "products");        // "products" | "skus"
 let window_ = remembered("window", null);         // {start, end} or null = whatever is stored
 let sort = remembered("sort", {key: "sales", dir: -1});
 let filters = remembered("filters", []);          // [{field, op, value}], ANDed
-let showExtra = remembered("showExtra", false);    // the Units / Returns / Rating columns
+let showExtra = remembered("showExtra", false);    // the Returns / Rating columns
+// Products marked `Active = N` in the MRP sheet. **Declared AFTER `remembered`** for the reason
+// `showExtra` records: `remembered` is a `const` arrow function and therefore not hoisted, so
+// calling it above its declaration throws from inside the error handler and the page renders
+// "Loading…" for ever. A test asserts the ORDER.
+let includeInactive = remembered("includeInactive", false);
 let rulesOpen = false;
 
 /* The columns a filter can be built on, and how each is read from a row. ONE definition, so the
@@ -444,21 +456,29 @@ function kg(value){
   return value.toLocaleString("en-IN", {maximumFractionDigits: 1}) + " kg";
 }
 
-/* The querystring for the current window, shared by the payload fetch and the Excel link so the
-   file always matches the screen. */
-function windowQuery(){
-  return window_ && window_.start && window_.end
-    ? `?start=${encodeURIComponent(window_.start)}&end=${encodeURIComponent(window_.end)}`
-    : "";
+/* **ONE querystring, used by the payload fetch AND the Excel link**, so the file cannot hold
+   different products from the grid it was downloaded from.
+
+   `includeInactive` belongs here rather than in a browser-side row filter: the server decides which
+   products the Active flag excludes, and the screen asks. That is the deletion `windows_available`
+   earned — one rule computed twice is the defect this codebase has shipped four times. */
+function payloadQuery(){
+  const parts = [];
+  if(window_ && window_.start && window_.end){
+    parts.push(`start=${encodeURIComponent(window_.start)}`);
+    parts.push(`end=${encodeURIComponent(window_.end)}`);
+  }
+  if(includeInactive) parts.push("include_inactive=1");
+  return parts.length ? "?" + parts.join("&") : "";
 }
 
 async function load(){
   try{
-    const r = await fetch("/portfolio" + windowQuery());
+    const r = await fetch("/portfolio" + payloadQuery());
     const body = await r.json();
     if(!r.ok){ message(body.error || "Could not load the portfolio.", "error"); return; }
     data = body;
-    $("excel-link").href = "/portfolio/download.xlsx" + windowQuery();
+    $("excel-link").href = "/portfolio/download.xlsx" + payloadQuery();
     render();
     renderRefresh(data.refresh);
   }catch(err){
@@ -473,6 +493,7 @@ function render(){
   renderKpis();
   renderCategories();
   renderColsButton();
+  renderInactiveButton();
   renderWindowBar();
   renderVerdicts();
   renderFilters();
@@ -486,7 +507,15 @@ function renderSubtitle(){
   // Set via textContent below, so these dates need no escaping — but they ARE stored values,
   // so the assignment target matters and must stay textContent.
   if(w) parts.push(`${w[0]} to ${w[1]}`);
-  parts.push(`${n(data.totals.parents)} products, ${n(data.totals.skus)} pack sizes`);
+  // **"35 active products · 55 hidden as inactive", not "35 products".** The owner knows there are
+  // 90, so a bare count reads as missing data — and this line is also what makes the toggle
+  // discoverable, since nothing else on screen says the grid is a subset.
+  const hidden = n(data.inactive_hidden_parents);
+  const shown = `${n(data.totals.parents)} ${hidden && !data.include_inactive ? "active " : ""}products`;
+  parts.push(`${shown}, ${n(data.totals.skus)} pack sizes`);
+  if(hidden && !data.include_inactive){
+    parts.push(`${n(hidden)} hidden as inactive`);
+  }
   parts.push("Amazon's own economics and advertising figures");
   $("subtitle").textContent = parts.join(" · ");
 }
@@ -639,6 +668,57 @@ function renderBanners(){
         aria-expanded="false" title="what these mean">ⓘ</button>
       <div class="caveat-full" hidden>${notes.map(x => `<p>${x.full}</p>`).join("")}</div>
     </div>`);
+  }
+
+  /* **What the Active flag excluded, in UNITS AND RUPEES, with the products named.**
+
+     The figures above drop by whatever this says, and nothing else on screen would explain it: the
+     four KPI tiles are money, so hiding Rs 67,193 leaves a 1.5% gap against a Business Report with
+     no account of itself. That gap — reported as 3,337 units against 3,259 — is the whole reason the
+     Shipment tab's version of this banner exists, and the reason this one states rupees where that
+     one states units.
+
+     **Only the products that SOLD are named**, biggest sales first. Measured live, 55 parents are
+     wholly inactive and 8 of them sold; listing all 55 would bury those 8 among dead products, which
+     is the opposite of the point. The other 47 are still counted.
+
+     The banner does NOT put the rows back, and that is deliberate — overriding the owner's own
+     Active flag would be the opposite failure. It asks a question only he can answer: is each of
+     these genuinely retired, or is the flag wrong? */
+  if(!data.include_inactive && n(data.inactive_hidden_skus)){
+    const named = (data.inactive_with_sales || []);
+    const more = n(data.inactive_with_sales_count) - named.length;
+    const list = named.map(x =>
+      `${esc(x.product)} <span class="dim">${n(x.units)}u ${money(x.sales)}</span>`
+    ).join(" · ");
+    out.push(`<div class="banner ${named.length ? "warn" : "info"}">
+      <strong>${n(data.inactive_hidden_skus)} pack size(s) across
+      ${n(data.inactive_hidden_parents)} product(s) are marked Active = N in the MRP sheet</strong>
+      and are excluded from every figure above.
+      ${named.length ? `<br>Still selling, so worth checking the flag is right:
+        ${list}${more > 0 ? ` <span class="dim">and ${n(more)} more</span>` : ""} —
+        <strong>${n(data.inactive_sales_units)} units, ${money(data.inactive_sales)}</strong>
+        in total.` : `None of them sold in this window.`}
+      </div>`);
+  }
+  /* Sizes dropped from a product that is STILL SHOWN — a different question, so its own line. A
+     vanished product asks "should this be selling at all"; a vanished SIZE under a live product asks
+     "is this pack size really retired", and the parent row beside it looks entirely normal, which is
+     what makes this the easier one to miss. */
+  if(!data.include_inactive && (data.inactive_sizes_of_shown || []).length){
+    const list = data.inactive_sizes_of_shown.map(x =>
+      `${esc(x.product)} <span class="dim">${n(x.sizes)}</span>`
+    ).join(" · ");
+    out.push(`<div class="banner info">Some products shown here have inactive pack sizes, excluded
+      from their totals: ${list}.</div>`);
+  }
+  /* Shown DESPITE being inactive, because a decision is recorded against them. Named because
+     otherwise "why is this dead product still in my table" has no answer on screen — and the reason
+     is a good one: `ProductDecision` exists to answer "what is it now?", which needs the row. */
+  if((data.decided_but_inactive || []).length){
+    out.push(`<div class="banner info">${esc(data.decided_but_inactive.join(", "))} —
+      inactive in the sheet, but kept here because you recorded a decision on
+      ${data.decided_but_inactive.length === 1 ? "it" : "them"}.</div>`);
   }
 
   if(data.catalogue_warning){
@@ -1282,10 +1362,20 @@ function renderTable(){
 
        **The category card is the fourth, and it was missing.** It is the newest of the four and
        the easiest to leave on by accident — it is a card in a strip rather than a control that
-       looks like a filter — so "Seeds + Scale" reaching zero rows said nothing about either. */
+       looks like a filter — so "Seeds + Scale" reaching zero rows said nothing about either.
+
+       **The Active flag is a FIFTH cause, and it is not a control on this screen at all.** The grid
+       can now be empty because every matching product is marked Active = N in the MRP sheet — a
+       sheet the owner edits elsewhere — so none of the four controls explains it and the toggle is
+       the way back. That is exactly the case the other four were added for. */
     let why = "Nothing matches.";
     if(!rows().length){
-      why = "No products yet.";
+      // Nothing for this grain at all. If the Active flag is what emptied it, say so FIRST: the
+      // sheet is not on this screen, so "No products yet" would send the owner to Refresh.
+      why = (!data.include_inactive && n(data.inactive_hidden_parents))
+        ? `All ${n(data.inactive_hidden_parents)} product(s) in this window are marked
+           Active = N in the MRP sheet. Press <strong>Show inactive</strong> to see them.`
+        : "No products yet.";
     } else {
       const bits = [];
       // `filter` is a GROUP now, not a verdict — naming it "verdict Scale" would point the owner
@@ -1344,9 +1434,14 @@ function renderTable(){
       // product rather than a fact discovered after doing so, and 15 rows appearing under a name
       // that mentions none of them is what made the grouping unreadable before.
       const flav = (p.flavours || []).length;
-      html += `<tr class="parent" data-parent="${esc(p.parent_asin)}">
+      html += `<tr class="parent${p.inactive ? " row-inactive" : ""}"
+          data-parent="${esc(p.parent_asin)}">
         <td class="p-name"><span class="caret">${isOpen ? "▾" : "▸"}</span> ${esc(p.product)}
           ${p.brand ? `<span class="brand">${esc(p.brand)}</span>` : ""}
+          ${/* A row that is inactive in the sheet but on screen anyway — the toggle is on, or a
+               decision is recorded against it. It SAYS so: an inactive product rendered
+               identically to a live one is the flag silently not mattering. */ ""}
+          ${p.inactive ? `<span class="fcount" title="Active = N in the MRP sheet">inactive</span>` : ""}
           ${flav ? `<span class="fcount" title="${esc(p.flavours.join(", "))}">${flav} flavours
             &times; ${p.sizes.length} sizes</span>` : ""}</td>
         ${dataCells(p)}
@@ -1573,6 +1668,33 @@ $("cols-btn").addEventListener("click", () => {
 
 function renderColsButton(){
   $("cols-btn").textContent = showExtra ? "− Fewer columns" : "+ More columns";
+}
+
+/* The inactive toggle. **`load()`, never `render()`** — the flag is a query parameter, so the server
+   returns a different set of products rather than the browser filtering the ones it already has.
+   Re-rendering would leave the old rows on screen under a button claiming the opposite. */
+$("inactive-btn").addEventListener("click", async () => {
+  includeInactive = !includeInactive;
+  remember("includeInactive", includeInactive);
+  await load();
+});
+
+function renderInactiveButton(){
+  const hidden = n(data && data.inactive_hidden_parents);
+  const btn = $("inactive-btn");
+  // Rendered from the SERVER's echoed flag, not from the local variable: if a request failed the
+  // local one has already flipped, and a button disagreeing with the grid beneath it is worse than
+  // one that lags. Same reason `invoicePick` is reconciled against the server's verified days.
+  const on = !!(data && data.include_inactive);
+  btn.textContent = on
+    ? "Hide inactive"
+    : (hidden ? `Show ${n(hidden)} inactive` : "Show inactive");
+  btn.title = on
+    ? "Hide the products marked Active = N in the MRP sheet"
+    : "Show the products marked Active = N in the MRP sheet";
+  // Nothing to show and nothing shown: the control would do nothing either way. Kept VISIBLE and
+  // disabled rather than removed — a control that vanishes is the dead end the verdict chips taught.
+  btn.disabled = !on && !hidden;
 }
 
 $("filter-area").addEventListener("input", e => {

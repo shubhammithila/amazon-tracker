@@ -462,3 +462,125 @@ def test_the_screen_says_WHERE_the_channel_split_went():
     toggle = source[source.index('data-view="skus"'):]
     toggle = toggle[: toggle.index("</button>")]
     assert "FBA" in toggle, "the SKUs control does not say it holds the Easy Ship / FBA split"
+
+
+# ─── The inactive toggle asks the server; it does not filter locally ─────────
+
+
+def test_the_inactive_toggle_is_a_QUERY_PARAMETER_and_not_a_client_side_filter():
+    """The server decides what the Active flag excludes. The screen asks.
+
+    One rule computed twice is the defect this codebase has shipped four times, and the deletion of
+    `windows_available` — the exact-windows Set the screen used to consult — is the precedent. A local
+    `rows.filter(r => r.active)` would also be wrong in a way nothing would notice: the TOTALS and the
+    banner come from the server, so they would keep describing the unfiltered set.
+    """
+    source = _template()
+    body = _function(source, "payloadQuery")
+    assert "include_inactive=1" in body, "the flag never reaches the server"
+
+    # ONE builder, used by the fetch AND the Excel link, so the file cannot hold different products
+    # from the grid it came from.
+    assert 'fetch("/portfolio" + payloadQuery())' in source
+    assert '"/portfolio/download.xlsx" + payloadQuery()' in source
+    assert "windowQuery" not in source, (
+        "a second query builder survives, so the file and the screen can diverge"
+    )
+
+
+def test_the_inactive_toggle_RELOADS_rather_than_re_rendering():
+    """`render()` would leave the old rows on screen beneath a button claiming the opposite.
+
+    The flag changes what the SERVER returns, so the data has to be re-fetched. Contrast `cols-btn`,
+    which legitimately only re-renders because the same rows are drawn with more columns.
+    """
+    source = _template()
+    handler = source[source.index('$("inactive-btn").addEventListener'):]
+    handler = handler[: handler.index("\n});")]
+    assert "load()" in handler, "the toggle does not re-fetch, so the grid keeps the old products"
+
+    # **Both halves of "remembered", and the DECLARATION is the half that was missing.** A mutation
+    # replacing `remembered("includeInactive", false)` with a bare `false` survived a version of this
+    # test that only checked the handler writes: the write still happened, and every read reverted to
+    # hiding on the next page load — a toggle that appears not to have worked.
+    assert 'remember("includeInactive"' in handler, "the choice is never written"
+    assert 'let includeInactive = remembered("includeInactive"' in source, (
+        "the choice is written but never read back, so it silently reverts on every load"
+    )
+
+
+def test_the_inactive_BUTTON_renders_from_the_servers_echoed_flag():
+    """Not from the local variable, which has already flipped even if the request failed.
+
+    A control disagreeing with the grid beneath it is worse than one that lags — the same reason
+    `invoicePick` is reconciled against the server's verified days on every render.
+    """
+    body = _function(_template(), "renderInactiveButton")
+    assert "data.include_inactive" in body, (
+        "the button reads the local flag rather than the server's answer"
+    )
+    # Kept visible and disabled when there is nothing to show, rather than removed: a control that
+    # vanishes is the dead end the verdict chips taught.
+    assert "disabled" in body
+
+
+def test_includeInactive_is_declared_AFTER_the_helper_it_calls():
+    """The `showExtra` temporal-dead-zone bug, which made the page render "Loading…" for ever.
+
+    `remembered` is a `const` arrow function and is NOT hoisted, so calling it above its declaration
+    throws — from inside the error handler, which needs `$` — and the real cause never reaches the
+    console. Nothing in the suite could catch that; it needed the page. So the ORDER is asserted.
+    """
+    source = _template()
+    assert source.index("const remembered") < source.index("let includeInactive"), (
+        "includeInactive is initialised from `remembered` before `remembered` exists"
+    )
+
+
+def test_the_empty_table_note_names_the_ACTIVE_FLAG_as_a_fifth_cause():
+    """The four named controls are all ON this screen; the MRP sheet is not.
+
+    A grid emptied because every matching product is marked Active = N has no explanation among them,
+    and "No products yet" would send the owner to Refresh from Amazon — the wrong action entirely.
+    """
+    body = _function(_template(), "renderTable")
+    assert "inactive_hidden_parents" in body, (
+        "the empty note cannot tell the owner the Active flag emptied the grid"
+    )
+    assert "Show inactive" in body, "the note does not name the control that undoes it"
+
+
+def test_the_banner_states_the_excluded_money_AND_units_and_names_the_products():
+    """The four KPI tiles are MONEY, so hiding Rs 67,193 leaves a 1.5% gap with no account of itself.
+
+    That gap, reported as 3,337 units against 3,259, is why the Shipment tab's version of this banner
+    exists. This one states rupees as well as units because of what sits above it.
+    """
+    body = _function(_template(), "renderBanners")
+    assert "inactive_with_sales" in body, "the excluded products are not named"
+    assert "inactive_sales_units" in body, "the excluded units are not stated"
+    assert "money(data.inactive_sales)" in body, "the excluded rupees are not stated"
+    # And it must not fire when nothing was excluded.
+    assert "!data.include_inactive && n(data.inactive_hidden_skus)" in body
+
+
+def test_a_shown_but_inactive_row_SAYS_it_is_inactive():
+    """Rendered identically to a live product, the flag is silently not mattering.
+
+    A row is on screen despite `Active = N` in two cases — the toggle is on, or a decision is
+    recorded against it — and both need the badge.
+    """
+    # The parent rows are built inside `renderTable` rather than in a function of their own.
+    source = _template()
+    body = _function(source, "renderTable")
+
+    # **TWO cues, asserted separately.** A mutation that deleted only the badge survived an earlier
+    # version of this test, because `row-inactive` was still present and one `in body` check covered
+    # both. The tint alone is easy to miss on a long table and impossible to read if you are not
+    # comparing rows; the word is what actually answers "why is this dead product here".
+    assert "row-inactive" in body, "an inactive row is not tinted"
+    assert "tr.parent.row-inactive" in source, "row-inactive has no CSS rule, so the tint is inert"
+    assert ">inactive</span>" in body, (
+        "the row carries no 'inactive' BADGE, so it is distinguishable only by a tint"
+    )
+    assert "p.inactive" in body, "the row does not read the server's inactive flag"

@@ -42,11 +42,17 @@ logger = logging.getLogger(__name__)
 STALE_RATING_DAYS = 3
 
 
-async def _dashboard(db: AsyncSession, window: tuple[str, str] | None = None) -> dict:
+async def _dashboard(
+    db: AsyncSession,
+    window: tuple[str, str] | None = None,
+    *,
+    include_inactive: bool = False,
+) -> dict:
     """The portfolio, its verdicts and its provenance. ONE function behind screen and export.
 
     Reads local rows only. The catalogue is loaded live (with its own cache fallback) because it
-    decides which products exist and what they are called — the stale
+    decides which products exist, what they are called, what each pack weighs, and — since the
+    Active flag — **which of them still count**. The stale
     ``app/invoice/product_families.json`` the old tab read had 205 ASINs against the sheet's 271.
 
     Five sources, each answering something the others cannot: the economics (margins), the ads
@@ -85,6 +91,7 @@ async def _dashboard(db: AsyncSession, window: tuple[str, str] | None = None) ->
         ads_by_asin=ads_by_asin,
         channels=logic.channel_split(sku_rows, ads_by_sku),
         thresholds=thresholds,
+        include_inactive=include_inactive,
     )
     result["catalogue_source"] = source
     result["catalogue_warning"] = catalogue_warning
@@ -191,6 +198,7 @@ async def get_portfolio(
     start: str | None = None,
     end: str | None = None,
     days: int | None = None,
+    include_inactive: bool = False,
     db: AsyncSession = Depends(get_db),
     grant=Depends(require_area(permissions.PORTFOLIO)),
 ):
@@ -202,6 +210,11 @@ async def get_portfolio(
     been fetched as that exact window. A range with a missing day still returns empty rather than
     fetching, because a fetch takes ~15 minutes and a GET must not block on one.
 
+    ``?include_inactive=1`` brings back the products marked ``Active = N`` in the MRP sheet. **A
+    parameter rather than a browser-side filter**, so the screen never holds a second copy of the
+    rule — the deletion `windows_available` earned. The flag is echoed in the payload, so the toggle
+    renders from the server's answer rather than from what the browser believes it asked for.
+
     Carries ``last_refresh``, ``ratings_as_of``, ``completeness`` and ``coverage`` so the screen can
     say how old these numbers are and, when a range cannot be answered, WHICH days are missing —
     the things the CSV upload could never tell anyone.
@@ -210,7 +223,7 @@ async def get_portfolio(
     if error:
         return JSONResponse({"error": error}, status_code=400)
 
-    data = await _dashboard(db, window)
+    data = await _dashboard(db, window, include_inactive=include_inactive)
     return JSONResponse({
         **data,
         "refresh": refresh.status(),
@@ -394,9 +407,15 @@ async def save_decision(
 
     # The numbers as they stand right now, so the decision can be judged later against what was
     # actually on screen when it was taken.
+    #
+    # **`include_inactive=True`, and that is not a detail.** The parent is looked up by
+    # `parent_asin` in `data["parents"]`, so on the default view a decision about a product hidden
+    # by the Active flag would find nothing, leave `snapshot` as None, and store a decision with no
+    # figures — silently defeating the one thing `ProductDecision.snapshot_json` exists for. The
+    # products most likely to be marked KILL are exactly the ones the sheet has already retired.
     snapshot = None
     if decision:
-        data = await _dashboard(db)
+        data = await _dashboard(db, include_inactive=True)
         parent = next(
             (p for p in data["parents"] if p["parent_asin"] == parent_asin), None
         )
@@ -434,20 +453,22 @@ async def download_portfolio(
     start: str | None = None,
     end: str | None = None,
     days: int | None = None,
+    include_inactive: bool = False,
     db: AsyncSession = Depends(get_db),
     grant=Depends(require_area(permissions.PORTFOLIO)),
 ):
     """The portfolio as Excel: parents with their sizes indented beneath.
 
     Built through the same ``_dashboard`` the screen uses, so the file and the monitor cannot
-    disagree about a margin. Takes the same window parameters as the screen, so what is exported
-    is what was being looked at.
+    disagree about a margin. Takes the same window parameters as the screen — **and the same
+    ``include_inactive``**, because a workbook that silently holds different products from the grid
+    it was downloaded from is worse than no workbook.
     """
     window, error = _requested_window(start, end, days)
     if error:
         return JSONResponse({"error": error}, status_code=400)
 
-    data = await _dashboard(db, window)
+    data = await _dashboard(db, window, include_inactive=include_inactive)
     window = data.get("window")
     totals = data["totals"]
 
@@ -531,6 +552,13 @@ async def download_portfolio(
         # screen's banner beside it — the same reason the pre-COGS caveat is written into row 1.
         + (f" · {totals['weight_unknown']} pack size(s) have no weight in the MRP sheet and are "
            "excluded from the weight total" if totals.get("weight_unknown") else "")
+        # **The Active exclusion has to be stated in RUPEES.** A file reading Rs 43,79,614 where the
+        # Business Report says Rs 44,46,806 is a reconciliation gap with nothing in the document to
+        # explain it — which is precisely the 3,337-vs-3,259 report that created this discipline.
+        + (f" · EXCLUDES {data['inactive_hidden_skus']} pack size(s) marked Active=N in the MRP "
+           f"sheet ({data['inactive_sales_units']} units, "
+           f"{_money(data['inactive_sales'])}); add ?include_inactive=1 to keep them"
+           if data.get("inactive_hidden_skus") else "")
         + " · margins are PRE-COGS (they exclude what it costs to make the product)"
     )
 
@@ -558,6 +586,24 @@ def _pct(value) -> str:
     among the most ad-efficient products in the portfolio.
     """
     return "—" if value is None else f"{value * 100:.1f}%"
+
+
+def _money(value) -> str:
+    """Rupees for a sentence rather than a cell — the workbook subtitle and nothing else.
+
+    Indian grouping is deliberately NOT attempted here: `f"{x:,.0f}"` gives 6,719,253-style groups,
+    which is wrong for lakhs, and a locale-aware formatter would be a dependency for one sentence.
+    The rupee sign plus plain grouping is unambiguous enough for a caveat line, and every figure in
+    the cells themselves is a real number the spreadsheet formats itself.
+    """
+    return f"Rs {_num_or_zero(value):,.0f}"
+
+
+def _num_or_zero(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _kg(value) -> str:

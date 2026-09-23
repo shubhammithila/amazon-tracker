@@ -107,9 +107,20 @@ def test_the_multiplication_is_the_shipment_tabs_and_not_a_second_copy():
     assert parent["weight_kg"] == line_weight(200, 0.15)
     # Asserted at source, because a reimplementation that happens to agree on this input would pass
     # every value-based test while being a second home for the rule.
+    #
+    # **Asserted on the IMPORT, not on the name.** A mutation that defined a local
+    # `def line_weight(u, w): return u * w` survived an earlier version of this check: the call site
+    # still read `line_weight(...)`, so a bare-name assertion passed while the rounding was gone and
+    # the rule had two homes. The import is the claim.
     import inspect
     source = inspect.getsource(logic.size_row)
-    assert "line_weight(" in source, "size_row does not use the shipment tab's own multiplication"
+    assert "from app.shipment.logic import line_weight" in source, (
+        "size_row does not import the shipment tab's multiplication, so either the rule has a "
+        "second home or the 3-decimal rounding is gone"
+    )
+    assert "line_weight(" in source, "the imported helper is not actually called"
+    # And a locally-defined shadow is refused outright, since that is how the rule silently forks.
+    assert "def line_weight" not in source, "line_weight is redefined rather than imported"
 
 
 # ─── An unknown pack size: excluded AND counted ──────────────────────────────
@@ -210,6 +221,31 @@ def test_the_workbook_carries_the_weight_on_every_row_type():
         "(size, parent, flavour group, TOTAL) plus the subtitle"
     )
     assert '"Weight (kg)"' in source, "the header has no weight column"
+
+
+def test_every_NUMERIC_workbook_column_is_right_aligned():
+    """Digits only compare with the ones above them when they line up.
+
+    **Found by mutation, and it exposed a PRE-EXISTING miss**: `ACOS` and `Ad sales` were absent from
+    this tuple from the day they were added, so both have rendered left-aligned in every workbook
+    exported since. Nothing asserted the alignment, so nothing noticed — and `Weight (kg)` would have
+    joined them silently.
+
+    Asserted on the tuple rather than by opening a cell, because openpyxl reports an unset alignment
+    as `None` rather than as the default, so a value-based check cannot tell "left" from "not set".
+    """
+    import inspect
+
+    from app.shipment import documents
+
+    source = inspect.getsource(documents.build_portfolio_xlsx)
+    tuple_start = source.index('elif heading in ("Sales"')
+    aligned = source[tuple_start: source.index("):", tuple_start)]
+    for column in ("Sales", "Ad spend", "Ad sales", "Net", "Units", "Weight (kg)",
+                   "Net %", "TACOS", "ACOS"):
+        assert f'"{column}"' in aligned, (
+            f"{column} is a number column but is not right-aligned in the workbook"
+        )
 
 
 def test_the_workbooks_TOTAL_uses_the_aggregate_not_a_resum_of_the_rows():
