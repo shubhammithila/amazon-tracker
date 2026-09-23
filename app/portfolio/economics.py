@@ -137,19 +137,32 @@ def validate_window(start: str, end: str, today: date | None = None) -> tuple[st
     return first.isoformat(), last.isoformat()
 
 
-def build_query(start: str, end: str, marketplace_id: str, *, by_sku: bool = False) -> str:
+def build_query(
+    start: str, end: str, marketplace_id: str, *, by_sku: bool = False, by_day: bool = False
+) -> str:
     """The GraphQL document for one economics fetch.
 
     ONE function, so the screen, the tests and any future caller ask Amazon the same
     question. Every field below is verified against the live schema
     (``schemas/data-kiosk/analytics_economics_2024_03_15.graphql``) and a live response.
 
-    **``RANGE`` and ``CHILD_ASIN``, deliberately.** ``RANGE`` collapses the whole window into
-    one row per product, which is the question this dashboard asks ("how did this SKU do over
-    the last 30 days"). ``DAY`` would return the same 267 products x 30 days = ~8,000 rows to
-    answer nothing extra. ``CHILD_ASIN`` is the pack size — the level at which a kill decision
-    is actually made — and each row carries its ``parentAsin``, so the parent rollup is done
-    locally rather than by a second query that could disagree with the first.
+    **``by_day=True`` asks for ``DAY``, and that is now the normal case.** This docstring used to
+    say ``DAY`` "would return the same 267 products x 30 days = ~8,000 rows to answer nothing
+    extra" — a reason not to bother that **nobody had ever run**. Measured on the live account
+    before the per-day cache was built:
+
+        2 days   ->   534 rows (267 per day, cleanly separated), 12 s
+        7 days   ->   the DAY sum equals RANGE to the rupee on sales, ads, net AND units
+        30 days  -> 8,010 rows in 25 s, 3.5 MB — the SAME cost as the RANGE query it replaces
+
+    The row count was right and the conclusion was wrong: those rows answer the thing a
+    window-keyed cache structurally cannot, which is any range the owner did not fetch in advance.
+    Summing them is not an approximation of the window figure — it IS the window figure.
+
+    ``RANGE`` remains available for a caller that genuinely wants one row per product over a span.
+    ``CHILD_ASIN`` is the pack size — the level at which a kill decision is actually made — and each
+    row carries its ``parentAsin``, so the parent rollup is done locally rather than by a second
+    query that could disagree with the first.
 
     ``msku`` is requested but comes back null under CHILD_ASIN aggregation (the schema says so:
     it is only populated for FNSKU/MSKU aggregation). It is left in because it costs nothing
@@ -168,7 +181,7 @@ query PortfolioEconomics {
       startDate: "%(start)s"
       endDate: "%(end)s"
       marketplaceIds: ["%(marketplace)s"]
-      aggregateBy: { date: RANGE, productId: %(grain)s }
+      aggregateBy: { date: %(date_grain)s, productId: %(grain)s }
     ) {
       startDate
       endDate
@@ -200,7 +213,8 @@ query PortfolioEconomics {
   }
 }
 """ % {"start": start, "end": end, "marketplace": marketplace_id,
-       "grain": "MSKU" if by_sku else "CHILD_ASIN"}
+       "grain": "MSKU" if by_sku else "CHILD_ASIN",
+       "date_grain": "DAY" if by_day else "RANGE"}
 
 
 async def _run_query(
@@ -254,8 +268,14 @@ async def fetch_economics(
     today: date | None = None,
     sleep=asyncio.sleep,
     on_progress=None,
+    by_day: bool = True,
 ) -> tuple[list[dict], list[dict], str, str]:
     """Both economics grains for one window. Returns ``(asin_rows, sku_rows, start, end)``.
+
+    **``by_day`` defaults to True**, because the store is keyed per day: a row without a
+    `startDate` of its own cannot be filed under one, and `save_economics_daily` skips it rather
+    than guessing. `by_day=False` is kept for a caller that wants one row per product over the
+    whole span.
 
     **Two queries, and the second one is optional detail.** The ASIN-level rows are the
     dashboard: sales, fees, ad charge, net proceeds per pack size, and the authoritative totals.
@@ -283,7 +303,7 @@ async def fetch_economics(
     if on_progress:
         on_progress("econ_submit", 0, 1)
     asin_rows = await _run_query(
-        build_query(start, end, settings.sp_api_marketplace_id),
+        build_query(start, end, settings.sp_api_marketplace_id, by_day=by_day),
         label="economics", sleep=sleep, on_progress=on_progress, phase="econ_poll",
     )
     if on_progress:
@@ -292,7 +312,9 @@ async def fetch_economics(
     sku_rows: list[dict] = []
     try:
         sku_rows = await _run_query(
-            build_query(start, end, settings.sp_api_marketplace_id, by_sku=True),
+            build_query(
+                start, end, settings.sp_api_marketplace_id, by_sku=True, by_day=by_day
+            ),
             label="economics by SKU", sleep=sleep, on_progress=on_progress, phase="econ_poll",
         )
     except SpApiError as exc:

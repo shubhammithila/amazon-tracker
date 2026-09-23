@@ -827,70 +827,59 @@ class ProductRawStock(Base):
     updated_by = Column(String(50))
 
 
-class EconomicsSnapshot(Base):
-    """One product's economics for one window, as Amazon reported them. **A cache.**
+class EconomicsDaily(Base):
+    """One product's economics for ONE DAY, as Amazon reported them. **A cache.**
 
-    Exists so the Portfolio tab renders instantly. A Data Kiosk query takes one to two minutes
-    (measured), so a page that fetched on request would hang and two people opening the tab
-    would queue behind each other. The background refresh writes these rows; every route reads
-    them — the same boundary `amazon_orders` keeps.
+    Replaces the per-WINDOW `economics_snapshot`, and the reason is the one the Ads tab already
+    learned: keyed per window, a range nobody had fetched had no row to read, so `GET /portfolio`
+    returned empty and offered a **~12 minute** fetch. Keyed per day, any sub-range inside the
+    coverage is a `GROUP BY`.
 
-    **Nothing here is edited by hand.** A wrong value is fixed by refreshing, not by typing,
-    because a local edit would make this a second source of truth about money Amazon has
-    already accounted for. The owner's own judgement lives in `ProductDecision` instead.
+    **The per-window table also grew without bound.** It had reached 32 windows / 21,698 rows with
+    no retention, one window added every night — the same shape `ads_performance` had before it was
+    deleted, and CLAUDE.md's conclusion there was "the most reliable way to bound a table is not to
+    have it". This one is purged to `DAILY_RETENTION_DAYS`.
 
-    UNIQUE on (window_start, window_end, child_asin): a refresh re-run for the same window
-    must UPDATE its rows rather than double the portfolio.
+    **`aggregateBy: { date: DAY }` was tested before this table existed**, because the old
+    `build_query` docstring recorded a reason NOT to use it ("~8,000 rows to answer nothing extra")
+    that nobody had run. Measured on the live account:
 
-    **Fees are a JSON map, not typed columns.** Amazon returned 8 distinct fee types on this
-    account (`FbaFulfilmentFee`, `WeightBasedFee`, `FixedClosingFee`, `ReferralFee`,
-    `RemovalFee`, `FBAInventoryReimbursement`, `RefundCommissionFee`, `MFNPostageFee`) and adds
-    more over time. A column each would mean a migration every time Amazon invents a fee, and
-    the dashboard only ever needs the total plus a breakdown on expand.
+        2 days   ->    534 rows  (267 per day, cleanly separated), 12 s
+        7 days   -> identical to the RANGE query to the rupee on sales, ads, net and units
+        30 days  ->  8,010 rows in 25 s, 3.5 MB - the same cost as the RANGE query it replaces
 
-    Money is `Numeric(12, 2)`, so **callers must convert to `float` before returning it in
-    JSON** — SQLAlchemy hands back `Decimal`, which `JSONResponse` cannot serialise. This app
-    has already shipped that defect twice (datetimes on the orders payload, then `raw_kg`), so
-    `repository.load_snapshot` does the conversion once for every route.
+    So summing days is not an approximation of the window figure; it IS the window figure.
+
+    UNIQUE on (day, child_asin, seller_sku). **`seller_sku` carries `""` rather than NULL on the
+    authoritative ASIN-level rows**, deliberately differing from `economics_snapshot`: SQLite
+    treats NULLs as DISTINCT in a unique index, so a nullable column there did not actually
+    constrain the ASIN rows and the same (day, asin) could be inserted twice, silently doubling a
+    day. `""` makes the index do the work.
+
+    Money is `Numeric(12, 2)`, so **callers convert to `float` before JSON** — `JSONResponse`
+    cannot serialise `Decimal`, a defect this app has shipped twice.
     """
-    __tablename__ = "economics_snapshot"
+    __tablename__ = "economics_daily"
     __table_args__ = (
         Index(
-            "idx_economics_snapshot_window_asin",
-            # `seller_sku` joined the key when per-SKU rows were added. NULL for the ASIN-level
-            # rows that carry the totals, and set for the MSKU breakdown rows that sit beside
-            # them — so one table holds both grains without either being able to double the
-            # other. `load_snapshot` filters to `seller_sku IS NULL`.
-            #
-            # SQLite treats NULLs as DISTINCT in a unique index, so this does NOT constrain the
-            # ASIN-level rows the way the three-column version did. `save_snapshot` therefore
-            # still selects-then-updates rather than relying on the index alone, which it always
-            # did — the index is a backstop, not the mechanism.
-            "window_start", "window_end", "child_asin", "seller_sku",
+            "idx_economics_daily_day_asin_sku",
+            "day", "child_asin", "seller_sku",
             unique=True,
         ),
+        # Every write deletes by day and every read sums a date range, so both paths want this.
+        Index("idx_economics_daily_day", "day"),
     )
 
     id = Column(Integer, primary_key=True)
-    #: Window the figures cover, "YYYY-MM-DD". Text for the same reason `pack_date` is:
-    #: these are calendar dates from Amazon, not instants, and must not drift with a timezone.
-    window_start = Column(String(10), nullable=False)
-    window_end = Column(String(10), nullable=False)
-    #: The pack size — the level at which a kill decision is taken.
+    #: `YYYY-MM-DD` exactly as Amazon reported it in `startDate`. Text rather than a Date for the
+    #: same reason `pack_date` is: a calendar day from Amazon, not an instant, and it must not
+    #: drift with a timezone.
+    day = Column(String(10), nullable=False)
     child_asin = Column(String(10), nullable=False)
-    #: **NULL on the authoritative ASIN-level rows; set on the per-SKU breakdown rows.**
-    #:
-    #: Measured on the live account: 186 of 267 child ASINs sell under TWO merchant SKUs — a
-    #: merchant/Easy Ship one and an identically-named "… FBA" one (`0.25 fc np` /
-    #: `0.25 fc np FBA`). The dashboard shows them COMBINED, which is what the CHILD_ASIN
-    #: aggregation already does; these rows exist only to show the split on expand.
-    #:
-    #: They are NOT the source of any total. Amazon's MSKU rows lose a little to rows it cannot
-    #: attribute to a single SKU, so ASIN-level stays authoritative — verified: merchant
-    #: 16,68,051 + FBA 32,81,373 = 49,49,424, matching the ASIN total to the rupee.
-    seller_sku = Column(String(80))
-    #: The variation family. Not a foreign key: it is Amazon's non-buyable grouping id and
-    #: appears in no other table.
+    #: `""` on the authoritative ASIN-level rows, the MSKU on the per-SKU breakdown rows. See the
+    #: class docstring for why this is `""` and not NULL, and `EconomicsSnapshot.seller_sku` for
+    #: why the two grains share one table (186 of 267 ASINs sell under two SKUs).
+    seller_sku = Column(String(80), nullable=False, default="", server_default="")
     parent_asin = Column(String(10))
     ordered_sales = Column(Numeric(12, 2), default=0)
     refunded_sales = Column(Numeric(12, 2), default=0)
@@ -899,11 +888,52 @@ class EconomicsSnapshot(Base):
     units_ordered = Column(Integer, default=0)
     units_refunded = Column(Integer, default=0)
     net_units = Column(Integer, default=0)
-    #: {feeTypeName: amount} as JSON text. See the class docstring for why it is not columns.
+    #: {feeTypeName: amount} as JSON text, for that day. Summing a range merges these BY NAME —
+    #: Amazon returned 8 distinct fee types here and adds more, so position would drift.
     fees_json = Column(Text)
-    #: {adTypeName: amount} as JSON text. One type today (SponsoredProductFee); Sponsored
-    #: Brands or Display would appear here without a migration.
     ads_json = Column(Text)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AdsDaily(Base):
+    """Ad cost and ATTRIBUTED sales per SKU, for ONE DAY. **Amazon's, cached.**
+
+    Replaces the per-window `ads_snapshot`, for the same reason `EconomicsDaily` replaces
+    `economics_snapshot`.
+
+    **The 14-day attribution window was the real risk here, and it turned out not to be.**
+    CLAUDE.md records that CHUNKING a 31-day report makes ACOS read slightly high, because
+    `attributedSalesSameSku14d` can credit a sale up to 14 days after the click and a chunk
+    boundary cannot see it. The obvious fear was that one-day granularity would be that error 30x
+    worse. Measured on the live account, 7 days:
+
+        SUMMARY  1,173 rows  cost 3,47,570.00  attributed sales 3,81,534.93  ACOS 91.10%
+        DAILY    6,057 rows  cost 3,47,570.00  attributed sales 3,81,534.93  ACOS 91.10%
+
+    **Identical.** Amazon attributes each sale back to the CLICK's day, so the daily rows sum to
+    the summary figure exactly — which makes summing days *more* accurate than the existing chunked
+    60d/90d path, not less.
+
+    `timeUnit: DAILY` requires the `date` column to be requested as well. Measured: DAILY is
+    accepted WITHOUT it, and the rows then carry no date at all and cannot be filed under a day.
+    """
+    __tablename__ = "ads_daily"
+    __table_args__ = (
+        Index("idx_ads_daily_pf_day_asin_sku", "day", "child_asin", "seller_sku", unique=True),
+        Index("idx_ads_daily_pf_day", "day"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    day = Column(String(10), nullable=False)
+    child_asin = Column(String(10), nullable=False)
+    #: Amazon's `advertisedSku`. Never NULL — see `EconomicsDaily.seller_sku` on why `""`.
+    seller_sku = Column(String(80), nullable=False, default="", server_default="")
+    cost = Column(Numeric(12, 2), default=0)
+    #: `attributedSalesSameSku14d`, credited to the click's day. See the class docstring.
+    attributed_sales = Column(Numeric(12, 2), default=0)
+    purchases = Column(Integer, default=0)
+    clicks = Column(Integer, default=0)
+    impressions = Column(Integer, default=0)
     fetched_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -1050,53 +1080,6 @@ class ProductDecision(Base):
     snapshot_json = Column(Text)
     decided_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     decided_by = Column(String(50))
-
-
-class AdsSnapshot(Base):
-    """Ad spend against ATTRIBUTED sales, per SKU, for one window. **Amazon's, cached.**
-
-    A separate table from `EconomicsSnapshot` because it comes from a separate API with a
-    different grain and a different failure mode. The Advertising API report takes ~12 minutes to
-    generate (measured) against the economics query's 30 seconds, so the two are fetched in
-    separate phases and **an ads failure must not cost the margins**. Two tables make that
-    trivially true.
-
-    **What it adds that SP-API cannot: `attributed_sales`.** The Economics feed reports the ad
-    CHARGE, which gives TACOS (spend / total sales). It has no attributed-sales column, so true
-    ACOS (spend / sales the ads actually caused) is not derivable from it. Measured 27 Jul –
-    26 Aug: TACOS 33.1% against a true ACOS of **89.9%** — Rs 1 of ads returning Rs 1.11. Those
-    are different claims about the same money and the tab shows both.
-
-    **Keyed on the SELLER SKU, not just the ASIN**, because that is the grain Amazon reports and
-    because it carries the fulfilment channel: `0.25 fc np` versus `0.25 fc np FBA`. Measured, the
-    merchant SKU of `B0DCCL1531` spent Rs 1,444 for ZERO attributed sales while its FBA twin
-    returned 36% ACOS — one number per ASIN would have hidden that.
-
-    Money is `Numeric(12, 2)`; **callers convert to float before JSON**, as everywhere in this
-    app (`JSONResponse` cannot serialise `Decimal`).
-    """
-    __tablename__ = "ads_snapshot"
-    __table_args__ = (
-        Index(
-            "idx_ads_snapshot_window_asin_sku",
-            "window_start", "window_end", "child_asin", "seller_sku",
-            unique=True,
-        ),
-    )
-
-    id = Column(Integer, primary_key=True)
-    window_start = Column(String(10), nullable=False)
-    window_end = Column(String(10), nullable=False)
-    child_asin = Column(String(10), nullable=False)
-    #: Amazon's `advertisedSku`. Verified: all 213 advertised SKUs join to the economics MSKUs.
-    seller_sku = Column(String(80), nullable=False, default="")
-    cost = Column(Numeric(12, 2), default=0)
-    #: `attributedSalesSameSku14d` — sales Amazon credits to a click on this SKU within 14 days.
-    attributed_sales = Column(Numeric(12, 2), default=0)
-    purchases = Column(Integer, default=0)
-    clicks = Column(Integer, default=0)
-    impressions = Column(Integer, default=0)
-    fetched_at = Column(DateTime, default=datetime.utcnow)
 
 
 class PortfolioSettings(Base):

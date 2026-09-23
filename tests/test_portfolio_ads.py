@@ -22,8 +22,21 @@ pytestmark = pytest.mark.regression
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def _fixture():
-    return json.loads((FIXTURES / "ads_rows.json").read_text(encoding="utf-8"))
+def _fixture(*, days: int = 1):
+    """The captured report rows, dealt across `days` calendar days.
+
+    The fixture is a real SUMMARY capture and therefore carries no `date`, while `fetch_acos` now
+    requests `timeUnit: DAILY` and **skips a dateless row by design** — Amazon accepts DAILY without
+    the `date` column (measured), and filing such a row under a guessed day would put one day's
+    spend into another. So the day is stamped here rather than the skip being loosened.
+
+    `days=1` leaves every existing total in this file exactly what it was; a larger number makes the
+    per-day keying observable.
+    """
+    raw = json.loads((FIXTURES / "ads_rows.json").read_text(encoding="utf-8"))
+    for index, row in enumerate(raw):
+        row["date"] = f"2026-08-{(index % days) + 1:02d}"
+    return raw
 
 
 async def _no_sleep(seconds):
@@ -255,7 +268,8 @@ async def test_a_gzipped_report_is_decompressed(monkeypatch):
     zero rows, which renders as "you advertise nothing".
     """
     fake = _Ads(statuses=["COMPLETED"],
-                rows=[{"advertisedAsin": "B0AAA00001", "advertisedSku": "s", "cost": 12.0}],
+                rows=[{"advertisedAsin": "B0AAA00001", "advertisedSku": "s", "cost": 12.0,
+                       "date": "2026-08-01"}],
                 compressed=True)
     _patch(monkeypatch, fake)
 
@@ -323,7 +337,8 @@ async def test_progress_is_reported_while_the_report_generates(monkeypatch):
     `test_the_progress_bar_spans_all_the_chunks_rather_than_restarting`.
     """
     fake = _Ads(statuses=["PENDING", "PENDING", "COMPLETED"],
-                rows=[{"advertisedAsin": "B0AAA00001", "advertisedSku": "s", "cost": 1.0}])
+                rows=[{"advertisedAsin": "B0AAA00001", "advertisedSku": "s", "cost": 1.0,
+                       "date": "2026-08-01"}])
     _patch(monkeypatch, fake)
 
     seen = []
@@ -407,14 +422,24 @@ def test_a_reversed_window_is_refused_rather_than_returning_nothing():
 async def test_a_ninety_day_window_runs_several_reports_and_sums_them(monkeypatch):
     """The end-to-end fix: three reports, one aggregated result at one grain.
 
-    Costs SUM across the chunks — the same ASIN advertised in all three months is one row whose
-    cost is the total, not the last chunk's. `aggregate` is reused unchanged for this, so there is
-    one summing rule rather than a second one for merging.
+    **Under `daily` the chunks PARTITION the days rather than summing over them**, which is the
+    property that makes per-day chunking exact. Each chunk here returns its own date, so three
+    reports produce three rows for one (asin, sku) — and the total across them is still the whole
+    window's spend. The SUMMARY behaviour (three chunks collapsing into one row whose cost is the
+    total, not the last chunk's) is asserted separately below.
     """
     row = [{"advertisedAsin": "B0AAA00001", "advertisedSku": "sku-1", "cost": 100.0,
             "attributedSalesSameSku14d": 250.0, "purchasesSameSku14d": 2,
             "clicks": 10, "impressions": 1000}]
-    fake = _Ads(statuses=["COMPLETED"], rows=row)
+
+    # A different day per chunk, the way a real DAILY report would answer.
+    class _PerChunk(_Ads):
+        def body(self):
+            day = f"2026-0{6 + len(self.created) - 1}-01"
+            import json as _json
+            return _json.dumps([{**row[0], "date": day}]).encode()
+
+    fake = _PerChunk(statuses=["COMPLETED"], rows=row)
     _patch(monkeypatch, fake)
 
     out = await ads.fetch_acos("2026-06-01", "2026-08-29", sleep=_no_sleep)
@@ -426,10 +451,35 @@ async def test_a_ninety_day_window_runs_several_reports_and_sums_them(monkeypatc
         span = (date.fromisoformat(body["endDate"]) - date.fromisoformat(body["startDate"])).days + 1
         assert span <= ads.MAX_REPORT_DAYS, f"a {span}-day report would be refused by Amazon"
 
+    assert len(out) == 3, "the three chunks did not each keep their own day"
+    assert {r["day"] for r in out} == {"2026-06-01", "2026-07-01", "2026-08-01"}
+    # Nothing is lost across the chunks — the whole window's spend is still present.
+    assert sum(r["cost"] for r in out) == 300.0, "chunk costs must SUM, not overwrite"
+    assert sum(r["attributed_sales"] for r in out) == 750.0
+    assert sum(r["clicks"] for r in out) == 30
+
+
+async def test_chunks_still_collapse_to_ONE_row_under_summary(monkeypatch):
+    """The pre-per-day behaviour, kept because `daily=False` is still a supported call.
+
+    Costs SUM across the chunks — the same ASIN advertised in all three months is one row whose
+    cost is the total, not the last chunk's. `aggregate` is reused unchanged for this, so there is
+    one summing rule rather than a second one for merging.
+    """
+    row = [{"advertisedAsin": "B0AAA00001", "advertisedSku": "sku-1", "cost": 100.0,
+            "attributedSalesSameSku14d": 250.0, "purchasesSameSku14d": 2,
+            "clicks": 10, "impressions": 1000}]
+    fake = _Ads(statuses=["COMPLETED"], rows=row)
+    _patch(monkeypatch, fake)
+
+    out = await ads.fetch_acos("2026-06-01", "2026-08-29", sleep=_no_sleep, daily=False)
+
+    assert len(fake.created) == 3
     assert len(out) == 1, "the three chunks were not collapsed to one row per (asin, sku)"
     assert out[0]["cost"] == 300.0, "chunk costs must SUM, not overwrite"
     assert out[0]["attributed_sales"] == 750.0
     assert out[0]["clicks"] == 30 and out[0]["impressions"] == 3000
+    assert "day" not in out[0], "a SUMMARY row must carry no day"
 
 
 async def test_the_progress_bar_spans_all_the_chunks_rather_than_restarting(monkeypatch):
@@ -439,7 +489,8 @@ async def test_the_progress_bar_spans_all_the_chunks_rather_than_restarting(monk
     monotonic percentage.
     """
     fake = _Ads(statuses=["PENDING", "COMPLETED"],
-                rows=[{"advertisedAsin": "B0AAA00001", "advertisedSku": "s", "cost": 1.0}])
+                rows=[{"advertisedAsin": "B0AAA00001", "advertisedSku": "s", "cost": 1.0,
+                       "date": "2026-08-01"}])
     _patch(monkeypatch, fake)
 
     seen = []

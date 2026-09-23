@@ -257,11 +257,12 @@ PORTFOLIO_REFRESH_IST = (7, 30)
 
 
 async def scheduled_portfolio_refresh():
-    """Pull the Seller Central Economics figures once a night.
+    """Pull the Seller Central Economics figures once a night — **only the days not already held**.
 
-    **Once, not hourly, because the data only changes once.** Amazon refreshes the economics data
-    set daily, so a second run the same day would spend one to two minutes to store identical
-    numbers. The manual Refresh button covers "I want it now".
+    **Incremental, not a rolling refetch.** The store is keyed per DAY, so a night only has to add
+    yesterday: ~15 minutes, against the ~45 a rolling 90-day refetch would cost in three ads
+    reports on a box where the Ads tab's own job already runs for an hour. `run_incremental` is a
+    no-op when the day is already there, so a second run the same night spends nothing.
 
     Skipped silently when SP-API is not configured — the app is expected to work without Amazon
     credentials, and the screen says so rather than the log filling with auth failures on every
@@ -277,8 +278,10 @@ async def scheduled_portfolio_refresh():
 
     from app.portfolio import refresh as portfolio_refresh
 
-    result = await portfolio_refresh.run()
-    if result.get("refused"):
+    result = await portfolio_refresh.run_incremental()
+    if result.get("skipped"):
+        logger.info("Portfolio refresh: every day is already held, nothing to fetch")
+    elif result.get("refused"):
         logger.info("Portfolio refresh skipped: one is already running")
     elif result.get("error"):
         logger.warning("Portfolio refresh failed: %s", result["error"])

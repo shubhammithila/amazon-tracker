@@ -473,11 +473,18 @@ function renderSubtitle(){
 }
 
 /* ── The window bar ─────────────────────────────────────────────────────────────
-   Presets plus a custom range. A window already fetched is marked with a dot and loads
-   instantly; anything else has to be fetched, and the button says how long that takes because
-   the ad report is a 15-to-25-minute wait rather than a spinner. */
+   Presets plus a custom range. **Any range inside the stored coverage is instant**, because the
+   cache is keyed per DAY and a window is a sum over days — it no longer has to have been fetched
+   as that exact window.
+
+   **The `windows_available` set is GONE, and the deletion is the fix.** The screen used to hold a
+   Set of exactly-fetched windows and decide "instant or 20-minute fetch" from it, which is one
+   rule computed twice: the server's `range_completeness` could refuse a range the dot had just
+   promised was instant. That is the Ads tab's `insideDailyCoverage` defect — same shape, same
+   deletion. The instant/not-instant answer now comes from `data.completeness` alone, and
+   `data.coverage` is used only for the prose that says what the store holds. */
 function renderWindowBar(){
-  const have = new Set((data.windows_available || []).map(w => w.start + ".." + w.end));
+  const cov = data.coverage || {};
   const current = data.window ? data.window[0] + ".." + data.window[1] : "";
   const today = new Date();
 
@@ -487,24 +494,34 @@ function renderWindowBar(){
     return {start: localDate(start), end: localDate(end)};
   }
 
+  /* Inside the coverage SPAN, which is what the button can know without asking the server per
+     preset. Deliberately NOT presented as a promise: a span cannot see an interior gap, so the
+     authoritative answer stays `data.completeness` for the range actually shown. The dot is a
+     hint about cost, and the banner below states the truth. */
+  const inSpan = (r) => !!(cov.first && cov.last && r.start >= cov.first && r.end <= cov.last);
+
   const buttons = [7, 30, 60, 90].map(days => {
     const r = presetRange(days);
     const key = r.start + ".." + r.end;
-    const cached = have.has(key);
-    // The dot is a bare coloured span, so it says nothing to a screen reader — and what it
-    // says is not decoration: cached is instant, uncached is a 20-minute Amazon report. It
-    // goes into the accessible name in words, and is aria-hidden as a glyph.
+    const likely = inSpan(r);
+    // The dot is a bare coloured span, so it says nothing to a screen reader — and what it says
+    // is not decoration. It goes into the accessible name in words, and is aria-hidden as a glyph.
     return `<button class="win-btn ${key === current ? "on" : ""}"
       data-start="${r.start}" data-end="${r.end}"
       aria-pressed="${key === current}"
       aria-label="Last ${days} days, ${r.start} to ${r.end}${
-        cached ? " — already fetched, loads instantly" : " — not fetched yet"}"
+        likely ? " — inside the stored days, loads instantly" : " — outside the stored days"}"
       title="${r.start} to ${r.end}">${days}d${
-      cached ? '<span class="dot" aria-hidden="true"></span>' : ""}</button>`;
+      likely ? '<span class="dot" aria-hidden="true"></span>' : ""}</button>`;
   }).join("");
 
   const w = data.window || ["", ""];
-  const uncached = w[0] && !have.has(current);
+  // **The SERVER's answer for the range actually on screen**, never a second computation of it.
+  const done = data.completeness || {};
+  const needsFetch = !!(w[0] && done.complete === false);
+  const held = cov.days
+    ? `holding ${n(cov.days)} day(s), ${esc(cov.first)} to ${esc(cov.last)}`
+    : "nothing stored yet";
   $("window-bar").innerHTML = `
     <span class="win-label">Window</span>
     ${buttons}
@@ -514,8 +531,8 @@ function renderWindowBar(){
     <input class="win-date" type="date" id="win-to" value="${esc(w[1])}" max="${esc(maxDate())}"
       aria-label="Window end date, no later than yesterday"/>
     <button class="btn-outline" id="win-apply">Show</button>
-    ${uncached ? `<button class="btn" id="win-fetch">Fetch this window (~20 min)</button>` : ""}
-    <span class="dim" style="font-size:11.5px">a dot means already fetched — instant</span>`;
+    ${needsFetch ? `<button class="btn" id="win-fetch">Fetch the missing days (~15 min)</button>` : ""}
+    <span class="dim" style="font-size:11.5px">${held} — any range inside them is instant</span>`;
 }
 
 /* Yesterday, because today's figures are still settling: an ad charge lands hours after the
@@ -543,10 +560,26 @@ function maxDate(){
 function renderBanners(){
   const out = [];
 
+  /* **An empty grid now has two different causes, and conflating them cost the Ads tab a
+     morning.** Either nothing has ever been fetched, or the store holds days but not THESE days —
+     and only the second one names which days are missing. The Ads tab's "Nothing fetched" banner
+     sat above half a million current rows for exactly this reason. */
   if(!data.parents.length){
-    out.push(`<div class="banner info">Nothing fetched yet. Press
-      <strong>Refresh from Amazon</strong> — it takes a minute or two, and the numbers are then
-      cached so this page always loads instantly.</div>`);
+    const done = data.completeness || {};
+    const cov = data.coverage || {};
+    if(done.missing_count > 0 && cov.days){
+      const named = (done.missing || []).map(esc).join(", ");
+      const more = done.missing_count - (done.missing || []).length;
+      out.push(`<div class="banner warn"><strong>This range is missing
+        ${n(done.missing_count)} day(s)</strong>, so it is not summable —
+        ${named}${more > 0 ? ` and ${n(more)} more` : ""}.
+        The store holds ${esc(cov.first)} to ${esc(cov.last)}; any range inside that is instant.
+        Press <strong>Fetch the missing days</strong> to add these.</div>`);
+    }else{
+      out.push(`<div class="banner info">Nothing fetched yet. Press
+        <strong>Refresh from Amazon</strong> — it fetches one day at a time and every range inside
+        the stored days then loads instantly.</div>`);
+    }
   }
 
   /* **The two standing caveats collapse to ONE line with an ⓘ.** Asked for as part of "make it

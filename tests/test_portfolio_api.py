@@ -5,12 +5,13 @@ Decimal reaching `JSONResponse`, a datetime reaching `JSONResponse`, and an N+1 
 inside a page render.
 """
 import json
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from app.models import EconomicsSnapshot, Product, ProductDecision, RatingHistory
+from app.models import EconomicsDaily, Product, ProductDecision, RatingHistory
 from app.portfolio import repository
 
 pytestmark = pytest.mark.regression
@@ -19,12 +20,41 @@ FIXTURES = Path(__file__).parent / "fixtures"
 WINDOW = ("2026-07-28", "2026-08-26")
 
 
-def _rows():
-    return json.loads((FIXTURES / "economics_rows.json").read_text(encoding="utf-8"))
+def _rows(day: str | None = None):
+    """The fixture rows, stamped onto ONE day inside `WINDOW`.
+
+    The store is keyed per day now, so a row needs a `startDate` that is a day rather than a window.
+    Stamping them all onto a single day keeps every total in this file exactly what it was — one
+    day's rows summed IS the window's rows — so the existing assertions still mean what they said.
+    Multi-day summing has its own tests in `test_portfolio_daily.py`.
+    """
+    raw = json.loads((FIXTURES / "economics_rows.json").read_text(encoding="utf-8"))
+    stamp = day or WINDOW[1]
+    for row in raw:
+        row["startDate"] = stamp
+        row["endDate"] = stamp
+    return raw
+
+
+def _stamp(rows, day: str | None = None):
+    """Put a day on hand-built economics rows. Same single-day reasoning as `_rows`."""
+    stamp = day or WINDOW[1]
+    for row in rows:
+        row["startDate"] = stamp
+        row["endDate"] = stamp
+    return rows
+
+
+def _stamp_ads(rows, day: str | None = None):
+    """Put a day on hand-built ads rows — `save_ads_daily` skips a dateless row by design."""
+    stamp = day or WINDOW[1]
+    for row in rows:
+        row["day"] = stamp
+    return rows
 
 
 async def _seed_snapshot(db, rows=None):
-    stored = await repository.save_snapshot(db, WINDOW[0], WINDOW[1], rows or _rows())
+    stored = await repository.save_economics_daily(db, rows or _rows())
     return stored
 
 
@@ -74,7 +104,7 @@ async def test_the_same_window_upserts_rather_than_doubling_the_portfolio(db):
     for _ in range(3):
         await _seed_snapshot(db, rows)
 
-    count = (await db.execute(select(func.count()).select_from(EconomicsSnapshot))).scalar()
+    count = (await db.execute(select(func.count()).select_from(EconomicsDaily))).scalar()
     assert count == len({r["childAsin"] for r in rows}), (
         f"{count} rows stored for {len(rows)} products — the upsert is inserting"
     )
@@ -92,19 +122,29 @@ async def test_no_decimal_survives_the_load(db):
     json.dumps(back)            # would raise on a Decimal
 
 
-async def test_the_latest_window_is_the_newest_END_date(db):
-    """Ordered by window_end, not by fetched_at.
+async def test_the_default_window_ends_on_the_newest_day_HELD(db):
+    """Anchored on the newest stored DAY, never on the order the days were written.
 
-    Re-running an OLDER window — a deliberate look at last month, say — would otherwise become
-    "the latest" and shift the whole dashboard backwards in time without saying so.
+    This used to assert "the latest window is the newest window_end", because the cache was keyed
+    per window and re-running an older one could otherwise become "the latest" and shift the whole
+    dashboard backwards in time. Per-day storage removes that failure mode by construction — there
+    is no window to re-run — and the property that replaces it is that the default range ends on the
+    freshest day actually held, whatever order the days arrived in.
     """
     rows = _rows()[:2]
-    await repository.save_snapshot(db, "2026-06-01", "2026-06-30", rows)
-    await repository.save_snapshot(db, "2026-07-28", "2026-08-26", rows)
-    # Stored last, but covers an older period.
-    await repository.save_snapshot(db, "2026-05-01", "2026-05-31", rows)
+    # Written OLDEST LAST, so an implementation keyed on insertion order would pick 2026-05-31.
+    await repository.save_economics_daily(db, _rows(day="2026-08-26")[:2])
+    await repository.save_economics_daily(db, _rows(day="2026-06-30")[:2])
+    await repository.save_economics_daily(db, _rows(day="2026-05-31")[:2])
+    assert rows
 
-    assert await repository.latest_window(db) == ("2026-07-28", "2026-08-26")
+    window = await repository.latest_window(db, days=30)
+    assert window[1] == "2026-08-26", (
+        "the default range does not end on the newest day held, so the dashboard would show "
+        "stale figures without saying so"
+    )
+    # And it never claims days before the earliest one held.
+    assert window[0] >= "2026-05-31"
 
 
 # ─── Ratings: one query, not one per product ─────────────────────────────────
@@ -554,7 +594,7 @@ async def test_sku_rows_live_beside_the_asin_rows_without_doubling_the_totals(db
          "netProceeds": {"total": {"amount": 10.0}}, "fees": [], "ads": []}
         for r in asin_rows
     ]
-    stored_skus = await repository.save_sku_snapshot(db, WINDOW[0], WINDOW[1], sku_rows)
+    stored_skus = await repository.save_sku_snapshot(db, _stamp(sku_rows))
     assert stored_skus == len(sku_rows), "the per-SKU rows were not stored"
 
     after_both = await repository.load_snapshot(db)
@@ -570,7 +610,7 @@ async def test_sku_rows_live_beside_the_asin_rows_without_doubling_the_totals(db
 async def test_re_saving_the_asin_rows_does_not_overwrite_a_sku_row(db):
     """A refresh must not clobber the split it stored moments earlier.
 
-    Without the `seller_sku IS NULL` filter in `save_snapshot`, the SELECT could match a per-SKU
+    Without the grain scope in `save_economics_daily`'s DELETE, the SELECT could match a per-SKU
     row and overwrite it with an ASIN total — corrupting the split rather than failing loudly.
     """
     asin_rows = _rows()[:2]
@@ -582,7 +622,7 @@ async def test_re_saving_the_asin_rows_does_not_overwrite_a_sku_row(db):
                   "refundedProductSales": {"amount": 0.0}},
         "netProceeds": {"total": {"amount": 5.0}}, "fees": [], "ads": [],
     }]
-    await repository.save_sku_snapshot(db, WINDOW[0], WINDOW[1], sku_rows)
+    await repository.save_sku_snapshot(db, _stamp(sku_rows))
 
     await _seed_snapshot(db, asin_rows)          # the refresh runs again
     kept = await repository.load_sku_snapshot(db)
@@ -602,7 +642,7 @@ async def test_ad_rows_round_trip_and_roll_up_to_the_asin(db):
          "cost": 5176.0, "attributed_sales": 14254.0, "purchases": 8, "clicks": 40,
          "impressions": 3000},
     ]
-    stored = await repository.save_ads_snapshot(db, WINDOW[0], WINDOW[1], rows)
+    stored = await repository.save_ads_daily(db, _stamp_ads(rows))
     assert stored == 2
 
     # latest_window() reads the ECONOMICS table, so the window has to exist there too.
@@ -618,23 +658,23 @@ async def test_ad_rows_upsert_rather_than_doubling_the_spend(db):
     """Pressing Refresh twice must correct the ad figures, not double them."""
     from sqlalchemy import func, select
 
-    from app.models import AdsSnapshot
+    from app.models import AdsDaily
 
     rows = [{"child_asin": "B0AAA00001", "seller_sku": "s", "cost": 100.0,
              "attributed_sales": 200.0, "purchases": 1, "clicks": 2, "impressions": 3}]
     for _ in range(3):
-        await repository.save_ads_snapshot(db, WINDOW[0], WINDOW[1], rows)
+        await repository.save_ads_daily(db, _stamp_ads(rows))
 
-    count = (await db.execute(select(func.count()).select_from(AdsSnapshot))).scalar()
+    count = (await db.execute(select(func.count()).select_from(AdsDaily))).scalar()
     assert count == 1, f"{count} rows for one (asin, sku) — the upsert is inserting"
 
 
 async def test_no_decimal_reaches_json_from_the_ad_rows(db):
     """`Numeric` returns Decimal, which JSONResponse cannot serialise."""
-    await repository.save_ads_snapshot(db, WINDOW[0], WINDOW[1], [
+    await repository.save_ads_daily(db, _stamp_ads([
         {"child_asin": "B0AAA00001", "seller_sku": "s", "cost": 12.34,
          "attributed_sales": 56.78, "purchases": 1, "clicks": 2, "impressions": 3},
-    ])
+    ]))
     await _seed_snapshot(db)
     by_asin, by_sku = await repository.load_ads_snapshot(db, WINDOW)
     json.dumps({"by_asin": by_asin, "by_sku": list(by_sku.values())})
@@ -766,14 +806,43 @@ async def test_an_uncached_window_returns_empty_rather_than_fetching(auth_client
     assert body["window"] == ["2026-06-01", "2026-06-30"]
 
 
-async def test_the_available_windows_are_reported_so_the_picker_can_mark_them(auth_client, db):
-    """The cost of a click should be visible before clicking."""
+async def test_the_server_says_whether_the_shown_range_is_answerable(auth_client, db):
+    """**ONE computation of "is this range instant", and the server owns it.**
+
+    This used to assert `windows_available` — the list of exactly-fetched windows, which the screen
+    compared against to draw an instant dot. That is one rule computed twice, and the Ads tab
+    shipped the same shape: a merged span promised "summed instantly" for windows the server then
+    refused. So the answer travels per requested range, and `coverage` is prose only.
+    """
     await _seed_snapshot(db)
     body = (await auth_client.get("/portfolio")).json()
-    windows = body["windows_available"]
-    assert windows, "no cached windows reported, so every range would look uncached"
-    assert windows[0]["start"] == WINDOW[0] and windows[0]["end"] == WINDOW[1]
-    assert windows[0]["rows"] > 0
+
+    done = body["completeness"]
+    assert done["complete"] is True, "the seeded day is held, so its own range must be answerable"
+    assert done["missing_count"] == 0
+
+    cov = body["coverage"]
+    assert cov["days"] == 1 and cov["first"] == cov["last"] == WINDOW[1]
+
+
+async def test_a_range_with_a_missing_day_is_refused_and_NAMES_the_days(auth_client, db):
+    """A missing interior day must not be summed over silently.
+
+    An understated total looks entirely plausible on a dashboard that decides which products to
+    kill — the same reason `ads.repository.range_completeness` exists. The count is exact while the
+    list is capped, because "missing 25 days" and "missing 2 days" call for different actions.
+    """
+    await _seed_snapshot(db, _rows(day="2026-08-20"))
+    await _seed_snapshot(db, _rows(day="2026-08-26"))
+
+    body = (await auth_client.get("/portfolio?start=2026-08-20&end=2026-08-26")).json()
+    done = body["completeness"]
+    assert done["complete"] is False, "a range with a 5-day hole reported itself as summable"
+    assert done["missing_count"] == 5
+    assert "2026-08-21" in done["missing"]
+    # The span alone would have said "covered" — which is exactly why it gates nothing.
+    assert body["coverage"]["first"] == "2026-08-20"
+    assert body["coverage"]["last"] == "2026-08-26"
 
 
 async def test_the_payload_carries_the_acos_and_view_data_the_screen_needs(auth_client, db):
@@ -782,7 +851,7 @@ async def test_the_payload_carries_the_acos_and_view_data_the_screen_needs(auth_
     await _seed_snapshot(db)
     body = (await auth_client.get("/portfolio")).json()
     for key in ("skus", "thresholds", "verdict_help", "verdict_order", "phase_labels",
-                "windows_available", "acos_available", "max_window_days"):
+                "completeness", "coverage", "acos_available", "max_window_days"):
         assert key in body, f"the payload is missing {key}"
     assert body["totals"]["sku_verdicts"], "no per-SKU verdict counts for the SKU view's chips"
     # Every phase the refresh can report must have a label, or the bar shows a raw key.
@@ -1078,10 +1147,10 @@ def test_the_sort_rule_is_one_function_shared_by_mouse_and_keyboard():
 
 
 def test_the_window_controls_carry_accessible_names():
-    """Two bare date inputs and a coloured dot that means "instant" versus "20 minutes".
+    """Two bare date inputs and a coloured dot that means "instant" versus "~15 minutes".
 
-    The dot is not decoration: a cached window loads immediately and an uncached one starts a
-    ~20-minute Amazon report, so that distinction goes into the accessible name in words.
+    The dot is not decoration: a range inside the stored days loads immediately and one outside
+    them starts an Amazon fetch, so that distinction goes into the accessible name in words.
     """
     source = _template()
     start = source.index('id="win-from"')
@@ -1089,9 +1158,48 @@ def test_the_window_controls_carry_accessible_names():
     start = source.index('id="win-to"')
     assert "aria-label=" in source[start:start + 220], "the end date input is unlabelled"
     presets = source[source.index("const buttons = [7, 30, 60, 90]"):]
-    presets = presets[:900]
-    assert "already fetched" in presets and "not fetched yet" in presets, (
-        "the cached/uncached distinction is carried only by a coloured dot, which says nothing "
-        "to a screen reader — and it is the difference between instant and ~20 minutes"
+    presets = presets[:1100]
+    assert "loads instantly" in presets and "outside the stored days" in presets, (
+        "the instant/fetch distinction is carried only by a coloured dot, which says nothing to a "
+        "screen reader — and it is the difference between instant and a ~15-minute Amazon fetch"
     )
     assert 'aria-hidden="true"' in presets, "the dot glyph is announced as well as its words"
+
+
+def test_the_screen_holds_no_SECOND_copy_of_the_instant_rule():
+    """**The `windows_available` Set is gone, and the deletion is the fix.**
+
+    The screen used to build a Set of exactly-fetched windows and decide "instant or fetch" from it,
+    while the server decided the same thing from `range_completeness` — one rule computed twice, so
+    the dot could promise instant for a range the server then refused. That is the Ads tab's
+    `insideDailyCoverage` defect, and CLAUDE.md records the same shape a third time on the Orders
+    tab ("86 orders beside 87 lines"). Asserted as an ABSENCE, because a correct-looking
+    reintroduction is what this guards against.
+    """
+    source = _template()
+    script = source[source.index("<script>"):]
+    code = re.sub(r"/\*.*?\*/", "", script, flags=re.S)
+    code = re.sub(r"^\s*//.*$", "", code, flags=re.M)
+    assert "windows_available" not in code, (
+        "the screen reads the exact-window list again, so its dot can disagree with the server"
+    )
+    # And the authoritative answer IS read — **asserted PER FUNCTION**, because two functions read
+    # it and a whole-file substring check passed while one of them had been blinded. Same trap as
+    # the `shownColumns()` mutation and the deploy detector's revision id.
+    for reader, why in (
+        ("renderWindowBar", "the fetch button would never appear for a range with a missing day"),
+        ("renderBanners", "the empty grid could not say WHICH days are missing"),
+    ):
+        scope = code[code.index(f"function {reader}("):]
+        scope = scope[: scope.index("\nfunction ")]
+        assert "data.completeness" in scope, (
+            f"{reader} does not read the server's completeness answer, so {why}"
+        )
+
+    bar = code[code.index("function renderWindowBar("):]
+    bar = bar[: bar.index("\nfunction ")]
+    assert "done.complete === false" in bar, (
+        "the fetch button is not gated on the server's answer, so a range with a missing day offers "
+        "no way to fill it"
+    )
+    assert "needsFetch ?" in bar

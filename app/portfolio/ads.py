@@ -268,26 +268,43 @@ async def poll_get(
     return response
 
 
-def build_report_request(start: str, end: str) -> dict:
+def build_report_request(start: str, end: str, *, daily: bool = False) -> dict:
     """The report body Amazon accepts. ONE function, so the shape is stated once.
 
     Every element below was arrived at by having a wrong version rejected. See the module
     docstring for the three traps; the tests pin all of them, because this body is only
     exercised for real when someone presses Refresh.
+
+    **`daily=True` asks for one row per DAY, and the `date` column travels WITH it.** The two are
+    required together, and that is measured rather than assumed: Amazon accepts `timeUnit: DAILY`
+    *without* the column, and the rows then carry no date at all — `save_ads_daily` skips every
+    dateless row rather than guessing one, so the refresh would report success and store nothing.
+
+    **The 14-day attribution window does NOT smear across day boundaries**, which was the real risk
+    here and the reason this was tested before being built. CLAUDE.md records that CHUNKING a 31-day
+    report makes ACOS read slightly high, because `attributedSalesSameSku14d` can credit a sale up
+    to 14 days after the click and a chunk boundary cannot see it — so one-day granularity looked
+    like that same error 30x worse. Measured on 7 real days:
+
+        SUMMARY  1,173 rows  cost 3,47,570.00  attributed 3,81,534.93  ACOS 91.10%
+        DAILY    6,057 rows  cost 3,47,570.00  attributed 3,81,534.93  ACOS 91.10%
+
+    Identical. Amazon attributes each sale back to the CLICK's day, so summing days is *more*
+    accurate than the existing chunked 60d/90d path rather than less.
     """
     return {
-        "name": f"portfolio acos {start}..{end}",
+        "name": f"portfolio acos {start}..{end}{' daily' if daily else ''}",
         "startDate": start,
         "endDate": end,
         "configuration": {
             "adProduct": AD_PRODUCT,
             # "advertiser", NOT "campaign": this report is per advertised product.
             "groupBy": ["advertiser"],
-            "columns": list(REPORT_COLUMNS),
+            # `date` ONLY under DAILY: it is not a legal column under SUMMARY (measured — the
+            # module docstring records that rejection).
+            "columns": list(REPORT_COLUMNS) + (["date"] if daily else []),
             "reportTypeId": REPORT_TYPE_ID,
-            # SUMMARY collapses the window into one figure per product. DAILY would multiply
-            # the rows by the window length and answer nothing the dashboard asks.
-            "timeUnit": "SUMMARY",
+            "timeUnit": "DAILY" if daily else "SUMMARY",
             "format": "GZIP_JSON",
         },
     }
@@ -336,13 +353,17 @@ def split_window(start: str, end: str, *, max_days: int = MAX_REPORT_DAYS) -> li
     return chunks
 
 
-def aggregate(rows: list[dict]) -> list[dict]:
-    """Collapse the raw report to ONE row per (asin, sku).
+def aggregate(rows: list[dict], *, daily: bool = False) -> list[dict]:
+    """Collapse the raw report to ONE row per (asin, sku), or per (day, asin, sku) when `daily`.
 
     **The report arrives split by campaign even though `groupBy` is `advertiser`.** Measured:
     1,697 rows for 213 pairs, up to 13 rows for a single pair. Aggregating here rather than in
     the repository or the template means every consumer sees one grain, and a total computed
     from these rows cannot disagree with the rows themselves.
+
+    **`daily=True` adds the DAY to the key rather than summing over it.** Dropping the day here
+    would collapse a 30-day report into window figures and silently defeat the whole per-day
+    store — the rows would still look correct, and every sub-range would be wrong.
 
     Sums rather than averages, including for clicks and impressions: they are counts, and this
     is the same set of ads viewed as one product.
@@ -355,15 +376,23 @@ def aggregate(rows: list[dict]) -> list[dict]:
         sku = (row.get("advertisedSku") or "").strip()
         if not asin:
             continue
-        acc = merged[(asin, sku)]
+        # A DAILY row with no `date` cannot be filed under a day. Skipped rather than defaulted:
+        # Amazon accepts `timeUnit: DAILY` without the `date` column, and guessing would put one
+        # day's spend into another.
+        day = str(row.get("date") or "")[:10]
+        if daily and not day:
+            continue
+        acc = merged[(day, asin, sku) if daily else (asin, sku)]
         acc["cost"] += float(row.get("cost") or 0)
         acc["attributed_sales"] += float(row.get("attributedSalesSameSku14d") or 0)
         acc["purchases"] += int(row.get("purchasesSameSku14d") or 0)
         acc["clicks"] += int(row.get("clicks") or 0)
         acc["impressions"] += int(row.get("impressions") or 0)
 
-    return [
-        {
+    out = []
+    for key, acc in merged.items():
+        day, asin, sku = key if daily else ("", key[0], key[1])
+        row = {
             "child_asin": asin,
             "seller_sku": sku,
             "cost": round(acc["cost"], 2),
@@ -372,8 +401,10 @@ def aggregate(rows: list[dict]) -> list[dict]:
             "clicks": acc["clicks"],
             "impressions": acc["impressions"],
         }
-        for (asin, sku), acc in merged.items()
-    ]
+        if daily:
+            row["day"] = day
+        out.append(row)
+    return out
 
 
 async def fetch_acos(
@@ -382,13 +413,22 @@ async def fetch_acos(
     *,
     sleep=asyncio.sleep,
     on_progress=None,
+    daily: bool = True,
 ) -> list[dict]:
     """Fetch ad cost and attributed sales for a window. Returns aggregated per-SKU rows.
 
+    **`daily` defaults to True** and adds a `day` to every row, because the store is keyed per day.
+
     **A window longer than 31 days becomes several reports, summed** — Amazon's cap, see
     `MAX_REPORT_DAYS`. One chunk is the common case (the 7d and 30d presets); 60d is two and 90d
-    is three. `aggregate` sums by `(asin, sku)` and is therefore reused unchanged to merge the
-    chunks, so a multi-chunk result has exactly the same shape and grain as a single one.
+    is three. `aggregate` keys by `(day, asin, sku)` under `daily` and is reused unchanged to merge
+    the chunks, so a multi-chunk result has exactly the same shape and grain as a single one.
+
+    **Chunking is EXACT under `daily`, which it is not under SUMMARY.** The chunked-ACOS caveat in
+    the module docstring exists because a 31-day boundary cannot see a sale attributed after it;
+    per-day rows carry the click's own day, so the chunks partition the days rather than splitting
+    an attribution window. Measured: DAILY and SUMMARY return identical cost and attributed sales
+    over the same 7 days.
 
     Raises `AdsNotConfigured` when there are no credentials — the caller is expected to treat
     that as "skip ACOS", not as a failure. Raises `AdsError` on a FAILURE status or a timeout,
@@ -422,12 +462,14 @@ async def fetch_acos(
 
             raw.extend(await _one_report(
                 client, chunk_start, chunk_end, sleep=sleep, on_progress=chunk_progress,
+                daily=daily,
             ))
 
-    rows = aggregate(raw)
+    rows = aggregate(raw, daily=daily)
     logger.info(
-        "portfolio: %d ad report(s) for %s..%s -> %d raw row(s) aggregated to %d (asin, sku) pair(s)",
+        "portfolio: %d ad report(s) for %s..%s -> %d raw row(s) aggregated to %d %s",
         len(chunks), start, end, len(raw), len(rows),
+        "(day, asin, sku) row(s)" if daily else "(asin, sku) pair(s)",
     )
     return rows
 
@@ -439,6 +481,7 @@ async def _one_report(
     *,
     sleep,
     on_progress=None,
+    daily: bool = False,
 ) -> list[dict]:
     """Create, poll and download ONE report. Returns its RAW rows, un-aggregated.
 
@@ -452,7 +495,7 @@ async def _one_report(
 
     create = await client.post(
         settings.ads_endpoint + REPORT_PATH,
-        content=json.dumps(build_report_request(start, end)),
+        content=json.dumps(build_report_request(start, end, daily=daily)),
         headers={**head, "Content-Type": CREATE_CONTENT_TYPE},
     )
     if create.status_code >= 400:

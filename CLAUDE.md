@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2301 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2338 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -129,7 +129,7 @@ app/
 ├── main.py              # FastAPI app entry point
 ├── config.py            # Settings (pydantic-settings, .env)
 ├── database.py          # Async SQLAlchemy engine
-├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry, AmazonOrder/AmazonOrderItem/OrderPackedEntry/OrderPackedState/ProductRawStock, EconomicsSnapshot/EconomicsRefresh/ProductDecision/AdsSnapshot/PortfolioSettings/AdsRefresh)
+├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry, AmazonOrder/AmazonOrderItem/OrderPackedEntry/OrderPackedState/ProductRawStock, EconomicsDaily/AdsDaily/EconomicsRefresh/ProductDecision/PortfolioSettings/AdsRefresh)
 ├── scheduler.py         # APScheduler. Times STATED IN IST via app/ist.py (the box is UTC):
 │                        # portfolio 07:30 IST, ads 08:00 IST, orders every 30m,
 │                        # product scrape 05:00 IST under its OWN flag (SCRAPE_ENABLED)
@@ -158,8 +158,9 @@ app/
 │   ├── economics.py     # The only Data Kiosk caller (analytics_economics_2024_03_15)
 │   ├── ads.py           # The only Advertising API caller (spAdvertisedProduct -> true ACOS)
 │   ├── logic.py         # Verdict rules; parent rollup; TACOS and margin arithmetic
-│   ├── repository.py    # Economics snapshot cache, one-query ratings, owner decisions
-│   └── refresh.py       # The nightly + manual background job, with progress
+│   ├── repository.py    # PER-DAY economics/ads cache, range_completeness, purge_daily,
+│   │                    # one-query ratings, owner decisions
+│   └── refresh.py       # run_incremental (nightly, yesterday only) + run (manual, a window)
 └── invoice/
     ├── company_data.py  # F2D Tech GSTINs, supplier info, priority FC addresses, transporters
     ├── hsn_codes.py     # HSN code master (default 1106 @ 5% for all food products)
@@ -1046,6 +1047,10 @@ any failure. Four things it knows that cost two failed deploys to learn:
    >
    > The required-tables check now also asserts `ads_performance` is **absent**, so a deploy
    > that silently skipped the migration fails loudly rather than leaving two grains live.
+   >
+   > **`e7b3f0c92a41` drops TWO more** — `economics_snapshot` and `ads_snapshot` — so the same
+   > remedy applies and the absent-tables loop now covers all three. Deploying that revision
+   > without checking the script out first repeats the rollback exactly.
 
 **The shared logins are EMPTY by default, and that is what makes "not set" safe.**
 
@@ -1096,6 +1101,24 @@ printf 'ORDER_REFRESH_ENABLED=true\nSCRAPE_ENABLED=true\n' >> /opt/amazon-tracke
 > flag's 06:00 server time, so the Portfolio tab's star ratings are current before the portfolio
 > job reads `rating_history` at 07:30 IST. Before this they were **six days old**: every scrape in
 > that table had been started by hand.
+
+### One-off after `e7b3f0c92a41`: back-fill the Portfolio history
+The migration **drops** `economics_snapshot` and `ads_snapshot`, and their rows could not be
+converted — a 30-day total carries no information about which day each sale fell on. So the per-day
+store starts empty and every range refuses until it has days. Run once, in a `screen`/`tmux` (the ads
+half is three ~15-minute reports):
+
+```bash
+cd /opt/amazon-tracker && venv/bin/python scripts/backfill_portfolio_daily.py
+```
+
+It is **safe to re-run** — every write is delete-then-insert scoped by day, so a second pass corrects
+rather than doubles — and it **stores the ads half chunk by chunk**, so a throttled third report
+leaves the first two months on disk instead of discarding 30 minutes of work. It finishes by asking
+`range_completeness` whether the full 90-day range is actually summable, and names the missing days if
+not, rather than reporting success because the fetch returned 200.
+
+The nightly job keeps the store current from then on, fetching only the day it is missing.
 
 **SP-API credentials ARE set** (`SP_API_CLIENT_ID`, `SP_API_CLIENT_SECRET`,
 `SP_API_REFRESH_TOKEN`, `SP_API_MARKETPLACE_ID`), and the `.env` is `chmod 600`. The
@@ -1574,11 +1597,15 @@ the export — Amazon's `netProceeds` is sales minus Amazon's fees minus ads, so
 +8.8% may still lose money.
 
 ### Three facts that decide the shape
-- **`RANGE` and `CHILD_ASIN` granularity.** `RANGE` collapses the window to one row per product,
-  which is the question asked; `DAY` would return ~8,000 rows for the same 30 days and answer
-  nothing extra. `CHILD_ASIN` is the pack size, where a kill decision is actually taken, and each
-  row carries its `parentAsin` so the parent rollup happens locally rather than in a second query
-  that could disagree.
+- **`DAY` and `CHILD_ASIN` granularity.** `CHILD_ASIN` is the pack size, where a kill decision is
+  actually taken, and each row carries its `parentAsin` so the parent rollup happens locally rather
+  than in a second query that could disagree.
+
+  > **This bullet used to say `RANGE`**, reasoning that `DAY` *"would return ~8,000 rows for the
+  > same 30 days and answer nothing extra"*. The row count was right — measured, 8,010 — and the
+  > conclusion was wrong: what `DAY` answers extra is **every sub-range**, which is the whole of
+  > "per-DAY rows, so every window is instant" below. It also cost nothing: the DAY query runs in
+  > **25 seconds**, the same as the RANGE query it replaced.
 - **Amazon pools reviews per variation family**, so a rating cannot discriminate between sizes.
   Roasted Chana 1 kg / 1.5 kg / 2 kg all report 4.2★ from 477 reviews. Confirmed from two
   directions: the 261 rated ASINs carry exactly **90 distinct (rating, count) pairs** — the same
@@ -1888,25 +1915,32 @@ identically-named `… FBA` one (`0.25 fc np` / `0.25 fc np FBA`). Split by chan
 
 **The `CHILD_ASIN` aggregation the tab already queried sums both channels**, so "combined" was
 always the behaviour. The `MSKU` grain is fetched *additionally*, only to show the split on expand,
-and stored in the same table with `seller_sku` set while the authoritative rows keep it NULL.
+and stored in the same table with `seller_sku` set while the authoritative rows carry `ASIN_GRAIN`.
 
-**`load_snapshot` filters `seller_sku IS NULL`, and that one clause keeps every figure honest** —
-without it the two channel rows would sum on top of their own ASIN row and the dashboard would
-report roughly double. Pinned by a test that stores both grains and asserts the totals are
+**`load_snapshot` filters `seller_sku == ASIN_GRAIN`, and that one clause keeps every figure
+honest** — without it the two channel rows would sum on top of their own ASIN row and the dashboard
+would report roughly double. Pinned by a test that stores both grains and asserts the totals are
 unchanged. The MSKU rows are never a source of totals in any case: Amazon cannot attribute every
 row to a single SKU, so they sum to slightly less than the ASIN figures.
 
-`_channel_of` splits on the trailing ` FBA` token — verified across all 453 MSKU rows and all 213
-advertised SKUs. **A convention of this account, not an Amazon rule**, which is why it is one
-function rather than an inline check. The split is decision-relevant, not decoration: the merchant
+> **`ASIN_GRAIN` is `""` and used to be `NULL`.** The per-window table got away with NULL; the
+> per-day one cannot, because SQLite treats NULLs as DISTINCT in a unique index and the nightly job
+> re-stores a day in place. See "`range_completeness` asks per DAY" below.
+
+`_channel_of` splits on a trailing `FBA` token, where the separator may be a space, an underscore or
+a hyphen — **a convention of this account, not an Amazon rule**, which is why it is one function
+rather than an inline check. See "The FBA token is separated TWO ways" under Known gaps: the
+whitespace-only version misfiled every Howrah and Prayagraj SKU. The split is decision-relevant, not decoration: the merchant
 SKU of `B0DCCL1531` spent **₹1,444 for zero attributed sales** while its FBA twin returned 36%
 ACOS, and one 500 g pack runs **105% ACOS on Easy Ship against 242% on FBA**.
 
 ### Windows, filters and sorting
 - **7 / 30 / 60 / 90-day presets plus a custom range**, capped at 90 days and at yesterday
-  (today's figures are still settling — an ad charge lands hours after its sale). A cached window
-  is marked with a dot and loads instantly; an uncached one shows `Fetch (~12 min)`. **A GET never
-  blocks on a fetch** — it returns empty and offers the button.
+  (today's figures are still settling — an ad charge lands hours after its sale). Any range whose
+  every day is stored is **summed instantly** and marked with a dot; one with a gap names the missing
+  days and offers `Fetch the missing days (~15 min)` — the missing days, not the window, because the
+  nightly job fetches per day. **A GET never blocks on a fetch** — it returns empty and offers the
+  button.
 - **Add-a-condition filters**, ANDed, over sales / ad spend / net / TACOS / ACOS / units / returns
   / rating — **behind a toggle** since the simplification, because the builder is a power tool and
   it sat open above the table on every visit. Reproduces the shortlists previously built by hand —
@@ -2070,7 +2104,7 @@ sales has no TACOS and "0%" would rank it among the most ad-efficient products i
 ### Three tables, and the boundary between them is the design
 | Table | Key | Whose fact |
 |---|---|---|
-| `economics_snapshot` | `(window_start, window_end, child_asin)` | Amazon's — a cache, never edited |
+| `economics_daily` | `(day, child_asin, seller_sku)` | Amazon's — a cache, never edited |
 | `economics_refresh` | one row per run | ours — so the screen can say how old the figures are |
 | `product_decision` | `(parent_asin)` | the owner's judgement |
 
@@ -2086,13 +2120,129 @@ more, so a column each would mean a migration every time Amazon invents a fee.
 human action in Seller Central — a dashboard that could kill a SKU on a threshold is a dashboard
 that kills a SKU on a bad data day. The save banner says so explicitly.
 
-### It is a cache with a nightly job, never fetched on request
+### The rows are stored per DAY, so every window is instant
+Asked for as *"fetching of sales and ad data should be more dynamic and updated everyday atleast
+once all 7d, 30d, 60d, 90d"*.
+
+`economics_snapshot` and `ads_snapshot` were keyed **per WINDOW**, so a range nobody had fetched had
+no row to read and `GET /portfolio` offered a **~12 minute** fetch. `economics_daily` and `ads_daily`
+hold one row per entity **per day**, so any sub-range is a `GROUP BY` — the pattern
+`ads_performance_daily` already proved on the Ads tab, for the same complaint.
+
+**Two assumptions had to be tested, because both were recorded in the code as conclusions nobody had
+run.** Measured on the live account:
+
+| Probe | Result |
+|---|---|
+| economics `aggregateBy: { date: DAY }` | **accepted** |
+| 7-day DAY vs RANGE | **identical to the rupee** (₹10,82,361.76 · ₹3,47,498.76 · ₹2,41,761.85 · 3,715 units) |
+| 30-day DAY fetch | **8,010 rows in 25 s** — the same cost as the RANGE query it replaces |
+| ads `timeUnit: DAILY` + the `date` column | **accepted** |
+| 7-day DAILY vs SUMMARY ads | **cost ₹3,47,570.00 and attributed sales ₹3,81,534.93 identical, ACOS 91.10% both** |
+
+**That last row is the finding that made it safe.** The fear was that one-day granularity would make
+the 14-day attribution error 30× worse. It does not — Amazon attributes each sale back to the
+**click's** day, so summing days is *more* accurate than the old chunked 60d/90d path, which loses
+boundary sales by construction (see "Chunking is exact for COST but slightly conservative for
+attributed SALES" above).
+
+**The per-window tables are DELETED, not kept alongside**, and both halves of that matter:
+
+- `economics_snapshot` was at **32 windows / 21,698 rows with no retention at all** — the
+  `ads_performance` growth problem repeating, one row set per window ever viewed, kept for ever.
+- **Two caches of one figure is what lost ₹1,26,328 of Sponsored Brands spend.** A superset window
+  reported less than its subset because the read side preferred whichever table the exact range
+  happened to be in. The most reliable way to bound a table is not to have it, and the most reliable
+  way to stop two caches disagreeing is to have one.
+
+**The old rows could not be migrated, so the migration drops them and a script refetches.** A 30-day
+total carries no information about which day each sale fell on, so there was nothing to split. The
+downgrade recreates both tables **empty** for the same reason. `scripts/backfill_portfolio_daily.py`
+fills the history once after deploy; the nightly job keeps it current from then on.
+
+### The nightly job fetches YESTERDAY, not the window
+`refresh.run_incremental` asks `range_completeness` which days are missing and fetches **only those**,
+as one contiguous span — so a routine night is one day, ~15 minutes, against ~45 for a whole window
+on a box where the Ads job already runs for an hour. `refresh.run` (the manual button) still fetches a
+whole window, because that is what "refetch this range" means.
+
+- **`MAX_BACKFILL_DAYS = 7`.** A long gap — a week of failed nights, a fresh install — is filled a
+  bounded chunk at a time rather than in one run: 90 days is three ads reports at ~15 minutes each
+  (Amazon caps one report at 31 days), which would hold the nightly job open for the better part of an
+  hour. Deliberately below `ads.MAX_REPORT_DAYS`, so a backfill is always a single report.
+- **The end day is `ist.today() - 1`.** Today's figures are still settling; an ad charge lands hours
+  after its sale, so a window ending today shows every product at a punishing TACOS each morning.
+- **`purge_daily` runs in the refresh's `finally`, inside its own `try`.** Retention that only runs on
+  the success path is a side effect, not a policy — the lesson `ads_performance_daily` already
+  recorded — and a purge failure must not mask the fetch error that is the actual news.
+- **`DAILY_RETENTION_DAYS = 90`**, which is not a free choice: it is the widest range the tab offers,
+  so anything narrower makes the 90d button unanswerable by construction. A test asserts the
+  relationship rather than the number.
+
+### `range_completeness` asks per DAY, and that is not the same as per span
+A range is summable only when **every** day in it is held. The endpoints are not enough and a span
+cannot see an **interior** gap — which is exactly the defect that put ₹0 on the Ads tab for a
+morning, where per-product spans would have fixed the symptom and missed the normal case (a
+four-report night usually loses a MIDDLE chunk).
+
+- **An empty store is INCOMPLETE, not vacuously complete.** `bool(wanted) and not absent` — without
+  the first half a fresh install renders zeros as though they were measured.
+- **The missing list is capped at 5; the COUNT is exact.** "missing 5 days" when 29 are missing is a
+  sentence the owner cannot act on — the same discipline as the catalogue notes and the Projections
+  `needs_review` list.
+- **A day holding only per-SKU rows does not count as held.** `days_held` filters
+  `seller_sku == ASIN_GRAIN`, because the MSKU rows are a split for display and Amazon cannot
+  attribute every row to one SKU — summing such a day would drop whatever it could not attribute.
+
+**`ASIN_GRAIN` is `""`, not `NULL`, and that is a SQLite fact rather than a preference.** SQLite treats
+NULLs as DISTINCT in a unique index, so with a NULL grain the same `(day, asin)` can be inserted twice
+and that day silently doubles. The old per-window table used NULL and got away with it because nothing
+re-ran a window in place.
+
+**Two scopes on one DELETE, and losing either is a silent data loss:**
+
+| Scope lost | What happens |
+|---|---|
+| **grain** | storing the MSKU rows deletes the ASIN totals written moments earlier — the shape that wiped 72% of the ads spend on the Ads tab |
+| **day** | the nightly one-day run wipes the other 89 days |
+
+`save_ads_daily`'s delete is scoped the same way, for the same reason `ads_performance_daily`'s is
+scoped by `(day, ad_product)`.
+
+**Summing ACCUMULATES; the per-window code could safely assign.** Sales, units, every fee and both ad
+figures are `+=` across the days in the range. Assignment is the mutation that reads most plausibly —
+a range reporting only its last day is 1/30th of the truth and looks like a number. **Fees merge by
+NAME**, never by position: Amazon does not return the same fee list every day, so a positional merge
+would add a referral fee to a storage fee.
+
+**A dateless row is SKIPPED, never filed under a guessed day.** Both fetchers can return one —
+Amazon really does emit undated ads rows when `DAILY` is requested without the `date` column — and a
+guessed day puts one day's sales into another, which is invisible in every total and wrong in every
+sub-range.
+
+### An incomplete range renders NOTHING rather than a short sum
+**Found by driving the real screen, and no mutation caught it.** A 90-day range over 40 stored days
+rendered a total **50 days light and labelled it 90 days** — because `_dashboard` computed
+completeness, sent it to the browser, and then summed the stored rows anyway.
+
+Every one of the 31 mutations attacked the completeness *calculation*; this was a missing **consumer**
+of its answer. `summable = bool(completeness and completeness["complete"])` now gates the four loads,
+and both halves are pinned — a mutation to `True` renders a short sum, a mutation to `False` leaves the
+tab permanently empty.
+
+**The screen holds no second copy of the rule.** `renderWindowBar` reads the server's
+`completeness.complete`; the `windows_available` Set it used to consult is **deleted**, and
+`coverage()` survives for prose and gates nothing. One rule computed twice is the defect this file
+records for the Orders tab ("86 orders beside 87 lines") and for `insideDailyCoverage`, which was
+deleted for exactly this reason.
+
+### It is still a cache with a nightly job, never fetched on request
 A Data Kiosk query is **asynchronous**: submit → poll → download JSON-lines. Measured 33 seconds
 for 267 rows, and the poll ceiling is 8 minutes. So `refresh.run` is a background task with a
 progress bar (`PHASE_BOUNDS`: submit 0–10, poll 10–80, download 80–92, store 92–100) and every
-route reads stored rows. The nightly job runs 03:20 on the **same `SCHEDULER_ENABLED` OR
+route reads stored rows. The nightly job runs at **07:30 IST** on the **same `SCHEDULER_ENABLED` OR
 `ORDER_REFRESH_ENABLED` guard** as the orders refresh, so production gets it without waking the
-06:00 product scrape.
+product scrape.
 
 > **`finally` on the refresh is load-bearing, and a mutation found it.** `except Exception` does
 > not catch `asyncio.CancelledError` (a `BaseException`), and this job runs as fire-and-forget —
@@ -2786,6 +2936,12 @@ at 12:59 IST — the "nightly" job had run three hours earlier and would not run
 **Ads is now 08:00 IST (asked for), portfolio 07:30 IST**, keeping its documented 30-minute lead so
 two multi-minute reporting jobs never overlap on a 951 MB box.
 
+> **The 30-minute lead got a lot more headroom when the portfolio job went incremental.** It calls
+> `run_incremental`, which fetches only the day it is missing (~15 min) rather than a whole 30-day
+> window (~45 min) — so the two jobs no longer come close to overlapping on a routine night. A test
+> asserts the SCHEDULER calls `run_incremental` rather than `run`, because both exist and the
+> difference is invisible in a passing refresh.
+
 **`app/ist.py` owns the offset and the definition of "today".** The previous five instances were each
 fixed in the file that broke, which is precisely why there was a sixth — an offset that lives in
 whichever module needed it first cannot reach the scheduler. `ads.logic.ist_day` and
@@ -2850,6 +3006,16 @@ production after two days of use:
 > turned out to be the cause of the ₹1,26,328 Sponsored Brands loss, and deleting it removed the
 > growth, the retention rule and the need for either. **The most reliable way to bound a table is not
 > to have it.**
+
+> **`economics_snapshot` was the same defect on the Portfolio tab, and it is now deleted too** —
+> 32 windows / 21,698 rows with **no retention rule at all**, so every custom range the owner ever
+> looked at was still there. `economics_daily` replaces it at **~90 days × ~270 ASINs ≈ 24,000 rows**,
+> which is a CEILING rather than a running total: `purge_daily` drops anything older than the widest
+> range the tab offers, so the table stops growing on day 91 whether or not anyone looks at it. The
+> same swap on `ads_snapshot`.
+>
+> That is the distinction worth carrying forward. A per-window cache grows with **how much you look**;
+> a per-day cache grows with **how long you keep**, and only the second one has a bound you can state.
 
 **The purge runs in the nightly sweep AND in the refresh**, and that redundancy is deliberate: the
 refresh only purges on its success path, so a week of failed ad reports would leave the
@@ -3079,12 +3245,18 @@ no match under any spelling, including Triphala Sattu, Makkai Sattu, Raw Flaxsee
 Gobindobhog Rice" — almost certainly the existing "Govind Bhog Rice" under a spelling variant, left
 for the owner to merge by hand rather than fuzzy-matched automatically.
 
-### Sales come from `economics_snapshot` — no new Amazon integration
+### Sales come from `economics_daily` — no new Amazon integration
 The nightly Portfolio refresh already stores `units_ordered`/`units_refunded`/`net_units` per
 child ASIN. The weekly Projections recompute (`app.projections.refresh.run`) reuses
-`app.portfolio.economics.fetch_economics` and `app.portfolio.repository.save_snapshot`/
-`load_snapshot`/`windows_available` directly — the two features share one cache, so a 30-day
+`app.portfolio.economics.fetch_economics` and `app.portfolio.repository.save_economics_daily`/
+`load_snapshot`/`range_completeness` directly — the two features share one cache, so a 30-day
 window the Portfolio tab's nightly job already fetched costs nothing extra here.
+
+> **Sharing the cache got strictly better when it went per-day.** `_ensure_window` used to ask
+> `windows_available` whether that EXACT window had been fetched, so the 7-day and 30-day windows
+> Projections needs were two separate ~12-minute fetches unless the Portfolio tab happened to have
+> viewed the same two ranges. It now asks `range_completeness`, so both windows are free the moment
+> the nightly job has the days.
 
 **`units_ordered`, never `net_units`.** Measured: 2 ASINs in a real 7-day window had
 `net_units < 0` (a refund-heavy week), and a negative daily rate would produce a negative

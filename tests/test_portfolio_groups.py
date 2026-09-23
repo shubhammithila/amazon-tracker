@@ -318,7 +318,11 @@ async def _seed(db):
     from app.portfolio import repository
 
     rows = json.loads((FIXTURES / "economics_rows.json").read_text(encoding="utf-8"))
-    return await repository.save_snapshot(db, WINDOW[0], WINDOW[1], rows)
+    # Stamped onto ONE day inside WINDOW: the store is keyed per day, and one day's rows summed IS
+    # the window's rows, so every total in this file means exactly what it did before.
+    for row in rows:
+        row["startDate"] = row["endDate"] = WINDOW[1]
+    return await repository.save_economics_daily(db, rows)
 
 
 async def test_the_payload_carries_the_grouping_and_the_categories(auth_client, db):

@@ -14,11 +14,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
+from app import ist
 from app.database import async_session
 from app.portfolio import ads, economics, repository
 from app.shipment.spapi import SpApiError, SpApiNotConfigured
+
+#: The most days one incremental run will fetch. Normally there is exactly ONE missing day, so this
+#: only bites after an outage — and then it bounds the run rather than letting a fortnight's gap hold
+#: the job open for hours on a 951 MB box. Later runs pick up the rest, and `range_completeness`
+#: refuses any range still touching a gap, so a partial catch-up is visible rather than quietly
+#: summing short.
+#:
+#: 7 because Amazon caps ONE ads report at 31 days (`ads.MAX_REPORT_DAYS`), so a wider span would
+#: silently become several reports and multiply a "catch-up" run's cost.
+MAX_BACKFILL_DAYS = 7
 
 logger = logging.getLogger(__name__)
 
@@ -167,11 +178,9 @@ async def run(
 
         _progress("econ_store", 0, 2)
         async with db_factory() as db:
-            stored = await repository.save_snapshot(db, window_start, window_end, rows)
+            stored = await repository.save_economics_daily(db, rows)
             _progress("econ_store", 1, 2)
-            stored_skus = await repository.save_sku_snapshot(
-                db, window_start, window_end, sku_rows
-            )
+            stored_skus = await repository.save_sku_snapshot(db, sku_rows)
         _progress("econ_store", 2, 2)
         STATE.update({"rows": stored, "sku_rows": stored_skus})
         logger.info(
@@ -193,9 +202,7 @@ async def run(
             )
             _progress("ads_store", 0, 1)
             async with db_factory() as db:
-                ads_stored = await repository.save_ads_snapshot(
-                    db, window_start, window_end, ad_rows
-                )
+                ads_stored = await repository.save_ads_daily(db, ad_rows)
             _progress("ads_store", 1, 1)
             STATE["ads_rows"] = ads_stored
             logger.info("portfolio refresh: %d ad row(s) stored", ads_stored)
@@ -241,5 +248,67 @@ async def run(
     finally:
         STATE["running"] = False
         STATE["finished_at"] = datetime.utcnow()
+        # **The retention sweep runs here, not on the success path.** A purge that only happens
+        # when a fetch succeeds is a side effect rather than a policy: a week of failed ad reports
+        # would leave the fastest-growing tables in this feature unpruned, which is exactly how
+        # `economics_snapshot` reached 32 windows with no retention at all. The Ads tab's own
+        # nightly sweep is duplicated for the same reason.
+        #
+        # Wrapped, because this block also runs on the crash path and a purge failure must not
+        # replace the real error with its own.
+        try:
+            async with db_factory() as db:
+                await repository.purge_daily(db)
+        except Exception:                        # noqa: BLE001 - never mask the original failure
+            logger.warning("portfolio refresh: the retention purge failed", exc_info=True)
 
     return status()
+
+
+async def run_incremental(
+    db_factory=async_session,
+    *,
+    max_days: int = MAX_BACKFILL_DAYS,
+    today: date | None = None,
+    sleep=asyncio.sleep,
+) -> dict:
+    """Fetch only the days NOT already held, newest-first-bounded. The nightly path.
+
+    Normally that is exactly one day — yesterday — which is what makes the nightly cost ~15 min
+    instead of the ~45 a rolling 90-day refetch would take on a box where the Ads tab's own job
+    already runs for an hour.
+
+    **Bounded at `max_days`**, so a long gap (the app was off for a fortnight) cannot hold the job
+    open for hours. The remaining days are picked up by subsequent runs, and `range_completeness`
+    refuses any range still touching a gap rather than summing short — so a partial catch-up is
+    visible rather than quietly wrong.
+
+    **A contiguous span is fetched, not a set of individual days.** Amazon bills a report per
+    request, not per day, and one 3-day report costs the same as one 1-day report; asking for three
+    separate days would triple the ~15 minutes for no benefit. Days already held inside the span are
+    simply rewritten with the same figures, which `save_economics_daily` does by design.
+
+    Returns the same status snapshot as `run`, with ``skipped=True`` when there was nothing to do.
+    """
+    end_day = (today or ist.today()) - timedelta(days=1)
+    async with db_factory() as db:
+        held = await repository.days_held(db)
+
+    wanted = [
+        (end_day - timedelta(days=offset)).isoformat()
+        for offset in range(max_days)
+    ]
+    missing = sorted(day for day in wanted if day not in held)
+    if not missing:
+        logger.info("portfolio refresh: every day up to %s is held, nothing to fetch", end_day)
+        snapshot = status()
+        snapshot["skipped"] = True
+        return snapshot
+
+    logger.info(
+        "portfolio refresh: %d day(s) missing, fetching %s..%s",
+        len(missing), missing[0], missing[-1],
+    )
+    return await run(
+        db_factory, start=missing[0], end=missing[-1], sleep=sleep,
+    )

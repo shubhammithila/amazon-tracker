@@ -38,10 +38,10 @@ async def test_run_stores_a_blended_rate_from_two_fetched_windows(db, monkeypatc
 
     monkeypatch.setattr("app.portfolio.economics.fetch_economics", _fake_fetch_economics)
 
-    async def _fake_save_snapshot(db_, start, end, rows):
+    async def _fake_save_daily(db_, rows, **kwargs):
         return len(rows)
 
-    monkeypatch.setattr("app.portfolio.repository.save_snapshot", _fake_save_snapshot)
+    monkeypatch.setattr("app.portfolio.repository.save_economics_daily", _fake_save_daily)
 
     async def _fake_load_snapshot(db_, window):
         if window == ("2026-08-02", "2026-08-31"):
@@ -50,10 +50,13 @@ async def test_run_stores_a_blended_rate_from_two_fetched_windows(db, monkeypatc
 
     monkeypatch.setattr("app.portfolio.repository.load_snapshot", _fake_load_snapshot)
 
-    async def _fake_windows_available(db_, limit=12):
-        return []  # nothing cached, so both windows are fetched
+    async def _fake_completeness(db_, start, end):
+        return {"complete": False, "missing": [start], "missing_count": 1,
+                "held": None, "days_held": 0}
 
-    monkeypatch.setattr("app.portfolio.repository.windows_available", _fake_windows_available)
+    monkeypatch.setattr(
+        "app.portfolio.repository.range_completeness", _fake_completeness
+    )
 
     result = await refresh.run(db, sleep=_no_sleep)
 
@@ -70,8 +73,12 @@ async def test_run_stores_a_blended_rate_from_two_fetched_windows(db, monkeypatc
 
 
 async def test_run_reuses_an_already_stored_window_without_refetching(db, monkeypatch):
-    """`windows_available` says the 30-day window is already stored — the job must not spend a
-    ~2-minute Data Kiosk query for data it already has.
+    """`range_completeness` says every day of the 30-day range is already stored — the job must not
+    spend a ~2-minute Data Kiosk query for data it already has.
+
+    The check used to be against `windows_available`, the list of exactly-fetched windows. Per-day
+    storage makes it strictly better: this job now gets a cache HIT whenever the days are present,
+    instead of missing whenever nobody had fetched that precise 30-day range.
 
     **`today` is pinned explicitly**, and this is not incidental: `_ensure_window` must check
     `economics.window_for(today, days)` against the cache BEFORE calling `fetch_economics` at
@@ -87,10 +94,17 @@ async def test_run_reuses_an_already_stored_window_without_refetching(db, monkey
                      "brand": "Mithila Foods", "active": True}}
     monkeypatch.setattr("app.shipment.catalogue.load_catalogue", _fake_catalogue_fn(sheet))
 
-    async def _fake_windows_available(db_, limit=12):
-        return [{"start": "2026-08-02", "end": "2026-08-31", "rows": 1}]
+    async def _fake_completeness(db_, start, end):
+        # Complete for the 30-day range, short for the 7-day one, so the test still exercises
+        # both the cache-hit and the fetch path in one run.
+        complete = (start, end) == ("2026-08-02", "2026-08-31")
+        return {"complete": complete, "missing": [] if complete else [start],
+                "missing_count": 0 if complete else 1,
+                "held": ["2026-08-02", "2026-08-31"], "days_held": 30}
 
-    monkeypatch.setattr("app.portfolio.repository.windows_available", _fake_windows_available)
+    monkeypatch.setattr(
+        "app.portfolio.repository.range_completeness", _fake_completeness
+    )
 
     fetch_calls = []
 
@@ -100,10 +114,10 @@ async def test_run_reuses_an_already_stored_window_without_refetching(db, monkey
 
     monkeypatch.setattr("app.portfolio.economics.fetch_economics", _fake_fetch_economics)
 
-    async def _fake_save_snapshot(db_, start, end, rows):
+    async def _fake_save_daily(db_, rows, **kwargs):
         return len(rows)
 
-    monkeypatch.setattr("app.portfolio.repository.save_snapshot", _fake_save_snapshot)
+    monkeypatch.setattr("app.portfolio.repository.save_economics_daily", _fake_save_daily)
 
     async def _fake_load_snapshot(db_, window):
         return [{"childAsin": "B01", "sales": {"unitsOrdered": 30, "netUnitsSold": 30}}]
@@ -132,10 +146,13 @@ async def test_run_records_a_failed_fetch_without_touching_existing_rows(db, mon
         )
     monkeypatch.setattr("app.shipment.catalogue.load_catalogue", _fake_catalogue)
 
-    async def _fake_windows_available(db_, limit=12):
-        return []
+    async def _fake_completeness(db_, start, end):
+        return {"complete": False, "missing": [start], "missing_count": 1,
+                "held": None, "days_held": 0}
 
-    monkeypatch.setattr("app.portfolio.repository.windows_available", _fake_windows_available)
+    monkeypatch.setattr(
+        "app.portfolio.repository.range_completeness", _fake_completeness
+    )
 
     from app.shipment.spapi import SpApiError
 
@@ -163,10 +180,13 @@ async def test_run_reads_the_saved_blend_weight_not_the_hardcoded_default(db, mo
                      "brand": "Mithila Foods", "active": True}}
     monkeypatch.setattr("app.shipment.catalogue.load_catalogue", _fake_catalogue_fn(sheet))
 
-    async def _fake_windows_available(db_, limit=12):
-        return []
+    async def _fake_completeness(db_, start, end):
+        return {"complete": False, "missing": [start], "missing_count": 1,
+                "held": None, "days_held": 0}
 
-    monkeypatch.setattr("app.portfolio.repository.windows_available", _fake_windows_available)
+    monkeypatch.setattr(
+        "app.portfolio.repository.range_completeness", _fake_completeness
+    )
 
     def _econ_row(units):
         return {"childAsin": "B01", "sales": {"unitsOrdered": units, "netUnitsSold": units}}
@@ -177,9 +197,9 @@ async def test_run_reads_the_saved_blend_weight_not_the_hardcoded_default(db, mo
 
     monkeypatch.setattr("app.portfolio.economics.fetch_economics", _fake_fetch_economics)
 
-    async def _fake_save_snapshot(db_, start, end, rows):
+    async def _fake_save_daily(db_, rows, **kwargs):
         return len(rows)
-    monkeypatch.setattr("app.portfolio.repository.save_snapshot", _fake_save_snapshot)
+    monkeypatch.setattr("app.portfolio.repository.save_economics_daily", _fake_save_daily)
 
     async def _fake_load_snapshot(db_, window):
         return [_econ_row(300)] if window[1].endswith("-31") and window[0].endswith("-02") \

@@ -366,8 +366,10 @@ def indexes(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "economics_daily" in tables:
+    print("e7b3f0c92a41")                           # head: portfolio economics + ads per DAY
 elif "over_pack_approved_units" in cols("shipment_plan_items"):
-    print("c5e2a91f47b3")                           # head: owner-approved over-pack
+    print("c5e2a91f47b3")                           # owner-approved over-pack
 elif "from_stock" in cols("shipment_packing_entries"):
     print("a3f1c72d8e94")                           # packed split made vs from stock
 elif "target_state" in cols("ads_rule"):
@@ -462,8 +464,13 @@ have = {r[0] for r in con.execute("select name from sqlite_master where type='ta
 need = {"shipment_plans", "shipment_plan_items", "shipment_packing_days",
         "shipment_packing_entries", "product_categories", "users",
         "amazon_orders", "order_packed_entries", "product_raw_stock",
-        "order_packed_state", "economics_snapshot", "product_decision",
-        "ads_snapshot", "portfolio_settings",
+        "order_packed_state", "product_decision", "portfolio_settings",
+        # The Portfolio tab's per-DAY rows. `economics_snapshot` and `ads_snapshot` are
+        # deliberately ABSENT — revision e7b3f0c92a41 drops both, because a window keyed cache
+        # could not answer a range nobody had fetched, and two caches of one figure with a read
+        # side choosing between them is what lost Rs 1,26,328 of Sponsored Brands spend.
+        "economics_daily", "ads_daily",
+        "economics_refresh",
         # The Ads tab. `ads_mutation` is the one that matters most here: it is the audit trail and
         # the undo for live bid changes, so a deploy that left it missing would make the tab
         # unsafe rather than merely broken.
@@ -490,6 +497,14 @@ if missing:
 if "ads_performance" in have:
     print("    ads_performance still exists — revision a1c7e93f24b8 did not run")
     sys.exit(1)
+# Same check for the two Portfolio per-window tables. **This is the half that cost a rollback
+# last time**: the required-tables list is read into memory from the OLD checkout, so a deploy
+# whose migration correctly DROPS a table then fails the old list and rolls the code back while
+# leaving the schema forward — old code against a table that no longer exists.
+for gone in ("economics_snapshot", "ads_snapshot"):
+    if gone in have:
+        print(f"    {gone} still exists — revision e7b3f0c92a41 did not run")
+        sys.exit(1)
 print("    all shipment and user tables present")
 PY
 

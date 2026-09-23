@@ -55,9 +55,26 @@ async def _dashboard(db: AsyncSession, window: tuple[str, str] | None = None) ->
     tab shows exactly what it showed before ACOS existed.
     """
     window = window or await repository.latest_window(db)
-    econ_rows = await repository.load_snapshot(db, window)
-    sku_rows = await repository.load_sku_snapshot(db, window)
-    ads_by_asin, ads_by_sku = await repository.load_ads_snapshot(db, window)
+
+    # **An INCOMPLETE range returns nothing rather than a short sum**, and that refusal is the
+    # point of storing days at all. Found by driving the real screen: a 90-day range over 40 stored
+    # days rendered 2 products and a total, labelled "90 days" — a figure 50 days short, on a
+    # dashboard whose entire purpose is deciding which products to stop selling. The banner said
+    # which days were missing while the grid quietly showed a plausible wrong number beside it.
+    #
+    # The same rule `POST /ads/preview` follows for a bid rule: a partial window is refused, not
+    # summed. `completeness` travels regardless, so the screen names the missing days and offers the
+    # fetch — an empty grid WITH a reason, rather than a filled one with a caveat.
+    completeness = (
+        await repository.range_completeness(db, window[0], window[1]) if window else None
+    )
+    summable = bool(completeness and completeness["complete"])
+
+    econ_rows = await repository.load_snapshot(db, window) if summable else []
+    sku_rows = await repository.load_sku_snapshot(db, window) if summable else []
+    ads_by_asin, ads_by_sku = (
+        await repository.load_ads_snapshot(db, window) if summable else ({}, {})
+    )
     sheet_catalogue, catalogue_warning, source = await catalogue.load_catalogue()
     ratings = await repository.load_ratings(db)
     decisions = await repository.load_decisions(db)
@@ -73,7 +90,19 @@ async def _dashboard(db: AsyncSession, window: tuple[str, str] | None = None) ->
     result["catalogue_warning"] = catalogue_warning
     result["last_refresh"] = await repository.last_refresh(db)
     result["window"] = window
-    result["windows_available"] = await repository.windows_available(db)
+    # **ONE computation of "can this range be answered", and the SERVER owns it.**
+    #
+    # This used to be `windows_available` — the exact windows previously fetched — and the screen
+    # compared the requested range against that list to decide whether to show an instant dot or a
+    # "Fetch (~12 min)" button. That is one rule computed twice, which is the defect this codebase
+    # has shipped three times (the Orders tab's "86 orders beside 87 lines"; the Ads tab's
+    # `insideDailyCoverage`, where a merged span promised "summed instantly" for windows the server
+    # then refused). So the answer now comes from `range_completeness` alone, per requested range.
+    #
+    # `coverage` travels too, but for PROSE only — a span cannot see an interior gap, which is
+    # exactly how the Ads tab's version came to lie.
+    result["completeness"] = completeness
+    result["coverage"] = await repository.coverage(db)
     result["ratings_as_of"], result["ratings_stale"] = _rating_freshness(ratings)
     # Whether ACOS is available at all, so the screen can say "not configured" rather than
     # rendering a column of dashes with no explanation.
@@ -163,14 +192,15 @@ async def get_portfolio(
 ):
     """The whole dashboard. Local rows only — no Amazon call.
 
-    ``?days=30`` or ``?start=&end=`` selects a window; both are validated to at most 90 days and
-    to end no later than yesterday. **A window with no stored rows returns empty rather than
-    fetching**, because a fetch takes twelve minutes and a GET must not block on one — the screen
-    offers a Fetch button instead.
+    ``?days=30`` or ``?start=&end=`` selects a range; both are validated to at most 90 days and
+    to end no later than yesterday. **Any range inside the stored coverage is answered instantly**,
+    because the cache is keyed per DAY and a window is a sum over days — it no longer has to have
+    been fetched as that exact window. A range with a missing day still returns empty rather than
+    fetching, because a fetch takes ~15 minutes and a GET must not block on one.
 
-    Carries ``last_refresh``, ``ratings_as_of`` and ``windows_available`` so the screen can say how
-    old these numbers are and which ranges are instant — the things the CSV upload could never
-    tell anyone.
+    Carries ``last_refresh``, ``ratings_as_of``, ``completeness`` and ``coverage`` so the screen can
+    say how old these numbers are and, when a range cannot be answered, WHICH days are missing —
+    the things the CSV upload could never tell anyone.
     """
     window, error = _requested_window(start, end, days)
     if error:

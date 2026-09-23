@@ -1,6 +1,6 @@
 """The weekly 7d/30d sales recompute. **No new Amazon integration** — reuses
-`app.portfolio.economics.fetch_economics` and `app.portfolio.repository.save_snapshot`/
-`load_snapshot`/`windows_available` exactly as the Portfolio tab's own nightly refresh does.
+`app.portfolio.economics.fetch_economics` and `app.portfolio.repository.save_economics_daily`/
+`load_snapshot`/`range_completeness` exactly as the Portfolio tab's own nightly refresh does.
 
 **A failed or partial fetch must not overwrite good data.** Every parent's existing row is left
 untouched if either window's fetch raises — the same discipline `app.ads.refresh`'s
@@ -29,11 +29,16 @@ async def _ensure_window(
     db: AsyncSession, days: int, *, sleep, today: date,
 ) -> tuple[str, str]:
     """Ensure an economics window is stored, and return `(start, end)`. **Checks the cache
-    BEFORE fetching, not after** — the whole reason `windows_available` is consulted at all is
-    to avoid a ~2-minute Data Kiosk query for a window the Portfolio tab's own nightly refresh
-    (or a previous run of this job) already stored. Calling `fetch_economics` unconditionally
-    and only skipping the SAVE would still pay the fetch cost every time, which defeats the
-    entire point of sharing the cache with the Portfolio tab.
+    BEFORE fetching, not after** — the point of consulting it at all is to avoid a Data Kiosk query
+    for days the Portfolio tab's own nightly refresh (or a previous run of this job) already stored.
+    Calling `fetch_economics` unconditionally and only skipping the SAVE would still pay the fetch
+    cost every time, which defeats the entire point of sharing the cache.
+
+    **The check is per DAY now rather than per exact window, which is strictly better here.** The
+    Portfolio cache used to be keyed per window, so this job paid for a full fetch whenever its
+    30-day range happened not to match one somebody had fetched as that exact range.
+    `range_completeness` is the same single source of truth the Portfolio route uses, so the two
+    features cannot disagree about whether a range is answerable.
 
     `economics.window_for(today, days)` is the same pure calculation `fetch_economics` uses
     internally to turn "the last N days" into concrete dates — calling it here costs nothing and
@@ -43,14 +48,13 @@ async def _ensure_window(
     run on.
     """
     start, end = economics.window_for(today, days)
-    cached = await portfolio_repository.windows_available(db, limit=50)
-    if any(w["start"] == start and w["end"] == end for w in cached):
+    if (await portfolio_repository.range_completeness(db, start, end))["complete"]:
         return start, end
 
     asin_rows, _sku_rows, start, end = await economics.fetch_economics(
         days=days, sleep=sleep, today=today,
     )
-    await portfolio_repository.save_snapshot(db, start, end, asin_rows)
+    await portfolio_repository.save_economics_daily(db, asin_rows)
     return start, end
 
 
@@ -58,7 +62,7 @@ async def run(db: AsyncSession, *, sleep=asyncio.sleep, today: date | None = Non
     """Recompute every sheet-sourced parent row's blended daily rate. Returns
     `{"rows_stored": int, "error": str | None, "window_start": str, "window_end": str}`.
 
-    **Checks `windows_available` before fetching**, so a 30-day window the Portfolio tab's own
+    **Checks `range_completeness` before fetching**, so a 30-day window the Portfolio tab's own
     nightly refresh already stored costs nothing extra here — the two features share one cache.
 
     `today` defaults to the IST calendar day (`app.ist.today()`), never the server's raw UTC
