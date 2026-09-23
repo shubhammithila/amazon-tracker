@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2338 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2388 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -1665,9 +1665,48 @@ while "net −56.8%, TACOS 78%" is a claim he can verify against Seller Central 
 | 2 | `KILL` | returns ≥15% on ≥20 units — a product problem money cannot fix |
 | 3 | `KILL` | net < 0 **AND** TACOS > 50% |
 | 4 | `SURGICAL` | parent net > 0 but ≥1 size loses money |
-| 5 | `AD DEPENDENT` | net > 0 but **ACOS > 100%** — the ads lose money on their own terms |
-| 6 | `BEST BET` / `SCALE` | net ≥25% and TACOS ≤30%, split on rating ≥4.0 |
-| 7 | `MONITOR` | everything else |
+| 5 | `BEST BET` / `SCALE` | net ≥25% and TACOS ≤30%, split on rating ≥4.0 |
+| 6 | `MONITOR` | everything else |
+
+> **There were SEVEN, and the removed one was the only rule that read ACOS.** `AD DEPENDENT` — net
+> > 0 but ACOS > 100% — retired on instruction: *"TACOS play a role, ACOS doesnt in deciding the
+> kill scale maintain. as ACOS might not be perfectly captured by online tools. but TACOS is."*
+>
+> **ACOS is still computed, still a sortable and filterable column, and still named in the BEST BET
+> and MONITOR reasons.** The rule is that nothing may *branch* on it. `test_no_verdict_rule_reads_acos`
+> is the guard and it asserts a PROPERTY — one row, four ad shapes (none / 50% / 401% / spend with
+> zero attributed sales), identical verdict, while `acos` and `acos_infinite` demonstrably differ.
+> Asserting the retired name is absent would pass the moment the constant went and say nothing about
+> an ACOS branch reintroduced under another name; a mutation doing exactly that is in the harness.
+>
+> **The cost was measured before agreeing to it**, on the live 30-day window: 5 of 90 parents move,
+> and two move from a warning to an *endorsement*.
+>
+> ```
+> ABC Sattu        AD DEPENDENT -> BEST BET   net 31.5%  TACOS 29.5%  ACOS 106%
+> Moringa Sattu    AD DEPENDENT -> MONITOR    net 16.0%  TACOS 45.3%  ACOS 196%
+> Pea Isolate      AD DEPENDENT -> MONITOR    net 17.9%  TACOS 41.9%  ACOS 130%
+> Ragi Atta        AD DEPENDENT -> MONITOR    net 20.4%  TACOS 29.6%  ACOS 103%
+> Makhana Powder   AD DEPENDENT -> SCALE      net 41.3%  TACOS 25.6%  ACOS 401%
+> ```
+>
+> So **ABC Sattu now reads BEST BET — "profitable, cheap to advertise, and liked" — while ₹1 of its
+> advertising returns ₹0.94.** That is an accepted trade, not an oversight, and the test asserting it
+> says so verbatim rather than picking a comfortable fixture. What makes it tolerable is that the
+> ACOS column sits beside the green tag, red above break-even, with its three states intact.
+>
+> `BREAK_EVEN_ACOS` went with the rule and is **not replaced**: it was break-even rather than a
+> tuning choice, so there is no equivalent number to make editable on the TACOS side. A settings row
+> stored before the removal may still hold the key; both `thresholds_or_default` and `save_settings`
+> gate on `key in DEFAULT_THRESHOLDS`, so it is inert — and the route REFUSES it, which is a separate
+> claim from being absent from the dict and is asserted separately.
+>
+> `GROUP_FLAGS` is down to one entry (SURGICAL) and stays a **dict**: the mechanism is what makes the
+> next awkward verdict a one-line change, and a test asserts the single entry in both directions.
+> Historical `product_decision.snapshot_json` rows may still name the retired verdict — deliberately
+> not back-filled, because rewriting an audit trail to what it should have said destroys the only
+> record of what the owner was looking at. Safe, because nothing looks a snapshot verdict up and both
+> verdict-keyed maps are total-with-fallback.
 
 **The thresholds are editable and saved** (`portfolio_settings`, one JSON row), because they are
 measured from this account rather than laws — net 25% and TACOS 30% are where *these* healthy
@@ -1675,6 +1714,25 @@ products sit. `verdict_for` takes them as a parameter and `DEFAULT_THRESHOLDS` i
 restores. The **⚙ Verdict rules** panel shows every rule in words with the live numbers substituted,
 so an edited threshold and its explanation cannot drift apart. Editing recomputes from stored rows
 — no Amazon call, instant.
+
+**The inputs are grouped by the DECISION each one serves**, asked for as *"give me editabel metrics
+for what to put in kill, maintain and scale."* `logic.THRESHOLD_GROUPS` maps them and is **asserted
+TOTAL over `DEFAULT_THRESHOLDS`** — the discipline `VERDICT_GROUPS` carries over `VERDICT_ORDER`, so a
+new threshold cannot be added without deciding which decision it serves. Left partial, the panel files
+the new number under whichever heading renders last, visible only to someone who already knows where
+it belonged. Shipped from the server like `verdict_groups`, because a second copy of the grouping is a
+second thing to keep in step.
+
+| Scale | Kill or monitor |
+|---|---|
+| `good_net` · `good_tacos` · `good_rating` | `kill_tacos` · `returns_kill_rate` · `returns_min_units` · `dead_units` |
+
+> **`Maintain` is deliberately EMPTY, and the panel explains it in WORDS rather than rendering an
+> empty heading.** MONITOR is the last rule — "everything else" — so it genuinely has no number of its
+> own. That is a fact about the rules, not a gap in the mapping: a heading with no inputs reads as
+> broken, while a heading with one sentence reads as the design. Same reasoning as every group tab
+> rendering at zero, dashed. A test asserts the absence, so nobody "fixes" it by inventing a MONITOR
+> threshold that decides nothing.
 
 > It used to be a per-chip ⓘ. That went with the seven chips: a **tab is a GROUP, not a verdict**,
 > so "what does Kill or monitor mean" is three rules rather than one, and the panel already answers
@@ -1695,18 +1753,26 @@ so an edited threshold and its explanation cannot drift apart. Editing recompute
 > **103% TACOS for −52.7% net**. Judged at the parent alone it reads as a mediocre keeper and the
 > correct action — kill the small packs, keep the big ones — is invisible.
 >
-> **Rule 5 only became expressible with the Advertising API.** Measured live: Roasted Chana earns
-> +31.9% net at **104% ACOS**, Moringa Sattu +17.4% at **182%**. Under TACOS alone both read as
-> MONITOR or BEST BET, because TACOS' denominator includes the organic sales carrying them. The
-> action differs from `KILL`: cut the spend, keep the product. Six products land here.
+> **The retired rule 5 only became expressible with the Advertising API, and that argument was
+> SOUND — it was simply overruled.** Measured live: Roasted Chana earns +31.9% net at **104% ACOS**,
+> Moringa Sattu +17.4% at **182%**. Under TACOS alone both read as MONITOR or BEST BET, because
+> TACOS' denominator includes the organic sales carrying them, and the action differed from `KILL`:
+> cut the spend, keep the product.
+>
+> It is kept here because the *reasoning* is still true and worth knowing — the gap between TACOS and
+> ACOS is real, and 33.1% against 89.9% account-wide is the measurement that proves it. What changed
+> is who reads it: the owner does not trust ACOS to be captured correctly, so the number is context
+> on a column rather than a line the code draws. **A sound argument for a rule is not the same as
+> authority to keep it**, and the distinction is worth recording because the next reader will find
+> this paragraph and the removal note above it and needs to know they do not contradict each other.
 
-### Three tabs over the seven verdicts — a VIEW, not a rewrite
+### Three tabs over the six verdicts — a VIEW, not a rewrite
 Asked for as *"lesser tabs — I want only Scale (top performers), Maintain (mid performers), Kill or
 monitor (least performers)"*.
 
-**The seven rules and every reason string are untouched**, and that is the whole decision.
+**The rules and every reason string are untouched by the GROUPING**, and that is the whole decision.
 `logic.VERDICT_GROUPS` maps them; `verdict_for` still returns "net −56.8%, TACOS 78%" and the row
-still shows it. Collapsing seven rules into three would turn that into "Kill" and leave the owner
+still shows it. Collapsing the rules into three would turn that into "Kill" and leave the owner
 nothing to check against Seller Central — the same argument that rejected a 0–100 composite score
 in the first place. What changed is how many controls sit above the table: seven chips became three
 tabs plus All.
@@ -1715,17 +1781,20 @@ tabs plus All.
 |---|---|---|
 | **Scale** | BEST BET · SCALE | |
 | **Maintain** | MONITOR · **SURGICAL** | ⚠ *some sizes lose money* |
-| **Kill or monitor** | KILL · DEAD · **AD DEPENDENT** | ⚠ *ads lose money on their own terms* |
+| **Kill or monitor** | KILL · DEAD | |
 
-**Two of the seven do not fold cleanly, and folding them SILENTLY is the actual risk** — so exactly
-those two carry a flag, asserted in both directions so a third cannot quietly appear:
+**SURGICAL does not fold cleanly, and folding it SILENTLY is the actual risk** — so it carries a flag,
+asserted in both directions so a second cannot quietly appear:
 
 - **SURGICAL is Maintain, not Kill.** The parent EARNS its place and one size does not, so the
   action is surgery. Measured live: Cheese & Cream Roasted Chana earns +27.1% overall while one
   250 g pack burns 103% TACOS at −52.7% net. In "Kill or monitor" it would invite killing a
   profitable product; in Maintain without a flag it reads as simply fine.
-- **AD DEPENDENT is Kill-or-monitor, but needs a DECISION rather than a kill** — the product is
-  profitable and its ADS are not, and the fix is to cut the spend. Six products land there.
+
+> **AD DEPENDENT was the second flagged verdict and is gone**, retired with its rule when ACOS stopped
+> deciding anything. Group counts went 12/18/60 → 10/15/65 on the live window. The test that asserted
+> `flagged == {SURGICAL, AD_DEPENDENT}` was RIGHT when written and now asserts one entry — the
+> both-directions property is unchanged and is the reason it exists.
 
 **An unrecognised verdict lands in Maintain rather than vanishing.** Deny into the SAFE bucket, like
 `ads.logic.manager_of` treating an unknown campaign as ours: a product missing from all three tabs
@@ -1742,6 +1811,154 @@ click to undo the filter.
 template is a second thing to keep in step, and the failure mode is a tab whose count disagrees with
 the rows beneath it — the "86 orders beside 87 lines" defect. **Two counts, not one**, because "11
 Scale products" and "36 Scale SKUs" are both true and the tab must match the grain on screen.
+
+### The MRP sheet's Active flag decides what this tab COUNTS
+Asked for as *"whether the sku/parent is killed or not can be taken from the MRP sheet… in which
+column V has the data in terms of Y and N. Refresh it every day."*
+
+**The column was already parsed and the catalogue was already loaded on every request.** What was
+missing was a CONSUMER: `size_row` read name, brand and weight off each entry and ignored `active`.
+So this is one field and a filter, not an integration — and "refresh it every day" was already true,
+because `_dashboard` fetches the sheet per request with its own cache fallback.
+
+**The SCALE is what needed deciding, so it was measured first** on the live 30-day window:
+
+| | |
+|---|---|
+| SKUs marked `N` | **157 of 267** |
+| Parents inactive in EVERY size | **53 of 90** — the tab goes 90 products → 37 |
+| Sales excluded | **₹45,042 of ₹44,46,806**, 120 units |
+| Inactive products that still SOLD | **6**, led by Moringa Powder 20u ₹9,443 |
+| MIXED parents (some sizes inactive) | 6 — all with zero sales on the inactive sizes *today* |
+| SKUs absent from the sheet | **0** |
+
+That gap is the **3,337-vs-3,259** report in a different tab: an inactive product that is still
+selling is a question, not a fact — a mis-set flag and a deliberate run-down look identical, and only
+the owner can tell them apart. So every excluded rupee is **named**, and the banner states **units AND
+money** where the Shipment tab's equivalent states units alone: a plan IS a unit count, while the four
+KPI tiles here are money, and a 1.5% gap against a Business Report otherwise has nothing to reconcile
+against. Only the products that SOLD are named, biggest **sales** first, capped at 8 with the count
+exact — naming all 53 would bury the 6 that matter among dead stock.
+
+**The filter lives in `logic.portfolio`, at the SIZE level.** Not in the router, and three properties
+decide that — only this placement gets all three:
+
+1. **Honest totals for free.** Everything downstream already derives from `parents`→`sizes`:
+   `totals`, `category_totals`, `group_counts`, the Excel export.
+2. **The banner can NAME a hidden parent.** A wholly-inactive parent's name is *derived* by
+   `family_label` from its child names plus the collision suffix — a router filtering raw economics
+   rows would have to re-derive that, and would be wrong on exactly the multi-flavour rows that are
+   hardest to notice.
+3. **A mixed parent's money equals the sum of the sizes SHOWN.**
+
+Two subtler consequences, both fixed rather than documented as limits:
+
+- **`verdict_for` gets the SHOWN sizes.** Rule 4 walks the list for loss-makers and NAMES them, so the
+  unfiltered list lets it judge a parent SURGICAL because of a pack that is not on screen — a verdict
+  the owner cannot check, which is the one thing these reasons exist to prevent.
+- **The family NAME derives from the shown sizes too**, or a row is labelled after flavours it does not
+  contain. A parent holding 3 flavours of which 2 are inactive is, on screen, a single-flavour product.
+
+> **A product with a stored DECISION is never hidden.** `ProductDecision` exists to answer "I marked
+> Moori KILL on 27 Aug at −56.8% net; what is it now?", and that needs the row present. Measured on
+> production, **Bengali Moori and Moori are exactly the products this would otherwise have removed** —
+> both inactive, both carrying a kill decision. They stay, tinted and badged `inactive`, and a banner
+> says why, because "why is this dead product still in my table" needs an answer on screen.
+
+> **Only an EXPLICIT falsy flag hides a row**, and that default is load-bearing three times over.
+> `catalogue.is_active` already states the rule — *"missing data is not a decision"* — and here:
+> an ASIN absent from the sheet stays (**all 3 stored decisions are on such ASINs**, so the naive
+> reading makes every one unreachable at once); an entry with no `active` key stays; and an **EMPTY
+> catalogue stays**, which is what `load_catalogue` returns during a Google outage — the naive reading
+> renders 90 products as 0, the worst outcome available here. **Zero live rows exercise any of those
+> branches**, so no value-based test would catch their loss by accident; a mutation covers each.
+
+> **`save_decision` passes `include_inactive=True`.** It looks the parent up in `data["parents"]`, so
+> on the default view a decision about a hidden product finds nothing, leaves `snapshot` as None, and
+> stores a decision with no figures — silently defeating the only thing `snapshot_json` exists for, on
+> exactly the products most likely to be marked KILL.
+
+**The toggle is a query parameter, re-fetched**, through ONE builder shared with the Excel link. The
+server decides what the flag excludes and the screen asks — the deletion `windows_available` earned. A
+client-side row filter would also be wrong invisibly: the totals and the banner come from the server,
+so they would keep describing the unfiltered set. The button renders from the server's **echoed** flag
+rather than the local variable, which has already flipped even if the request failed.
+
+> **The reconciliation test caught a real bug in the first version.** `inactive_sales` summed the
+> vanished PARENTS, so a mixed parent's hidden size was excluded from the totals and counted nowhere —
+> ₹20,000 neither on screen nor named. `test_EVERY_RUPEE_is_either_on_screen_or_named_as_excluded`
+> asserts `active_only + inactive_sales == full` to the paisa, the property
+> `test_shipment_catalogue.py` already asserts for units, and it failed rather than the code reading
+> wrong. **Verified on production: ₹44,01,764 + ₹45,042 = ₹44,46,806**, and 14,897 + 120 = 15,017 units.
+
+**Sizes dropped from a still-SHOWN parent get their own line**, because it is a different question:
+a vanished product asks "should this be selling at all", a vanished SIZE under a live product asks "is
+this pack size really retired" — and the parent row beside it looks entirely normal, which makes it the
+easier one to miss. Live: 6 such parents, led by Usna Chawal with 2.
+
+**The empty-table note gained a FIFTH cause**, and it is the first that is not a control on this
+screen: the grid can be empty because every matching product is marked `N` in a sheet edited
+elsewhere, where "No products yet" would send the owner to Refresh from Amazon.
+
+### Weight sold: units × the pack size, from column B
+Asked for as *"total weight sold also should be column for parent and child sku's both… weight is
+there in MRP sheet column B."* Already on every row — `size_row` has read it for the sort order all
+along — so this is a multiplication and a column.
+
+**Computed per CHILD ASIN, never at the parent.** A parent holds 0.5 kg, 1 kg and 2 kg packs and has
+no single weight to multiply by, so a parent-level `units × weight` is not merely riskier, it is
+meaningless. The parent sums its sizes, the construction that already makes `sales` and `net` agree
+with the rows beneath them. Verified in a browser on real data: 1 kg × 193 + 2 kg × 25 + 500 g × 71 +
+3 kg × 9 = **305.5 kg**, matching the parent exactly — and the halving on the 500 g pack is the check
+that the multiplication is per-PACK rather than per-unit.
+
+**`line_weight` is imported from the shipment tab, not reimplemented.** It carries the 3-decimal
+rounding, and without it 0.15 kg × 200 is `30.000000000000004` — a number that would reach a
+spreadsheet cell. Asserted on the IMPORT rather than the name: a mutation defining a local
+`def line_weight(u, w): return u * w` walked straight through a bare-name check, with the rounding gone
+and the rule in two places.
+
+**An unknown pack size is EXCLUDED and COUNTED, never treated as 0 kg** — `shipment_weight`'s rule and
+its documented reason, *"a line silently contributing nothing is how a 130 kg shipment reports 90"*.
+`None` rather than `0.0`, so the screen shows a dash: a product that sold 245 units of packs the sheet
+has no weight for has an UNKNOWN weight sold, and `0.0 kg` beside 245 units is a claim rather than an
+absence. `weight_unknown` travels so the shortfall is stated. **0 of 273 sheet entries lack a weight**,
+so no live row exercises this and the fixtures construct one.
+
+> **The totals row needed its own accumulator.** The shared `sum` helper does `n(r[key])`, and
+> `n(null)` is 0 — correct for every money column, and the silent shortfall here. No family
+> deduplication, unlike `rating_count`: a parent IS the sum of its sizes, so the same kilogram is never
+> on two rows of one view. Worth stating, because the rating dedup sits three lines away and invites a
+> copy.
+
+**Units left the `+ More columns` toggle** in the same change. It was `extra: true` — the figure the
+owner judges a row by, behind a control he had to find. That makes ONE column-layout change: the
+documented browser check flips from **8/8/8 collapsed and 11/11/11 expanded to 10/10/10 and 12/12/12**,
+across `dataCells`, `detailCells` (its colspan) and `totalsRow`, plus `table{min-width}` — a min-width
+left behind when a column is added is the same defect as none at all, applied to the last column.
+Verified in a browser at both settings, and at a 375px viewport where the table scrolls inside its
+wrapper with **zero** document-level overflow.
+
+### The size rows are plain; the SKU detail row keeps the channel split
+Reported as *"the sku wise analysis is looking too jumbled up. too much info on the left. keep it
+simple like the parent sku."*
+
+The clutter was one line: `sizeRowHtml` appended `channelHtml(s)` — a ~150-character merchant/FBA
+sentence — into the same cell as the size name and the ASIN. A size row now reads **`1 kg
+B0DK1LJ3N3`** and nothing else.
+
+**`channelHtml` survives with ONE caller**, and the asymmetry is deliberate: the SKU-view detail row is
+a full-width `colspan` cell holding prose, where the length costs nothing, and it is the view where a
+per-channel decision is actually taken. The finding it exists for is still real — one product's
+merchant SKU spent ₹1,444 on ads for zero attributed sales while its FBA twin returned 36% ACOS. The
+`.chan` CSS and its wrapping test survive for the same reason, and the function's comment says so,
+because "finish the job" is the obvious next mistake. Asserted in BOTH directions and verified by
+mutating each way. The SKUs control names the split in its title, since information that moves without
+a signpost is information lost.
+
+> **This removes the root cause of the "child SKU isn't showing units" bug rather than its symptom.**
+> That nowrap sentence is what widened the Product column 353px → 780px and pushed Units off the
+> scroll wrapper. `.chan` is still the fix for the surviving call site.
 
 ### Category sales come from the SHIPMENT tab's own classification
 Asked for as *"need each category sales as well. Sattu, chana, flours, Staples, seeds, others…
@@ -1848,6 +2065,12 @@ loss of information:
 | 11 columns always | **8**, with `+ More columns` for Units / Returns / Rating |
 | filter builder always open | behind a toggle |
 | 7 verdict chips | **3 tabs + All** |
+
+> **The column row has since moved to 10, and in the other direction.** Units came out from behind the
+> toggle and Weight joined it, both asked for explicitly — so the default is **10 columns** with
+> `+ More columns` holding Returns and Rating only. That is not a reversal of "make it more simpler":
+> the simplification removed columns nobody had asked for, and these two were named. The lesson worth
+> keeping is that "simpler" meant *fewer things the owner does not read*, not a column budget.
 
 The pre-COGS caveat and the ratings date both survive — they are what stop a money-losing SKU
 reading as a keeper and a stale rating shaping a verdict — and the ratings DATE stays on the visible
@@ -2004,7 +2227,7 @@ ACOS, and one 500 g pack runs **105% ACOS on Easy Ship against 242% on FBA**.
   carries the direction, because the ▲/▼ glyph is decoration and is `aria-hidden`.
 - **`Products` / `SKUs` toggle inside every group tab**, because "the kills, by SKU" is the actual
   question. The counts differ per grain (15 Scale products against 36 Scale sizes) and each tab
-  shows the count for the grain on screen — see "Three tabs over the seven verdicts" above for why
+  shows the count for the grain on screen — see "Three tabs over the six verdicts" above for why
   two separate counts travel from the server.
 
   > **A zero-count tab is still rendered**, dashed, and this was found by /qa on the seven chips it
@@ -2025,7 +2248,7 @@ than typos. `THRESHOLD_RANGES` gives each threshold the bounds its units actuall
 keep breaking the verdicts with no way to see why.
 
 **The table scrolls inside `.table-wrap`, and the table needs a `min-width` for that to do
-anything.** Every cell here is `white-space:nowrap` on purpose — 11 columns of money and
+anything.** Every cell here is `white-space:nowrap` on purpose — 12 columns of money and
 percentages, where a wrapped `₹1,23,456` reads as two numbers — so the grid is legitimately wider
 than a phone and the only question is where the overflow goes. It went to the PAGE: measured **744px
 of sideways document scroll at a 350px viewport**, taking the nav, the window bar and the verdict
