@@ -403,3 +403,62 @@ def test_the_kg_formatter_shows_a_DASH_and_never_zero_kg():
     body = _function(_template(), "kg")
     assert "null" in body and "undefined" in body, "kg() does not test for a missing value"
     assert "—" in body, "kg() has no dash for an unknown weight"
+
+
+# ─── The size rows are plain; the SKU detail row keeps the channel split ──────
+
+
+def test_a_SIZE_row_carries_no_channel_note_while_the_SKU_row_STILL_DOES():
+    """Reported as *"too much info on the left. keep it simple like the parent sku."*
+
+    Both directions, because each failure is real and they are opposite:
+
+    * the note back in `sizeRowHtml` is the reported clutter — a ~150-character sentence in the first
+      cell of a numeric row, which is also what widened the Product column 353px -> 780px and pushed
+      Units off the scroll wrapper;
+    * the note gone from the SKU detail row as well would be "finishing the job", and would delete
+      the only remaining view of a split that is decision-relevant: measured, one product's merchant
+      SKU spent Rs 1,444 on ads for ZERO attributed sales while its FBA twin returned 36% ACOS.
+
+    Asserted per FUNCTION rather than by counting call sites across the file — an earlier test in this
+    codebase counted them, passed at 3, and one of the three was a duplicate.
+    """
+    source = _template()
+    assert "${channelHtml(" not in _function(source, "sizeRowHtml"), (
+        "the merchant/FBA sentence is back in the size row's first cell"
+    )
+    # **Counted as an INTERPOLATION, `${channelHtml(`, not as the bare name.** The comment above
+    # `sizeRowHtml` explains the removal and necessarily quotes `channelHtml(s)`, so a bare-name count
+    # reads 3 where 2 are rendered. That is the deploy-detector mistake — a substring that also
+    # appears in its own explanation — and it bit twice while writing these tests.
+    rendered = source.count("${channelHtml(")
+    assert rendered == 1, (
+        f"{rendered} rows render the channel note; exactly one should (the SKU detail row). "
+        "Zero means the split was deleted entirely; two means it is back in a numeric row."
+    )
+    assert "function channelHtml(" in source, "channelHtml was deleted with its duplicate caller"
+
+
+def test_the_channel_note_CSS_and_its_wrapping_rule_survive_the_simplification():
+    """One caller remains, so all three parts of the original fix still apply.
+
+    Deleting `.chan` along with the duplicate call would leave the SKU detail row's prose inheriting
+    `tbody td { white-space: nowrap }` — reintroducing the exact overflow that made child rows look
+    as though they had no units.
+    """
+    source = _template()
+    assert ".chan{" in source, "the wrapping rule was deleted, so the surviving note cannot wrap"
+    assert "white-space:normal" in source
+    assert 'class="dim chan"' in source, "the surviving note no longer uses the wrapping class"
+
+
+def test_the_screen_says_WHERE_the_channel_split_went():
+    """Information that moves without a signpost is information lost.
+
+    The split left the Products view entirely, so the SKUs control names it. Without this the owner
+    has no way to discover that the figures he was reading are one click away rather than gone.
+    """
+    source = _template()
+    toggle = source[source.index('data-view="skus"'):]
+    toggle = toggle[: toggle.index("</button>")]
+    assert "FBA" in toggle, "the SKUs control does not say it holds the Easy Ship / FBA split"

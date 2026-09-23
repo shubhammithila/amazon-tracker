@@ -313,15 +313,19 @@ th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
     <input class="search-input" id="search" type="search"
            placeholder="Search product, brand, ASIN or verdict…"/>
     <!-- Products vs SKUs. Sits beside the verdict chips in spirit: "KILL, by SKU" is the
-         question, so the grain belongs next to the filter. -->
+         question, so the grain belongs next to the filter.
+         SKUs is also where the merchant/FBA split lives now that the size rows are plain — the
+         title says so, because information that moved without a signpost is information lost. -->
     <div class="seg" id="view-toggle">
       <button class="seg-btn on" data-view="products">Products</button>
-      <button class="seg-btn" data-view="skus">SKUs</button>
+      <button class="seg-btn" data-view="skus"
+              title="One row per pack size, and the only view with the Easy Ship / FBA split">SKUs</button>
     </div>
     <button class="btn-outline" id="filter-btn">+ Filter</button>
-    <!-- Units, Returns and Rating. Context rather than the four figures a kill-or-scale call is
-         made on, so they are one click away instead of always on screen. The choice is remembered,
-         because someone who wants them wants them every visit. -->
+    <!-- Returns and Rating. Context rather than the figures a kill-or-scale call is made on, so they
+         are one click away instead of always on screen. The choice is remembered, because someone who
+         wants them wants them every visit. Units and Weight LEFT this toggle: they are what the
+         owner reads a row by, and a figure behind a toggle is a figure he has to go looking for. -->
     <button class="btn-outline" id="cols-btn"></button>
   </div>
   <div id="filter-area"></div>
@@ -1077,9 +1081,19 @@ function detailCells(row){
     <td colspan="${trailing}" class="dim" style="font-size:11px">rating is per product</td>`;
 }
 
-/* The merchant/FBA split for one size, shown on expand.
+/* The merchant/FBA split for one size.
    Decision-relevant rather than decorative: measured, one product's merchant SKU spent Rs 1,444
-   on ads for ZERO attributed sales while its FBA twin returned 36% ACOS. */
+   on ads for ZERO attributed sales while its FBA twin returned 36% ACOS.
+
+   **ONE caller now, and the other was removed deliberately.** This used to be appended into the
+   first cell of every expanded SIZE row too, and that is what the owner reported as *"too much info
+   on the left"* — a 150-character sentence in a table cell, beside a size name and an ASIN.
+
+   The surviving caller is the SKU-view detail row, which is the right home for it and not merely a
+   place it survived: it is a full-width `colspan` cell holding prose, where the length costs nothing,
+   and it is the view where a PER-CHANNEL decision is actually taken. Do NOT "finish the job" by
+   removing this one as well — and do not delete `.chan` or its wrapping test either, both of which
+   this caller still needs. What went was the duplicate in a numeric row, not the information. */
 function channelHtml(row){
   const ch = row.channels || {};
   if(!ch.merchant && !ch.fba) return "";
@@ -1239,10 +1253,19 @@ function totalsRow(list, isSkus){
 
 /* One pack-size row. ONE function, called from both the flat and the flavour-grouped paths,
    so a nested size row and a flat one cannot come to disagree about a column — the same reason
-   `applySort` is shared by the click and the keydown handlers. `nested` only indents. */
+   `applySort` is shared by the click and the keydown handlers. `nested` only indents.
+
+   **The first cell is the size and its ASIN, and nothing else.** Reported as *"the sku wise analysis
+   is looking too jumbled up. too much info on the left. keep it simple like the parent sku."* It
+   used to append `channelHtml(s)` — a ~150-character merchant/FBA sentence — into this cell, which
+   is the clutter being described. A parent row carries a name and a brand; a size row now carries a
+   size and an ASIN, which is the parity that was asked for.
+
+   `channelHtml` is NOT deleted: the SKU-view detail row still calls it, and that asymmetry is
+   deliberate — see the note on the function itself. */
 function sizeRowHtml(s, nested){
   return `<tr class="size${nested ? " nested" : ""}">
-    <td>${esc(sizeName(s))} <span class="asin">${esc(s.asin)}</span>${channelHtml(s)}</td>
+    <td>${esc(sizeName(s))} <span class="asin">${esc(s.asin)}</span></td>
     <td></td>
     ${detailCells(s)}
   </tr>`;
