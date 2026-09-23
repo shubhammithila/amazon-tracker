@@ -1120,6 +1120,43 @@ not, rather than reporting success because the fetch returned 200.
 
 The nightly job keeps the store current from then on, fetching only the day it is missing.
 
+**Verified on production, 23 Sep** — run end to end, then checked rather than trusted:
+
+```
+economics  24,030 ASIN rows + 48,150 SKU rows for 2026-06-25..09-22 in 83s   <- 90/90 days
+ads        chunk 1/3  5,001 rows in 1376s     chunk 2/3  4,477 in 1982s
+           chunk 3/3  4,314 rows in 1498s     26,731 raw -> 4,314 (day,asin,sku)
+the full 90-day range is summable — every sub-range is now instant
+```
+
+The checks that actually prove it, none of which a 200 response would have:
+
+| Check | Result |
+|---|---|
+| every preset (7/30/60/90d) and an arbitrary interior 13 days | **complete, 200, 90 parents / 267 SKUs each** |
+| a range reaching back to January | **refused, 175 missing days named** |
+| parents whose sizes do not sum to the parent | **0 of 90** |
+| sum of parents vs `totals.sales` | **₹1,46,24,714.42 both — delta ₹0.00** |
+| unmatched ASINs | **0** |
+
+**The strongest check is the cross-API one**, because it compares two entirely separate integrations:
+
+| Window | economics `ad_spend` | Ads API `cost` | apart |
+|---|---|---|---|
+| 7d | ₹2,91,613.26 | ₹2,91,477.73 | **0.05%** |
+| 30d | ₹14,04,598.55 | ₹14,13,069.41 | 0.60% |
+| 60d | ₹30,83,454.25 | ₹30,88,217.70 | 0.15% |
+| 90d | ₹47,99,753.95 | ₹48,02,554.42 | **0.06%** |
+
+All inside the ~0.2% reconciliation this file already records for the two feeds, which is what makes
+`acos` computed from the Ads API's own `cost` rather than from the economics figure legitimate.
+
+> **The two-mint token pattern showed up again, as designed.** `o2/token` at 12:25 and 13:24 — 59
+> minutes apart, so `poll_get` replaced the token before Amazon could reject it and **no 401 ever
+> fired**. A 90-day backfill is three sequential ~25-minute chunks, so it necessarily crosses the
+> one-hour boundary; under the old code that bound a header dict once, chunk 3 could not have
+> finished. The retry is the backstop, not the mechanism.
+
 **SP-API credentials ARE set** (`SP_API_CLIENT_ID`, `SP_API_CLIENT_SECRET`,
 `SP_API_REFRESH_TOKEN`, `SP_API_MARKETPLACE_ID`), and the `.env` is `chmod 600`. The
 refresh token is the most valuable secret on the box — worth more than the app
