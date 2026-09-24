@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2388 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2412 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -186,11 +186,93 @@ how they look. `app/shipment/documents.py` and `app/invoice/generator.py` keep
 their dark header bands: those are printed documents, where dark-on-white is the
 accounting convention.
 
+> **Layout is deliberately NOT centralised** — each page keeps its own inline CSS, because these are
+> twelve standalone documents rather than one app shell. Two exceptions live in `theme.css` and say so
+> in their comments: `flex-wrap` on `header`/`.nav-links` (the nav is a shared partial, so a per-page
+> fix leaves seven pages broken) and `font-variant-numeric` on `.num` cells (type, which this file
+> already owns). `templates/_icons.html` and `_icon_sprite.html` are fragments with no `<head>`, so
+> they are exempt from the stylesheet-link rule and **nothing else** — the `:root` and colour bans run
+> over every template, which is what keeps the icon sprite honest.
+
 The nav lives in `templates/nav.html` and is `include`d, not inherited. It used
 to be copy-pasted into all 7 templates and had drifted: `projections.html` was
 simply missing the Shipment link, which is why that tab vanished when you opened
 Projections. `tests/test_nav_consistency.py` is what stops it recurring — the
 partial alone would not.
+
+### Four defects a reverted refresh had already found
+Asked for as *"the UI of the whole thing can be better. research some online websites and other
+analysis softwares for the UI changes you can do."*
+
+**The research turned up this repo's own history first.** A Materio-inspired token refresh was built
+across six commits and reverted in full (`af82f1b`) — *"revert back from materio. I dont like it."*
+Its revert message listed four defects it had fixed, and **all four came back with the look**. So the
+instruction this time was **"fix what's broken, don't restyle"**, on the Portfolio page, and that is
+what these are: no new palette, no density change, no type or spacing scale.
+`test_the_theme_still_declares_no_new_tokens` fails the moment a `--fs-*` or `--sp-*` reappears, so
+the restyle cannot creep back one variable at a time.
+
+| Defect | Measured before | After |
+|---|---|---|
+| **Logout unreachable on a phone** | `.nav-links` 587px in a 375px box, **426px** of document sideways scroll, Logout's rect starting at **x=800** | nav 295px over 3 rows, Logout x=351, **0px** sideways |
+| **Portfolio's headings scrolled away** | computed `position: static`, headings at **−289px** after 900px of scroll | pinned at offset 1px through 900px |
+| **Money columns drifted** | `1,111,111` vs `9,000,000` at 15px: Segoe UI 0px, Roboto **−2.22px**, Arial/Helvetica **−4.45px** | 0px everywhere |
+| **The expand arrow jittered** | ▸/▾ have different advance widths per OS | one chevron, fixed 14px, rotated |
+
+**The third is the reason nobody reported it:** money columns line up perfectly on the owner's Segoe
+UI box and drift on the warehouse tablet, which is the machine nobody reviews on. The rule is scoped
+to `.num` cells and the KPI figure — never `body` or a bare `td`, because tabular digits are worse for
+prose, which is the same numbers-versus-prose split `.chan` already makes.
+
+> **`position:sticky` alone is a NON-FIX, and it is what the reverted commit shipped.** `.table-wrap`
+> is `overflow-x:auto`, and per CSS Overflow setting one axis to `auto` makes the other compute from
+> `visible` to `auto` — so the wrapper was **already** a scrollport on both axes, and a sticky `thead`
+> inside it positioned against *that box* rather than the page. With no height constraint the box never
+> scrolled, so the header had zero travel. Measured in isolation under Portfolio's exact conditions:
+> `scrollHeight 2415 == clientHeight 2415`, header at **−604px** after 900px of scroll.
+>
+> So the cap and the sticky are **halves of one fix**, and both are asserted — because the failing
+> version still *reads* as `position: sticky` in the CSS. `ops.html` caps its height and works;
+> **`shipment.html` declares the same sticky header and footer over an uncapped wrapper and is
+> therefore inert too** — real, pre-existing, and filed separately.
+
+> **The cap is measured against the VIEWPORT, not the chrome above the table — and I got that
+> backwards first.** Sizing the box to the space left below everything above it, which is what
+> `ops.html` correctly does because there the table *is* the screen, left **77px** of table here: this
+> page carries 599px of legitimate chrome above the grid. So the box is deliberately taller than the
+> space initially free — the page scrolls the chrome away, then the box takes over. `--pf-table-cap` is
+> still set from `window.innerHeight` rather than using `100vh`, because `100vh` on mobile is the
+> height *with* the toolbars hidden and a value measured once goes stale on rotation.
+
+> **Capping the height has one cost, and the mitigation is not the obvious one.** Expanding a product
+> near the bottom opens its rows below the fold. Scrolling the *parent* into view does nothing — it is
+> already on screen, which is how it got clicked — so the handler walks to the **last** new row and
+> reveals that. Measured: 5 of 5 size rows visible, header and footer still pinned.
+
+**Icons are an inline SVG sprite, and the split is why.** Of 15 icon glyphs on the Portfolio page,
+**4 are in Jinja markup and 11 are inside JavaScript template literals**, so a Jinja macro cannot
+reach eleven of them — and giving the JS its own path data would be two homes for one drawing. Both
+halves emit a `<use href="#i-…">` and the geometry lives only in `templates/_icon_sprite.html`. Paths
+from Lucide (ISC, which permits copying individual paths; the notice is in the sprite).
+`stroke="currentColor"` throughout, never a literal — which is also what keeps
+`test_theme.py`'s colour ban passing, and means an icon inside `.neg` is red for free.
+
+- **One chevron serves four arrows** — collapsed, expanded, and both sort directions — rotated in CSS.
+  That is the actual jitter fix. **No transition**, because `renderTable()` rebuilds the tbody via
+  `innerHTML`, so the chevron that appears is a new element with nothing to animate from; declaring one
+  would be a comment that lies.
+- **`aria-hidden` unconditionally**, since every icon sits beside its own words, and the sort direction
+  stays on `aria-sort` where it always was.
+- **The header's 📊 stays.** Branding, and ten other templates carry the same glyph in that slot, so
+  converting one of eleven would create the inconsistency rather than remove it. `₹` and `−` are
+  typography. Tests pin all three, so this cannot be "finished" by converting them.
+
+> **Two of the 22 mutations survived the first pass, and one of them was MY OWN mutation being
+> wrong.** It claimed `flex:none` on `.ico` was load-bearing because an icon inside a flex row would
+> be squashed; measured, **0 of the 44 icons sit in a flex parent**. The declaration stays (it costs
+> nothing), the mutation is deleted, and no test was written — a test asserting it would pin an
+> incidental detail rather than a behaviour, which is the trap this file records four times. The other
+> survivor was a genuine gap: a leftover emoji star passed every other icon test.
 
 History and Keywords were removed as requested. `app/routers/keywords.py`, the
 models and the scheduler job all stay: only the tabs were unwanted, and
@@ -2259,6 +2341,10 @@ the same defect as the PDF cells that printed SKUs over product names.
 > Fixing that revealed a **separate, pre-existing overflow**: `.nav-links` is 547px wide with no
 > wrap rule, so all 8 pages still scroll ~411px sideways and Logout sits off-screen. Site-wide, not
 > this page's, and tracked separately.
+>
+> **Now fixed — see "Four defects a reverted refresh had already found" below.** Two properties in
+> `theme.css`, and the second half was found by measuring: `.nav-links` alone left the nav squeezed
+> to 138px because `header` is `flex-wrap:nowrap` too.
 
 > **The same `nowrap` rule then hid the Units column, and it was reported as missing DATA.**
 > "when I click on the parent sku, the child sku isnt showing units" — and the units were rendered
