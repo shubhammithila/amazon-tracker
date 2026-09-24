@@ -1,0 +1,19 @@
+{#
+  The Jinja half of the icon story. Emits a <use> reference into the sprite and carries NO
+  path data — `_icon_sprite.html` is the only place a drawing lives, so the Jinja side and
+  the JavaScript side cannot come to disagree about what an icon looks like.
+
+  Usage:
+
+      {% import "_icons.html" as icons %}
+      <button class="btn">{{ icons.icon("refresh") }} Refresh from Amazon</button>
+
+  Autoescape is on (Starlette sets it), and a macro returns Markup — so this needs no
+  `|safe` at the call site. Adding one would be unnecessary and would teach the habit.
+
+  `aria-hidden` is unconditional: every icon in this app sits beside its own words or inside
+  a control that already carries a title. See the sprite's own notes.
+#}
+{% macro icon(name) -%}
+<svg class="ico" aria-hidden="true" focusable="false"><use href="#i-{{ name }}"/></svg>
+{%- endmacro %}

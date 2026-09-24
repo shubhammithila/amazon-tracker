@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>Portfolio — Amazon Tracker</title>
+{% import "_icons.html" as icons %}
 {#
   Portfolio Review: which products earn their place, and which to churn.
 
@@ -262,7 +263,27 @@ tfoot tr.totals td{background:var(--surface2);font-weight:700;font-size:13px;col
 .v-BEST{background:var(--green-soft);color:var(--green)}
 
 .reason{font-size:12px;color:var(--text-muted);line-height:1.5;white-space:normal}
-.caret{display:inline-block;width:12px;color:var(--text-dim);font-size:10px}
+.caret{display:inline-block;width:12px;color:var(--text-dim)}
+
+/* **One box for every icon, and this is what stops the first column jittering.**
+   The disclosure caret used to be the characters ▸ and ▾, whose advance widths differ per
+   operating system — so the Product column changed width on every expand, and differently on
+   the owner's box than on the warehouse tablet. `.caret`'s hardcoded 12px was a partial
+   workaround for exactly that; with a real 1em box it is now just alignment.
+
+   Sized in `em` so an icon tracks the text beside it with no per-site size. `currentColor`
+   inherits through `<use>`, which is what makes an icon inside `.neg` red and one inside
+   `.dim` dim with no extra rule — and is why no colour literal appears here, per
+   tests/test_theme.py. `flex:none` matters inside `.controls` and `.decide`, which are flex
+   containers: an SVG with no intrinsic ratio gets squashed there otherwise. */
+.ico{width:1em;height:1em;flex:none;vertical-align:-0.125em}
+/* Four arrows from one drawing: collapsed (0°), expanded (90°), and the two sort
+   directions. The rotation is the fix; there is deliberately no transition, because
+   `renderTable()` rebuilds the tbody via innerHTML on every toggle, so the chevron that
+   appears is a new element already in its final state and has nothing to animate from.
+   Declaring a transition anyway would be a comment that lies. */
+.ico-r90{transform:rotate(90deg)}
+.ico-r270{transform:rotate(270deg)}
 
 .decide{display:flex;gap:6px;align-items:center;flex-wrap:wrap;white-space:normal}
 .decide select,.decide input{background:var(--bg);border:1px solid var(--border-strong);
@@ -330,6 +351,8 @@ th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 <link rel="stylesheet" href="/static/theme.css"/>
 </head>
 <body>
+{# The icon geometry, once. Hidden and inert; every icon on the page is a <use> into it. #}
+{% include "_icon_sprite.html" %}
 <header>
 <span>📊</span><h1>Amazon Tracker v2</h1>
 {% include "nav.html" %}
@@ -347,9 +370,9 @@ th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
        and the button says so because the ad report takes 15-25 minutes. -->
   <div class="controls" id="window-bar" style="margin-bottom:8px"></div>
   <div class="controls" style="margin-bottom:0">
-    <button class="btn" id="refresh-btn">↻ Refresh from Amazon</button>
-    <a class="btn-outline" id="excel-link" href="/portfolio/download.xlsx">⬇ Excel</a>
-    <button class="btn-outline" id="rules-btn">⚙ Verdict rules</button>
+    <button class="btn" id="refresh-btn">{{ icons.icon("refresh") }} Refresh from Amazon</button>
+    <a class="btn-outline" id="excel-link" href="/portfolio/download.xlsx">{{ icons.icon("download") }} Excel</a>
+    <button class="btn-outline" id="rules-btn">{{ icons.icon("settings") }} Verdict rules</button>
     <span id="refresh-note" class="dim" style="font-size:12px">—</span>
   </div>
   <div id="progress-wrap">
@@ -450,6 +473,19 @@ const FIELDS = {
 const $ = id => document.getElementById(id);
 const n = v => Number(v || 0);
 
+/* The JavaScript twin of `_icons.html`'s Jinja macro, and the reason the sprite exists.
+
+   **Measured: 11 of this page's 15 icon glyphs are built inside template literals** — the
+   disclosure caret, the sort indicator, the group-flag warning, the stars, the filter remove
+   — so a Jinja macro cannot reach them. This emits identical markup against identical ids and
+   carries NO path data; both halves reference `_icon_sprite.html`, so every drawing has
+   exactly one home and a test asserts no `d="` appears outside it.
+
+   `extra` carries the rotation class, which is why there is one chevron symbol rather than
+   four separate arrows. */
+const ico = (name, extra) =>
+  `<svg class="ico${extra ? " " + extra : ""}" aria-hidden="true" focusable="false"><use href="#i-${name}"/></svg>`;
+
 function esc(s){
   return String(s == null ? "" : s)
     .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
@@ -486,7 +522,7 @@ function pct(v, opts){
 function stars(rating, count){
   if(rating === null || rating === undefined) return '<span class="dim">—</span>';
   const cls = rating < 4 ? "neg" : "pos";
-  return `<span class="${cls}">${rating.toFixed(1)}★</span>
+  return `<span class="${cls}">${rating.toFixed(1)}${ico("star")}</span>
           <span class="dim" style="font-size:11px">(${n(count)})</span>`;
 }
 
@@ -722,7 +758,7 @@ function renderBanners(){
     out.push(`<div class="banner ${stale ? "warn" : "info"} caveats">
       <span class="caveat-line">${notes.map(x => x.short).join(" · ")}</span>
       <button class="caveat-more" type="button" data-caveats="1"
-        aria-expanded="false" title="what these mean">ⓘ</button>
+        aria-expanded="false" title="what these mean">${ico("info")}</button>
       <div class="caveat-full" hidden>${notes.map(x => `<p>${x.full}</p>`).join("")}</div>
     </div>`);
   }
@@ -1191,7 +1227,7 @@ function headerHtml(){
     return `<th scope="col" class="sortable${c.num ? " num" : ""}${on ? " sorted" : ""}"
       data-sort="${c.key}" tabindex="0" role="button" aria-sort="${aria}"
       aria-label="Sort by ${esc(name)}"${c.tip ? ` title="${esc(c.tip)}"` : ""}>${esc(c.label)}${
-      on ? `<span class="arrow" aria-hidden="true">${sort.dir < 0 ? "▼" : "▲"}</span>` : ""}</th>`;
+      on ? `<span class="arrow">${ico("chevron", sort.dir < 0 ? "ico-r90" : "ico-r270")}</span>` : ""}</th>`;
   }).join("");
 }
 
@@ -1266,7 +1302,7 @@ function dataCells(r){
   const flag = groupFlag(r.verdict);
   return `
     <td><span class="tag ${verdictClass(r.verdict)}">${esc(r.verdict)}</span>${
-      flag ? ` <span class="gflag" title="${esc(flag)}">⚠</span>` : ""}</td>
+      flag ? ` <span class="gflag" title="${esc(flag)}">${ico("alert")}</span>` : ""}</td>
     <td class="num">${money(r.sales)}</td>
     <td class="num">${money(r.ad_spend)}</td>
     <td class="num">${pct(r.tacos)}</td>
@@ -1449,7 +1485,7 @@ function renderTable(){
          single size row can carry it. Worth saying when the SKU grain looks emptier than
          expected — the difference between an explanation and a dead end. */
       if(isSkus){
-        why += ` <span class="dim">Note that the ⚠ warnings are product-level — SURGICAL means one
+        why += ` <span class="dim">Note that the ${ico("alert")} warnings are product-level — SURGICAL means one
           pack size loses money while the product overall does not, so no single size can carry
           it. Switch to Products to see those.</span>`;
       }
@@ -1468,7 +1504,7 @@ function renderTable(){
     list.forEach(s => {
       const isOpen = open.has("sku:" + s.asin);
       html += `<tr class="parent" data-sku="${esc(s.asin)}">
-        <td class="p-name"><span class="caret">${isOpen ? "▾" : "▸"}</span>
+        <td class="p-name"><span class="caret">${ico("chevron", isOpen ? "ico-r90" : "")}</span>
           ${esc(s.product)} <span class="brand">${esc(sizeName(s))}</span>
           <span class="asin">${esc(s.asin)}</span></td>
         ${dataCells(s)}
@@ -1493,7 +1529,7 @@ function renderTable(){
       const flav = (p.flavours || []).length;
       html += `<tr class="parent${p.inactive ? " row-inactive" : ""}"
           data-parent="${esc(p.parent_asin)}">
-        <td class="p-name"><span class="caret">${isOpen ? "▾" : "▸"}</span> ${esc(p.product)}
+        <td class="p-name"><span class="caret">${ico("chevron", isOpen ? "ico-r90" : "")}</span> ${esc(p.product)}
           ${p.brand ? `<span class="brand">${esc(p.brand)}</span>` : ""}
           ${/* A row that is inactive in the sheet but on screen anyway — the toggle is on, or a
                decision is recorded against it. It SAYS so: an inactive product rendered

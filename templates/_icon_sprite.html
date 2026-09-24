@@ -1,0 +1,121 @@
+{#
+  Inline SVG icon sprite. Included once per page that needs icons; emits one hidden,
+  inert <svg> holding a <symbol> per icon.
+
+  ── Licence ──
+
+  Paths are from Lucide (https://lucide.dev), ISC Licence, Copyright (c) 2022 Lucide
+  Contributors. Lucide is itself a fork of Feather (MIT, Copyright (c) 2013-2023 Cole
+  Bemis). ISC requires the copyright and permission notice to appear "in all copies or
+  substantial portions of the Software"; this repository IS the distribution — the app is
+  self-hosted and nothing is published — so this source-level notice discharges it. No
+  attribution is required in the rendered UI.
+
+    Permission to use, copy, modify, and/or distribute this software for any purpose with
+    or without fee is hereby granted, provided that the above copyright notice and this
+    permission notice appear in all copies.
+
+    THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD
+    TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN
+    NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR
+    CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR
+    PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+    ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+  ── Why a <symbol> sprite rather than a Jinja macro that emits paths ──
+
+  **Measured: of the 15 icon glyphs on the Portfolio page, 4 are in Jinja markup and 11
+  are inside JavaScript template literals** — the disclosure caret, the sort indicator, the
+  group-flag warning, the stars, the filter remove. A Jinja macro cannot reach eleven of
+  them. Giving the JS its own copy of the path data would be two homes for one drawing,
+  which is the defect this codebase records shipping four times.
+
+  With a sprite, both sides emit a short <use href="#i-…"> reference and the geometry has
+  exactly one home: here. A test asserts no `d="` appears anywhere else.
+
+  ── Colour ──
+
+  Every stroke is `currentColor`, never a literal. Not a preference: tests/test_theme.py
+  fails any template containing a hex or rgb() outside a comment. It also means an icon
+  inside `.neg` is red and one inside `.dim` is dim, for free, with no per-icon rule.
+
+  ── Accessibility ──
+
+  Every icon here is DECORATIVE — each sits beside its own words ("Refresh from Amazon",
+  "Verdict rules") or inside a control that already carries a title or aria-label, and the
+  sort direction is carried by `aria-sort` on the th rather than by the arrow. So the
+  helpers stamp aria-hidden="true" unconditionally and there is no `label` parameter to
+  forget. An icon that ever becomes the ONLY name of a control needs an aria-label on the
+  CONTROL, not on the svg.
+
+  ── Sizing ──
+
+  Lucide draws on a 24x24 grid for 24px display with a 2px stroke. These render at 1em
+  (~13-15px here), where 2px goes slightly heavy, so stroke-width is 1.75.
+#}
+<svg width="0" height="0" aria-hidden="true" focusable="false"
+     style="position:absolute;overflow:hidden">
+  <defs>
+    {# chevron-right. ONE drawing for FOUR arrows: the disclosure pair (collapsed ▸ /
+       expanded ▾) and the sort indicator (▲ / ▼), rotated in CSS. That is the actual fix
+       for the reported first-column jitter — ▸ and ▾ have different advance widths on
+       different operating systems, so the Product column changed width on every expand. A
+       fixed 1em box cannot. #}
+    <symbol id="i-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="m9 18 6-6-6-6"/>
+    </symbol>
+
+    {# settings — the ⚙ Verdict rules panel. #}
+    <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+      <circle cx="12" cy="12" r="3"/>
+    </symbol>
+
+    {# download — the Excel link. #}
+    <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+      <polyline points="7 10 12 15 17 10"/>
+      <line x1="12" x2="12" y1="15" y2="3"/>
+    </symbol>
+
+    {# refresh-cw — Refresh from Amazon. #}
+    <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+      <path d="M21 3v5h-5"/>
+      <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+      <path d="M8 16H3v5"/>
+    </symbol>
+
+    {# triangle-alert — the SURGICAL group flag, and the empty-note prose that refers to it. #}
+    <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/>
+      <path d="M12 9v4"/>
+      <path d="M12 17h.01"/>
+    </symbol>
+
+    {# info — the collapsed caveats expander. #}
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/>
+      <path d="M12 16v-4"/>
+      <path d="M12 8h.01"/>
+    </symbol>
+
+    {# star — filled, because a rating star reads as a solid mark rather than an outline. #}
+    <symbol id="i-star" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+      <path d="M11.5 2.3a.6.6 0 0 1 1 0l2.4 5 5.4.8c.5.1.7.7.3 1l-3.9 3.8.9 5.4c.1.5-.4.9-.9.7l-4.8-2.6-4.8 2.6c-.5.2-1-.2-.9-.7l.9-5.4L3.6 9.1c-.4-.3-.2-.9.3-1l5.4-.8z"/>
+    </symbol>
+
+    {# x — removing a filter row. #}
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 6 6 18"/>
+      <path d="m6 6 12 12"/>
+    </symbol>
+  </defs>
+</svg>

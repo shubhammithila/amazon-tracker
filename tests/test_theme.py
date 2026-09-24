@@ -29,9 +29,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = sorted(p for p in (REPO_ROOT / "templates").glob("*.html"))
 THEME = REPO_ROOT / "static" / "theme.css"
 
-#: nav.html is a fragment included by the others — it has no <head> of its own,
-#: so it neither can nor should link the stylesheet.
-FRAGMENTS = {"nav.html"}
+#: Fragments included by the others — they have no <head> of their own, so they
+#: neither can nor should link the stylesheet.
+#:
+#: **Note what this does NOT exempt.** The `:root` ban and the hardcoded-colour ban
+#: below are parametrised over `TEMPLATES` (every file), not `PAGES`, so these
+#: fragments are still held to both. That is the right boundary: the icon sprite is
+#: precisely the kind of file where a `stroke="#555"` would be easy to write, and
+#: `currentColor` is what keeps theme.css the only place colour lives.
+FRAGMENTS = {"nav.html", "_icons.html", "_icon_sprite.html"}
 PAGES = [p for p in TEMPLATES if p.name not in FRAGMENTS]
 
 pytestmark = pytest.mark.regression

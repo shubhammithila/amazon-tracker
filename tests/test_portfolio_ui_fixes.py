@@ -261,3 +261,168 @@ def test_the_rupee_and_the_minus_sign_are_NOT_treated_as_icons():
     assert "−" in _function(source, "renderColsButton"), (
         "the minus sign has left the columns toggle"
     )
+
+
+# ─── Icons: one drawing per icon, one home for every drawing ─────────────────
+
+SPRITE = Path(__file__).parent.parent / "templates" / "_icon_sprite.html"
+MACRO = Path(__file__).parent.parent / "templates" / "_icons.html"
+
+
+def test_the_disclosure_caret_and_the_SORT_ARROW_are_the_same_chevron():
+    """**The reported jitter: the first column changed width on every expand.**
+
+    The caret was the characters ▸ and ▾, whose advance widths differ per operating system,
+    so the Product column moved — and moved differently on the owner's Windows box than on
+    the warehouse tablet. Measured after: the caret is a fixed **14px in both states** and
+    rotates instead of swapping glyph. (The column does shift 455->436px on expand, fully
+    reversibly, but that is table auto-layout redistributing once the size rows add content
+    to other columns — not the caret.)
+
+    One chevron symbol serves four arrows: collapsed, expanded, and both sort directions.
+    """
+    source = _source()
+    stripped = re.sub(r"/\*.*?\*/|\{#.*?#\}|<!--.*?-->", " ", source, flags=re.S)
+    for glyph in ("▸", "▾", "▲", "▼"):
+        assert glyph not in stripped, (
+            f"{glyph!r} is still rendered — a character whose width varies by OS, which is "
+            "what made the first column jitter"
+        )
+    assert stripped.count('ico("chevron"') >= 3, (
+        "the caret (two call sites) and the sort indicator should all be one chevron"
+    )
+    assert "ico-r90" in stripped, "the chevron never rotates, so expanded looks like collapsed"
+    assert "aria-sort" in stripped, (
+        "the sort DIRECTION must stay on aria-sort — the glyph never carried it, and an "
+        "icon swap must not be the moment it is lost"
+    )
+
+
+def test_the_path_data_has_exactly_ONE_home():
+    """The whole reason the sprite exists rather than a macro that emits paths.
+
+    Measured: 11 of the 15 icon glyphs on this page were inside JavaScript template
+    literals, which a Jinja macro cannot reach. Giving the JS its own copy of the geometry
+    would be two homes for one drawing — the defect this codebase records shipping four
+    times. Both halves emit a `<use>` reference and carry no `d=`.
+    """
+    # **Anchored on a word boundary, not the bare string `d="`.** Unanchored it matches
+    # `id="`, `data-end="` and `aria-expanded="` — which is how the first version of this
+    # test reported 40 false positives in a file containing no path data at all.
+    path_attr = re.compile(r"(?<![-a-zA-Z])d=\"")
+    assert path_attr.search(SPRITE.read_text(encoding="utf-8")), "the sprite holds no path data"
+    for path in (TEMPLATE, MACRO):
+        body = re.sub(r"/\*.*?\*/|\{#.*?#\}|<!--.*?-->", " ", path.read_text(encoding="utf-8"),
+                      flags=re.S)
+        assert not path_attr.search(body), (
+            f"{path.name} carries its own path data — the drawing now has two homes and they "
+            "will drift"
+        )
+
+
+def test_every_icon_REFERENCED_is_declared_in_the_sprite():
+    """A `<use>` pointing at a missing symbol renders NOTHING — no error, no icon.
+
+    Exactly the silent shape `test_template_render_targets.py` exists for: a typo in an id
+    produces a blank space, an empty console and a passing test.
+    """
+    declared = set(re.findall(r'<symbol id="(i-[a-z-]+)"', SPRITE.read_text(encoding="utf-8")))
+    assert declared, "the sprite declares no symbols"
+    source = _source() + MACRO.read_text(encoding="utf-8")
+    # Both call shapes: the Jinja macro's `#i-{{ name }}` and the JS helper's `#i-${name}`.
+    used = set(re.findall(r'ico\("([a-z-]+)"', source)) | set(
+        re.findall(r'icons\.icon\("([a-z-]+)"\)', source))
+    missing = {f"i-{name}" for name in used} - declared
+    assert not missing, (
+        f"{missing} are referenced but not declared in the sprite, so they render as nothing"
+    )
+
+
+def test_no_icon_hardcodes_a_colour():
+    """`currentColor` is what keeps the theme the only place colour lives.
+
+    It also means an icon inside `.neg` is red and one inside `.dim` is dim with no per-icon
+    rule — verified in the browser, where the first icon inherited the amber of the banner
+    around it. And `tests/test_theme.py` fails any template with a hex or rgb() outside a
+    comment, so a literal here would break that too.
+    """
+    sprite = SPRITE.read_text(encoding="utf-8")
+    assert "currentColor" in sprite, "the icons do not inherit the surrounding text colour"
+    body = re.sub(r"\{#.*?#\}", " ", sprite, flags=re.S)
+    assert not re.findall(r"#[0-9a-fA-F]{6}\b", body), "an icon hardcodes a hex colour"
+    assert not re.findall(r"rgba?\(", body), "an icon hardcodes an rgb colour"
+
+
+def test_the_icons_are_decorative_and_hidden_from_a_SCREEN_READER():
+    """Each sits beside its own words, so announcing it would be noise.
+
+    Unconditional rather than a parameter, because a `label` argument is one a call site can
+    forget — and the failure mode is silent for the person who cannot see the icon.
+    """
+    for path in (SPRITE, MACRO):
+        assert 'aria-hidden="true"' in path.read_text(encoding="utf-8"), (
+            f"{path.name} does not hide its decorative icons from assistive technology"
+        )
+    # `ico` is a `const` arrow function, so `_function` (which looks for `function name(`)
+    # cannot find it — slice from the declaration instead.
+    source = _source()
+    helper = source[source.index("const ico = "):]
+    helper = helper[: helper.index(";")]
+    assert 'aria-hidden="true"' in helper, (
+        "the JS icon helper omits aria-hidden, so 11 of the 15 icons announce themselves"
+    )
+
+
+def test_the_header_LOGO_is_left_as_it_is():
+    """Branding, not a control — and ten other templates carry the same glyph in that slot.
+
+    Converting one of eleven would create exactly the inconsistency this work removes.
+    """
+    header = _source()
+    header = header[header.index("<header>"): header.index("</header>")]
+    assert "📊" in header, (
+        "the header logo was converted to an SVG, leaving this page's branding different "
+        "from the other ten templates"
+    )
+
+
+def test_no_EMOJI_survives_as_an_icon():
+    """**The whole inventory, not just the arrows** — a leftover glyph is the inconsistency.
+
+    The chevron test above covers the four arrows because those caused the measured jitter. This
+    one covers the rest, and it exists because a mutation swapping only the star back to `★`
+    survived every other test here: the page would then mix an OS-dependent emoji with SVG icons,
+    which is precisely what this work removes.
+
+    **Two glyphs are deliberately KEPT and must not be converted:**
+
+    * `📊` in the header is branding, and ten other templates carry the same glyph in that slot —
+      converting one of eleven creates the inconsistency rather than removing it;
+    * `₹` and `−` are typography. See `test_the_rupee_and_the_minus_sign_are_NOT_treated_as_icons`.
+
+    Checked against RENDERED markup only, and that includes stripping JavaScript `//` line
+    comments as well as the block forms — one of those still refers to "the ⚙ rules panel", which
+    made the first version of this test fail on its own prose. Substring trap number seven.
+    """
+    rendered = re.sub(r"/\*.*?\*/|\{#.*?#\}|<!--.*?-->", " ", _source(), flags=re.S)
+    # `//` comments only where they start a line or follow whitespace, so a `//` inside a URL or a
+    # string literal is left alone.
+    rendered = re.sub(r"(?m)(?<![:\w])//[^\n]*", " ", rendered)
+    converted = {
+        "⚙": "settings",      # gear
+        "⚠": "alert",         # warning
+        "★": "star",
+        "ⓘ": "info",          # circled i
+        "↻": "refresh",
+        "⬇": "download",
+        "▸": "chevron", "▾": "chevron",   # the disclosure pair
+        "▲": "chevron", "▼": "chevron",   # the sort indicator
+    }
+    for glyph, name in converted.items():
+        assert glyph not in rendered, (
+            f"U+{ord(glyph):04X} is still rendered — it should be ico(\"{name}\"), or the page "
+            "mixes an OS-dependent character with the SVG icons"
+        )
+    # ...and the ones that are meant to stay, so this test cannot be "fixed" by converting them.
+    assert "\U0001f4ca" in rendered, "the header logo is branding and belongs to all 11 templates"
+    assert "₹" in rendered, "the rupee sign is currency, not an icon"
