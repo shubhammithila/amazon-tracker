@@ -107,7 +107,44 @@ header {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   box-shadow: var(--shadow);
+  /* **Wraps, or it squeezes the nav into a narrow column.** Found by measuring
+     after the `.nav-links` fix below: every page's `header` is
+     `display:flex;flex-wrap:nowrap`, so the logo, the title, the nav's 32px indent
+     and Logout all compete for 375px and the nav — `flex-shrink:1`,
+     `min-width:auto` — loses. It was squeezed to 138px and stacked its nine links
+     into FIVE rows. Wrapping gives the nav a row of its own: measured 138px -> 295px
+     and 5 rows -> 3.
+     Desktop is untouched, verified rather than assumed: at 1440px the header is
+     53px with the nav on ONE row and zero sideways scroll, because `flex-wrap` only
+     engages when the content cannot fit. */
+  flex-wrap: wrap;
 }
+
+/* **The nav overflowed a phone by 212px and LOGOUT WAS OFF-SCREEN.** Measured at a
+   375px viewport: `.nav-links` scrollWidth 587 in a 375px box, 426px of
+   document-level sideways scroll, computed `flex-wrap: nowrap`, and the Logout
+   control's bounding rect starting at x=800 — not merely awkward to reach,
+   genuinely unreachable. CLAUDE.md recorded it as known and unfixed.
+   Two properties, and NOTHING else — this is an ADDITION, not an override. The
+   layout line `.nav-links{display:flex;gap:16px;margin-left:32px}` is
+   copy-pasted into eight templates (with `margin-left` already diverging 24px on
+   ops), and those eight keep owning their own gap and margin. Deleting the
+   duplicates is a nine-file refactor for no behaviour change; making them wrap is
+   two properties for a reachable Logout on all eight pages.
+   Layout normally stays per-page (see the header of this file). The exception is
+   deliberate: this is a SHARED partial — `templates/nav.html` — so fixing it in
+   one template leaves seven pages broken and adds a ninth variant of a line that
+   has already drifted. The thing that would diverge is whether a control is
+   reachable, which is discovered on a phone in a warehouse rather than in a diff.
+   **Wrap rather than a hamburger or horizontal scroll.** A hamburger needs
+   open/closed state, `aria-expanded`, Escape-to-close and focus management pasted
+   into nine standalone documents — the exact shape `test_nav_consistency.py`
+   exists to prevent, after Projections silently lost its Shipment link that way.
+   Horizontal scroll is this bug with a scrollbar: on touch there is no visible
+   affordance at all, so the links past the edge stay undiscoverable.
+   `4px` literal, not a spacing token: the token scale was reverted (af82f1b) and
+   must not return one variable at a time. */
+.nav-links { flex-wrap: wrap; row-gap: 4px; }
 
 .nav-links a {
   color: var(--text-muted);
@@ -181,6 +218,30 @@ tbody tr.no-ship { opacity: 1; color: var(--text-dim); }
 tbody tr.no-ship td { color: var(--text-dim); }
 
 td { font-size: 13px; }
+
+/* **Money columns must line up digit-for-digit, and whether they did depended on
+   the operating system.** Measured on two identical-length figures at 15px —
+   `1,111,111` against `9,000,000`, which a right-aligned column must render at
+   the same width:
+
+       Segoe UI            0px     <- the owner's Windows box
+       Roboto             -2.22px  <- the warehouse Android tablet
+       Arial, Helvetica   -4.45px  <- Linux, older Android
+
+   `tabular-nums` takes Arial and Helvetica to 0. In proportional figures a `1`
+   is narrower than a `0`, so the thousands digit of one row sits over the
+   hundreds of another and the column reads as jitter — which is exactly why this
+   was never reported: it is perfect on the machine it gets reviewed on and wrong
+   on the machine it gets used on.
+
+   **Scoped to `.num` cells and the KPI figures, NEVER to `body` or a bare `td`.**
+   Tabular digits are slightly wider and worse for prose, so this is the same
+   numbers-versus-prose split `.chan` already makes on the Portfolio tab: prose
+   wraps and stays proportional, numbers do neither. Applying it to `td` would
+   reach the product names, the reason sentences and the merchant/FBA note.
+
+   No new variable, no size change, nothing else: the rule is one property. */
+th.num, td.num, .kpi .v { font-variant-numeric: tabular-nums; }
 
 /* Inputs inside the grid. Bigger than the dark theme's 11px — these are typed
    into all day, sometimes on a phone. Note 16px on the ops screen specifically:

@@ -230,3 +230,124 @@ def test_printed_documents_were_not_lightened(path, marker):
         f"{path} no longer uses its dark document header ({marker}) — printed "
         "output should not follow the screen theme"
     )
+
+
+# ─── Four defects a reverted refresh had fixed, re-fixed without the restyle ───
+#
+# A Materio-inspired token refresh was built across six commits and reverted in full
+# (`af82f1b`) because *"revert back from materio. I dont like it."* Its revert message
+# listed the defects it had fixed, and they all came back with the look. These tests
+# pin the fixes — and, just as importantly, pin that the RESTYLE has not returned.
+
+
+def _rule(theme: str, selector: str) -> str:
+    """The declarations of the first REAL rule whose selector list contains `selector`.
+
+    Scoped rather than searched whole-file, because "this property appears somewhere in
+    theme.css" is a different claim from "this selector carries it" — a `flex-wrap` on
+    `.controls` would satisfy a whole-file grep and fix nothing.
+
+    **Comments are stripped first, and that is not defensive tidiness.** The comment
+    explaining this very fix quotes the duplicated layout line
+    `.nav-links{display:flex;gap:16px;margin-left:32px}` verbatim, so an unstripped scan
+    finds the PROSE before the rule and reports the fix missing — which is exactly what
+    it did on the first run. Sixth instance of that substring trap here, after the deploy
+    detector's revision id, the SB `daily=True` fake, "weighted by reviews" matching a
+    check for "weight", and a comment quoting `channelHtml(s)`.
+    """
+    css = re.sub(r"/\*.*?\*/", " ", theme, flags=re.S)
+    for match in re.finditer(r"([^{}]+)\{([^}]*)\}", css):
+        if selector in match.group(1):
+            return match.group(2)
+    raise AssertionError(f"theme.css has no rule for {selector!r}")
+
+
+def test_the_nav_wraps_rather_than_overflowing_a_phone(theme):
+    """**Logout was genuinely unreachable on a phone, not merely awkward to reach.**
+
+    Measured at a 375px viewport before the fix: `.nav-links` scrollWidth 587 in a 375px
+    box, **426px** of document-level sideways scroll, computed `flex-wrap: nowrap`, and
+    the Logout control's bounding rect starting at **x=800**. CLAUDE.md recorded it as
+    known and unfixed. After: nav 295px wide over 3 rows, Logout at x=351, **0px** of
+    sideways scroll — and at 1440px the header is unchanged at 53px with the nav on one
+    row, because `flex-wrap` only engages when the content cannot fit.
+
+    Both halves are asserted. `.nav-links` alone leaves the nav squeezed to 138px by the
+    header's own `flex-wrap: nowrap`, stacking nine links into five rows — measured, and
+    the reason the `header` rule exists.
+    """
+    assert "flex-wrap: wrap" in _rule(theme, ".nav-links"), (
+        "the nav cannot wrap, so Logout sits off the right edge of a 375px screen"
+    )
+    assert "flex-wrap: wrap" in _rule(theme, "header"), (
+        "the header cannot wrap, so it squeezes the nav into a narrow column: measured "
+        "138px wide and five rows for nine links"
+    )
+
+
+def test_numeric_cells_use_tabular_figures(theme):
+    """**Money columns lined up on the owner's box and drifted on the warehouse tablet.**
+
+    Measured on two identical-length figures at 15px — `1,111,111` against `9,000,000`,
+    which a right-aligned column must render at the same width:
+
+        Segoe UI            0px     <- the owner's Windows box
+        Roboto             -2.22px  <- the warehouse Android tablet
+        Arial, Helvetica   -4.45px  <- Linux, older Android
+
+    `tabular-nums` takes Arial and Helvetica to 0. That split is why it was never
+    reported: perfect where it is reviewed, wrong where it is used.
+
+    The selector must reach `.num` and must NOT reach prose. `body` or a bare `td` would
+    make product names, reason sentences and the merchant/FBA note tabular too — the
+    numbers-versus-prose distinction `.chan` already draws, inverted.
+    """
+    rules = [
+        (sel, body) for sel, body in re.findall(r"([^{}]+)\{([^}]*)\}", theme)
+        if "tabular-nums" in body
+    ]
+    assert rules, "no rule sets font-variant-numeric: tabular-nums"
+    selectors = " ".join(sel for sel, _ in rules)
+    assert ".num" in selectors, (
+        f"tabular figures do not reach the .num cells; selector was {selectors.strip()!r}"
+    )
+    # A dead selector is the failure mode that already shipped once: the reverted
+    # commit targeted `.kpi-value`, which matches nothing in this codebase.
+    assert ".kpi-value" not in selectors, (
+        "`.kpi-value` matches no element in this app — the reverted refresh's own "
+        "mistake. The KPI figure is `.kpi .v`."
+    )
+    for prose in (r"(^|[\s,])body\s*[,{]", r"(^|[\s,])td\s*[,{]"):
+        assert not re.search(prose, selectors + "{"), (
+            f"tabular figures reach prose via {selectors.strip()!r} — they are for "
+            "numbers only, the same split .chan makes"
+        )
+
+
+def test_the_theme_still_declares_no_new_tokens(theme):
+    """**The reverted refresh must not creep back one variable at a time.**
+
+    Six commits added `--fs-*`, `--sp-*`, extra radii and RGB channel variables, and were
+    reverted in full (`af82f1b`) on the instruction *"revert back from materio. I dont
+    like it."* The four defect fixes are deliberately separable from that restyle, and
+    this test is what keeps them separated: it fails the moment a scale reappears.
+
+    Colour variables are untouched by construction, which is what keeps all 18 WCAG pairs,
+    both large-text pairs, the luminance floors and the red/yellow/green spread passing.
+    """
+    block = re.search(r":root\s*\{(.*?)\}", theme, re.S)
+    assert block
+    names = re.findall(r"--([a-z0-9-]+)\s*:", block.group(1))
+    banned = {
+        "a type scale": lambda n: n.startswith("fs-"),
+        "a spacing scale": lambda n: n.startswith("sp-") or n.startswith("space-"),
+        "extra radii": lambda n: n in {"radius-sm", "radius-lg", "radius-pill"},
+        "RGB channel splits": lambda n: n.endswith("-rgb"),
+        "a tint ramp": lambda n: n.startswith("tint-"),
+    }
+    for label, matches in banned.items():
+        offenders = [n for n in names if matches(n)]
+        assert not offenders, (
+            f"{label} is back in :root ({offenders}) — that is the reverted Materio "
+            "refresh returning. The UI fixes do not need it."
+        )
