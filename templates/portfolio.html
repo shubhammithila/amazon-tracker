@@ -135,15 +135,63 @@ h2{font-size:19px;font-weight:600;margin-bottom:2px}
    toggle and Weight joined it. **A min-width left behind when a column is added is the same
    defect as no min-width at all**, applied to the last column or two.
 
-   No sticky header and no max-height, unlike ops.html: this grid expands rows inline, so
-   capping the height would put a scroll region inside a page that also scrolls. ops.html
-   records what a sticky thead does inside such a box. */
-.table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border);
-  -webkit-overflow-scrolling:touch}
+   **This comment used to end "no sticky header and no max-height, unlike ops.html: this grid
+   expands rows inline, so capping the height would put a scroll region inside a page that
+   also scrolls." That reasoning was real and it was overruled**, because over 90 products the
+   headings scrolled away entirely — measured at -289px after 900px of scroll, so the owner was
+   reading twelve columns of money with no labels. The nested-scroll cost is accepted and
+   mitigated: expanding a product scrolls its new rows into view.
+
+   **`overflow-y:auto` is written out even though it ALREADY computes that way, and the
+   computed value is the whole reason this was confusing.** Per CSS Overflow, setting one axis
+   to `auto` makes the other compute from `visible` to `auto` — so this box was already a
+   scrollport on both axes, and a sticky `thead` inside it positioned against THIS BOX rather
+   than the page. With no height constraint the box never scrolled, so the header had zero
+   travel and left with the table. Measured in isolation under these exact conditions:
+   scrollHeight 2415 == clientHeight 2415, and the header at -604px after 900px of scroll.
+
+   **So `position:sticky` alone would have been a NON-FIX that still reads as sticky in the
+   CSS** — which is exactly what the reverted Materio commit shipped, claiming verification
+   that was true of ops.html (which caps its height) and impossible here. With the cap:
+   scrollable 2017px, header pinned at offset 1px through 900px of scroll.
+
+   `overflow-x:auto` stays literally present: `tests/test_portfolio_api.py` asserts that exact
+   string, so `overflow:auto` would fail it AND hide the trap this comment documents.
+
+   **The cap is measured against the VIEWPORT, not against the chrome above the table — and
+   that distinction was found by measuring, having first got it wrong.** ops.html sizes its box
+   to the space left below everything above it, which is right there because its table is the
+   whole screen. Here it is not: measured on a 1440x900 viewport, this page carries 599px of
+   legitimate chrome above the grid (the caveats banner, the window bar, four KPI tiles, the
+   category strip, the group tabs, the controls), which left **77px** for the table and clamped
+   it to the 200px floor — a letterbox showing four products.
+
+   So the cap is `100vh` less the page header, which makes the box TALLER than the space
+   initially available. The page scrolls the chrome away first, and only then does the box take
+   over with its header pinned. Measured: an 840px box with 344px of internal scroll, against a
+   200px box with 984px of it.
+
+   `--pf-table-cap` is still set by `sizeTable()`, because `100vh` is wrong on mobile browsers
+   whose toolbars come and go, and because a stale value after a rotation leaves the totals row
+   floating mid-screen. `max-height` rather than `height`, plus a `min-height`, so a 3-row
+   filtered grid leaves no empty scroll well beneath it. */
+.table-wrap{overflow-x:auto;overflow-y:auto;
+  max-height:var(--pf-table-cap, calc(100vh - 60px));min-height:200px;
+  border-radius:10px;border:1px solid var(--border);
+  -webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 table{width:100%;border-collapse:separate;border-spacing:0;min-width:1040px}
+/* **`top:0`, and it must stay 0.** The offset is measured from `.table-wrap`, not the page, so
+   the sticky page header's height is already accounted for by this wrapper's own position —
+   ops.html's `top:56px` parked its header 56px DOWN INSIDE the table, directly over the first
+   product row, hiding a row that was still in the DOM. A test enforces the zero.
+   The opaque `--surface2` background above is what makes sticky safe; a transparent sticky
+   header shows the body rows sliding through it. `border-collapse:separate` on the table is
+   likewise required rather than cosmetic: under `collapse` the browser paints borders on the
+   TABLE, so the header's bottom border stays behind and rows slide under a naked edge.
+   z-index 2: above the body cells, below the page header's 100, below the totals row's 3. */
 thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;font-size:10.5px;
   font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:left;white-space:nowrap;
-  border-bottom:2px solid var(--border-strong)}
+  border-bottom:2px solid var(--border-strong);position:sticky;top:0;z-index:2}
 tbody td{padding:7px 10px;font-size:13px;border-bottom:1px solid var(--border);white-space:nowrap}
 th.num,td.num{text-align:right}
 tbody tr.parent{cursor:pointer}
@@ -185,10 +233,19 @@ tr.size.nested td:first-child{padding-left:52px}
 
 /* The totals row. Heavier than the data and pinned to the bottom of the grid, so a long list
    still shows what the column adds up to without scrolling back. `position:sticky` on the cells
-   rather than the row, because a `tr` is not a positioned box in the table layout model. */
+   rather than the row, because a `tr` is not a positioned box in the table layout model.
+
+   **This `position:sticky` was DECLARED here and inert until the wrapper gained a height cap**,
+   for the same reason the header's was: `bottom:0` had no scroll region to stick to. It now does
+   what this comment has claimed since it was written — a real behaviour change, and the wanted
+   one.
+
+   z-index 3, above the header's 2. They only meet when the grid is shorter than the cap — a
+   two-row filtered table — and there the summary should sit over the headings rather than under
+   them. Was 1, which lost that collision. */
 tfoot tr.totals td{background:var(--surface2);font-weight:700;font-size:13px;color:var(--text);
   border-top:2px solid var(--border-strong);border-bottom:none;
-  position:sticky;bottom:0;z-index:1}
+  position:sticky;bottom:0;z-index:3}
 .tnote{display:block;font-size:10.5px;color:var(--text-dim);font-weight:500;white-space:normal;
   max-width:340px;line-height:1.45;margin-top:2px}
 .asin{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--text-dim)}
@@ -1522,7 +1579,42 @@ function renderTable(){
   if(count){
     count.textContent = `${list.length} of ${rows().length} ${isSkus ? "sizes" : "products"} match`;
   }
+  // The cap depends on where the wrapper ENDED UP, so it can only be measured after the table
+  // exists. Called here rather than once at load because the chrome above it changes height:
+  // a banner appears, the category strip grows a row, the filter builder opens.
+  sizeTable();
 }
+
+/* How tall the table's scroll box may be, in real pixels rather than `100vh`.
+
+   **Measured against the VIEWPORT, not against the chrome above the table**, and that is the
+   opposite of what ops.html does — deliberately, because the two pages are shaped differently.
+   There the table IS the screen, so sizing it to the space left below everything else is
+   right. Here the grid sits under 599px of legitimate chrome (measured at 1440x900: the
+   caveats line, the window bar, the KPI tiles, the category strip, the group tabs, the
+   controls), and sizing to the remainder left **77px** of table — a letterbox showing four
+   products, clamped to the 200px floor.
+
+   So the box is deliberately TALLER than the space initially free: the page scrolls the chrome
+   away first, and the box then takes over with its header pinned.
+
+   Real pixels rather than the `100vh` fallback in the CSS, for two reasons: `100vh` on mobile
+   browsers is the height WITH the toolbars hidden, so the last row sits under the address bar
+   until you scroll; and a value measured once goes stale when the tablet rotates. */
+function sizeTable(){
+  const wrap = document.querySelector(".table-wrap");
+  if(!wrap) return;                       // the empty-state card has no table
+  const header = document.querySelector("header");
+  const chrome = header ? Math.round(header.getBoundingClientRect().height) : 0;
+  // 8px of breathing room, so the box does not sit flush against the viewport edge.
+  const cap = Math.max(200, Math.round(window.innerHeight - chrome - 8));
+  document.documentElement.style.setProperty("--pf-table-cap", cap + "px");
+}
+
+/* A measurement is only true for the viewport it was taken in. Rotating the tablet or
+   opening a keyboard changes innerHeight, and a stale cap leaves the totals row floating
+   mid-screen or the last product unreachable. */
+window.addEventListener("resize", sizeTable);
 
 /* ── Events ───────────────────────────────────────────────────────────────────
    Delegated listeners rather than inline handlers, because product names and ASINs come from
@@ -1597,8 +1689,35 @@ $("table-area").addEventListener("click", e => {
   const row = e.target.closest("tr.parent");
   if(!row) return;
   const key = row.dataset.parent || ("sku:" + row.dataset.sku);
+  const opening = !open.has(key);
   if(open.has(key)) open.delete(key); else open.add(key);
   renderTable();
+
+  /* **The cost of capping the table's height, paid back here.** The grid now scrolls inside its
+     own box, so expanding a product near the bottom opens its reason row and pack sizes BELOW
+     the visible area — the rows are there and it looks as though the click did nothing. That is
+     the one regression the height cap introduces, and this is the mitigation.
+
+     **Scroll the LAST NEW ROW into view, not the parent**, which is the version that actually
+     works — measured. Revealing the parent with `block:"nearest"` leaves it exactly where it
+     already was (it is on screen; that is how it got clicked), so all five of its new rows
+     stayed below the fold: parent at y=667 in a box ending at 797, children at 796-993, zero
+     visible. Scrolling the last child up brings the whole group in, and `block:"nearest"` then
+     moves the minimum needed — a group that already fits does not move at all.
+
+     Re-found by selector because `renderTable()` rebuilt the tbody and the original element is
+     gone, the same reason `applySort` re-finds its header to restore focus. */
+  if(opening){
+    const attr = row.dataset.parent ? "data-parent" : "data-sku";
+    const value = row.dataset.parent || row.dataset.sku;
+    const again = document.querySelector(`tr.parent[${attr}="${CSS.escape(value)}"]`);
+    if(again){
+      // Every row this parent just opened, up to the next parent row.
+      let last = again, next = again.nextElementSibling;
+      while(next && !next.classList.contains("parent")){ last = next; next = next.nextElementSibling; }
+      last.scrollIntoView({block: "nearest"});
+    }
+  }
 });
 
 /* Enter and Space on a focused header, which is what `role="button"` promises.
