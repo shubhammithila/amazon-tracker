@@ -723,15 +723,34 @@ function renderBanners(){
     }
   }
 
-  /* **The two standing caveats collapse to ONE line with an ⓘ.** Asked for as part of "make it
-     more simpler": they were two full-width banners taking ~90px before any data, on every visit,
-     saying the same thing every time.
+  /* ── STANDING FACTS collapse to ONE line; only a PROBLEM gets a banner ──────────
+     Reported as *"too many messages at the top. dont want them if the logics are working fine"*,
+     against a screenshot showing FIVE stacked blocks — and every one of them was reporting correct
+     behaviour. That is the failure this codebase already records three times over: *"a caveat that
+     fires on every render is the kind that trains its reader to skip the one that matters"*, and
+     the one that matters here is a failed refresh sitting underneath four paragraphs of routine.
 
-     Neither is dropped, and that matters — a pre-COGS margin read as profit is how a
-     money-losing SKU looks like a keeper, and a stale star rating silently shapes a verdict. The
-     ratings one is what revealed that the scrape had never run on production. So the facts stay,
-     one click from full text, and the ratings DATE stays on the visible line because that is the
-     part that changes. */
+     So the test is now **"is something wrong?"**, not "is something true?":
+
+       collapsed onto one line   pre-COGS margins · the ratings date · what Active = N excluded
+       a real banner             a failed refresh · an unsummable range · a STALE ratings date ·
+                                 ASINs missing from the sheet · the catalogue on its cached copy
+
+     **Nothing is dropped and no figure is rounded away.** The exclusion still states units AND
+     rupees, still names the products biggest-sales-first, and still says which shown products lost
+     a size — one click away instead of ~150px of standing yellow. Two things make that safe:
+
+       - the SUBTITLE independently carries "35 active products · 56 hidden as inactive", so the
+         grid can never silently look like the whole account;
+       - **`build_portfolio_xlsx` writes the same exclusion into row 1 of the workbook**, which is
+         the path that actually needs it — a file leaves the app with no screen beside it, and
+         `test_the_WORKBOOK_follows_the_toggle_and_names_what_it_excluded` pins it there.
+
+     **A stale ratings date is promoted OUT of the line into its own warn banner**, because it is
+     the one item here that is sometimes a problem rather than always a fact — rule 6 splits
+     BEST BET from SCALE on rating >= 4.0, so a stale figure silently shapes a verdict, and it is
+     what revealed the product scrape had never run on production. Fresh, it is a date on the line;
+     stale, it interrupts. That is exactly the distinction the rest of this block is built on. */
   const notes = [];
   if(data.pre_cogs){
     notes.push({
@@ -743,19 +762,64 @@ function renderBanners(){
         true margins.`,
     });
   }
-  if(data.ratings_as_of || data.ratings_stale){
-    const when = data.ratings_as_of ? String(data.ratings_as_of).slice(0, 10) : "never";
+  /* Fresh: a date on the collapsed line. Stale: its own banner below, not both. */
+  if(data.ratings_as_of && !data.ratings_stale){
+    const when = String(data.ratings_as_of).slice(0, 10);
     notes.push({
       short: `ratings from ${esc(when)}`,
-      stale: !!data.ratings_stale,
       full: `<strong>Ratings are from ${esc(when)}.</strong> Star ratings come from our own scraper,
         not Amazon's API, so a stale figure would quietly shape a verdict. They refresh nightly;
         you can also run a product scrape from the Dashboard.`,
     });
   }
+
+  /* What the Active flag excluded — the figures above drop by exactly this, and the four KPI tiles
+     are money, so an unexplained 1.5% gap against a Business Report is the "3,337 against 3,259"
+     report all over again. Hence units AND rupees, and hence the products NAMED: an inactive
+     product that is still selling is a QUESTION only the owner can answer — a mis-set flag and a
+     deliberate run-down look identical. It does not put the rows back, deliberately.
+
+     Only the products that SOLD are named, biggest first and capped, with the COUNT left exact:
+     naming all 56 would bury the 8 that matter among dead stock. */
+  if(!data.include_inactive && n(data.inactive_hidden_skus)){
+    const named = (data.inactive_with_sales || []);
+    const more = n(data.inactive_with_sales_count) - named.length;
+    const list = named.map(x =>
+      `${esc(x.product)} <span class="dim">${n(x.units)}u ${money(x.sales)}</span>`
+    ).join(" · ");
+    const parts = [`<strong>${n(data.inactive_hidden_skus)} pack size(s) across
+      ${n(data.inactive_hidden_parents)} product(s) are marked Active = N in the MRP sheet</strong>
+      and are excluded from every figure above.`];
+    parts.push(named.length
+      ? `Still selling, so worth checking the flag is right: ${list}${
+          more > 0 ? ` <span class="dim">and ${n(more)} more</span>` : ""} —
+         <strong>${n(data.inactive_sales_units)} units, ${money(data.inactive_sales)}</strong>
+         in total.`
+      : `None of them sold in this window.`);
+    /* A size dropped from a product that is STILL SHOWN is a different question — "is this pack
+       size really retired", asked while the parent row beside it looks entirely normal, which is
+       what makes it the easier one to miss. It rides in the same note rather than its own line. */
+    if((data.inactive_sizes_of_shown || []).length){
+      parts.push(`Products shown here that lost a pack size from their totals:
+        ${data.inactive_sizes_of_shown.map(x =>
+          `${esc(x.product)} <span class="dim">${n(x.sizes)}</span>`).join(" · ")}.`);
+    }
+    /* Shown DESPITE being inactive, because a decision is recorded against them — `ProductDecision`
+       answers "I marked this KILL at -56.8% net; what is it now?", which needs the row present. */
+    if((data.decided_but_inactive || []).length){
+      parts.push(`${esc(data.decided_but_inactive.join(", "))} — inactive in the sheet, but kept
+        here because you recorded a decision on
+        ${data.decided_but_inactive.length === 1 ? "it" : "them"}.`);
+    }
+    notes.push({
+      short: `${n(data.inactive_hidden_skus)} size(s) hidden as inactive${
+        n(data.inactive_sales) ? `, ${money(data.inactive_sales)} of sales` : ""}`,
+      full: parts.join("<br>"),
+    });
+  }
+
   if(notes.length){
-    const stale = notes.some(x => x.stale);
-    out.push(`<div class="banner ${stale ? "warn" : "info"} caveats">
+    out.push(`<div class="banner info caveats">
       <span class="caveat-line">${notes.map(x => x.short).join(" · ")}</span>
       <button class="caveat-more" type="button" data-caveats="1"
         aria-expanded="false" title="what these mean">${ico("info")}</button>
@@ -763,57 +827,13 @@ function renderBanners(){
     </div>`);
   }
 
-  /* **What the Active flag excluded, in UNITS AND RUPEES, with the products named.**
-
-     The figures above drop by whatever this says, and nothing else on screen would explain it: the
-     four KPI tiles are money, so hiding Rs 67,193 leaves a 1.5% gap against a Business Report with
-     no account of itself. That gap — reported as 3,337 units against 3,259 — is the whole reason the
-     Shipment tab's version of this banner exists, and the reason this one states rupees where that
-     one states units.
-
-     **Only the products that SOLD are named**, biggest sales first. Measured live, 55 parents are
-     wholly inactive and 8 of them sold; listing all 55 would bury those 8 among dead products, which
-     is the opposite of the point. The other 47 are still counted.
-
-     The banner does NOT put the rows back, and that is deliberate — overriding the owner's own
-     Active flag would be the opposite failure. It asks a question only he can answer: is each of
-     these genuinely retired, or is the flag wrong? */
-  if(!data.include_inactive && n(data.inactive_hidden_skus)){
-    const named = (data.inactive_with_sales || []);
-    const more = n(data.inactive_with_sales_count) - named.length;
-    const list = named.map(x =>
-      `${esc(x.product)} <span class="dim">${n(x.units)}u ${money(x.sales)}</span>`
-    ).join(" · ");
-    out.push(`<div class="banner ${named.length ? "warn" : "info"}">
-      <strong>${n(data.inactive_hidden_skus)} pack size(s) across
-      ${n(data.inactive_hidden_parents)} product(s) are marked Active = N in the MRP sheet</strong>
-      and are excluded from every figure above.
-      ${named.length ? `<br>Still selling, so worth checking the flag is right:
-        ${list}${more > 0 ? ` <span class="dim">and ${n(more)} more</span>` : ""} —
-        <strong>${n(data.inactive_sales_units)} units, ${money(data.inactive_sales)}</strong>
-        in total.` : `None of them sold in this window.`}
-      </div>`);
+  /* ── Actual problems, each needing something done ── */
+  if(data.ratings_stale || (data.ratings_as_of == null && data.totals && n(data.totals.parents))){
+    const when = data.ratings_as_of ? String(data.ratings_as_of).slice(0, 10) : "never";
+    out.push(`<div class="banner warn"><strong>Star ratings are from ${esc(when)}.</strong>
+      They come from our own scraper, not Amazon's API, and a verdict splits on rating — so a stale
+      figure quietly shapes one. Run a product scrape from the Dashboard.</div>`);
   }
-  /* Sizes dropped from a product that is STILL SHOWN — a different question, so its own line. A
-     vanished product asks "should this be selling at all"; a vanished SIZE under a live product asks
-     "is this pack size really retired", and the parent row beside it looks entirely normal, which is
-     what makes this the easier one to miss. */
-  if(!data.include_inactive && (data.inactive_sizes_of_shown || []).length){
-    const list = data.inactive_sizes_of_shown.map(x =>
-      `${esc(x.product)} <span class="dim">${n(x.sizes)}</span>`
-    ).join(" · ");
-    out.push(`<div class="banner info">Some products shown here have inactive pack sizes, excluded
-      from their totals: ${list}.</div>`);
-  }
-  /* Shown DESPITE being inactive, because a decision is recorded against them. Named because
-     otherwise "why is this dead product still in my table" has no answer on screen — and the reason
-     is a good one: `ProductDecision` exists to answer "what is it now?", which needs the row. */
-  if((data.decided_but_inactive || []).length){
-    out.push(`<div class="banner info">${esc(data.decided_but_inactive.join(", "))} —
-      inactive in the sheet, but kept here because you recorded a decision on
-      ${data.decided_but_inactive.length === 1 ? "it" : "them"}.</div>`);
-  }
-
   if(data.catalogue_warning){
     out.push(`<div class="banner warn">${esc(data.catalogue_warning)}</div>`);
   }

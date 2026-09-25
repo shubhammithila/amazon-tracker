@@ -274,6 +274,62 @@ from Lucide (ISC, which permits copying individual paths; the notice is in the s
 > incidental detail rather than a behaviour, which is the trap this file records four times. The other
 > survivor was a genuine gap: a leftover emoji star passed every other icon test.
 
+### Five standing messages became one line — only a PROBLEM gets a banner
+Reported as *"too many messages at the top. dont want them if the logics are working fine"*, against
+a screenshot of five stacked blocks above the data. **Every one of them was reporting CORRECT
+behaviour**, which is the failure this file already records three times: *"a caveat that fires on
+every render is the kind that trains its reader to skip the one that matters"* — and the one that
+matters here is a failed refresh sitting underneath four paragraphs of routine.
+
+The test is now **"is something wrong?"**, not "is something true?":
+
+| | |
+|---|---|
+| **one collapsed ⓘ line** | pre-COGS margins · the ratings date · what `Active = N` excluded |
+| **a real banner** | a failed refresh · an unsummable range · a **stale** ratings date · ASINs missing from the sheet · the catalogue on its cached copy |
+
+**Nothing is dropped and no figure is rounded away.** The exclusion still states units AND rupees,
+still names the products biggest-sales-first with the count left exact, and still says which shown
+products lost a size — one click away instead of ~150px of standing yellow. Two things make that
+safe: the **subtitle** independently carries "35 active products · 56 hidden as inactive", and
+**`build_portfolio_xlsx` writes the same exclusion into row 1 of the workbook**, which is the path
+that actually needs it since a file leaves the app with no screen beside it.
+
+**A stale ratings date is promoted OUT of the line into its own banner**, because it is the one item
+that is sometimes a problem rather than always a fact — rule 6 splits BEST BET from SCALE on
+rating ≥ 4.0, so a stale figure silently shapes a verdict, and it is what revealed the product scrape
+had never run on production. Fresh, it is a date on the line; stale, it interrupts. Never both.
+
+> **`if(false && …)` mutations are invisible to a source-level test, and chasing them wasted three
+> rewrites of the same helper.** Dead-coding a guard leaves every rendered string textually intact,
+> so no assertion over template text can see it. That is a limit of the approach rather than a gap to
+> patch — the harness now mutates by DELETING or MOVING render code, which is the shape a source test
+> can legitimately observe, and 19 of 19 are caught.
+>
+> Getting there took three attempts at one helper, each too loose, and each let real mutations pass:
+> `"data.x" in body` was true while the value was read in an `if` and rendered nowhere; looking for
+> `out.push` within 200 characters reached BACKWARDS into the neighbouring banner's push; and
+> capturing each `` `…` `` literal broke on NESTED literals — a conditional inside a literal makes a
+> non-greedy backtick regex split at the inner backticks, so `${n(more)}` landed in the GAP between
+> two captures and was found in neither. Measured: 14 captures, two expressions in gaps. The working
+> version keys on the `${…}` interpolation directly, since `${` only appears inside a literal anyway.
+> **Ninth instance of the substring trap in this codebase.**
+>
+> Two further survivors were the same shape one level down: `money(data.inactive_sales)` appears
+> TWICE in the note — collapsed line and full text — so deleting either left the other satisfying
+> the check. Same for `esc(x.product)`. Now asserted on the per-row `${n(x.units)}u` and
+> `${money(x.sales)}`, which appear exactly once, plus both halves of the total separately.
+
+> **Verified by EXECUTING `renderBanners` under Node** across eight data states, because the
+> per-datum tests cannot answer "what does the screen actually look like". Five blocks → one for the
+> reported case, 5 blocks in the everything-wrong case, and 1 with the toggle on.
+>
+> **The first probe reported a phantom "0 size(s) hidden as inactive" line, and the bug was in the
+> probe.** It stubbed `n` as a FORMATTER, so `n(0)` was the truthy string `"0"` and the guard passed;
+> the real helper is `v => Number(v || 0)`. Copying the page's own one-liners verbatim is the only
+> safe way to harness them — a stub that disagrees with the code invents defects that do not exist,
+> which is the mirror of a test that misses ones that do.
+
 History and Keywords were removed as requested. `app/routers/keywords.py`, the
 models and the scheduler job all stay: only the tabs were unwanted, and
 `tests/test_retention_and_scheduler.py` asserts `daily_keyword_track` exists.

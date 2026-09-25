@@ -5,7 +5,8 @@
       "Bash(python -m venv venv)",
       "Bash(./venv/Scripts/pip install *)",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(venv/Scripts/python -c ' *)"
     ]
   }
 }
