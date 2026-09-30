@@ -60,6 +60,19 @@ def test_the_totals_row_is_a_tfoot_and_not_another_data_row():
     )
 
 
+def _totals_source() -> str:
+    """The totals row's arithmetic AND its per-column renderers, together.
+
+    The column picker split the old `totalsRow` in two: `computeTotals` holds the sums, and each
+    column's `total` renderer in `COLUMN_DEFS` turns them into a cell. The properties these tests
+    guard span both, so they are asserted against both.
+    """
+    source = _template()
+    defs = source[source.index("const COLUMN_DEFS = {"):]
+    defs = defs[: defs.index("\n};") + 3]
+    return "\n".join([_function(source, "computeTotals"), _function(source, "totalsRow"), defs])
+
+
 def test_the_totals_row_recomputes_percentages_and_never_averages_them():
     """**The mean of 90 products' TACOS belongs to no product.**
 
@@ -71,12 +84,12 @@ def test_the_totals_row_recomputes_percentages_and_never_averages_them():
     not evidence equal to a 3.8 from 400. Measured on the live window, the plain mean is 3.86
     against a review-weighted 3.95.
     """
-    body = _function(_template(), "totalsRow")
+    body = _totals_source()
 
-    assert "ratio(spend, sales)" in body, "TACOS is not recomputed from the summed money"
-    assert "ratio(net, sales)" in body, "net % is not recomputed from the summed money"
-    assert "ratio(refunded, ordered)" in body, "returns % is not recomputed from the summed units"
-    assert "ratio(adsCost, attributed)" in body, "ACOS is not recomputed from the summed money"
+    assert "t.ratio(t.spend, t.sales)" in body, "TACOS is not recomputed from the summed money"
+    assert "t.ratio(t.net, t.sales)" in body, "net % is not recomputed from the summed money"
+    assert "t.ratio(t.refunded, t.ordered)" in body, "returns % is not recomputed from the summed units"
+    assert "t.ratio(t.adsCost, t.attributed)" in body, "ACOS is not recomputed from the summed money"
 
     # The tell-tale of an average is dividing by how many ROWS there are. It is legitimate only for
     # the rating, which divides by total REVIEWS — so the row count must appear in no arithmetic.
@@ -131,10 +144,26 @@ def test_the_totals_row_has_one_cell_per_column():
     Weight was added beside it. Deliberately NOT derived from the `COLUMNS` array: this test exists
     to catch the footer and the header disagreeing, so counting the same list both are meant to
     follow would make it self-fulfilling.
+
+    **With the column picker there is no fixed count to assert**, so the self-fulfilling trap is now
+    avoided the other way: `test_header_product_size_flavour_and_totals_rows_list_the_SAME_columns_
+    in_the_SAME_order` EXECUTES the footer and the header separately and compares their OUTPUT, id by
+    id, across four layouts — two renderings, not one list read twice. What stays here is the
+    structure that output depends on: one hand-written cell (Product), the rest from the list, and a
+    totals renderer for every column the server can send.
     """
     body = _function(_template(), "totalsRow")
-    cells = body.count("<td")
-    assert cells == 12, f"the totals row has {cells} cells for 12 columns"
+    assert body.count("<td") == 1, "the totals row hand-writes cells beside the column list"
+    assert "visibleColumns().slice(1).map(c => cell(c, c.total(t)))" in body
+    source = _template()
+    defs = source[source.index("const COLUMN_DEFS = {"):]
+    defs = defs[: defs.index("\n};")]
+    from app.portfolio import columns as C
+    ids = [c["id"] for c in C.COLUMNS if c["id"] != "product"]
+    for i, col in enumerate(ids):
+        start = defs.index(f"  {col}:")
+        end = defs.index(f"  {ids[i + 1]}:") if i + 1 < len(ids) else len(defs)
+        assert "total:" in defs[start:end], f"{col} has no totals renderer"
 
 
 # ─── Why the child rows appeared to have no units ────────────────────────────
@@ -180,8 +209,12 @@ def test_every_size_row_still_renders_its_units():
     two things to keep in step with the toggle. Asserted there now, which covers BOTH grains rather
     than only the flat one.
     """
-    body = _function(_template(), "detailCells")
-    assert "row.units" in body, "a detail row does not render its units at all"
+    # The units cell now comes from `COLUMN_DEFS.units.detail`, reached through `detailCells`.
+    source = _template()
+    defs = source[source.index("const COLUMN_DEFS = {"):]
+    units = defs[defs.index("  units:"): defs.index("  weight_kg:")]
+    assert "detail: r => n(r.units)" in units, "a detail row does not render its units at all"
+    assert "visibleColumns().slice(1)" in _function(source, "detailCells")
     # ...and the row builders must go through it rather than keeping a copy.
     assert "detailCells(s)" in _function(_template(), "sizeRowHtml")
 
@@ -286,7 +319,7 @@ def test_the_rating_count_is_deduplicated_per_family():
     kind of error that ships: the visible number looks right and the count beside it does not.
     Keying on `parent_asin` counts each family once at either grain.
     """
-    body = _function(_template(), "totalsRow")
+    body = _totals_source()
     assert "r.parent_asin || r.asin" in body, (
         "the rating count is not keyed per family, so the SKU grain counts the same pooled reviews "
         "once per pack size"
@@ -356,28 +389,21 @@ def test_units_and_weight_are_OUTSIDE_the_showExtra_gate_in_ALL_THREE_functions(
     Scoped per FUNCTION rather than searched across the file: "this rule holds somewhere in 1,600
     lines" is a different claim from "this function follows it", and the 4th instance of this trap in
     this codebase was a test that passed while one of three call sites disagreed.
+
+    **The `showExtra` gate is gone** — the column picker replaced it. "Always shown" is now a SERVER
+    fact: Units and Weight are `locked` in `app/portfolio/columns.py` (movable, never hideable), and
+    each has a renderer for all three row types, so no row type can drop the cell.
     """
+    from app.portfolio import columns as C
+
+    locked = {c["id"] for c in C.COLUMNS if c["locked"]}
+    assert {"units", "weight_kg"} <= locked, "Units or Weight can be hidden again"
     source = _template()
-    for name in ("dataCells", "detailCells", "totalsRow"):
-        body = _function(source, name)
-        # `${showExtra ? ` — the template-literal gate that wraps the optional CELLS. Deliberately
-        # not a bare `showExtra ?`: `detailCells` also computes `const trailing = showExtra ? 2 : 1`,
-        # which is the colspan rather than a cell, and splitting on that would test the wrong block.
-        assert "${showExtra ? `" in body, f"{name} no longer gates the optional columns at all"
-        gated = body.split("${showExtra ? `", 1)[1].split('` : ""', 1)[0]
-        always = body.replace(gated, "")
-        # Asserted on the IDENTIFIERS rather than on the words. The gated block legitimately contains
-        # the string "weighted by reviews" — the rating note — so a `"weight" in gated` check fails
-        # on prose that has nothing to do with the column. Sixth instance of that substring trap in
-        # this codebase, and the first to bite a test I was writing to catch it.
-        for cell in ("units", "kg("):
-            assert cell not in gated, (
-                f"{name} renders {cell!r} inside the showExtra gate, so the column is invisible by "
-                "default again"
-            )
-            assert cell in always, (
-                f"{name} renders no {cell!r} cell at all, so the assertion above passes vacuously"
-            )
+    defs = source[source.index("const COLUMN_DEFS = {"):]
+    for col, nxt in (("units", "weight_kg"), ("weight_kg", "returns_pct")):
+        entry = defs[defs.index(f"  {col}:"): defs.index(f"  {nxt}:")]
+        for kind in ("row:", "detail:", "total:"):
+            assert kind in entry, f"{col} has no {kind} renderer, so a row type renders no cell"
 
 
 def test_the_weight_total_does_not_COERCE_an_unknown_weight_to_zero():
@@ -387,7 +413,7 @@ def test_the_weight_total_does_not_COERCE_an_unknown_weight_to_zero():
     is the silent shortfall `shipment_weight` names: "a 130 kg shipment reports 90". So weight needs
     its own accumulator, and the excluded rows must be counted and named in the cell.
     """
-    body = _function(_template(), "totalsRow")
+    body = _totals_source()
     assert "weighed" in body, "the weight total has no accumulator of its own"
     assert "r.weight_kg !== null" in body, (
         "the weight total does not filter unknown weights, so nulls are summed as 0 kg"

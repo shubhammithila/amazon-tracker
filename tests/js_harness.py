@@ -69,6 +69,14 @@ def _const(script: str, name: str) -> str:
                 continue
             if ch == quote:
                 quote = None
+        # Comments are skipped whole: an apostrophe in "the parent's number" inside a `//` comment
+        # otherwise opens a string and the statement runs on past its `;` — found by the first run.
+        elif script.startswith("//", i):
+            i = script.index("\n", i)
+            continue
+        elif script.startswith("/*", i):
+            i = script.index("*/", i) + 2
+            continue
         elif ch in "'\"`":
             quote = ch
         elif ch in "([{":

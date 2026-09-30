@@ -237,29 +237,45 @@ def test_the_money_columns_are_all_tagged_num_in_all_three_render_functions():
 
     Scoped per function, because "this holds somewhere in 1,900 lines" is a different claim
     from "this function holds it" — the 4th-instance trap this codebase records.
+
+    **The render functions no longer hand-write `class="num"`.** With the column picker every cell
+    is built by one `cell()` from its column's `COLUMN_DEFS` entry, so "all three functions agree"
+    holds by construction — and the risk moves to the DEFINITIONS: a money column losing `num: true`
+    goes proportional in every row type at once. Asserted per column here, and EXECUTED (the rendered
+    `<td>` carries `class="num"`) in `test_numeric_columns_render_as_num_cells`.
     """
     source = _source()
-    for name in ("dataCells", "detailCells", "totalsRow"):
-        body = _function(source, name)
-        found = body.count('class="num"')
-        assert found == 8, (
-            f"{name} emits {found} numeric cells, expected 8 — a money column has lost its "
-            "`num` class and will render with proportional digits on the tablet"
+    defs = source[source.index("const COLUMN_DEFS = {"):]
+    defs = defs[: defs.index("\n};")]
+    order = ["verdict", "sales", "ad_spend", "tacos", "acos", "net_pct", "units",
+             "weight_kg", "returns_pct", "rating", "decision"]
+    for i, col in enumerate(order):
+        start = defs.index(f"  {col}:")
+        end = defs.index(f"  {order[i + 1]}:") if i + 1 < len(order) else len(defs)
+        is_num = "num: true" in defs[start:end]
+        should = col in {"sales", "ad_spend", "tacos", "acos", "net_pct", "units",
+                         "weight_kg", "returns_pct"}
+        assert is_num == should, (
+            f"{col}: num is {is_num}, expected {should} — "
+            + ("a money column will render with proportional digits on the tablet" if should
+               else "prose would get tabular digits, the split .chan already makes, inverted")
         )
+    assert 'col.num ? "num"' in _function(source, "cell"), "cell() does not honour num"
 
 
 def test_the_rupee_and_the_minus_sign_are_NOT_treated_as_icons():
     """Typography, not iconography — the guard against over-applying the icon work.
 
-    U+20B9 is the currency on every figure and U+2212 is the minus in the columns toggle.
-    Replacing either with an SVG would be a drawing where a character belongs.
+    U+20B9 is the currency on every figure. Replacing it with an SVG would be a drawing where a
+    character belongs.
+
+    U+2212 was guarded here too, as the minus in "− Fewer columns"; that toggle was retired by the
+    column picker and no minus is rendered anywhere now, so there is nothing left for that half to
+    protect. Dropped rather than kept pointing at a function that no longer exists.
     """
     source = _source()
     assert "₹" in _function(source, "money"), (
         "the rupee sign has left money(), so every figure lost its currency"
-    )
-    assert "−" in _function(source, "renderColsButton"), (
-        "the minus sign has left the columns toggle"
     )
 
 

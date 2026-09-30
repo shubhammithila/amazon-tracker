@@ -981,7 +981,12 @@ def test_the_view_and_sort_survive_a_reload():
     assert "sessionStorage" in source
     assert 'remembered("view"' in source and 'remembered("sort"' in source
     assert 'remembered("filters"' in source and 'remembered("window"' in source
-    assert "localStorage" not in source, (
+    # localStorage is allowed for EXACTLY ONE key: the column layout of a shared-password session,
+    # which has no account to save it against (see the column picker). Anything else in it would
+    # carry a filter across sessions and open the tab filtered — the reason this rule exists.
+    keys = set(re.findall(r'localStorage\.(?:getItem|setItem)\("([^"]+)"', source))
+    assert keys <= {"pf.columnLayout"} and source.count("localStorage") == len(
+        re.findall(r'localStorage\.(?:getItem|setItem)\("pf\.columnLayout"', source)), (
         "localStorage would carry a filter across sessions, so the tab would open filtered"
     )
 
@@ -1118,9 +1123,10 @@ def test_the_table_scrolls_inside_a_wrapper_rather_than_moving_the_page():
     assert '<div class="table-wrap">' in source, (
         "the wrapper is styled but the table is not inside it"
     )
-    table_rule = source[source.index("table{width:100%"):]
-    table_rule = table_rule[:table_rule.index("}")]
-    assert "min-width" in table_rule, (
+    # The floor is now COMPUTED from the visible columns and set inline (`tableMinWidth()`), so a
+    # narrow layout is not padded out to twelve columns — and `test_min_width_follows_the_visible_
+    # columns` executes it. What must not happen is the table having no floor at all.
+    assert '<table style="min-width:${tableMinWidth()}px">' in source, (
         "without a min-width the table shrinks to the wrapper and the nowrap cells overflow "
         "their own gridlines, so the wrapper never scrolls and the fix does nothing"
     )

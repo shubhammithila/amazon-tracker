@@ -570,48 +570,34 @@ def test_the_hidden_columns_are_gated_in_ALL_THREE_places():
     asked for in one message — so the optional count went 3 -> 2 and the total 11 -> 12, and every
     one of the three functions had to change together.
 
-    Asserted at source because the three are built by three different functions, and only a
-    convention keeps them in step.
+    **Now held by construction.** The column picker replaced `showExtra` and the three
+    hand-written gates with ONE list, `visibleColumns()`, that the header and every row builder map
+    over — so there is no second place a column can be hidden. That is asserted here at source, and
+    EXECUTED (same `data-col` ids, same order, across header, product, size, flavour and totals rows,
+    for four layouts) in `tests/test_portfolio_columns_render.py`.
     """
     source = _portfolio_template()
-    # The header derives its list; the body and footer gate on the same flag.
-    assert "shownColumns()" in source, "the header must derive its columns from one list"
-    assert source.count("showExtra ?") >= 3, (
-        "the body cells, the detail cells and the totals row must each gate on showExtra — "
-        "otherwise a hidden column still renders in one of them"
-    )
-    # And no hardcoded colspan can survive, or an expanded row stops spanning the table.
+    for name in ("headerHtml", "dataCells", "detailCells", "totalsRow"):
+        body = _template_function(source, name)
+        assert "visibleColumns()" in body, f"{name} does not build from the one column list"
+        assert "showExtra" not in body, f"{name} still consults the retired toggle"
+    # No hardcoded colspan can survive, or an expanded row stops spanning the table.
     assert 'colspan="11"' not in source
     assert 'colspan="12"' not in source
+    assert 'colspan="${visibleColumns().length}"' in source
 
     # **The list must actually DROP the hidden ones, not merely be called.** A mutation returning
-    # `COLUMNS` unfiltered survived an earlier version of this test: every assertion above stayed
-    # true while the header rendered more columns than the body. The count is what fails.
-    body = _template_function(source, "shownColumns")
-    assert "showExtra" in body, "shownColumns does not consult the toggle at all"
-    assert ".filter(" in body, (
-        "shownColumns returns every column, so the header renders 12 headings over 10 body cells "
-        "and every figure after Weight sits under the wrong one"
-    )
-    # Scoped to the COLUMNS array, so the prose explaining the flag is not counted as a column —
-    # the deploy-detector mistake (a substring that also appears in its own explanation). The
-    # trailing brace is load-bearing: the comment above the Units column contains the words
-    # "extra: true" and would otherwise be counted as a fourth optional column.
-    declaration = source[source.index("const COLUMNS = ["):]
-    declaration = declaration[: declaration.index("];")]
-    extras = declaration.count("extra: true}")
-    assert extras == 1, (
-        f"{extras} optional columns declared; the three gated blocks render exactly 1 "
-        "(Returns), so another would render under a hidden header"
-    )
-    # And the columns the owner asked to see are NOT optional — the point of each change.
-    for always in ('{key: "units"', '{key: "weight_kg"', '{key: "rating"'):
-        line = declaration[declaration.index(always):]
-        line = line[: line.index("\n")]
-        assert "extra" not in line, f"{always} is still gated behind the + More columns toggle"
+    # every column unfiltered survived an earlier version of this test.
+    body = _template_function(source, "visibleColumns")
+    assert ".filter(" in body and "hidden" in body, "visibleColumns does not drop hidden columns"
+
+    # Units, Weight (and Sales, Ad spend) can never be hidden — the server says so.
+    from app.portfolio import columns as C
+    locked = {c["id"] for c in C.COLUMNS if c["locked"]}
+    assert {"units", "weight_kg", "sales", "ad_spend"} <= locked
 
 
-def test_showExtra_is_declared_AFTER_the_helper_it_calls():
+def test_state_that_calls_remembered_is_declared_AFTER_the_helper():
     """**Found by opening the page: it rendered "Loading…" for ever.**
 
     `remembered` is a `const` arrow function, so it is NOT hoisted. Declaring
@@ -619,12 +605,18 @@ def test_showExtra_is_declared_AFTER_the_helper_it_calls():
     from inside the error handler, which needs `$` — so the real cause never reached the console and
     the page simply never finished loading.
 
-    Nothing in the test suite could have caught this; it needed the page. Asserted on ORDER so the
-    declaration cannot drift back above its helper.
+    `showExtra` is gone (the column picker replaced it), and its successor `let layout = null` calls
+    nothing — so the ORDER rule now binds every remaining `let … = remembered(` declaration, which is
+    where the same mistake can still be made.
     """
+    import re
+
     source = _portfolio_template()
-    assert source.index("const remembered =") < source.index("let showExtra ="), (
-        "showExtra reads remembered(), which is a const arrow function and therefore not hoisted"
+    helper = source.index("const remembered =")
+    callers = [m.start() for m in re.finditer(r"\nlet \w+ = remembered\(", source)]
+    assert callers, "no state reads remembered() — the rule has nothing left to protect"
+    assert all(helper < at for at in callers), (
+        "a `let` reads remembered(), a const arrow function, above its declaration"
     )
 
 
