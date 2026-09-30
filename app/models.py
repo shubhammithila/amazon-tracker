@@ -546,6 +546,12 @@ class User(Base):
     # Set when the owner generates or resets a password, cleared on first successful
     # login. Lets the panel show "has not signed in yet" honestly.
     must_change_password = Column(Boolean, default=False, nullable=False)
+    #: Personal display choices, as JSON text, namespaced by screen — today only
+    #: `{"portfolio_columns": {"order": [...], "hidden": [...]}}`. **NULL means "never chosen"**,
+    #: which is a different fact from "chose the default": it is what lets a later change of
+    #: default reach everyone who never customised. Written by `app.users.save_preference`, which
+    #: MERGES so one screen's choice can never overwrite another's. Never a permission.
+    preferences_json = Column(Text, nullable=True)
 
 
 class UserLoginEvent(Base):

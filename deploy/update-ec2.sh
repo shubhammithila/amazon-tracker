@@ -366,8 +366,10 @@ def indexes(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "preferences_json" in cols("users"):
+    print("c3d8e1f5a702")                           # head: per-login display preferences
 elif "sb_spend" in cols("economics_daily"):
-    print("b91d4a7c3e26")                           # head: SB spend attributed per ASIN per day
+    print("b91d4a7c3e26")                           # SB spend attributed per ASIN per day
 elif "economics_daily" in tables:
     print("e7b3f0c92a41")                           # portfolio economics + ads per DAY
 elif "over_pack_approved_units" in cols("shipment_plan_items"):
