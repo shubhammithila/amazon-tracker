@@ -180,7 +180,7 @@ h2{font-size:19px;font-weight:600;margin-bottom:2px}
   max-height:var(--pf-table-cap, calc(100vh - 60px));min-height:200px;
   border-radius:10px;border:1px solid var(--border);
   -webkit-overflow-scrolling:touch;overscroll-behavior:contain}
-table{width:100%;border-collapse:separate;border-spacing:0;min-width:1040px}
+table{width:100%;border-collapse:separate;border-spacing:0;min-width:1120px}
 /* **`top:0`, and it must stay 0.** The offset is measured from `.table-wrap`, not the page, so
    the sticky page header's height is already accounted for by this wrapper's own position —
    ops.html's `top:56px` parked its header 56px DOWN INSIDE the table, directly over the first
@@ -444,7 +444,7 @@ let view = remembered("view", "products");        // "products" | "skus"
 let window_ = remembered("window", null);         // {start, end} or null = whatever is stored
 let sort = remembered("sort", {key: "sales", dir: -1});
 let filters = remembered("filters", []);          // [{field, op, value}], ANDed
-let showExtra = remembered("showExtra", false);    // the Returns / Rating columns
+let showExtra = remembered("showExtra", false);    // the Returns column
 // Products marked `Active = N` in the MRP sheet. **Declared AFTER `remembered`** for the reason
 // `showExtra` records: `remembered` is a `const` arrow function and therefore not hoisted, so
 // calling it above its declaration throws from inside the error handler and the page renders
@@ -1210,7 +1210,11 @@ const COLUMNS = [
   {key: "units",        label: "Units",    num: true},
   {key: "weight_kg",    label: "Weight",   num: true, tip: "units × pack size, from the MRP sheet — a dash where the sheet has no weight"},
   {key: "returns_pct",  label: "Returns",  num: true, extra: true},
-  {key: "rating",       label: "Rating",   extra: true},
+  // Rating came out of the toggle too, asked as "why I am not able to see the ratings here… whether
+  // chana sattu is 3 star or 3.5 star or 4 star". It was scraped and on every row all along, one
+  // click away — and rule 5 splits BEST BET from SCALE on it, so a verdict read without it is read
+  // without one of its own inputs.
+  {key: "rating",       label: "Rating"},
   {key: null,           label: "Decision"},
 ];
 
@@ -1260,7 +1264,9 @@ function headerHtml(){
    per family: a per-size star rating would be the parent's number repeated, implying a precision
    the review data does not have. */
 function detailCells(row){
-  const trailing = showExtra ? 2 : 1;
+  // Spans Rating AND Decision in both layouts now that Rating is always shown; Returns, the one
+  // remaining optional column, gets its own cell inside the gate below.
+  const trailing = 2;
   return `
     <td class="num">${money(row.sales)}</td>
     <td class="num">${money(row.ad_spend)}</td>
@@ -1331,8 +1337,8 @@ function dataCells(r){
     <td class="num">${n(r.units).toLocaleString("en-IN")}</td>
     <td class="num">${kg(r.weight_kg)}</td>
     ${showExtra ? `
-    <td class="num">${r.returns_pct ? pct(r.returns_pct) : '<span class="dim">—</span>'}</td>
-    <td>${stars(r.rating, r.rating_count)}</td>` : ""}
+    <td class="num">${r.returns_pct ? pct(r.returns_pct) : '<span class="dim">—</span>'}</td>` : ""}
+    <td>${stars(r.rating, r.rating_count)}</td>
     <td>${r.decision
           ? `<span class="tag d-${esc(r.decision)}">${esc(r.decision.toUpperCase())}</span>`
           : '<span class="dim">—</span>'}</td>`;
@@ -1434,10 +1440,10 @@ function totalsRow(list, isSkus){
          under a hidden header shifts the whole footer one column left, which is the sort of thing
          that looks like a rounding error rather than a layout bug. */ ""}
     ${showExtra ? `
-    <td class="num">${pct(ratio(refunded, ordered))}</td>
+    <td class="num">${pct(ratio(refunded, ordered))}</td>` : ""}
     <td>${rating === null
           ? '<span class="dim">—</span>'
-          : `${stars(rating, reviews)}<span class="tnote">weighted by reviews</span>`}</td>` : ""}
+          : `${stars(rating, reviews)}<span class="tnote">weighted by reviews</span>`}</td>
     <td>${decided
           ? `<span class="dim">${n(decided)} decided</span>`
           : '<span class="dim">—</span>'}</td>
