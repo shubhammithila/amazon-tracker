@@ -1414,3 +1414,153 @@ def _rating_for(sizes: Sequence[Mapping], ratings: Mapping) -> dict:
         if not best or str(row.get("scraped_at") or "") > str(best.get("scraped_at") or ""):
             best = row
     return best
+
+
+# ── Sponsored Brands: attributing spend Amazon reports at AD-GROUP level ──────────────────────
+#
+# **The Portfolio tab's `ad_spend` was Sponsored Products ONLY, and nothing on screen said so.**
+# Amazon's economics feed returns exactly one ad type name — `SponsoredProductFee`, measured across
+# all 9,074 stored rows that carry ad spend — so 28% of real ad spend was missing from every row
+# and all four KPI tiles, understating TACOS and overstating net margin everywhere.
+#
+# Amazon publishes no ASIN-level SB COST report (the research is in `ads.fetch_sb_ad_asins`), but it
+# DOES declare which ASINs each ad group advertises. That makes this a join against Amazon's own
+# statement, plus a division for the ad groups that name several products at once.
+
+#: Written to `EconomicsDaily.sb_basis`. Amazon named this ASIN on the ad group that spent the
+#: money, so the attribution is Amazon's own rather than ours.
+SB_BASIS_DECLARED = "declared"
+
+#: Brand-level spend with no ASIN to attribute it to — a Brand Store ad, or an ad group whose named
+#: products all sold nothing that day. Spread across the portfolio by sales share so the total still
+#: reconciles against the Ads tab.
+SB_BASIS_SPREAD = "spread"
+
+
+def allocate_sb_spend(
+    ad_group_spend: Mapping[tuple[str, str], float],
+    ad_group_asins: Mapping[str, Sequence[str]],
+    sales_by_day_asin: Mapping[tuple[str, str], float],
+) -> tuple[dict[tuple[str, str], float], float]:
+    """Sponsored Brands spend per ``(day, asin)``, plus the total that could not be attributed.
+
+    Pure — no database, no Amazon — so the four properties below are testable directly.
+
+        ad_group_spend      {(day, ad_group_id): spend}   from `ads_performance_daily`
+        ad_group_asins      {ad_group_id: [asin, ...]}    from `ads.fetch_sb_ad_asins`
+        sales_by_day_asin   {(day, asin): ordered_sales}  from `economics_daily`
+
+    **Divided by each ASIN's SALES SHARE that day, not equally**, and the case that settled it is
+    real: ad group `406048686897409` spent Rs 18,342 across 3 ASINs, one of which sold nothing.
+    An equal split bills that dead ASIN Rs 6,114 for advertising it never converted; sales-weighted
+    bills it Rs 0. Measured, the two bases give IDENTICAL verdicts at parent level — they differ
+    only per child ASIN inside an ad group, which is exactly where the weighting is defensible.
+
+    ── Four properties, each a way to get this wrong ──
+
+    **1. Conservation.** ``sum(allocated) + unattributable == sum(ad_group_spend)``. An allocator
+    that loses or invents money is the failure mode that looks entirely plausible on screen, which
+    is why a test asserts this directly rather than spot-checking rows — the property
+    `test_EVERY_RUPEE_is_either_on_screen_or_named_as_excluded` already pins for the Active flag.
+
+    **2. Per DAY, never per window.** The store is keyed per day so every sub-range is a sum; an
+    allocation computed over a window total would make a 7-day slice of a 30-day allocation wrong.
+    The day is part of the key throughout and is never collapsed.
+
+    **3. A day where the whole ad group sold NOTHING must not divide by zero.** Sales-weighting has
+    no denominator there. Those rupees go to `unattributable` rather than being split equally,
+    because "we cannot attribute this" is the honest reading and an equal split would invent a
+    number — the same reason `_ratio` returns None rather than 0.0.
+
+    **4. An ASIN with no economics row is not dropped.** Its share goes to `unattributable`. Today
+    all 24 ASINs receiving SB spend have a row, so no live data exercises this; a test constructs
+    it, as with the unknown-pack-weight case.
+
+    Returns ``({(day, asin): spend}, unattributable_total)``. Spreading the remainder is
+    `spread_unattributable`'s job, not this function's, so the two steps stay separately testable.
+    """
+    allocated: dict[tuple[str, str], float] = {}
+    unattributable = 0.0
+
+    for (day, ad_group_id), spend in ad_group_spend.items():
+        amount = _num(spend)
+        if not amount:
+            continue
+
+        asins = [str(a).strip().upper() for a in (ad_group_asins.get(str(ad_group_id)) or [])]
+        if not asins:
+            # Amazon names no product for this ad group (a Brand Store ad), or we never heard of
+            # the ad group at all. Both are genuinely unattributable — see `fetch_sb_ad_asins` for
+            # why the two cases are nonetheless kept distinct at the fetch boundary.
+            unattributable += amount
+            continue
+
+        if len(asins) == 1:
+            # Half the real spend takes this path — 41 of 66 ads name exactly one ASIN — so this is
+            # the COMMON case rather than an optimisation of the general one, and it involves no
+            # division and therefore no attribution judgement at all.
+            asin = asins[0]
+            if (day, asin) in sales_by_day_asin:
+                allocated[(day, asin)] = allocated.get((day, asin), 0.0) + amount
+            else:
+                unattributable += amount
+            continue
+
+        weights = {asin: _num(sales_by_day_asin.get((day, asin))) for asin in asins}
+        total_weight = sum(weights.values())
+        if total_weight <= 0:
+            unattributable += amount           # property 3
+            continue
+
+        # Distribute, giving the LAST recipient whatever rounding leaves over, so an ad group's
+        # spend is conserved exactly rather than drifting a paisa per ASIN. Rounding each share
+        # independently would break property 1 on precisely the multi-ASIN groups this branch
+        # exists for.
+        running = 0.0
+        share_asins = [a for a in asins if weights[a] > 0]
+        for index, asin in enumerate(share_asins):
+            if index == len(share_asins) - 1:
+                share = amount - running
+            else:
+                share = round(amount * weights[asin] / total_weight, 2)
+                running += share
+            allocated[(day, asin)] = allocated.get((day, asin), 0.0) + share
+
+    return {key: round(value, 2) for key, value in allocated.items()}, round(unattributable, 2)
+
+
+def spread_unattributable(
+    unattributable: float,
+    sales_by_day_asin: Mapping[tuple[str, str], float],
+) -> dict[tuple[str, str], float]:
+    """Spread brand-level SB spend across every ``(day, asin)`` by its share of total sales.
+
+    Asked for explicitly, so Portfolio's total ad spend reconciles EXACTLY against the Ads tab
+    rather than sitting ~2% light. Measured, this is about Rs 11,114 a month — the Brand Store ads,
+    which advertise the brand rather than any one product, so there is no single product to charge
+    and every product benefits from them.
+
+    **Weighted by sales, like the per-ad-group split**, so the same reasoning carries: a product
+    that sold nothing carries none of it. Returns an empty dict when there is nothing to spread or
+    nothing sold, rather than dividing by zero.
+    """
+    amount = _num(unattributable)
+    if amount <= 0:
+        return {}
+
+    total_sales = sum(_num(value) for value in sales_by_day_asin.values())
+    if total_sales <= 0:
+        return {}
+
+    keys = [key for key, value in sales_by_day_asin.items() if _num(value) > 0]
+    spread: dict[tuple[str, str], float] = {}
+    running = 0.0
+    for index, key in enumerate(keys):
+        if index == len(keys) - 1:
+            share = round(amount - running, 2)
+        else:
+            share = round(amount * _num(sales_by_day_asin[key]) / total_sales, 2)
+            running += share
+        if share:
+            spread[key] = share
+    return spread

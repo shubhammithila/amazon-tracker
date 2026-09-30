@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2412 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2452 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -1766,6 +1766,15 @@ against the account. What is NOT there is ad-attributed sales, which is why this
 **TACOS (spend ÷ total sales) and never ACOS**. The earlier hand analysis called it ACOS; that
 was wrong.
 
+> **"Ad spend arrives in SP-API" was only HALF true, and for a month nobody could see which half.**
+> Asked directly: *"the ad expenses which you are taking includes all SP, SB, SD campaigns right?"*
+> — no. Across all **9,074** stored rows carrying ad spend, the economics feed returns exactly ONE
+> ad type name, `SponsoredProductFee`. Sponsored Brands never appears, so over the 30 days the
+> question was asked about, **Rs 5,30,615 — 28% of real ad spend — was missing** from every row and
+> every KPI tile: TACOS understated, net margin overstated. The code was already written to sum
+> whatever `adTypeName`s arrived; Amazon simply never sends SB. See "Sponsored Brands is in the ad
+> figures now" below.
+
 `cost: PerUnitCost` in the schema returns **your COGS** if entered in Seller Central SKU Central.
 It is null on this account, which is why every margin is labelled **pre-COGS** on screen and in
 the export — Amazon's `netProceeds` is sales minus Amazon's fees minus ads, so a size showing
@@ -2228,6 +2237,88 @@ line, because that is the part that changes.
 > asserts the `.filter` and counts the optional columns, scoped to the `COLUMNS` array so the prose
 > explaining the flag cannot satisfy the substring. Verified in the browser as 8/8/8 collapsed and
 > 11/11/11 expanded. Fourth instance of that trap here.
+
+### Sponsored Brands is in the ad figures now — attributed from Amazon's own ASIN list
+Then: *"Add SB into the Portfolio figures — but no separate labelling of it in the portfolio tab.
+just add to the main ad figures of each product."*
+
+**There is no ASIN-level SB cost report, and this was researched rather than assumed.**
+`sbAdvertisedProduct` does not exist (the v3 compatibility table leaves "Advertised product" blank for
+SB); of the seven SB report types only `sbPurchasedProduct` carries an ASIN, it is the ASIN *bought*,
+and it has **no `cost` column**. Structurally an SB ad holds an `asins` ARRAY plus a Brand-Store page,
+so one click has no single product to bill.
+
+**But `POST /sb/v4/ads/list` declares `creative.asins` per ad group**, and the Ads tab already stores
+SB spend per `(day, ad_group_id)`. Measured on the live account: 66 ads (41 name one ASIN, 21 name
+three, 2 name seven, 1 names none), and joined against real stored spend **97.9% attributes by
+Amazon's own declaration**, 0 ad groups missing. So it is a join, not a guess:
+
+| | Rule | Why |
+|---|---|---|
+| 1-ASIN ad group | all of it to that ASIN | half the money; no division, no judgement |
+| multi-ASIN group | **by each ASIN's sales that DAY** (the owner's call) | ad group `406048686897409`: Rs 18,342 over 3 ASINs, one sold nothing — equal split bills it Rs 6,114, weighted bills it 0 |
+| names no ASIN (~2%, Brand Store) | **spread over the portfolio by sales** (the owner's call) | so Portfolio's total reconciles exactly against the Ads tab |
+
+Measured before building: **at PARENT level both split bases give identical verdicts** — Scale
+17→12, Kill 7→10, account TACOS 26.9%→38.4%, margin 37.1%→25.6%. They differ only per child ASIN
+inside an ad group. **Five products leave Scale and three more become Kill; that is the correction.**
+
+> **`netProceeds` already nets the SP spend — verified to the rupee** (`ordered − refunded − fees −
+> ad_spend == net_proceeds` on every row checked). So SB must be ADDED to ad spend AND SUBTRACTED from
+> net, in one place. Only the first fixes TACOS and leaves margin exactly as overstated, and the two
+> figures then contradict each other on one row.
+
+> **The obvious fix would have changed NOTHING on screen, and it was one keystroke from shipping.**
+> `_sum_economics` sums a bucket `ad_spend` total that `_summed_amazon_row` **never emits** — `size_row`
+> reads ad spend from the rebuilt `ads` LIST. So SB travels as an entry in that list, under
+> `SB_AD_TYPE = "SponsoredBrandsAttributed"`, a name Amazon does not use so it can never be merged
+> with one Amazon really reported. The first test for this grepped `load_snapshot` for `ad_spend +=`
+> and would have passed on the no-op; it now drives the database through `size_row`.
+
+**Storage: two columns on `economics_daily`** (`sb_spend`, `sb_basis`), not a sibling table — the
+key is identical, and one figure in two caches is what lost Rs 1,26,328 on the Ads tab. **`ad_spend`,
+`net_proceeds` and `ads_json` keep Amazon's own numbers**; SB is added on READ in `_sum_economics`,
+so the cache stays a faithful copy of what Amazon said, a new basis is a recompute rather than a
+refetch, and an allocator bug cannot touch the SP figures that reconcile to −0.0%.
+
+**The SB figure is COPIED from the Ads tab's rows; the Portfolio creates NO SB report.** The approved
+plan had it create one, and that was caught before building: SB report creation is throttled over
+HOURS across every report created that day, and the Ads tab's nightly job needs one at 08:00 IST — a
+Portfolio report at 07:30 would spend that budget first and bring back *"Sponsored Brands figures are
+stale"*, the defect that took a week to find. So `app/portfolio/sb_attribution.py` reads
+`ads_performance_daily`, and **the Ads refresh calls it from `store_sb_chunk`** for exactly the days
+just stored. An `ast` test forbids `fetch_targeting` in either Portfolio module.
+
+- **Copied at write time, never read at request time.** `ads_performance_daily` keeps 60 days,
+  `economics_daily` 90; reading SB per request would make a 90-day window SP-only for its first
+  third. Copied nightly while a day is inside the Ads tab's 60, it lives on the Portfolio row for 90.
+- **A day is attributed only when BOTH halves are held.** No SB rows may mean "throttled", not "no
+  spend"; no economics means no sales to weight by. Such a day waits for whichever job lands second —
+  nightly that is Portfolio 07:30, then Ads 08:00, which attributes.
+- **Swallowed inside the Ads refresh, never raised** — `store_sb_chunk`'s exceptions propagate out of
+  `fetch_targeting`, so a Portfolio bug would otherwise fail the Ads tab's own SB report.
+- **A failed ASIN list writes NOTHING** rather than attributing with `{}`, which would send 100% of SB
+  to the spread bucket — plausible and wrong. The last good figures stand.
+- **`save_economics_daily` CARRIES `sb_spend` across its delete-then-insert.** Found while wiring: a
+  manual re-fetch would otherwise zero SB, and if the next SB report throttled the day would stay
+  SP-only. **`save_sb_spend` resets every row of the days it writes** — a re-run corrects rather than
+  doubles, and an ASIN that stopped receiving SB loses yesterday's figure — scoped to those days, or
+  the nightly one-day run would zero the other 89.
+- **Per DAY throughout, including the spread.** A window-level spread puts one day's Brand-Store spend
+  on another day's sales; that mutation SURVIVED the first harness pass because every test used one day.
+- **ACOS is untouched** — the Ads API's own cost over its own attributed sales. **Nothing SB is
+  rendered**: a test forbids `sb_spend`, `sb_basis` and "Sponsored Brands" in the template.
+
+**Backfill once after deploy**, in a `screen`: `venv/bin/python scripts/backfill_portfolio_sb.py`. It
+attributes every economics day the Ads tab also holds, **reconciles Portfolio SB against the Ads tab's
+own SB total** (non-zero exit if they differ), and NAMES the days it could not cover — the oldest ~29,
+beyond the Ads tab's 60. `--fetch-missing` asks Amazon for those: opt-in, and **not near 08:00 IST**,
+for the throttle reason above. Left alone they age out of the 90-day window by themselves.
+
+`scripts/mutate_portfolio_sb.py` — 18 mutations, all caught. **Re-running the OLDER harnesses found a
+miss from the previous commit**: collapsing the banners put the excluded-rupees total in the source
+twice, so `mutate_portfolio_active_weight.py`'s mutation 31 survived — the test checking both halves
+lived in a file that harness did not run. Its scope now includes `test_portfolio_ui_fixes.py`.
 
 ### TACOS and ACOS are different questions, and both stay on screen
 `TACOS = ad spend ÷ TOTAL sales` — how ad-dependent is this product?

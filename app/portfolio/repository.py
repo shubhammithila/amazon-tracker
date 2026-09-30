@@ -28,7 +28,7 @@ import json
 import logging
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import delete, func, insert, select
+from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -270,12 +270,119 @@ async def save_economics_daily(
         if sku_grain
         else EconomicsDaily.seller_sku == ASIN_GRAIN
     )
+
+    # **The attributed Sponsored Brands figure is CARRIED across the rewrite, not reset.** It is not
+    # part of Amazon's economics answer — it comes from a separate SB report and a separate allocation
+    # step — so a delete-then-insert of the economics would otherwise zero it. A manual re-fetch of a
+    # day whose SB report then throttles (an hours-long window for SB report creation, measured) would
+    # leave that day silently SP-only: exactly the understatement `sb_spend` exists to remove. The SB
+    # phase overwrites the carried figure when it succeeds; when it fails, the last good one stands —
+    # the same "a failed fetch never overwrites a good figure" rule `projection_refresh` enforces.
+    carried: dict[tuple[str, str], tuple[float, str]] = {}
+    if not sku_grain:
+        existing = await db.execute(
+            select(EconomicsDaily.day, EconomicsDaily.child_asin,
+                   EconomicsDaily.sb_spend, EconomicsDaily.sb_basis)
+            .where(EconomicsDaily.day.in_(sorted(days)), grain_filter)
+        )
+        for day, asin, sb, basis in existing:
+            if _float(sb):
+                carried[(day, asin)] = (_float(sb), basis or "")
+        # Every row gets both keys, carried or zero: a bulk insert over rows with DIFFERENT key sets
+        # is split by SQLAlchemy into several statements, and relying on that is fragile.
+        for row in mapped:
+            row["sb_spend"], row["sb_basis"] = carried.get(
+                (row["day"], row["child_asin"]), (0.0, "")
+            )
+
     await db.execute(
         delete(EconomicsDaily).where(EconomicsDaily.day.in_(sorted(days)), grain_filter)
     )
     await db.execute(insert(EconomicsDaily), mapped)
     await db.commit()
     return len(mapped)
+
+
+async def load_sales_by_day_asin(
+    db: AsyncSession, days: list[str] | set[str]
+) -> dict[tuple[str, str], float]:
+    """``{(day, asin): ordered_sales}`` at ASIN grain — the weights the SB allocator divides by.
+
+    ASIN grain only, for the reason `load_snapshot` states: the MSKU rows sum to slightly less than
+    the ASIN rows and would double every weight if both were read.
+    """
+    if not days:
+        return {}
+    rows = await db.execute(
+        select(EconomicsDaily.day, EconomicsDaily.child_asin, EconomicsDaily.ordered_sales)
+        .where(EconomicsDaily.day.in_(sorted(days)), EconomicsDaily.seller_sku == ASIN_GRAIN)
+    )
+    return {(day, asin): _float(sales) for day, asin, sales in rows}
+
+
+async def save_sb_spend(
+    db: AsyncSession,
+    days: list[str] | set[str],
+    allocations: dict[tuple[str, str], tuple[float, str]],
+) -> int:
+    """Write attributed Sponsored Brands spend onto the ASIN-grain rows of ``days``.
+
+    ``allocations`` is ``{(day, asin): (amount, basis)}``. **Every row of those days is RESET first**,
+    so a second run corrects rather than doubles and an ASIN that stopped receiving SB spend does not
+    keep yesterday's figure — the idempotence `save_economics_daily`'s delete-then-insert gives the
+    economics, applied to the one column it deliberately does not own.
+
+    **Scoped to ``days``**, never the whole table: the nightly run allocates one day, and a reset
+    scoped wider would zero the SB figure on the other 89. Same two-scope rule as every DELETE here.
+
+    An allocation for a ``(day, asin)`` with no economics row cannot be written — there is no row to
+    hold it. The allocator already routes those rupees to the spread bucket (its property 4), so a
+    non-zero count here means a caller skipped that step, and it is logged rather than swallowed.
+    """
+    if not days:
+        return 0
+    day_list = sorted(days)
+    await db.execute(
+        update(EconomicsDaily)
+        .where(EconomicsDaily.day.in_(day_list), EconomicsDaily.seller_sku == ASIN_GRAIN)
+        .values(sb_spend=0, sb_basis="")
+    )
+    written = unwritten = 0
+    for (day, asin), (amount, basis) in allocations.items():
+        if day not in days:
+            continue
+        result = await db.execute(
+            update(EconomicsDaily)
+            .where(EconomicsDaily.day == day, EconomicsDaily.child_asin == asin,
+                   EconomicsDaily.seller_sku == ASIN_GRAIN)
+            .values(sb_spend=round(float(amount), 2), sb_basis=basis)
+        )
+        if result.rowcount:
+            written += 1
+        else:
+            unwritten += 1
+    await db.commit()
+    if unwritten:
+        logger.warning(
+            "portfolio: %d SB allocation(s) had no economics row to land on and were NOT stored",
+            unwritten,
+        )
+    return written
+
+
+#: The read-time ad-type name Sponsored Brands spend travels under. **Deliberately NOT a name Amazon
+#: uses** (Amazon's is `SponsoredProductFee` for SP, and it sends nothing for SB), so this entry can
+#: never be merged with — or mistaken for — something Amazon actually reported.
+SB_AD_TYPE = "SponsoredBrandsAttributed"
+
+
+def _with_sb(agg: dict) -> dict:
+    """The ad-type breakdown with the attributed SB spend added, when there is any."""
+    types = dict(agg.get("ad_types") or {})
+    sb = round(float(agg.get("sb_spend") or 0.0), 2)
+    if sb:
+        types[SB_AD_TYPE] = types.get(SB_AD_TYPE, 0.0) + sb
+    return types
 
 
 def _summed_amazon_row(key: tuple[str, str], agg: dict, window: tuple[str, str]) -> dict:
@@ -307,7 +414,7 @@ def _summed_amazon_row(key: tuple[str, str], agg: dict, window: tuple[str, str])
         ],
         "ads": [
             {"adTypeName": name, "charge": {"totalAmount": {"amount": round(amount, 2)}}}
-            for name, amount in sorted(agg["ad_types"].items())
+            for name, amount in sorted(_with_sb(agg).items())
         ],
         "netProceeds": {"total": {"amount": round(agg["net_proceeds"], 2)}},
     }
@@ -316,7 +423,36 @@ def _summed_amazon_row(key: tuple[str, str], agg: dict, window: tuple[str, str])
 async def _sum_economics(
     db: AsyncSession, window: tuple[str, str], *, sku_grain: bool
 ) -> list[dict]:
-    """Sum the stored days of a range into one row per product, in Amazon's shape."""
+    """Sum the stored days of a range into one row per product, in Amazon's shape.
+
+    **Sponsored Brands spend is folded in HERE, and this is the only place it happens.** The stored
+    rows keep Amazon's own `ad_spend` and `net_proceeds` untouched — see `EconomicsDaily.sb_spend`
+    for why the cache stays faithful to what Amazon actually said — so the two are combined on read:
+
+        ads          += [SB_AD_TYPE: sb_spend]   so TACOS, the KPI tile and every row move together
+        net_proceeds -= sb_spend                 because netProceeds ALREADY nets the SP ad spend
+
+    **It travels as an entry in the rebuilt `ads` list, because that list is the ONLY channel into
+    `size_row`** — which sums `econ["ads"]` to get `ad_spend`. The bucket's own `ad_spend` total is
+    summed here and never emitted, so adding SB to it alone would have changed no figure anywhere
+    while reading exactly like the fix. Found by reading `_summed_amazon_row` before wiring it up.
+
+    **That second line is the one to protect.** Verified to the rupee on production rows:
+    `ordered - refunded - fees - ad_spend == net_proceeds`. So adding SB to the numerator of TACOS
+    without also taking it out of net would leave margin exactly as overstated as it was before
+    while making TACOS correct — and the two figures would then contradict each other on the same
+    row, which is worse than the honest-but-incomplete state this replaced.
+
+    Folding it in this one function rather than in `size_row` is what keeps everything consistent:
+    both grains pass through here, so the parent rows, the SKU-level channel split, `category_totals`
+    and `build_portfolio_xlsx` all inherit the same arithmetic, and `_sum_sizes` needs no change at
+    all because a parent is the sum of its sizes by construction.
+
+    **The STORED `ads_json` is never given a Sponsored Brands entry** — it is Amazon's verbatim
+    breakdown, and writing one there would make the cache contain something Amazon never said. The
+    entry exists only in this read-time shape, under `SB_AD_TYPE`, a name Amazon does not use, so it
+    can never be mistaken for, or merged with, an ad type Amazon really reported.
+    """
     grain_filter = (
         EconomicsDaily.seller_sku != ASIN_GRAIN
         if sku_grain
@@ -339,7 +475,7 @@ async def _sum_economics(
             "parent_asin": row.parent_asin,
             "ordered_sales": 0.0, "refunded_sales": 0.0, "ad_spend": 0.0, "net_proceeds": 0.0,
             "units_ordered": 0, "units_refunded": 0, "net_units": 0,
-            "fees": {}, "ad_types": {},
+            "fees": {}, "ad_types": {}, "sb_spend": 0.0,
         })
         # First non-empty wins: the parent is a property of the product, not of the day, and a day
         # Amazon reported without one must not blank it.
@@ -349,6 +485,12 @@ async def _sum_economics(
         bucket["refunded_sales"] += _float(row.refunded_sales)
         bucket["ad_spend"] += _float(row.ad_spend)
         bucket["net_proceeds"] += _float(row.net_proceeds)
+        # Sponsored Brands, attributed per day — see `EconomicsDaily.sb_spend`. Subtracted from net
+        # HERE, per row, because Amazon's netProceeds already nets the SP spend it reports and knows
+        # nothing of SB; the matching addition to ad spend happens in `_summed_amazon_row`.
+        sb = _float(getattr(row, "sb_spend", 0))
+        bucket["sb_spend"] += sb
+        bucket["net_proceeds"] -= sb
         bucket["units_ordered"] += int(row.units_ordered or 0)
         bucket["units_refunded"] += int(row.units_refunded or 0)
         bucket["net_units"] += int(row.net_units or 0)

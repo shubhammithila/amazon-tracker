@@ -370,6 +370,12 @@ TESTS = [
     "tests/test_portfolio_groups.py",
     "tests/test_portfolio_screen.py",
     "tests/test_portfolio_api.py",
+    # Added when mutation 31 SURVIVED after the banners collapsed onto one line: the excluded-rupees
+    # total then appears TWICE in the note (the collapsed line and the full text), so the older
+    # screen test is satisfied by whichever copy remains. The test that checks BOTH halves lives in
+    # the UI-fixes file, which this harness did not run. A harness scoped narrower than the tests
+    # that guard its targets reports a gap that does not exist — or, worse, hides one that does.
+    "tests/test_portfolio_ui_fixes.py",
 ]
 
 

@@ -883,14 +883,41 @@ class EconomicsDaily(Base):
     parent_asin = Column(String(10))
     ordered_sales = Column(Numeric(12, 2), default=0)
     refunded_sales = Column(Numeric(12, 2), default=0)
+    #: Amazon's own `SponsoredProductFee`, exactly as reported — **Sponsored Products ONLY**. See
+    #: `sb_spend` below. Note `net_proceeds` already has THIS figure deducted, verified to the rupee
+    #: on real rows: `ordered - refunded - fees - ad_spend == net_proceeds`.
     ad_spend = Column(Numeric(12, 2), default=0)
     net_proceeds = Column(Numeric(12, 2), default=0)
+    #: Sponsored Brands spend attributed to this ASIN for this day, and **not part of Amazon's
+    #: answer**: the economics feed returns only `SponsoredProductFee`, measured across all 9,074
+    #: rows here that carry ad spend. That silently hid 28% of real ad spend from every figure on
+    #: the Portfolio tab — understating TACOS and overstating margin — until this column existed.
+    #:
+    #: Derived from Amazon's OWN declaration rather than guessed: `/sb/v4/ads/list` reports
+    #: `creative.asins` per ad group, which joins to the SB spend already stored per ad group and
+    #: covers 97.9% of it. A multi-ASIN ad group divides by each ASIN's sales share that day; the
+    #: brand-level remainder is spread across the portfolio by sales. See `logic.allocate_sb_spend`.
+    #:
+    #: **Stored BESIDE `ad_spend` rather than added into it**, so these rows stay a faithful cache
+    #: of what Amazon said: re-deciding the attribution basis is then a recompute rather than a
+    #: refetch, and a bug in the allocator cannot corrupt the SP figures that reconcile against the
+    #: Advertising API to -0.0%. The two are summed on READ, in `repository.load_snapshot` — the one
+    #: place that knows about both, so they cannot disagree.
+    sb_spend = Column(Numeric(12, 2), nullable=False, default=0, server_default="0")
+    #: How `sb_spend` was derived: `"declared"` (Amazon named this ASIN on the ad group), `"spread"`
+    #: (brand-level spend with no ASIN to attribute it to), or `""` (untouched). Kept so the two can
+    #: be told apart later without re-running the allocator. **Never rendered** — the instruction was
+    #: "no separate labelling of it in the portfolio tab. just add to the main ad figures".
+    sb_basis = Column(String(12), nullable=False, default="", server_default="")
     units_ordered = Column(Integer, default=0)
     units_refunded = Column(Integer, default=0)
     net_units = Column(Integer, default=0)
     #: {feeTypeName: amount} as JSON text, for that day. Summing a range merges these BY NAME —
     #: Amazon returned 8 distinct fee types here and adds more, so position would drift.
     fees_json = Column(Text)
+    #: {adTypeName: amount} as Amazon reported it, VERBATIM. `sb_spend` is deliberately NOT written
+    #: in here: this is a cache of Amazon's answer, and a synthetic `SponsoredBrandsFee` entry would
+    #: make it contain something Amazon never said.
     ads_json = Column(Text)
     fetched_at = Column(DateTime, default=datetime.utcnow)
 

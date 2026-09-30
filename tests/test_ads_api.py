@@ -207,10 +207,14 @@ async def test_today_is_allowed_but_the_future_is_not(auth_client, db):
     from datetime import date, timedelta
     today = date.today().isoformat()
     tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    # RELATIVE to today. This was the literal "2026-08-01", which began failing on 30 Sep 2026 —
+    # the day that start made a 61-day window, one over the 60-day cap — for a reason unrelated to
+    # what the test is about. A fixture date must not age into a different rule.
+    start = (date.today() - timedelta(days=20)).isoformat()
 
-    assert (await auth_client.get(f"/ads?start=2026-08-01&end={today}")).status_code == 200
+    assert (await auth_client.get(f"/ads?start={start}&end={today}")).status_code == 200
 
-    future = await auth_client.get(f"/ads?start=2026-08-01&end={tomorrow}")
+    future = await auth_client.get(f"/ads?start={start}&end={tomorrow}")
     assert future.status_code == 400
     assert "future" in future.json()["error"].lower()
 

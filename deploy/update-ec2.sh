@@ -366,8 +366,10 @@ def indexes(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "sb_spend" in cols("economics_daily"):
+    print("b91d4a7c3e26")                           # head: SB spend attributed per ASIN per day
 elif "economics_daily" in tables:
-    print("e7b3f0c92a41")                           # head: portfolio economics + ads per DAY
+    print("e7b3f0c92a41")                           # portfolio economics + ads per DAY
 elif "over_pack_approved_units" in cols("shipment_plan_items"):
     print("c5e2a91f47b3")                           # owner-approved over-pack
 elif "from_stock" in cols("shipment_packing_entries"):

@@ -572,3 +572,122 @@ async def _one_report(
 
     logger.info("portfolio: ad report %s -> %d raw row(s)", report_id, len(raw_rows))
     return raw_rows
+
+
+# ── Sponsored Brands: which ASINs does each ad group advertise? ────────────────────────────────
+#
+# **Amazon has no ASIN-level SB COST report, and this was researched rather than assumed.**
+# `sbAdvertisedProduct` does not exist — the report-type compatibility table ticks "Advertised
+# product" for Sponsored Products and Display and leaves it BLANK for Sponsored Brands, and
+# `advertisedAsin`/`advertisedSku` are documented only for `sp*` types. Of the seven SB report types
+# exactly one carries an ASIN at all (`sbPurchasedProduct.purchasedAsin`), that is the ASIN BOUGHT
+# rather than the one advertised, and **it has no `cost` column**. Probed live anyway: 429 Throttled,
+# which this module's docstring already explains is an hours-long window for SB report creation.
+#
+# The reason is structural rather than an oversight: an SB ad holds an `asins` ARRAY plus a
+# Brand-Store landing page, so one click incurs one cost with no single advertised ASIN to bill.
+#
+# **But Amazon WILL tell us what each ad group advertises**, which is what makes attribution a join
+# against Amazon's own declaration instead of a guess. Measured on the live account: 66 SB ads, each
+# with `creative.asins`, and joined against the SB spend already stored per ad group that covers
+# **97.9%** of it — 41 ads name one ASIN, 21 name three, 2 name seven, and 1 names none.
+
+#: POST, and it needs its OWN vendor media type. Measured, and the alternatives are not subtle:
+#: `/sb/ads/list` is a 404, and `/sb/v4/ads/list` with no media type is also a 404 — so unlike
+#: `/sb/targets/list` (which requires NO type at all, per `spapi_ads._media`), this one requires
+#: exactly this one. "No type", "this type" and "that type" are three distinct cases here.
+SB_ADS_PATH = "/sb/v4/ads/list"
+SB_ADS_MEDIA = "application/vnd.sbadresource.v4+json"
+
+#: Rows per page. SB list endpoints REFUSE a larger value rather than clamping it — Amazon names
+#: the limit in the error (`upperLimit: "100"`), which is why this is a measured constant and not a
+#: guess. 66 ads fit one page today; the paging below exists so a growing account cannot silently
+#: truncate.
+SB_ADS_PAGE_SIZE = 100
+
+#: Pages before giving up. A CEILING, not an expectation — and truncation is REPORTED rather than
+#: silent, because the Orders tab shipped a 4-page cap that truncated on every run while claiming
+#: orders were missing from the sheet.
+SB_ADS_MAX_PAGES = 50
+
+
+async def fetch_sb_ad_asins(client: httpx.AsyncClient) -> dict[str, list[str]]:
+    """``{ad_group_id: [asin, ...]}`` — Amazon's own declaration of what each SB ad group advertises.
+
+    This is the join key that makes Sponsored Brands spend attributable at all. `ads_performance_daily`
+    already stores SB spend per `(day, ad_group_id)`, and `logic.allocate_sb_spend` turns the two into
+    a per-ASIN figure.
+
+    **An ad group naming NO ASINs is returned as an empty list, not omitted.** The distinction is
+    load-bearing downstream: an empty list means "Amazon says this ad group advertises no specific
+    product" (a Brand Store ad, whose spend goes to the spread bucket), while a MISSING key means "we
+    never heard about this ad group", which is a different and more suspicious thing. Collapsing them
+    would hide a fetch that silently returned less than it should.
+
+    Measured: 0 of the 39 ad groups with spend were missing from this endpoint, and the one that
+    names no ASINs carries 2.1% of the spend.
+
+    Raises `AdsNotConfigured` with no credentials, and `AdsError` on any HTTP failure — **never an
+    empty dict to mean failure**, because "no SB ads exist" and "we could not ask" must not attribute
+    spend the same way. An empty dict would silently send 100% of SB spend to the spread bucket.
+    """
+    settings = get_settings()
+    if not settings.ads_configured:
+        raise AdsNotConfigured()
+
+    by_ad_group: dict[str, list[str]] = {}
+    next_token = None
+
+    for page in range(SB_ADS_MAX_PAGES):
+        body: dict = {"maxResults": SB_ADS_PAGE_SIZE}
+        if next_token:
+            body["nextToken"] = next_token
+
+        # Headers rebuilt per page for the reason `poll_get` documents at length: a long-running
+        # job can outlive its access token, and `_access_token` returns the cached one until it is
+        # genuinely near expiry, so this is cheap rather than a stampede.
+        token = await _access_token(client)
+        head = {**_headers(token), "Content-Type": SB_ADS_MEDIA, "Accept": SB_ADS_MEDIA}
+
+        response = await client.post(settings.ads_endpoint + SB_ADS_PATH, headers=head, json=body)
+        if response.status_code >= 400:
+            raise AdsError(
+                f"Listing Sponsored Brands ads failed on page {page + 1} "
+                f"(HTTP {response.status_code}). {response.text[:200]}",
+                status=response.status_code,
+            )
+
+        payload = response.json()
+        ads = payload.get("ads") or []
+        for ad in ads:
+            ad_group_id = str(ad.get("adGroupId") or "").strip()
+            if not ad_group_id:
+                continue
+            asins = [
+                str(asin).strip().upper()
+                for asin in ((ad.get("creative") or {}).get("asins") or [])
+                if str(asin or "").strip()
+            ]
+            # An ad group can hold several ads; union them rather than letting the last one win.
+            # Same reasoning as `parse_stock_csv` summing per ASIN instead of assigning: assignment
+            # is what made a whole warehouse read as empty.
+            existing = by_ad_group.setdefault(ad_group_id, [])
+            for asin in asins:
+                if asin not in existing:
+                    existing.append(asin)
+
+        next_token = payload.get("nextToken")
+        if not next_token:
+            break
+    else:
+        logger.warning(
+            "portfolio: stopped listing Sponsored Brands ads at the %d-page ceiling; "
+            "%d ad group(s) so far and Amazon offered more",
+            SB_ADS_MAX_PAGES, len(by_ad_group),
+        )
+
+    logger.info(
+        "portfolio: %d Sponsored Brands ad group(s), %d naming at least one ASIN",
+        len(by_ad_group), sum(1 for v in by_ad_group.values() if v),
+    )
+    return by_ad_group

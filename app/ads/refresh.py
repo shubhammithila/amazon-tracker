@@ -135,6 +135,32 @@ def default_window(days: int = 7, *, today: date | None = None) -> tuple[str, st
     return start.isoformat(), end.isoformat()
 
 
+async def _attribute_sb_to_portfolio(db_factory, start: str, end: str) -> None:
+    """Copy the SB spend just stored onto the Portfolio tab's rows, attributed per ASIN.
+
+    **This is the nightly path for Portfolio's Sponsored Brands figures**, and it lives here rather
+    than in the Portfolio refresh on purpose: that refresh creating its own `sbTargeting` report
+    would spend the hours-long SB throttle budget this job needs 30 minutes later. See
+    `app/portfolio/sb_attribution.py`.
+
+    **Swallowed and logged, never raised.** It runs inside `store_sb_chunk`, whose exceptions
+    propagate out of `fetch_targeting` — so a bug or an Amazon hiccup here would otherwise fail the
+    Ads tab's own SB report, which is the report this app spent a week getting to succeed. The
+    Portfolio rows keep their last good figures when it fails.
+    """
+    from datetime import date, timedelta
+
+    from app.portfolio import sb_attribution
+
+    first, last = date.fromisoformat(start), date.fromisoformat(end)
+    days = [(first + timedelta(days=i)).isoformat() for i in range((last - first).days + 1)]
+    try:
+        async with db_factory() as db:
+            await sb_attribution.attribute_days(db, days)
+    except Exception:  # noqa: BLE001 - must never fail the Ads tab's own refresh
+        logger.warning("ads refresh: attributing SB spend to the Portfolio failed", exc_info=True)
+
+
 async def run(
     *,
     days: int = 7,
@@ -306,6 +332,7 @@ async def run(
                 "ads refresh: stored %d Sponsored Brands daily row(s) for %s..%s",
                 stored, chunk_start, chunk_end,
             )
+            await _attribute_sb_to_portfolio(db_factory, chunk_start, chunk_end)
 
         try:
             await reports.fetch_targeting(

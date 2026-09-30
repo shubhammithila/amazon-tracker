@@ -18,7 +18,7 @@ from datetime import date, datetime, timedelta
 
 from app import ist
 from app.database import async_session
-from app.portfolio import ads, economics, repository
+from app.portfolio import ads, economics, repository, sb_attribution
 from app.shipment.spapi import SpApiError, SpApiNotConfigured
 
 #: The most days one incremental run will fetch. Normally there is exactly ONE missing day, so this
@@ -58,6 +58,8 @@ def reset_state() -> None:
         #: An ads failure that did NOT cost the margins. Reported separately from `error` so the
         #: screen can say "margins are current, ACOS is stale" rather than "the refresh failed".
         "ads_error": None,
+        #: Sponsored Brands attribution failed. Like `ads_error`, it does not cost the margins.
+        "sb_error": None,
         "refused": False,
     })
 
@@ -217,10 +219,30 @@ async def run(
             STATE["ads_error"] = str(exc)
             logger.warning("portfolio refresh: the ad report failed: %s", exc)
 
+        # ── Sponsored Brands, copied from the Ads tab's own stored rows ──
+        #
+        # NOT a new Amazon report: see `sb_attribution`. The nightly attribution happens when the
+        # Ads job stores SB at 08:00; this covers a manual refresh of days SB is already held for.
+        # Isolated like the ads phase — the margins above are committed and must not be lost to it.
+        try:
+            first = date.fromisoformat(window_start)
+            last = date.fromisoformat(window_end)
+            async with db_factory() as db:
+                await sb_attribution.attribute_days(
+                    db,
+                    [(first + timedelta(days=i)).isoformat()
+                     for i in range((last - first).days + 1)],
+                )
+        except Exception as exc:                # noqa: BLE001 - never cost the margins
+            STATE["sb_error"] = f"Sponsored Brands spend could not be attributed: {exc}"
+            logger.warning("portfolio refresh: SB attribution failed: %s", exc)
+
         async with db_factory() as db:
             await repository.record_refresh(
                 db, window_start=window_start, window_end=window_end,
-                rows_stored=stored, error=STATE.get("ads_error"), started_at=started,
+                rows_stored=stored,
+                error=STATE.get("ads_error") or STATE.get("sb_error"),
+                started_at=started,
             )
 
         STATE.update({"phase": "done", "percent": 100})
