@@ -87,3 +87,119 @@ def test_the_normaliser_is_idempotent():
     layout = {"order": ["rating", "gone", "sales"], "hidden": ["sales", "decision"]}
     once = C.normalise_column_layout(layout)
     assert C.normalise_column_layout(once) == once
+
+
+# ── Reading and writing the preference, through the real routes ────────────────────────────
+
+import json
+
+from httpx import ASGITransport, AsyncClient
+
+from app.main import app
+from app.routers.auth import SESSION_COOKIE, serializer
+
+
+async def _named_client(db, username="owner"):
+    from app import users as users_repo
+    await users_repo.create(db, username=username, full_name=username, is_admin=True,
+                            created_by="test")
+    transport = ASGITransport(app=app)
+    client = AsyncClient(transport=transport, base_url="http://test", follow_redirects=False)
+    client.cookies.set(SESSION_COOKIE, serializer.dumps(
+        {"authenticated": True, "username": username, "role": "admin"}))
+    return client
+
+
+async def _stored(db, username):
+    from sqlalchemy import select
+    from app.models import User
+    db.expire_all()
+    raw = (await db.execute(select(User.preferences_json).where(User.username == username))).scalar()
+    return json.loads(raw) if raw else None
+
+
+async def test_GET_serves_the_vocabulary_and_the_default_for_a_new_login(db):
+    async with await _named_client(db) as client:
+        body = (await client.get("/portfolio")).json()
+    assert [c["id"] for c in body["columns"]] == ["product"] + ALL
+    assert body["column_layout"] == C.DEFAULT_LAYOUT
+    assert body["column_scope"] == "account"
+
+
+async def test_a_saved_layout_comes_back_normalised(db):
+    async with await _named_client(db) as client:
+        # The page always sends the FULL order; a stale id and a protected hide are what to clean.
+        order = ["rating"] + [c for c in ALL if c != "rating"] + ["gone"]
+        r = await client.put("/portfolio/column-prefs",
+                             json={"order": order, "hidden": ["sales", "acos"]})
+        assert r.status_code == 200
+        saved = r.json()["column_layout"]
+        assert saved["order"][0] == "rating" and "gone" not in saved["order"]
+        assert saved["hidden"] == ["acos"]
+        assert (await client.get("/portfolio")).json()["column_layout"] == saved
+
+
+async def test_PUT_writes_ONLY_the_session_account_whatever_the_body_says(db):
+    from app import users as users_repo
+    await users_repo.create(db, username="victim", full_name="v", is_admin=False,
+                            created_by="test")
+    async with await _named_client(db, "owner") as client:
+        await client.put("/portfolio/column-prefs",
+                         json={"username": "victim", "order": ALL, "hidden": ["acos"]})
+    assert await _stored(db, "victim") is None
+    assert (await _stored(db, "owner"))[C.PREFERENCE_KEY]["hidden"] == ["acos"]
+
+
+async def test_saving_MERGES_so_another_screens_preference_survives(db):
+    from sqlalchemy import update
+    from app.models import User
+    async with await _named_client(db) as client:
+        await db.execute(update(User).where(User.username == "owner")
+                         .values(preferences_json=json.dumps({"orders_tab": {"x": 1}})))
+        await db.commit()
+        await client.put("/portfolio/column-prefs", json={"order": ALL, "hidden": []})
+    stored = await _stored(db, "owner")
+    assert stored["orders_tab"] == {"x": 1}
+    assert stored[C.PREFERENCE_KEY] == {"order": ALL, "hidden": []}
+
+
+async def test_a_shared_password_session_is_told_to_use_the_browser(auth_client):
+    body = (await auth_client.get("/portfolio")).json()
+    assert body["column_scope"] == "browser"
+    assert body["column_layout"] == C.DEFAULT_LAYOUT
+    r = await auth_client.put("/portfolio/column-prefs", json={"order": ALL, "hidden": []})
+    assert r.status_code == 409
+
+
+async def test_a_non_JSON_body_is_a_400(db):
+    async with await _named_client(db) as client:
+        r = await client.put("/portfolio/column-prefs", content=b"not json",
+                             headers={"content-type": "application/json"})
+    assert r.status_code == 400
+
+
+async def test_a_corrupt_stored_value_still_renders_the_default(db):
+    from sqlalchemy import update
+    from app.models import User
+    async with await _named_client(db) as client:
+        await db.execute(update(User).where(User.username == "owner")
+                         .values(preferences_json="{not json"))
+        await db.commit()
+        assert (await client.get("/portfolio")).json()["column_layout"] == C.DEFAULT_LAYOUT
+
+
+async def test_the_EXCEL_ignores_the_saved_layout(db):
+    """The file leaves the app; a sheet missing TACOS because it was hidden on screen weeks ago is
+    a misleading document. Header row identical with and without a layout."""
+    async with await _named_client(db) as client:
+        before = (await client.get("/portfolio/download.xlsx")).content
+        await client.put("/portfolio/column-prefs",
+                         json={"order": list(reversed(ALL)), "hidden": ["tacos", "acos"]})
+        after = (await client.get("/portfolio/download.xlsx")).content
+    assert before == after or _xlsx_rows(before) == _xlsx_rows(after)
+
+
+def _xlsx_rows(content):
+    import io
+    from openpyxl import load_workbook
+    return [tuple(r) for r in load_workbook(io.BytesIO(content)).active.iter_rows(values_only=True)]

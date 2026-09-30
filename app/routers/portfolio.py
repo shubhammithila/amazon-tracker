@@ -22,10 +22,10 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import permissions
+from app import permissions, users as users_repo
 from app.database import get_db
-from app.portfolio import economics, logic, refresh, repository
-from app.routers.auth import require_area
+from app.portfolio import columns, economics, logic, refresh, repository
+from app.routers.auth import get_current_username, require_area
 from app.shipment import catalogue, documents
 # The category classification lives on the SHIPMENT side, keyed on the product name. Imported
 # rather than duplicated: the owner classifies a product once and both tabs must agree, and
@@ -192,6 +192,25 @@ def _requested_window(start: str | None, end: str | None, days: int | None):
     return None, None            # neither given: use whatever is stored
 
 
+async def _column_payload(request: Request, db: AsyncSession) -> dict:
+    """The column vocabulary, this person's normalised layout, and WHERE it is saved.
+
+    `"account"` for a named login, `"browser"` for a shared-password session — which has no user
+    row to save against, so the page keeps its layout in localStorage instead. Normalised on READ
+    as well as write, so a stored value that went bad can never break the table.
+    """
+    username = get_current_username(request)
+    saved = (await users_repo.load_preference(db, username, columns.PREFERENCE_KEY)
+             if username else None)
+    return {
+        "columns": columns.COLUMNS,
+        "column_layout": columns.normalise_column_layout(
+            saved if saved is not None else columns.DEFAULT_LAYOUT
+        ),
+        "column_scope": "account" if username else "browser",
+    }
+
+
 @router.get("")
 async def get_portfolio(
     request: Request,
@@ -226,6 +245,7 @@ async def get_portfolio(
     data = await _dashboard(db, window, include_inactive=include_inactive)
     return JSONResponse({
         **data,
+        **(await _column_payload(request, db)),
         "refresh": refresh.status(),
         "window_days": economics.WINDOW_DAYS,
         "max_window_days": economics.MAX_WINDOW_DAYS,
@@ -234,6 +254,42 @@ async def get_portfolio(
         # present the number without the caveat.
         "pre_cogs": True,
     })
+
+
+@router.put("/column-prefs")
+async def put_column_prefs(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    grant=Depends(require_area(permissions.PORTFOLIO)),
+):
+    """Save the caller's column layout. `{"order": [...], "hidden": [...]}`.
+
+    **The account is the SESSION's, never the body's** — a `username` in the body is ignored, so a
+    person can only ever write their own layout. Normalised before storing, so what is saved is
+    exactly what will be read back.
+
+    A shared-password session has no row to save against: 409 rather than a silent no-op, so a
+    client that forgot `column_scope` is a visible bug rather than a layout that never sticks.
+    """
+    username = get_current_username(request)
+    if not username:
+        return JSONResponse(
+            {"error": "Shared-password sessions keep their column layout in this browser."},
+            status_code=409,
+        )
+    try:
+        body = await request.json()
+    except Exception:                       # noqa: BLE001 - a malformed body is a 400
+        return JSONResponse({"error": "Expected a JSON body."}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Expected a JSON object."}, status_code=400)
+
+    layout = columns.normalise_column_layout(
+        {"order": body.get("order"), "hidden": body.get("hidden", [])}
+    )
+    if not await users_repo.save_preference(db, username, columns.PREFERENCE_KEY, layout):
+        return JSONResponse({"error": "Your account was not found."}, status_code=404)
+    return JSONResponse({"column_layout": layout})
 
 
 @router.post("/refresh")

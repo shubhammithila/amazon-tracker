@@ -17,6 +17,7 @@ someone adds a second endpoint:
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 
@@ -325,3 +326,42 @@ async def load_login_events(db: AsyncSession, *, limit: int = 200) -> list[dict]
         }
         for row in result.scalars()
     ]
+
+
+async def load_preference(db: AsyncSession, username: str, key: str):
+    """One namespaced value from `users.preferences_json`, or None.
+
+    **Never raises on a corrupt value.** A hand-edited or truncated JSON cell returns None, and the
+    caller normalises None to its default — a display preference must not be able to 500 a page.
+    """
+    raw = (await db.execute(
+        select(User.preferences_json).where(User.username == username)
+    )).scalar()
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return data.get(key) if isinstance(data, dict) else None
+
+
+async def save_preference(db: AsyncSession, username: str, key: str, value) -> bool:
+    """Set ONE namespaced value, MERGED into the existing JSON so another screen's key survives.
+
+    Returns False when no such user exists. `username` must come from the session — this function
+    trusts its caller, so the route is what guarantees a person can only write themselves.
+    """
+    user = (await db.execute(select(User).where(User.username == username))).scalar_one_or_none()
+    if user is None:
+        return False
+    try:
+        data = json.loads(user.preferences_json) if user.preferences_json else {}
+    except (TypeError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data[key] = value
+    user.preferences_json = json.dumps(data)
+    await db.commit()
+    return True
