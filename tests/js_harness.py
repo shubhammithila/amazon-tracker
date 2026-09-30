@@ -22,8 +22,9 @@ FUNCTIONS = [
     "esc", "stars", "money", "pct", "kg", "acosCell", "verdictClass", "groupFlag", "sizeName",
     "normaliseLayout", "visibleColumns", "cell", "tableMinWidth", "headerHtml", "dataCells",
     "detailCells", "computeTotals", "totalsRow", "sizeRowHtml",
-    "columnsPanelHtml", "applyLayout", "moveColumn", "setHidden",
 ]
+#: The Columns-panel logic, opted into by the panel tests (`run_portfolio_js(..., panel=True)`).
+PANEL_FUNCTIONS = ["columnsPanelHtml", "applyLayout", "moveColumn", "setHidden"]
 CONSTS = ["n", "ico", "COLUMN_DEFS", "FALLBACK_ORDER"]
 
 #: Statements that end a top-level function when a script is sliced by `function NAME(`.
@@ -84,7 +85,7 @@ def _const(script: str, name: str) -> str:
     raise AssertionError(f"could not extract const {name}")
 
 
-def run_portfolio_js(body: str):
+def run_portfolio_js(body: str, *, panel: bool = False):
     node = shutil.which("node")
     if not node:
         pytest.skip("node is not installed; the render tests need it")
@@ -95,7 +96,7 @@ def run_portfolio_js(body: str):
         "function emit(v){ console.log(JSON.stringify(v)); }",
     ]
     parts += [_const(script, name) for name in CONSTS]
-    parts += [_function(script, name) for name in FUNCTIONS]
+    parts += [_function(script, name) for name in FUNCTIONS + (PANEL_FUNCTIONS if panel else [])]
     parts.append(body)
     path = os.path.join(tempfile.gettempdir(), "pf_render_test.js")
     Path(path).write_text("\n".join(parts), encoding="utf-8")
