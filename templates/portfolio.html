@@ -283,6 +283,24 @@ tfoot tr.totals td{background:var(--surface2);font-weight:700;font-size:13px;col
    appears is a new element already in its final state and has nothing to animate from.
    Declaring a transition anyway would be a comment that lies. */
 #cols-btn .ico{transform:rotate(90deg)}
+.cols-wrap{position:relative;display:inline-block}
+.cols-panel{position:absolute;right:0;top:calc(100% + 4px);z-index:20;min-width:300px;
+  background:var(--surface);border:1px solid var(--border-strong);border-radius:8px;
+  box-shadow:var(--shadow);padding:6px 0}
+.cols-head{display:flex;justify-content:space-between;align-items:center;padding:4px 12px 8px;
+  font-weight:600;border-bottom:1px solid var(--border)}
+.cols-reset{background:none;border:none;font:inherit;font-weight:400;font-size:12px;cursor:pointer;
+  color:var(--accent);padding:0}
+.cols-list{list-style:none;margin:0;padding:4px 0}
+.cols-list li{display:flex;align-items:center;gap:8px;padding:3px 12px}
+.cols-list li.dragging{opacity:.4}
+.cols-list .grip{cursor:grab;color:var(--text-dim);user-select:none;width:10px}
+.cols-list label{flex:1;display:flex;gap:6px;align-items:center;white-space:nowrap}
+.cols-list .lock{color:var(--text-dim);font-size:11px;white-space:nowrap}
+.cols-list button{background:none;border:1px solid var(--border);border-radius:4px;
+  padding:0 7px;cursor:pointer;color:var(--text);line-height:1.6}
+.cols-list button:disabled{opacity:.35;cursor:default}
+.cols-note{padding:4px 12px;font-size:11.5px;color:var(--red)}
 .ico-r90{transform:rotate(90deg)}
 .ico-r270{transform:rotate(270deg)}
 
@@ -407,8 +425,13 @@ th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
               title="One row per pack size, and the only view with the Easy Ship / FBA split">SKUs</button>
     </div>
     <button class="btn-outline" id="filter-btn">+ Filter</button>
-    <!-- Choose, hide and reorder columns (the panel is wired in the next step). -->
-    <button class="btn-outline" id="cols-btn">Columns {{ icons.icon("chevron") }}</button>
+    <!-- Choose, hide and reorder columns. Saved with the login (or this browser for a shared
+         password). Sales, Ad spend, Units and Weight can move but not hide; Product is pinned. -->
+    <span class="cols-wrap">
+      <button class="btn-outline" id="cols-btn" aria-expanded="false"
+              aria-controls="cols-panel">Columns {{ icons.icon("chevron") }}</button>
+      <div class="cols-panel" id="cols-panel" hidden></div>
+    </span>
     <!-- Products marked Active = N in the MRP sheet. Re-FETCHES rather than filtering client-side,
          so the server stays the only place that decides what the flag excludes. -->
     <button class="btn-outline" id="inactive-btn"></button>
@@ -591,6 +614,92 @@ function applyLayoutFrom(d){
   }
 }
 
+/* ── The Columns ▾ panel ─────────────────────────────────────────────────────────────────────
+   Every change applies INSTANTLY and saves in the background — no Save button. ↑ ↓ exist because
+   dragging inside a small panel is fiddly on a phone or the warehouse tablet; drag is for the mouse.
+   Header drag was rejected: a heading click already SORTS, so every click would be ambiguous. */
+function columnsPanelHtml(){
+  const vocab = data.columns || [];
+  const locked = new Set(vocab.filter(c => c.locked).map(c => c.id));
+  const label = id => (vocab.find(c => c.id === id) || {}).label || id;
+  const last = layout.order.length - 1;
+  return `<div class="cols-head"><span>Columns</span>
+      <button type="button" class="cols-reset" data-cols-reset>Reset to default</button></div>
+    <ul class="cols-list">
+      <li><span class="grip" aria-hidden="true"></span><label>${esc(label("product"))}</label>
+        <span class="lock">always first</span></li>
+      ${layout.order.map((id, i) => `
+      <li draggable="true" data-col-row="${id}">
+        <span class="grip" aria-hidden="true">⠿</span>
+        <label><input type="checkbox" data-col-toggle="${id}"${
+          layout.hidden.includes(id) ? "" : " checked"}${locked.has(id) ? " disabled" : ""}>
+          ${esc(label(id))}</label>
+        ${locked.has(id) ? '<span class="lock">always shown</span>' : ""}
+        <button type="button" data-col-move="${id}" data-delta="-1"
+          aria-label="Move ${esc(label(id))} left"${i === 0 ? " disabled" : ""}>↑</button>
+        <button type="button" data-col-move="${id}" data-delta="1"
+          aria-label="Move ${esc(label(id))} right"${i === last ? " disabled" : ""}>↓</button>
+      </li>`).join("")}
+    </ul>
+    <div class="cols-note" id="cols-note" hidden></div>`;
+}
+
+/* The one place a layout changes: normalise, apply the sort rule, re-render, save. A change the
+   normaliser refuses (hiding a protected column) produces the same layout and saves nothing. */
+function applyLayout(next){
+  const before = JSON.stringify(layout);
+  layout = normaliseLayout(next, data.columns);
+  if(JSON.stringify(layout) === before) return;
+  // Sorted by a column that is now hidden -> back to Sales. A table ordered by a column the owner
+  // cannot see reads as randomly ordered.
+  const sortedCol = Object.keys(COLUMN_DEFS).find(id => COLUMN_DEFS[id].sortKey === sort.key);
+  if(sortedCol && layout.hidden.includes(sortedCol)){
+    sort = {key: "sales", dir: -1};
+    remember("sort", sort);
+  }
+  render();
+  saveLayout();
+}
+
+function moveColumn(id, delta){
+  const order = layout.order.slice();
+  const i = order.indexOf(id), j = i + delta;
+  if(i < 0 || j < 0 || j >= order.length) return;
+  [order[i], order[j]] = [order[j], order[i]];
+  applyLayout({order, hidden: layout.hidden});
+}
+
+function setHidden(id, hide){
+  const hidden = layout.hidden.filter(x => x !== id);
+  if(hide) hidden.push(id);
+  applyLayout({order: layout.order, hidden});      // the normaliser refuses a locked id
+}
+
+/* Account or browser. A failed save leaves the screen AS SET and says so — it never reverts. */
+async function saveLayout(){
+  const failed = () => {
+    const note = $("cols-note");
+    if(note){ note.textContent = "Couldn't save — this layout will reset when you reload."; note.hidden = false; }
+  };
+  if(data.column_scope === "browser"){
+    try { localStorage.setItem("pf.columnLayout", JSON.stringify(layout)); } catch(e){ failed(); }
+    return;
+  }
+  try{
+    const r = await fetch("/portfolio/column-prefs", {method: "PUT",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(layout)});
+    if(!r.ok) throw new Error(String(r.status));
+  }catch(err){
+    failed();
+  }
+}
+
+/* Re-draw the panel in place after a change, so its ticks and arrows match the new layout. */
+function renderColumnsPanel(){
+  const panel = $("cols-panel");
+  if(panel && !panel.hidden) panel.innerHTML = columnsPanelHtml();
+}
+
 function render(){
   if(!data) return;
   renderSubtitle();
@@ -598,6 +707,7 @@ function render(){
   renderKpis();
   renderCategories();
   renderInactiveButton();
+  renderColumnsPanel();
   renderWindowBar();
   renderVerdicts();
   renderFilters();
@@ -1885,6 +1995,56 @@ $("filter-btn").addEventListener("click", () => {
   remember("filters", filters);
   renderFilters();
   renderTable();
+});
+
+$("cols-btn").addEventListener("click", ev => {
+  ev.stopPropagation();
+  const panel = $("cols-panel");
+  panel.hidden = !panel.hidden;
+  $("cols-btn").setAttribute("aria-expanded", String(!panel.hidden));
+  if(!panel.hidden) panel.innerHTML = columnsPanelHtml();
+});
+$("cols-panel").addEventListener("click", ev => {
+  ev.stopPropagation();
+  const move = ev.target.closest("[data-col-move]");
+  if(move){ moveColumn(move.dataset.colMove, Number(move.dataset.delta)); return; }
+  if(ev.target.closest("[data-cols-reset]")) applyLayout(null);
+});
+$("cols-panel").addEventListener("change", ev => {
+  const box = ev.target.closest("[data-col-toggle]");
+  if(box) setHidden(box.dataset.colToggle, !box.checked);
+});
+// Drag to reorder, mouse only; ↑ ↓ are the touch and keyboard path.
+let dragId = null;
+$("cols-panel").addEventListener("dragstart", ev => {
+  const li = ev.target.closest("[data-col-row]"); if(!li) return;
+  dragId = li.dataset.colRow; li.classList.add("dragging");
+  ev.dataTransfer.effectAllowed = "move";
+});
+$("cols-panel").addEventListener("dragover", ev => {
+  if(dragId && ev.target.closest("[data-col-row]")) ev.preventDefault();
+});
+$("cols-panel").addEventListener("drop", ev => {
+  const li = ev.target.closest("[data-col-row]"); if(!li || !dragId) return;
+  ev.preventDefault();
+  const target = li.dataset.colRow;
+  const movingDown = layout.order.indexOf(dragId) < layout.order.indexOf(target);
+  const order = layout.order.filter(id => id !== dragId);
+  order.splice(order.indexOf(target) + (movingDown ? 1 : 0), 0, dragId);
+  dragId = null;
+  applyLayout({order, hidden: layout.hidden});
+});
+$("cols-panel").addEventListener("dragend", () => { dragId = null; renderColumnsPanel(); });
+document.addEventListener("click", () => {
+  const panel = $("cols-panel");
+  if(!panel.hidden){ panel.hidden = true; $("cols-btn").setAttribute("aria-expanded", "false"); }
+});
+document.addEventListener("keydown", ev => {
+  if(ev.key === "Escape" && !$("cols-panel").hidden){
+    $("cols-panel").hidden = true;
+    $("cols-btn").setAttribute("aria-expanded", "false");
+    $("cols-btn").focus();
+  }
 });
 
 /* The inactive toggle. **`load()`, never `render()`** — the flag is a query parameter, so the server

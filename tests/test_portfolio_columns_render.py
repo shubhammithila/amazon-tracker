@@ -117,3 +117,78 @@ def test_the_client_normaliser_agrees_with_the_server(saved):
 
     client = run_portfolio_js(VOCAB + f"emit(normaliseLayout({json.dumps(saved)}, data.columns));")
     assert client == C.normalise_column_layout(saved)
+
+
+PANEL = VOCAB + """
+layout = normaliseLayout(null, data.columns);
+let saved = []; function saveLayout(){ saved.push(JSON.parse(JSON.stringify(layout))); }
+function render(){} function remember(){}
+"""
+
+
+def test_the_panel_lists_every_movable_column_and_disables_the_locked_ticks():
+    import re
+
+    html = run_portfolio_js(PANEL + "emit(columnsPanelHtml());", panel=True)
+    for col in ("verdict", "sales", "tacos", "rating", "decision"):
+        assert f'data-col-row="{col}"' in html
+    assert 'data-col-row="product"' not in html, "Product is pinned and is not listed as movable"
+    sales = re.search(r'data-col-row="sales".*?</li>', html, re.S).group(0)
+    assert "disabled" in sales, "a protected column's tick box must be disabled"
+    tacos = re.search(r'data-col-row="tacos".*?</li>', html, re.S).group(0)
+    tick = re.search(r'<input type="checkbox"[^>]*>', tacos).group(0)
+    assert "disabled" not in tick, "a hideable column's tick box is disabled"
+
+
+def test_moving_a_column_changes_the_order_and_saves():
+    out = run_portfolio_js(PANEL + """
+moveColumn("decision", -1);
+emit({order: layout.order, saves: saved.length});
+""", panel=True)
+    assert out["order"].index("decision") == out["order"].index("rating") - 1
+    assert out["saves"] == 1
+
+
+def test_moving_past_either_end_is_a_no_op():
+    out = run_portfolio_js(PANEL + """
+const first = layout.order[0], last = layout.order[layout.order.length - 1];
+moveColumn(first, -1); moveColumn(last, +1);
+emit({saves: saved.length});
+""", panel=True)
+    assert out["saves"] == 0
+
+
+def test_hiding_the_sorted_column_resets_the_sort_to_sales():
+    out = run_portfolio_js(PANEL + """
+sort = {key: "tacos", dir: 1};
+setHidden("tacos", true);
+emit({sort, hidden: layout.hidden});
+""", panel=True)
+    assert out["sort"] == {"key": "sales", "dir": -1}
+    assert "tacos" in out["hidden"]
+
+
+def test_hiding_an_UNSORTED_column_leaves_the_sort_alone():
+    out = run_portfolio_js(PANEL + """
+sort = {key: "net_pct", dir: 1};
+setHidden("tacos", true);
+emit(sort);
+""", panel=True)
+    assert out == {"key": "net_pct", "dir": 1}
+
+
+def test_a_locked_column_cannot_be_hidden_even_by_calling_the_handler():
+    out = run_portfolio_js(PANEL + 'setHidden("sales", true); emit({h: layout.hidden, s: saved.length});',
+                           panel=True)
+    assert "sales" not in out["h"]
+    assert out["s"] == 0, "a refused change must not trigger a save"
+
+
+def test_reset_restores_todays_layout():
+    out = run_portfolio_js(PANEL + """
+moveColumn("decision", -1); setHidden("acos", true);
+applyLayout(null);
+emit(layout);
+""", panel=True)
+    from app.portfolio import columns as C
+    assert out == C.DEFAULT_LAYOUT
