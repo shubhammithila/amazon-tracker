@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2452 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2502 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -2237,6 +2237,51 @@ line, because that is the part that changes.
 > asserts the `.filter` and counts the optional columns, scoped to the `COLUMNS` array so the prose
 > explaining the flag cannot satisfy the substring. Verified in the browser as 8/8/8 collapsed and
 > 11/11/11 expanded. Fourth instance of that trap here.
+
+### The Columns panel: hide and reorder, saved with the LOGIN
+Asked for as *"make every column except the Sales, ad spend, units and weights… hiddenable"* and
+*"slidable… kon sa pehle chaiye kon sa baad me"*. **`+ More columns` is gone**; a `Columns` menu
+lists every column with a tick, ↑ ↓ buttons and drag-to-reorder. Product is pinned first; Sales, Ad
+spend, Units and Weight can move but never hide.
+
+- **One column list drives every row.** `COLUMN_DEFS` carries a row, detail and total renderer per
+  column, and the header, `dataCells`, `detailCells`, `totalsRow` and `tableMinWidth()` all map over
+  `visibleColumns()`. Before this they were four hand-written sequences, which is how the 11-over-8
+  shift above happened. Every cell carries `data-col`, and `tests/test_portfolio_columns_render.py`
+  **executes the template's JavaScript under Node** (`tests/js_harness.py`) and compares ids in
+  order across four layouts. A count can match while TACOS sits under ACOS.
+- **The vocabulary lives on the server** (`app/portfolio/columns.py`), and `normalise_column_layout`
+  runs on READ and write. An unknown id is dropped, a locked column cannot be hidden, and a column
+  added in a later release is inserted after its nearest default-order predecessor rather than
+  appended last, so a saved layout never hides a new column. `normaliseLayout` is its client twin,
+  and a parity test runs both over the same inputs.
+- **Stored in `users.preferences_json`** (`c3d8e1f5a702`), a JSON map keyed by `PREFERENCE_KEY`, so
+  the next per-user setting needs no migration. `PUT /portfolio/column-prefs` takes the username
+  from the SESSION only, never the body. A shared-password session has no user row, so it gets a
+  **409** and the screen falls back to `localStorage` (`column_scope: "browser"`), saying so.
+- **The Excel always has every column**, by decision. A file leaves the app, and a column the
+  owner hid on screen is still a column someone else reads.
+- **Hiding the sorted column resets the sort to Sales**, or the table would sort by an invisible
+  figure with no header to click.
+
+> **The panel opened half off-screen on a phone, and only the browser showed it.** It is anchored by
+> its right edge under the button. At 375px the button wraps to the left edge, so the 300px panel
+> opened at **x = −172**. The click handler now measures from the default anchor on every open and
+> adds `from-left` when the left edge would be under 8px; `max-width: calc(100vw - 16px)` caps it.
+> Measured after the fix: 35–335px of 375, with 0px of sideways scroll.
+
+`scripts/mutate_portfolio_columns.py`: 16 mutations, all caught. The four older Portfolio harnesses
+targeted the pre-refactor markup and were re-pointed at the column list (sb 18, ui 22, groups 33,
+active_weight 38, all caught). **One of them printed nothing, and that was not a pass.** A
+re-pointed entry had kept its old `TEMPLATE` path beside the new one, so the tuple had five fields
+and the harness died while unpacking it. A harness with no summary line has crashed; check for the
+`All N mutations caught` line explicitly.
+
+> **The migration detector test now covers the newest THREE revisions, not just head.** Once
+> `c3d8e1f5a702` became head, deleting the `sb_spend` branch from `update-ec2.sh` survived, because
+> the test only migrated to head and the newer branch answered first. Every older branch was untested
+> the moment it stopped being newest, and an older branch is exactly what a partially-migrated
+> production box hits.
 
 ### Sponsored Brands is in the ad figures now — attributed from Amazon's own ASIN list
 Then: *"Add SB into the Portfolio figures — but no separate labelling of it in the portfolio tab.

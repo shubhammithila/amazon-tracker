@@ -286,7 +286,10 @@ tfoot tr.totals td{background:var(--surface2);font-weight:700;font-size:13px;col
 .cols-wrap{position:relative;display:inline-block}
 .cols-panel{position:absolute;right:0;top:calc(100% + 4px);z-index:20;min-width:300px;
   background:var(--surface);border:1px solid var(--border-strong);border-radius:8px;
-  box-shadow:var(--shadow);padding:6px 0}
+  box-shadow:var(--shadow);padding:6px 0;max-width:calc(100vw - 16px);box-sizing:border-box}
+/* Right-anchored by default; on a phone the button wraps to the LEFT edge, where a right-anchored
+   300px panel opened at x=-172 with half its rows off-screen. The click handler flips it. */
+.cols-panel.from-left{left:0;right:auto}
 .cols-head{display:flex;justify-content:space-between;align-items:center;padding:4px 12px 8px;
   font-weight:600;border-bottom:1px solid var(--border)}
 .cols-reset{background:none;border:none;font:inherit;font-weight:400;font-size:12px;cursor:pointer;
@@ -2002,7 +2005,12 @@ $("cols-btn").addEventListener("click", ev => {
   const panel = $("cols-panel");
   panel.hidden = !panel.hidden;
   $("cols-btn").setAttribute("aria-expanded", String(!panel.hidden));
-  if(!panel.hidden) panel.innerHTML = columnsPanelHtml();
+  if(panel.hidden) return;
+  panel.innerHTML = columnsPanelHtml();
+  // Measured against the right-anchored position every time, since a rotation or resize can move
+  // the button between opens.
+  panel.classList.remove("from-left");
+  if(panel.getBoundingClientRect().left < 8) panel.classList.add("from-left");
 });
 $("cols-panel").addEventListener("click", ev => {
   ev.stopPropagation();

@@ -199,3 +199,22 @@ emit(layout);
 """, panel=True)
     from app.portfolio import columns as C
     assert out == C.DEFAULT_LAYOUT
+
+
+def test_the_panel_flips_to_open_rightward_when_it_would_start_off_screen():
+    """Found in a browser at 375px: the button wraps to the LEFT edge on a phone, and the panel is
+    anchored by its right edge, so it opened at x=-172 with half its rows unreachable.
+
+    Source-level, because Node has no layout engine to measure a rect in — the property is that the
+    handler MEASURES and flips, and that the flip class and a viewport cap both exist in the CSS.
+    """
+    from pathlib import Path
+    import re
+    text = Path("templates/portfolio.html").read_text(encoding="utf-8")
+    handler = text[text.index('$("cols-btn").addEventListener("click"'):]
+    handler = handler[:handler.index("\n});")]
+    assert 'classList.remove("from-left")' in handler, "must re-measure from the default anchor"
+    assert re.search(r'getBoundingClientRect\(\)\.left\s*<\s*\d+\)\s*panel\.classList\.add\("from-left"\)',
+                     handler)
+    assert re.search(r"\.cols-panel\.from-left\{left:0;right:auto\}", text)
+    assert "max-width:calc(100vw - 16px)" in text
