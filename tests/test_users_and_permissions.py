@@ -1197,3 +1197,77 @@ async def test_login_log_lists_recent_attempts(client, db):
     body = r.json()
     assert len(body["events"]) >= 2  # the failed probe and this test's own successful sign-in
     assert any(not e["success"] for e in body["events"])
+
+
+# ─── A refused PAGE shows the app, not an error object ───────────────────────
+#
+# Reported with a screenshot of `{"error": "You do not have access…"}` rendered by the browser as
+# the whole page. On production every 403 in three days was `GET /` — the bookmarked address — from
+# the `warehouse` (packing) and `accounts` (portfolio, projections) logins, neither of which holds
+# Dashboard. A browser navigation now goes to the first screen the person can use.
+
+BROWSER = {"accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
+
+
+async def _login_with(auth_client, client, **body):
+    created = (await auth_client.post("/admin/users", json={"full_name": "Someone", **body})).json()
+    r = await client.post(
+        "/login",
+        data={"username": created["user"]["username"], "password": created["password"]},
+    )
+    assert r.status_code == 303, r.text
+    return created
+
+
+@pytest.mark.parametrize("body, landing", [
+    ({"preset": "packer"}, "/ops-page"),
+    ({"preset": "custom", "areas": ["portfolio", "projections"]}, "/portfolio-page"),
+    # Orders and Ads were missing from `_landing`, so these two read "no access" while holding a tab.
+    ({"preset": "custom", "areas": ["orders"]}, "/orders-page"),
+    ({"preset": "custom", "areas": ["ads"]}, "/ads-page"),
+])
+async def test_a_refused_PAGE_goes_to_the_first_screen_they_can_use(
+    auth_client, client, db_schema, body, landing
+):
+    await _login_with(auth_client, client, **body)
+    r = await client.get("/", headers=BROWSER)
+    assert r.status_code == 303 and r.headers["location"] == landing, (r.status_code, r.text[:200])
+    # ...and that screen really opens: a redirect into another refusal would be a loop.
+    assert (await client.get(landing, headers=BROWSER)).status_code == 200
+
+
+async def test_a_refused_page_never_bounces_a_signed_in_user_to_login(
+    auth_client, client, db_schema
+):
+    """/login would read as an expired session, and they would sign in and loop."""
+    await _login_with(auth_client, client, preset="packer")
+    for page in ("/", "/invoice-page", "/portfolio-page", "/projections-page", "/users-page"):
+        r = await client.get(page, headers=BROWSER)
+        assert r.status_code == 303, page
+        assert r.headers["location"] != "/login", page
+
+
+async def test_an_API_call_still_gets_a_readable_403(auth_client, client, db_schema):
+    """`fetch()` sends `*/*`. A redirect there would land an HTML page in the screen's JSON
+    parser as a 200, and the refusal would surface as a confusing parse error."""
+    await _login_with(auth_client, client, preset="packer")
+    r = await client.get("/portfolio", headers={"accept": "*/*"})
+    assert r.status_code == 403
+    assert "do not have access" in r.json()["error"]
+    # A non-GET from a form is not a page view either.
+    r = await client.put("/portfolio/column-prefs", json={}, headers=BROWSER)
+    assert r.status_code == 403
+
+
+async def test_a_user_with_no_areas_is_sent_to_the_page_that_explains_itself(
+    auth_client, client, db_schema
+):
+    await _login_with(auth_client, client, preset="custom", areas=[])
+    r = await client.get("/", headers=BROWSER)
+    assert r.status_code == 303 and r.headers["location"] == "/no-access"
+    assert (await client.get("/no-access", headers=BROWSER)).status_code == 200
+
+
+async def test_signed_out_still_goes_to_login(client, db_schema):
+    r = await client.get("/portfolio-page", headers=BROWSER)
+    assert r.status_code == 303 and r.headers["location"] == "/login"

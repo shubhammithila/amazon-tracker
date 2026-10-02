@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2502 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2510 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -49,6 +49,16 @@ listing them. The pre-existing test checked five paths it had been given and pas
 the project while the schema was public — a hand-written list is exactly how this went unnoticed. Five
 exemptions are declared with a reason each (`/login`, `/logout`, `/no-access`, `/health`, `/static/*`),
 and the allow-list is itself asserted in both directions so it cannot silently grow.
+
+**Signed IN but not allowed: a page goes to the first screen they CAN use.** Reported as *"this
+happens to many users… even after login the main app should be shown"*, with a screenshot of the
+raw `{"error": "You do not have access…"}` JSON filling the browser. Every 403 on production in
+three days was `GET /`, the bookmarked address, from the `warehouse` and `accounts` logins, which
+hold no Dashboard. `forbidden_handler` now sends a GET that accepts `text/html` to `_landing()`,
+the page login itself picks, and sends it to `/no-access` if that would be the same page. **Never
+to /login**, which would read as an expired session and loop. `fetch()` sends `*/*`, so API calls
+keep their 403 JSON; a redirect there would arrive in the screen's parser as an HTML 200.
+`_landing` was also missing Orders and Ads, so an orders-only account was told it had no access.
 
 An unknown path is a **404, not a redirect**. A catch-all would satisfy the request lazily and make
 every mistyped URL look like a session timeout.

@@ -9,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import inspect as sa_inspect
 
 from app.config import get_settings
-from app.database import engine, Base
+from app.database import engine, Base, async_session
 from app import permissions
 from app.routers import (
     admin_users, ads, auth, invoice, keywords, orders, portfolio, product_prices, products,
@@ -18,9 +18,11 @@ from app.routers import (
 from app.routers.auth import (
     ForbiddenException,
     RedirectException,
+    _landing,
     require_admin_grant,
     require_area,
     require_packing,
+    resolve_grant,
 )
 from app.scheduler import setup_scheduler
 
@@ -151,17 +153,35 @@ async def auth_redirect_handler(request: Request, exc: RedirectException):
 
 @app.exception_handler(ForbiddenException)
 async def forbidden_handler(request: Request, exc: ForbiddenException):
-    """403, deliberately not a redirect to /login.
+    """A PAGE goes to the first part of the app this person can use; an API call gets a 403.
 
-    Bouncing an authenticated user to the login page would look like their session had
-    expired, and they would just log in again and loop. A 403 says 'you are signed in,
-    this part is not yours'.
+    Reported as *"this happens to many users… even after login the main app should be
+    shown"* — against a screenshot of this JSON, rendered by the browser as the whole page.
+    Measured on production: every 403 in three days was `GET /`, from the `warehouse` and
+    `accounts` accounts, neither of which holds Dashboard. `/` is the bookmarked address,
+    so the first thing those people saw of the app was a raw error object.
+
+    **Never a redirect to /login.** Bouncing an authenticated user there would look like
+    their session had expired, and they would log in and loop. `_landing` is the page login
+    itself sends them to, so it is one they can open by construction — and if it somehow
+    names the page that refused them, `/no-access` breaks the loop.
+
+    **A page request is a GET that ACCEPTS text/html.** Browser navigation sends that;
+    `fetch()` sends `*/*` by default, so the screens' own API calls still get a 403 they can
+    read, and a redirect to an HTML page would arrive there as an unparseable 200.
 
     The message no longer says "Admin only". With per-area permissions that is usually
     the wrong remedy: the accounts user refused the Projections tab does not need to
     become an administrator, they need that one area granted. Naming the wrong fix sends
     them to ask for the wrong thing.
     """
+    if request.method == "GET" and "text/html" in request.headers.get("accept", ""):
+        async with async_session() as db:
+            grant, is_admin = await resolve_grant(request, db)
+        destination = _landing(grant, is_admin)
+        if destination == request.url.path:
+            destination = "/no-access"
+        return RedirectResponse(url=destination, status_code=303)
     return JSONResponse(
         {
             "error": "You do not have access to this section. Ask the owner to grant it "

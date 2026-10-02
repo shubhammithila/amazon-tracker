@@ -338,6 +338,8 @@ def _landing(grant: str | None, is_admin: bool) -> str:
         (permissions.INVOICE, "/invoice-page"),
         (permissions.PORTFOLIO, "/portfolio-page"),
         (permissions.PROJECTIONS, "/projections-page"),
+        (permissions.ORDERS, "/orders-page"),
+        (permissions.ADS, "/ads-page"),
         (permissions.PACKING, "/ops-page"),
     ):
         if permissions.has(grant, area):
