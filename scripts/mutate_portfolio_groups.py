@@ -241,15 +241,15 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     # ── The screen ──
     (
         TEMPLATE,
-        'let showExtra = remembered("showExtra", false);',
-        "",
+        'const remembered = ',
+        'let tooEarly = remembered("x", 1);\nconst remembered = ',
         "showExtra is undeclared, so every column render throws "
-        "— test_showExtra_is_declared_AFTER_the_helper_it_calls",
+        "— test_state_that_calls_remembered_is_declared_AFTER_the_helper",
     ),
     (
         TEMPLATE,
-        "  return COLUMNS.filter(c => !c.extra || showExtra);",
-        "  return COLUMNS;",
+        "    current.order.filter(id => !current.hidden.includes(id) && COLUMN_DEFS[id])",
+        "    current.order.filter(id => COLUMN_DEFS[id])",
         "the header renders 11 columns while the body renders 8, shifting every figure left "
         "— test_the_hidden_columns_are_gated_in_ALL_THREE_places",
     ),
@@ -300,6 +300,7 @@ def run_tests() -> bool:
             "tests/test_portfolio_api.py",
             "tests/test_portfolio_screen.py",
             "tests/test_retention_and_scheduler.py",
+            "tests/test_portfolio_columns_render.py",
         ],
         cwd=ROOT,
         capture_output=True,

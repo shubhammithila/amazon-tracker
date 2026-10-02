@@ -406,6 +406,56 @@ def test_the_deploy_detector_reports_the_head_for_a_head_schema(tmp_path, monkey
     )
 
 
+def _upgrade_to(sync_url: str, revision: str) -> None:
+    from alembic import command
+
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", sync_url)
+    command.upgrade(cfg, revision)
+
+
+#: How many revisions back from head to check. Production sits one or two revisions behind head
+#: between a merge and its deploy, so those are the schemas the detector must name correctly.
+RECENT_REVISIONS = 3
+
+
+def _recent_revisions() -> list[str]:
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+    script = ScriptDirectory.from_config(cfg)
+    chain, rev = [], script.get_current_head()
+    while rev and len(chain) < RECENT_REVISIONS:
+        chain.append(rev)
+        rev = script.get_revision(rev).down_revision
+    return chain
+
+
+@pytest.mark.parametrize("revision", _recent_revisions())
+def test_the_deploy_detector_names_each_RECENT_revision_not_only_head(tmp_path, monkeypatch,
+                                                                       revision):
+    """**The head-only test above cannot see a deleted SECOND-newest branch.**
+
+    Found by `scripts/mutate_portfolio_sb.py`: once `c3d8e1f5a702` became head, removing the
+    `sb_spend -> b91d4a7c3e26` branch left the head test passing — while production was sitting at
+    exactly `b91d4a7c3e26`. A database there would have been detected one revision older, stamped
+    backwards, and `upgrade head` would then re-run a migration whose columns already exist.
+    """
+    db = tmp_path / "tracker.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db.as_posix()}")
+    import app.config
+    app.config.get_settings.cache_clear()
+    try:
+        _upgrade_to(f"sqlite:///{db.as_posix()}", revision)
+    finally:
+        app.config.get_settings.cache_clear()
+    detected = _detected_baseline(db)
+    assert detected == revision, (
+        f"a schema migrated to {revision} is detected as {detected!r}, so the deploy script would "
+        "stamp it at the wrong revision. Every migration needs its own branch, newest first."
+    )
+
+
 def test_the_deploy_detector_reports_nothing_for_an_empty_database(tmp_path):
     """An empty database must migrate from scratch, not be stamped at anything.
 

@@ -134,8 +134,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         PF,
-        '    <td class="num">${kg(row.weight_kg)}</td>',
-        "    <td>${kg(row.weight_kg)}</td>",
+        '  weight_kg:   {num: true, sortKey: "weight_kg", width: 90,',
+        '  weight_kg:   {sortKey: "weight_kg", width: 90,',
         "ONE of the three render functions loses the class, so the weight column goes proportional "
         "on the tablet only — invisible on the box where it would be reviewed "
         "— test_the_money_columns_are_all_tagged_num_in_all_three_render_functions",
@@ -234,6 +234,7 @@ TESTS = [
     "tests/test_theme.py",
     "tests/test_portfolio_screen.py",
     "tests/test_portfolio_api.py",
+    "tests/test_portfolio_columns_render.py",
     "tests/test_nav_consistency.py",
 ]
 

@@ -150,11 +150,18 @@ emit({order: layout.order, saves: saved.length});
 
 
 def test_moving_past_either_end_is_a_no_op():
+    """Starts from a NON-default layout on purpose. From the default, a broken move that corrupts the
+    order is normalised straight back to the default — i.e. to where it started — and looks like a
+    no-op. The mutation harness caught this test passing against exactly that bug."""
     out = run_portfolio_js(PANEL + """
+layout = normaliseLayout({order: ["decision", "rating", "sales", "verdict"], hidden: ["acos"]},
+                         data.columns);
+const before = JSON.stringify(layout);
 const first = layout.order[0], last = layout.order[layout.order.length - 1];
 moveColumn(first, -1); moveColumn(last, +1);
-emit({saves: saved.length});
+emit({same: JSON.stringify(layout) === before, saves: saved.length});
 """, panel=True)
+    assert out["same"], "moving past an end changed the layout"
     assert out["saves"] == 0
 
 

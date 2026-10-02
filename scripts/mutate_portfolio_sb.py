@@ -91,7 +91,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
      "        # ── Sponsored Brands, copied from the Ads tab's own stored rows ──\n",
      "the Portfolio refresh starts creating its own SB report, spending the Ads tab's throttle budget"),
     ("deploy/update-ec2.sh", '''elif "sb_spend" in cols("economics_daily"):
-    print("b91d4a7c3e26")                           # head: SB spend attributed per ASIN per day
+    print("b91d4a7c3e26")                           # SB spend attributed per ASIN per day
 ''', "", "the baseline detector is stale and stamps production BACKWARDS — a failed deploy"),
 ]
 

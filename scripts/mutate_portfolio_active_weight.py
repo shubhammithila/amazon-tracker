@@ -199,21 +199,17 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
 
     # ── The screen: the column layout ──
     (
-        TEMPLATE,
-        '  {key: "units",        label: "Units",    num: true},',
-        '  {key: "units",        label: "Units",    num: true, extra: true},',
-        "Units goes back behind the '+ More columns' toggle, so the figure the owner judges a row "
-        "by is invisible by default — and the HEADER now renders one fewer column than the body "
-        "— test_the_hidden_columns_are_gated_in_ALL_THREE_places",
+        "app/portfolio/columns.py",
+        '    {"id": "units",       "label": "Units",    "locked": True},',
+        '    {"id": "units",       "label": "Units",    "locked": False},',
+        "Units becomes HIDEABLE again, so the figure the owner judges a row by can vanish from "
+        "the table — test_the_hidden_columns_are_gated_in_ALL_THREE_places",
     ),
     (
         TEMPLATE,
-        "    <td class=\"num\">${n(r.units).toLocaleString(\"en-IN\")}</td>\n"
-        "    <td class=\"num\">${kg(r.weight_kg)}</td>\n"
-        "    ${showExtra ? `",
-        "    ${showExtra ? `\n"
-        "    <td class=\"num\">${n(r.units).toLocaleString(\"en-IN\")}</td>\n"
-        "    <td class=\"num\">${kg(r.weight_kg)}</td>",
+        'return visibleColumns().slice(1).map(c => cell(c, c.row(r))).join("");',
+        'return visibleColumns().slice(1).filter(c => c.id !== "units" && c.id !== "weight_kg")'
+        '.map(c => cell(c, c.row(r))).join("");',
         "**Units and Weight are gated in ONE of the three render functions only**, so the header "
         "renders 12 columns over 10 body cells and every figure after Net % sits under the wrong "
         "heading — the 4th-instance trap this codebase records "
@@ -240,8 +236,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     # ── The screen: the size rows and the toggle ──
     (
         TEMPLATE,
-        '    <td>${esc(sizeName(s))} <span class="asin">${esc(s.asin)}</span></td>',
-        '    <td>${esc(sizeName(s))} <span class="asin">${esc(s.asin)}</span>${channelHtml(s)}</td>',
+        '    <td data-col="product">${esc(sizeName(s))} <span class="asin">${esc(s.asin)}</span></td>',
+        '    <td data-col="product">${esc(sizeName(s))} <span class="asin">${esc(s.asin)}</span>${channelHtml(s)}</td>',
         "the ~150-character merchant/FBA sentence is back in the size row's first cell — the "
         "reported clutter, and what widened the Product column 353px to 780px "
         "— test_a_SIZE_row_carries_no_channel_note_while_the_SKU_row_STILL_DOES",
@@ -376,6 +372,7 @@ TESTS = [
     # the UI-fixes file, which this harness did not run. A harness scoped narrower than the tests
     # that guard its targets reports a gap that does not exist — or, worse, hides one that does.
     "tests/test_portfolio_ui_fixes.py",
+    "tests/test_portfolio_columns_render.py",
 ]
 
 
