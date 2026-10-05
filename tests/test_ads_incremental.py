@@ -164,6 +164,30 @@ async def test_the_gap_fill_DOES_fetch_a_throttled_SB_morning(monkeypatch, db_sc
     assert calls == [("sb", END.isoformat(), END.isoformat())]
 
 
+async def test_a_day_the_purge_already_deleted_is_NOT_missing(monkeypatch, db_schema, configured):
+    """**Found by dry-running the plan on production**, not by the tests above: `default_window(60)`
+    starts one day before the 60 days `purge_daily` keeps, so its first day is always absent and
+    both the nightly and gap-fill plans came out as the full 60 days, re-fetching a day the purge
+    deletes minutes later. Built from the real relationship rather than hand-picked dates."""
+    calls = []
+    _fake_amazon(monkeypatch, calls)
+    today = END + timedelta(days=1)
+    keep_from = today - timedelta(days=repository.DAILY_RETENTION_DAYS - 1)
+    kept = _days(keep_from, END)          # exactly what retention holds
+
+    async def held(_factory):
+        return {"sp": kept, "sb": kept}
+
+    monkeypatch.setattr(refresh, "_held_days", held)
+    result = await refresh.run(days=60, only_if_missing=True, today=today)
+    assert result.get("skipped") is True, f"the gap-fill fetched {calls} with nothing missing"
+
+    calls.clear()
+    await refresh.run(days=60, settle_days=refresh.NIGHTLY_SETTLE_DAYS, today=today)
+    tail = (END - timedelta(days=refresh.NIGHTLY_SETTLE_DAYS - 1)).isoformat()
+    assert calls == [("sp", tail, END.isoformat()), ("sb", tail, END.isoformat())], calls
+
+
 def test_the_scheduler_passes_the_settling_tail_and_registers_the_gap_fill():
     """Source-level: the nightly job must pass `settle_days`, or it silently goes back to fetching
     only gaps and never re-reads a settling day's late sales."""

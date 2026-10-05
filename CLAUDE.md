@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2521 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2522 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3561,6 +3561,9 @@ the first missing day and the start of a settling tail, to the window's end — 
   ageing out. That can make one range longer than 31 days (two chunks); it only happens after a gap.
 - `STATE["fetched"]` says what was asked for, and the refresh note on screen prints it — "SB 3 Oct →
   4 Oct, SP already complete" — so a short top-up does not read as a full re-download.
+- **Plan only over days the purge KEEPS.** `default_window(60)` starts a day before the 60 days
+  `purge_daily` holds, so its first day is always absent — the first deploy of this change planned the
+  full 60 days again on production, caught by dry-running the plan there before the morning job.
 - The "never edits a bid" source test now covers **both** scheduled ads jobs.
 
 ## Disk space — the app now grows with USAGE, not just time

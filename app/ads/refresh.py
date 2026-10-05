@@ -272,8 +272,15 @@ async def run(
 
     window_start, window_end = (start, end) if (start and end) else default_window(days, today=today)
 
+    # **Plan only over days the retention purge KEEPS.** `default_window(60)` starts one day before
+    # the 60 days `purge_daily` holds, so that first day is always "missing" — found by dry-running
+    # this plan against production, where the nightly and gap-fill plans both came out as the full
+    # 60 days again, purely to re-fetch a day the purge deletes minutes later. The IST day is used,
+    # and is never earlier than the purge's server-clock day, so no planned day can be one it purges.
+    keep_from = ((today or ist.today())
+                 - timedelta(days=repository.DAILY_RETENTION_DAYS - 1)).isoformat()
     plan = plan_ranges(
-        window_start, window_end, await _held_days(db_factory),
+        max(window_start, keep_from), window_end, await _held_days(db_factory),
         settle_days=settle_days, freshen_days=freshen_days,
     )
     if only_if_missing and not any(plan.values()):
