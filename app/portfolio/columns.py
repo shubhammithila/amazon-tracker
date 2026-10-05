@@ -18,7 +18,10 @@ PREFERENCE_KEY = "portfolio_columns"
 COLUMNS: list[dict] = [
     {"id": "product",     "label": "Product",  "locked": True},
     {"id": "verdict",     "label": "Verdict",  "locked": False},
-    {"id": "sales",       "label": "Sales",    "locked": True},
+    # **ex-GST**: Amazon's `orderedProductSales` excludes the 5% GST the order price includes —
+    # measured, app sales = order price / 1.05 to within 0.2% for 5 Sep - 4 Oct — so Seller
+    # Central's Business Report reads ~5% higher. The label says so rather than leaving a gap to explain.
+    {"id": "sales",       "label": "Sales (ex-GST)", "locked": True},
     {"id": "ad_spend",    "label": "Ad spend", "locked": True},
     {"id": "tacos",       "label": "TACOS",    "locked": False},
     {"id": "acos",        "label": "ACOS",     "locked": False},
@@ -29,7 +32,8 @@ COLUMNS: list[dict] = [
     # Business Report's own figure; net units stay, labelled, because verdicts are decided on them.
     {"id": "units_ordered", "label": "Units ordered", "locked": True},
     {"id": "units",       "label": "Net units", "locked": True},
-    {"id": "weight_kg",   "label": "Weight",   "locked": True},
+    {"id": "weight_ordered_kg", "label": "Weight ordered", "locked": True},
+    {"id": "weight_kg",   "label": "Net weight", "locked": True},
     {"id": "returns_pct", "label": "Returns",  "locked": False},
     {"id": "rating",      "label": "Rating",   "locked": False},
     {"id": "decision",    "label": "Decision", "locked": False},

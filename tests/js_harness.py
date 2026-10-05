@@ -25,7 +25,7 @@ FUNCTIONS = [
 ]
 #: The Columns-panel logic, opted into by the panel tests (`run_portfolio_js(..., panel=True)`).
 PANEL_FUNCTIONS = ["columnsPanelHtml", "applyLayout", "moveColumn", "setHidden"]
-CONSTS = ["n", "ico", "COLUMN_DEFS", "FALLBACK_ORDER"]
+CONSTS = ["n", "ico", "COLUMN_DEFS", "FALLBACK_ORDER", "FIELDS"]
 
 #: Statements that end a top-level function when a script is sliced by `function NAME(`.
 _TOP_LEVEL = ("\nconst ", "\nlet ", "\n$(", "\ndocument.", "\nload()", "\n/*", "\n//")

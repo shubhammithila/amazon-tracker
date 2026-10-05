@@ -481,17 +481,19 @@ let rulesOpen = false;
 /* The columns a filter can be built on, and how each is read from a row. ONE definition, so the
    dropdown, the comparison and the sort cannot disagree about what "TACOS" means. */
 const FIELDS = {
-  sales:        {label: "Sales",        get: r => r.sales,        kind: "money"},
+  sales:        {label: "Sales (ex-GST)", get: r => r.sales,        kind: "money"},
   ad_spend:     {label: "Ad spend",     get: r => r.ad_spend,     kind: "money"},
   net:          {label: "Net",          get: r => r.net,          kind: "money"},
   net_pct:      {label: "Net %",        get: r => r.net_pct,      kind: "pct"},
   tacos:        {label: "TACOS",        get: r => r.tacos,        kind: "pct"},
   acos:         {label: "ACOS",         get: r => r.acos,         kind: "pct"},
-  units:        {label: "Units",        get: r => r.units,        kind: "int"},
+  units_ordered: {label: "Units ordered", get: r => r.units_ordered, kind: "int"},
+  units:        {label: "Net units",    get: r => r.units,        kind: "int"},
   // Weight sold, so it sorts and filters like any other number. Nulls already sort last in both
   // directions and a null row is already excluded from a numeric filter — both correct here for
   // free, and both for the same reason: "the sheet has no weight" is not a small weight.
-  weight_kg:    {label: "Weight (kg)",  get: r => r.weight_kg,    kind: "num"},
+  weight_ordered_kg: {label: "Weight ordered (kg)", get: r => r.weight_ordered_kg, kind: "num"},
+  weight_kg:    {label: "Net weight (kg)", get: r => r.weight_kg,  kind: "num"},
   returns_pct:  {label: "Returns %",    get: r => r.returns_pct,  kind: "pct"},
   rating:       {label: "Rating",       get: r => r.rating,       kind: "num"},
 };
@@ -986,7 +988,7 @@ function renderKpis(){
   const t = data.totals;
   const netCls = (t.net_pct !== null && t.net_pct < 0) ? "bad" : "good";
   $("kpis").innerHTML = `
-    <div class="kpi"><div class="v">${money(t.sales)}</div><div class="k">Sales</div></div>
+    <div class="kpi"><div class="v">${money(t.sales)}</div><div class="k">Sales (ex-GST)</div></div>
     <div class="kpi warn"><div class="v">${money(t.ad_spend)}</div><div class="k">Ad spend</div></div>
     <div class="kpi ${netCls}"><div class="v">${money(t.net)}</div><div class="k">Net (pre-COGS)</div></div>
     <div class="kpi ${netCls}"><div class="v">${
@@ -1369,6 +1371,10 @@ const COLUMN_DEFS = {
                 row: r => n(r.units).toLocaleString("en-IN"),
                 detail: r => n(r.units).toLocaleString("en-IN"),
                 total: t => n(t.units).toLocaleString("en-IN")},
+  weight_ordered_kg: {num: true, sortKey: "weight_ordered_kg", width: 100,
+                tip: "units ORDERED × pack size, from the MRP sheet — before refunds",
+                row: r => kg(r.weight_ordered_kg), detail: r => kg(r.weight_ordered_kg),
+                total: t => t.weighedOrdered ? kg(t.weightOrdered) : '<span class="dim">—</span>'},
   weight_kg:   {num: true, sortKey: "weight_kg", width: 90,
                 tip: "net units × pack size, from the MRP sheet — a dash where the sheet has no weight",
                 row: r => kg(r.weight_kg), detail: r => kg(r.weight_kg),
@@ -1398,7 +1404,7 @@ const COLUMN_DEFS = {
 
 // Used only when `data.columns` has not arrived (and by the render tests' smoke check).
 const FALLBACK_ORDER = ["verdict", "sales", "ad_spend", "tacos", "acos", "net_pct", "units_ordered", "units",
-                        "weight_kg", "returns_pct", "rating", "decision"];
+                        "weight_ordered_kg", "weight_kg", "returns_pct", "rating", "decision"];
 
 /* The client twin of `app/portfolio/columns.normalise_column_layout`, rule for rule. It exists for
    the browser-scope layout (shared-password sessions) and to re-render instantly before a save
@@ -1408,7 +1414,7 @@ function normaliseLayout(saved, vocab){
   const movable = (known ? vocab.map(c => c.id) : ["product"].concat(FALLBACK_ORDER))
     .filter(id => id !== "product");
   const locked = new Set(known ? vocab.filter(c => c.locked).map(c => c.id)
-                               : ["product", "sales", "ad_spend", "units_ordered", "units", "weight_kg"]);
+                               : ["product", "sales", "ad_spend", "units_ordered", "units", "weight_ordered_kg", "weight_kg"]);
   const def = {order: movable.slice(), hidden: ["returns_pct"]};
   if(!saved || typeof saved !== "object" || Array.isArray(saved)) return def;
   const order = saved.order, hidden = saved.hidden === undefined ? [] : saved.hidden;
@@ -1571,6 +1577,10 @@ function computeTotals(list){
   const weighed = list.filter(r => r.weight_kg !== null && r.weight_kg !== undefined);
   const weight = weighed.reduce((a, r) => a + r.weight_kg, 0);
   const weightUnknown = list.length - weighed.length;
+  // Its own accumulator for the same reason as `weight` above: a null is an unknown, not 0 kg.
+  const weighedOrderedRows = list.filter(r => r.weight_ordered_kg !== null && r.weight_ordered_kg !== undefined);
+  const weightOrdered = weighedOrderedRows.reduce((a, r) => a + r.weight_ordered_kg, 0);
+  const weighedOrdered = weighedOrderedRows.length;
 
   // A ratio with no denominator is a dash, never 0% — `_ratio`'s rule on the server, and for the
   // same reason: 0% TACOS would read as the most ad-efficient set of products on the account.
@@ -1607,7 +1617,7 @@ function computeTotals(list){
   const infinite = adsCost > 0 && attributed === 0;
 
   return {sales, spend, net, adsCost, attributed, units, ordered, refunded,
-          weighed: weighed.length, weight, weightUnknown, ratio,
+          weighed: weighed.length, weight, weightUnknown, weighedOrdered, weightOrdered, ratio,
           rating, reviews, decided, infinite};
 }
 

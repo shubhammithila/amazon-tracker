@@ -534,6 +534,10 @@ def size_row(econ: Mapping, catalogue: Mapping, ads: Mapping | None = None) -> d
         # shows a dash — `_ratio`'s discipline — because a product that sold 245 units of something
         # the sheet has no weight for has an UNKNOWN weight sold, not a zero one.
         "weight_kg": line_weight(units, pack_weight) if pack_weight > 0 else None,
+        # The same multiplication on units ORDERED, for dispatch and purchasing: `weight_kg` is net
+        # of refunds (weight actually sold) and the two answer different questions. Same unknown-
+        # weight rule — a dash, never 0 kg.
+        "weight_ordered_kg": line_weight(units_ordered, pack_weight) if pack_weight > 0 else None,
         "weight_unknown": 1 if (units > 0 and pack_weight <= 0) else 0,
         "sales": round(ordered, 2),
         "refunded": round(refunded, 2),
@@ -1363,6 +1367,8 @@ def _sum_sizes(sizes: Sequence[Mapping]) -> dict:
     # so the same reviews appear on every size — and copying it here would undercount real weight.
     known_weights = [s.get("weight_kg") for s in sizes if s.get("weight_kg") is not None]
     weight_kg = round(sum(_num(w) for w in known_weights), 3) if known_weights else None
+    known_ordered = [s.get("weight_ordered_kg") for s in sizes if s.get("weight_ordered_kg") is not None]
+    weight_ordered_kg = round(sum(_num(w) for w in known_ordered), 3) if known_ordered else None
     weight_unknown = sum(int(s.get("weight_unknown") or 0) for s in sizes)
 
     fees: dict[str, float] = {}
@@ -1380,6 +1386,7 @@ def _sum_sizes(sizes: Sequence[Mapping]) -> dict:
         "units_ordered": units_ordered,
         "units_refunded": units_refunded,
         "weight_kg": weight_kg,
+        "weight_ordered_kg": weight_ordered_kg,
         "weight_unknown": weight_unknown,
         "ads_cost": ads_cost,
         "ad_attributed_sales": attributed,

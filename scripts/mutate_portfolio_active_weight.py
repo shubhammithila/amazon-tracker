@@ -342,8 +342,9 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         ROUTER,
         '        totals["net"], int(totals.get("units_ordered") or 0), totals["units"], '
-        '_kg(totals.get("weight_kg")),',
-        '        totals["net"], int(totals.get("units_ordered") or 0), totals["units"], _kg(sum(\n'
+        '_kg(totals.get("weight_ordered_kg")), _kg(totals.get("weight_kg")),',
+        '        totals["net"], int(totals.get("units_ordered") or 0), totals["units"], '
+        '_kg(totals.get("weight_ordered_kg")), _kg(sum(\n'
         '            (p.get("weight_kg") or 0) for p in data["parents"]) or None),',
         "the TOTAL row re-sums the rows, and each parent already contains its sizes — the "
         "double-count `build_portfolio_xlsx` has no `_totals_row` in order to avoid "
@@ -351,8 +352,9 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         DOCS,
-        '            elif heading in ("Sales", "Ad spend", "Ad sales", "Net", "Units", "Units ordered", '
-        '"Net units",\n                             "Weight (kg)",\n'
+        '            elif heading in ("Sales", "Sales (ex-GST)", "Ad spend", "Ad sales", "Net", "Units",\n'
+        '                             "Units ordered", "Net units", "Weight (kg)", "Weight ordered (kg)",\n'
+        '                             "Net weight (kg)",\n'
         '                             "Net %", "TACOS", "ACOS"):',
         '            elif heading in ("Sales", "Ad spend", "Net", "Units", "Net %", "TACOS"):',
         "the new numeric columns render left-aligned, so digits do not line up down the column — "

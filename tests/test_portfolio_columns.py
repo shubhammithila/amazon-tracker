@@ -22,13 +22,13 @@ def test_users_has_a_nullable_preferences_column():
 from app.portfolio import columns as C
 
 ALL = ["verdict", "sales", "ad_spend", "tacos", "acos", "net_pct",
-       "units_ordered", "units", "weight_kg", "returns_pct", "rating", "decision"]
+       "units_ordered", "units", "weight_ordered_kg", "weight_kg", "returns_pct", "rating", "decision"]
 
 
-def test_the_vocabulary_is_exactly_the_agreed_thirteen_columns():
+def test_the_vocabulary_is_exactly_the_agreed_fourteen_columns():
     assert [c["id"] for c in C.COLUMNS] == ["product"] + ALL
     locked = {c["id"] for c in C.COLUMNS if c["locked"]}
-    assert locked == {"product", "sales", "ad_spend", "units_ordered", "units", "weight_kg"}
+    assert locked == {"product", "sales", "ad_spend", "units_ordered", "units", "weight_ordered_kg", "weight_kg"}
 
 
 def test_the_default_is_todays_screen():

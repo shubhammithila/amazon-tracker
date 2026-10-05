@@ -83,3 +83,67 @@ async def test_the_workbook_carries_both_unit_columns_with_the_right_figures(aut
     assert differing, "the fixture has no refunded units, so this test could not tell the columns apart"
     for s in sizes:
         assert by_asin[s["asin"]] == (s["units_ordered"], s["units"]), s["asin"]
+
+
+# ─── Sales ex-GST, and weight on units ORDERED ───────────────────────────────
+
+
+def test_sales_is_labelled_ex_GST_everywhere_it_is_shown():
+    """Amazon's `orderedProductSales` excludes the 5% GST the order price includes — measured,
+    app sales = order price / 1.05 to within 0.2% — so the Business Report reads ~5% higher. An
+    unlabelled "Sales" invites exactly the reconciliation this was asked about."""
+    from pathlib import Path
+
+    from app.portfolio import columns as C
+
+    assert {c["id"]: c["label"] for c in C.COLUMNS}["sales"] == "Sales (ex-GST)"
+    text = Path("templates/portfolio.html").read_text(encoding="utf-8")
+    assert '<div class="k">Sales (ex-GST)</div>' in text, "the KPI tile still says plain Sales"
+    router = Path("app/routers/portfolio.py").read_text(encoding="utf-8")
+    assert '"Sales (ex-GST)"' in router, "the Excel header still says plain Sales"
+
+
+def test_weight_ordered_is_units_ORDERED_times_the_pack_and_sums_up_to_the_parent():
+    from app.portfolio import logic
+
+    size = logic.size_row(
+        {"childAsin": "B0X", "parentAsin": "B0P",
+         "sales": {"orderedProductSales": {"amount": 100}, "unitsOrdered": 113, "unitsRefunded": 7,
+                   "netUnitsSold": 106}},
+        {"B0X": {"name": "Bengali Posta", "weight": 0.2}},
+    )
+    assert size["weight_ordered_kg"] == 22.6       # 113 x 0.2, not 106 x 0.2
+    assert size["weight_kg"] == 21.2
+    parent = logic._sum_sizes([size, dict(size)])
+    assert parent["weight_ordered_kg"] == 45.2
+
+
+def test_an_unknown_pack_weight_is_a_dash_not_zero_for_weight_ordered_too():
+    from app.portfolio import logic
+
+    size = logic.size_row(
+        {"childAsin": "B0X", "sales": {"unitsOrdered": 5, "netUnitsSold": 5}}, {"B0X": {"name": "X"}}
+    )
+    assert size["weight_ordered_kg"] is None
+
+
+@pytest.mark.parametrize("col", ["weight_ordered_kg", "weight_kg"])
+def test_each_weight_column_shows_its_own_figure(col):
+    expected = {"weight_ordered_kg": "22.6 kg", "weight_kg": "21.2 kg"}[col]
+    out = run_portfolio_js(VOCAB + """
+const R = Object.assign({}, ROW, {weight_ordered_kg: 22.6, weight_kg: 21.2});
+layout = normaliseLayout(null, data.columns);
+const part = dataCells(R).split('data-col="%s"')[1] || "";
+emit(part ? part.slice(part.indexOf(">") + 1, part.indexOf("</td>")).replace(/<[^>]+>/g, "").trim() : null);
+""" % col)
+    assert out == expected
+
+
+def test_EVERY_sortable_column_has_a_sort_field_so_it_does_not_silently_sort_by_sales():
+    """**Found while adding Weight ordered.** `sortValue` reads `FIELDS[sort.key] || FIELDS.sales`,
+    so a column whose sortKey is missing from FIELDS sorts by SALES with nothing failing — which is
+    what "Units ordered" did from the commit that added it. Asserted against the page's own objects."""
+    out = run_portfolio_js("""
+emit(Object.entries(COLUMN_DEFS).filter(([id, d]) => d.sortKey && !FIELDS[d.sortKey]).map(([id]) => id));
+""")
+    assert out == [], f"these columns sort by Sales instead of themselves: {out}"

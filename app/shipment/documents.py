@@ -360,8 +360,9 @@ def build_portfolio_xlsx(
             # `Ad sales` were missing here from the day they were added**, so both have rendered
             # left-aligned in every workbook exported since; `Weight (kg)` joins them rather than
             # repeating the omission.
-            elif heading in ("Sales", "Ad spend", "Ad sales", "Net", "Units", "Units ordered", "Net units",
-                             "Weight (kg)",
+            elif heading in ("Sales", "Sales (ex-GST)", "Ad spend", "Ad sales", "Net", "Units",
+                             "Units ordered", "Net units", "Weight (kg)", "Weight ordered (kg)",
+                             "Net weight (kg)",
                              "Net %", "TACOS", "ACOS"):
                 cell.alignment = Alignment(horizontal="right")
     # The reason column is prose and needs to wrap rather than run under its neighbours.

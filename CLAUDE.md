@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2527 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2533 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -2119,6 +2119,23 @@ picks up the new column after Net % via `normalise_column_layout`, so no existin
 `tests/test_portfolio_units_ordered.py` builds its rows with the two figures DIFFERENT. The shared
 fixture has 10 and 10, so a renderer reading the wrong field would pass, and the first version of the
 Excel test (`ordered >= net`) did let a both-columns-net mutation through.
+
+### Sales is ex-GST, and weight is shown on BOTH unit bases
+Checked after the units fix, against Amazon's All Orders report for 5 Sep – 4 Oct:
+- **Sales = order price ÷ 1.05 to within 0.2%**, and 94% of sales sit at a per-ASIN ratio of
+  0.94–0.96. `orderedProductSales` excludes the 5% GST that the order price includes. The small
+  per-ASIN scatter follows promotions; the largest single-ASIN gap was about ₹1,450. So the column
+  and KPI tile now read **Sales (ex-GST)**, and the Business Report is expected to read about 5% higher.
+- **Every pack weight in the MRP sheet matched the size in the ASIN's own Amazon title**: 114 of
+  114, zero mismatches.
+- **Weight ordered** (`units_ordered × pack`) now sits beside **Net weight** (net units × pack).
+  Same unknown-weight rule: a dash, never 0 kg.
+
+> **"Units ordered" sorted by SALES from the commit that added it.** `sortValue` reads
+> `FIELDS[sort.key] || FIELDS.sales`, so a column whose sortKey is missing from `FIELDS` falls back to
+> Sales with nothing failing. Found while adding Weight ordered.
+> `test_EVERY_sortable_column_has_a_sort_field_so_it_does_not_silently_sort_by_sales` checks this
+> against the page's own objects, and fails with the old code.
 
 ### The size rows are plain; the SKU detail row keeps the channel split
 Reported as *"the sku wise analysis is looking too jumbled up. too much info on the left. keep it

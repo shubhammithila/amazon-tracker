@@ -11,7 +11,7 @@ pytestmark = pytest.mark.regression
 
 
 def test_the_harness_can_run_the_page_code():
-    assert run_portfolio_js("emit(normaliseLayout(null, data.columns).order.length)") == 12
+    assert run_portfolio_js("emit(normaliseLayout(null, data.columns).order.length)") == 13
 
 
 VOCAB = """
@@ -21,6 +21,7 @@ data.columns = [
   {id:"tacos",label:"TACOS",locked:false},{id:"acos",label:"ACOS",locked:false},
   {id:"net_pct",label:"Net %",locked:false},
   {id:"units_ordered",label:"Units ordered",locked:true},{id:"units",label:"Net units",locked:true},
+  {id:"weight_ordered_kg",label:"Weight ordered",locked:true},
   {id:"weight_kg",label:"Weight",locked:true},{id:"returns_pct",label:"Returns",locked:false},
   {id:"rating",label:"Rating",locked:false},{id:"decision",label:"Decision",locked:false}];
 data.group_flags = {};

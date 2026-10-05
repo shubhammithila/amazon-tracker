@@ -220,7 +220,11 @@ def test_the_workbook_carries_the_weight_on_every_row_type():
         f"only {source.count('_kg(')} row builders carry a weight cell; there are four "
         "(size, parent, flavour group, TOTAL) plus the subtitle"
     )
-    assert '"Weight (kg)"' in source, "the header has no weight column"
+    # Two weight columns since "Weight ordered" was added: net of refunds, and on units ordered.
+    assert '"Net weight (kg)"' in source and '"Weight ordered (kg)"' in source, (
+        "the header is missing a weight column"
+    )
+    assert source.count("_kg(") >= 8, "a row builder carries one weight cell where there are two"
 
 
 def test_every_NUMERIC_workbook_column_is_right_aligned():
