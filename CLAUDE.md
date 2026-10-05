@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2533 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2542 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -2749,6 +2749,37 @@ total carries no information about which day each sale fell on, so there was not
 downgrade recreates both tables **empty** for the same reason. `scripts/backfill_portfolio_daily.py`
 fills the history once after deploy; the nightly job keeps it current from then on.
 
+### Fees post LATE, so 30 days of economics are re-read every night
+Asked as *"check once if the fees of amazon which are being fetched are correct or updated"*. They were
+not. 5 Sep – 4 Oct was re-fetched and compared with what was stored, and every day was **₹15,000–29,000
+short on fees**: about ₹5.6 lakh across the month, or around 12 points of Net %.
+
+Two causes, measured from what each stored day held and when it was fetched:
+
+| Days | Fetched | Stored fee types |
+|---|---|---|
+| 8 Jul – 30 Aug | 23 Sep (backfill) | all, incl. **FBA fulfilment ₹9–13k/day, fixed closing ₹9–12k/day** |
+| 5 Sep – 3 Oct | **4 Oct 07:01 IST** | **FBA fulfilment and fixed closing missing entirely** |
+| 4 Oct | 5 Oct | **₹92** (₹29,379 a day later) |
+
+1. **Fees arrive over days**, and `run_incremental` fetched each day ONCE. It now re-reads
+   `ECON_SETTLE_DAYS = 30` of economics every night (about a minute). The 15-minute ACOS ad report
+   still runs only for days that are genuinely missing (`skip_ads`).
+2. **On 4 Oct Amazon returned a month of rows with two fee types gone**, and the **Sunday Projections
+   job wrote it over good rows**. It ran at 07:00 IST, before the 07:30 Portfolio job stored
+   yesterday, so its window always looked incomplete and it re-fetched and saved all 30 days. It now
+   runs at **09:30 IST** and stores **only days that were missing**.
+
+**`incomplete_settled_days` guards the re-read.** Fees on a day older than `SETTLED_AFTER_DAYS = 10`
+only grow as Amazon posts them. So if a fresh answer's fees for the settled days fall below 85% of
+what is stored, judged across those days together because one reimbursement can dip one day, those
+days keep their previous figures and `econ_warning` says so. Without this the nightly re-read would
+reproduce the 4 Oct damage every night Amazon's answer was incomplete.
+
+> **`test_the_nightly_run_is_a_NO_OP_when_the_day_is_already_held` was the bug, written as a test.**
+> It asserted that a held day costs nothing, and that is precisely why late fees were never picked
+> up. It now asserts the opposite: economics are re-read, and the ad report is skipped.
+
 ### The nightly job fetches YESTERDAY, not the window
 `refresh.run_incremental` asks `range_completeness` which days are missing and fetches **only those**,
 as one contiguous span — so a routine night is one day, ~15 minutes, against ~45 for a whole window
@@ -3916,7 +3947,7 @@ The blend weight and divergence threshold are saved settings (`portfolio_setting
 or Ads specifically), **range-checked on read AND write**: the `good_rating: 99` lesson from the
 Portfolio tab, where an unvalidated stored threshold silently broke every verdict on the account.
 
-### The weekly refresh runs at 07:00 IST, before Portfolio and Ads
+### The weekly refresh runs at 09:30 IST, AFTER Portfolio and Ads (it was 07:00, which overwrote fees)
 Registered through `app.ist.utc_hhmm`, the same way the Ads and Portfolio jobs are — no bare hour
 reaches `CronTrigger`, which is the mistake that put those two jobs at 08:50/09:20 IST for months
 before it was found. `day_of_week=6` (Sunday) is arbitrary but fixed; weekly, not nightly, because

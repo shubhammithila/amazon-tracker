@@ -31,7 +31,63 @@ from app.shipment.spapi import SpApiError, SpApiNotConfigured
 #: silently become several reports and multiply a "catch-up" run's cost.
 MAX_BACKFILL_DAYS = 7
 
+#: **The economics of the last 30 days are re-fetched every night, because Amazon posts fees LATE.**
+#: Measured on production, 6 Oct: yesterday's row held ₹92 of fees when first fetched, against
+#: ₹29,379 a day later. FBA fulfilment, fixed closing and referral fees arrive over the following
+#: days, and refunds keep arriving for weeks. A day fetched once and never again therefore keeps a
+#: fee figure that is far too low, and every Net % built on it is overstated.
+#:
+#: This is economics ONLY. That query is ~1 minute for 30 days; the ACOS ad report is the 15-minute
+#: one, and it still runs only for days genuinely missing.
+ECON_SETTLE_DAYS = 30
+
+#: **A fresh fetch may not REPLACE settled days with much lower fees.** On 4 Oct Amazon's Data Kiosk
+#: returned a month of rows with FBA fulfilment and fixed closing fees missing entirely, about
+#: ₹19,000 a day, and the weekly Projections job's 07:00 fetch wrote that over good rows. Re-fetched
+#: two days later the same days were complete again. Fees on a day older than
+#: `SETTLED_AFTER_DAYS` only ever GROW as Amazon posts them, so a drop below `FEE_DROP_FLOOR` of what
+#: is stored marks Amazon's answer as incomplete, not a correction: those days keep their previous
+#: figures, and the run says so.
+SETTLED_AFTER_DAYS = 10
+FEE_DROP_FLOOR = 0.85
+
 logger = logging.getLogger(__name__)
+
+
+class _NoAdsWanted(Exception):
+    """Internal: the caller asked for economics only. Caught beside the ads failures so the
+    skip shares their isolation — the stored margins are never at risk either way."""
+
+
+def _fees_of(row: dict) -> float:
+    """Total Amazon fees on one raw economics row — `logic.size_row`'s own figure, so the guard and
+    the screen cannot disagree about what a row's fees are."""
+    from app.portfolio import logic
+
+    return float(logic.size_row(row, {}).get("fees_total") or 0.0)
+
+
+def incomplete_settled_days(
+    new_rows: list[dict], stored: dict[str, float], window_end: str
+) -> list[str]:
+    """Settled days whose freshly fetched fees fell below `FEE_DROP_FLOOR` of what is stored. Pure.
+
+    Judged over the settled days TOGETHER, not one by one: a single day's fees can legitimately dip
+    (a large inventory reimbursement lands as a negative fee), while a whole fee type vanishing — the
+    4 Oct failure — moves the total of every day at once.
+    """
+    cutoff = (date.fromisoformat(window_end) - timedelta(days=SETTLED_AFTER_DAYS)).isoformat()
+    fresh: dict[str, float] = {}
+    for row in new_rows:
+        day = (row.get("startDate") or "")[:10]
+        if day and day <= cutoff:
+            fresh[day] = fresh.get(day, 0.0) + _fees_of(row)
+    settled = [d for d in fresh if d in stored]
+    before = sum(stored[d] for d in settled)
+    after = sum(fresh[d] for d in settled)
+    if before > 1000 and after < FEE_DROP_FLOOR * before:
+        return sorted(settled)
+    return []
 
 #: Live progress for the banner. Module-level because there is exactly one refresh at a time
 #: and the screen polls a separate request that must see it.
@@ -60,6 +116,8 @@ def reset_state() -> None:
         "ads_error": None,
         #: Sponsored Brands attribution failed. Like `ads_error`, it does not cost the margins.
         "sb_error": None,
+        #: Amazon returned an incomplete-looking answer for settled days, which were kept as they were.
+        "econ_warning": None,
         "refused": False,
     })
 
@@ -142,8 +200,16 @@ async def run(
     start: str | None = None,
     end: str | None = None,
     sleep=asyncio.sleep,
+    econ_start: str | None = None,
+    econ_end: str | None = None,
+    skip_ads: bool = False,
 ) -> dict:
     """Fetch one window from BOTH Amazon APIs and store it. Returns a status snapshot.
+
+    ``start``/``end`` are the ACOS ad report's window. ``econ_start``/``econ_end`` WIDEN the
+    economics fetch beyond it — the nightly run re-reads 30 days of economics (fees post late; see
+    `ECON_SETTLE_DAYS`) while asking the 15-minute ad report only for days actually missing.
+    ``skip_ads`` drops the ad report entirely when no day is missing.
 
     **Refuses rather than raises when one is already running**, so the nightly job overlapping a
     manual refresh is a no-op instead of an error in the log every night. The guard lives here
@@ -171,15 +237,31 @@ async def run(
     window_start = window_end = None
     try:
         # ── Phase 1-4: the economics (margins, fees, TACOS) ──
+        e_lo = min([d for d in (start, econ_start) if d], default=None)
+        e_hi = max([d for d in (end, econ_end) if d], default=None)
         rows, sku_rows, window_start, window_end = await economics.fetch_economics(
             days=days or economics.WINDOW_DAYS,
-            start=start, end=end,
+            start=e_lo, end=e_hi,
             sleep=sleep, on_progress=_progress,
         )
         STATE.update({"window_start": window_start, "window_end": window_end})
+        ads_start, ads_end = (start or window_start), (end or window_end)
 
         _progress("econ_store", 0, 2)
         async with db_factory() as db:
+            keep = incomplete_settled_days(
+                rows, await repository.fee_totals_by_day(db, window_start, window_end), window_end
+            )
+            if keep:
+                kept = set(keep)
+                rows = [r for r in rows if (r.get("startDate") or "")[:10] not in kept]
+                sku_rows = [r for r in sku_rows if (r.get("startDate") or "")[:10] not in kept]
+                STATE["econ_warning"] = (
+                    f"Amazon returned much lower fees for {len(keep)} settled day(s) "
+                    f"({keep[0]}..{keep[-1]}) than are already stored, which is how an incomplete "
+                    "answer looks rather than a correction. Those days keep their previous figures."
+                )
+                logger.warning("portfolio refresh: %s", STATE["econ_warning"])
             stored = await repository.save_economics_daily(db, rows)
             _progress("econ_store", 1, 2)
             stored_skus = await repository.save_sku_snapshot(db, sku_rows)
@@ -199,8 +281,12 @@ async def run(
             def ads_progress(done, total):
                 _progress("ads_report", done, total)
 
+            if skip_ads:
+                # Every day already has its ad figures; the economics above were re-read only
+                # because fees post late. The ad report is the 15-minute half — not spent for nothing.
+                raise _NoAdsWanted()
             ad_rows = await ads.fetch_acos(
-                window_start, window_end, sleep=sleep, on_progress=ads_progress
+                ads_start, ads_end, sleep=sleep, on_progress=ads_progress
             )
             _progress("ads_store", 0, 1)
             async with db_factory() as db:
@@ -208,6 +294,8 @@ async def run(
             _progress("ads_store", 1, 1)
             STATE["ads_rows"] = ads_stored
             logger.info("portfolio refresh: %d ad row(s) stored", ads_stored)
+        except _NoAdsWanted:
+            logger.info("portfolio refresh: ad figures already held for every day, report skipped")
         except ads.AdsNotConfigured:
             # Expected on any install without advertising keys. Not an error: the tab shipped
             # before ACOS existed and says "not configured" rather than failing.
@@ -241,7 +329,7 @@ async def run(
             await repository.record_refresh(
                 db, window_start=window_start, window_end=window_end,
                 rows_stored=stored,
-                error=STATE.get("ads_error") or STATE.get("sb_error"),
+                error=STATE.get("ads_error") or STATE.get("sb_error") or STATE.get("econ_warning"),
                 started_at=started,
             )
 
@@ -321,16 +409,25 @@ async def run_incremental(
         for offset in range(max_days)
     ]
     missing = sorted(day for day in wanted if day not in held)
+
+    # The economics are re-read for the whole settling tail EVERY night, held or not — fees post
+    # late (see `ECON_SETTLE_DAYS`). Only the ad report is limited to the missing days.
+    econ_start = (end_day - timedelta(days=ECON_SETTLE_DAYS - 1)).isoformat()
     if not missing:
-        logger.info("portfolio refresh: every day up to %s is held, nothing to fetch", end_day)
-        snapshot = status()
-        snapshot["skipped"] = True
-        return snapshot
+        logger.info(
+            "portfolio refresh: every day up to %s is held; re-reading economics %s..%s for "
+            "late-posted fees, no ad report", end_day, econ_start, end_day,
+        )
+        return await run(
+            db_factory, econ_start=econ_start, econ_end=end_day.isoformat(),
+            skip_ads=True, sleep=sleep,
+        )
 
     logger.info(
-        "portfolio refresh: %d day(s) missing, fetching %s..%s",
-        len(missing), missing[0], missing[-1],
+        "portfolio refresh: %d day(s) missing, ad report %s..%s, economics from %s",
+        len(missing), missing[0], missing[-1], econ_start,
     )
     return await run(
         db_factory, start=missing[0], end=missing[-1], sleep=sleep,
+        econ_start=econ_start, econ_end=end_day.isoformat(),
     )

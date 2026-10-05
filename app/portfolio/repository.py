@@ -119,6 +119,24 @@ def expected_days(start: str, end: str) -> list[str]:
     ]
 
 
+async def fee_totals_by_day(db: AsyncSession, start: str, end: str) -> dict[str, float]:
+    """``{day: total Amazon fees}`` stored at ASIN grain. What the incomplete-fees guard in
+    `refresh.run` compares a fresh fetch against."""
+    rows = await db.execute(
+        select(EconomicsDaily.day, EconomicsDaily.fees_json)
+        .where(EconomicsDaily.seller_sku == ASIN_GRAIN)
+        .where(EconomicsDaily.day >= start, EconomicsDaily.day <= end)
+    )
+    totals: dict[str, float] = {}
+    for day, fees_json in rows.all():
+        try:
+            fees = json.loads(fees_json or "{}")
+        except ValueError:
+            fees = {}
+        totals[day] = totals.get(day, 0.0) + sum(_float(v) for v in fees.values())
+    return totals
+
+
 async def days_held(db: AsyncSession, *, table=EconomicsDaily) -> set[str]:
     """Which days have rows at all, for the authoritative grain.
 

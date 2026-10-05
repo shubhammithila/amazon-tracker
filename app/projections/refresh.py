@@ -54,7 +54,16 @@ async def _ensure_window(
     asin_rows, _sku_rows, start, end = await economics.fetch_economics(
         days=days, sleep=sleep, today=today,
     )
-    await portfolio_repository.save_economics_daily(db, asin_rows)
+    # **Store only the days that were MISSING.** This used to save the whole 30-day answer, and it
+    # ran at 07:00 IST, half an hour BEFORE the Portfolio job stores yesterday, so the window always
+    # looked incomplete and every Sunday it overwrote 30 good days with whatever Amazon had at that
+    # moment. On 4 Oct that answer was missing FBA fulfilment and fixed closing fees entirely, about
+    # ₹19,000 a day, and the Portfolio tab's Net % read high for a month. Days already held belong
+    # to the Portfolio refresh, which re-reads them nightly with a guard against exactly that answer.
+    held = await portfolio_repository.days_held(db)
+    missing = [r for r in asin_rows if (r.get("startDate") or "")[:10] not in held]
+    if missing:
+        await portfolio_repository.save_economics_daily(db, missing)
     return start, end
 
 

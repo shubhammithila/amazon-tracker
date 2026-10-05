@@ -552,8 +552,12 @@ async def test_the_nightly_run_fetches_only_the_MISSING_days(monkeypatch, db):
     )
 
 
-async def test_the_nightly_run_is_a_NO_OP_when_the_day_is_already_held(monkeypatch, db):
-    """A second run the same night must spend nothing, so the job is safe to retry."""
+async def test_a_held_day_still_has_its_ECONOMICS_reread_but_no_ad_report(monkeypatch, db):
+    """**This test used to assert a no-op, and that was the bug.** Fees post LATE — measured, a
+    day's row held ₹92 of fees when first fetched and ₹29,379 a day later — so a day fetched once
+    and never again keeps fees far too low and an inflated Net %. Every night now re-reads the last
+    `ECON_SETTLE_DAYS` of economics (~1 minute) while the 15-minute ad report is still skipped when
+    nothing is missing."""
     from app.portfolio import refresh
 
     today = date(2026, 9, 30)
@@ -566,7 +570,7 @@ async def test_the_nightly_run_is_a_NO_OP_when_the_day_is_already_held(monkeypat
     called = []
 
     async def _fake_run(*a, **k):
-        called.append(True)
+        called.append(k)
         return {}
 
     monkeypatch.setattr(refresh, "run", _fake_run)
@@ -580,9 +584,13 @@ async def test_the_nightly_run_is_a_NO_OP_when_the_day_is_already_held(monkeypat
                 return False
         return _Ctx()
 
-    result = await refresh.run_incremental(_factory, today=today)
-    assert result.get("skipped") is True
-    assert not called, "a fetch was started for days that are already held"
+    await refresh.run_incremental(_factory, today=today)
+    assert len(called) == 1, "the late-posted fees of held days are never re-read"
+    asked = called[0]
+    assert asked.get("skip_ads") is True, "the 15-minute ad report ran although no day was missing"
+    assert asked.get("econ_end") == "2026-09-29"
+    span = (date(2026, 9, 29) - date.fromisoformat(asked["econ_start"])).days + 1
+    assert span == refresh.ECON_SETTLE_DAYS
 
 
 async def test_a_long_gap_is_BOUNDED_rather_than_fetched_all_at_once(monkeypatch, db):

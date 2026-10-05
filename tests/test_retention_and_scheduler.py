@@ -288,7 +288,7 @@ def test_the_nightly_jobs_fire_at_the_IST_time_they_claim(monkeypatch):
     assert f"minute='{portfolio_minute}'" in jobs["portfolio_refresh"]
 
 
-def test_the_projections_job_fires_at_07_00_IST_and_before_portfolio(monkeypatch):
+def test_the_projections_job_fires_at_09_30_IST_AFTER_portfolio_and_ads(monkeypatch):
     """Same lesson, same test shape as the ads/portfolio pair: assert the IST constant, never
     a hardcoded UTC hour — a literal `hour='1'` here would pin the arithmetic instead of the
     intent, exactly the mistake that shipped the original 09:20 IST bug."""
@@ -297,16 +297,18 @@ def test_the_projections_job_fires_at_07_00_IST_and_before_portfolio(monkeypatch
 
     jobs = _registered_jobs(monkeypatch, hour=6)
 
-    assert sched.PROJECTIONS_REFRESH_IST == (7, 0)
+    assert sched.PROJECTIONS_REFRESH_IST == (9, 30)
     proj_hour, proj_minute = ist_module.utc_hhmm(*sched.PROJECTIONS_REFRESH_IST)
     assert f"hour='{proj_hour}'" in jobs["projections_refresh"]
     assert f"minute='{proj_minute}'" in jobs["projections_refresh"]
     assert f"day_of_week='{sched.PROJECTIONS_REFRESH_DAY}'" in jobs["projections_refresh"]
 
-    assert sched.PROJECTIONS_REFRESH_IST < sched.PORTFOLIO_REFRESH_IST, (
-        "the weekly recompute must stay before the nightly portfolio pull, or the two "
-        "multi-minute Amazon reports overlap on a 951 MB box"
-    )
+    # **This assertion FLIPPED.** It said "before the portfolio pull, or the two Amazon reports
+    # overlap" — and running before it is what made the window look incomplete every Sunday, so the
+    # job re-fetched and overwrote 30 days (on 4 Oct with two fee types missing). After both jobs the
+    # window is complete and this one makes no Amazon call, so there is nothing to overlap.
+    assert sched.PROJECTIONS_REFRESH_IST > sched.PORTFOLIO_REFRESH_IST
+    assert sched.PROJECTIONS_REFRESH_IST > sched.ADS_REFRESH_IST
 
 
 def test_the_startup_log_states_the_IST_time_and_the_UTC_one(monkeypatch, caplog):

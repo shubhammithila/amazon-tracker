@@ -373,12 +373,15 @@ async def scheduled_ads_retry():
                     result.get("sb_error"))
 
 
-#: **07:00 IST, before both the portfolio pull (07:30) and the ads one (08:00)** — see
-#: `PORTFOLIO_REFRESH_IST` for why these are stated in IST rather than as a bare server hour.
+#: **09:30 IST, AFTER the portfolio pull (07:30) and the ads one (08:00)**, and the order is the fix.
+#: It ran at 07:00, before the portfolio job had stored yesterday, so its 30-day window always looked
+#: incomplete and it re-fetched and overwrote all 30 days every Sunday — on 4 Oct with an answer
+#: missing two fee types. After the nightly pull the window is complete and this job makes no Amazon
+#: call at all. See `PORTFOLIO_REFRESH_IST` for why these are stated in IST.
 #: Weekly, not nightly: the owner asked for weekly, and a 30-day rolling average moves little
 #: day to day, so a tighter cadence buys nothing. Sunday (day_of_week=6 in APScheduler's
 #: 0=Monday..6=Sunday) is an arbitrary but stable choice — a fixed day matters more than which one.
-PROJECTIONS_REFRESH_IST = (7, 0)
+PROJECTIONS_REFRESH_IST = (9, 30)
 PROJECTIONS_REFRESH_DAY = 6
 
 
