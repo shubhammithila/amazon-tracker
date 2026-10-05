@@ -200,8 +200,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     # ── The screen: the column layout ──
     (
         "app/portfolio/columns.py",
-        '    {"id": "units",       "label": "Units",    "locked": True},',
-        '    {"id": "units",       "label": "Units",    "locked": False},',
+        '    {"id": "units",       "label": "Net units", "locked": True},',
+        '    {"id": "units",       "label": "Net units", "locked": False},',
         "Units becomes HIDEABLE again, so the figure the owner judges a row by can vanish from "
         "the table — test_the_hidden_columns_are_gated_in_ALL_THREE_places",
     ),
@@ -341,8 +341,9 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     # ── The export ──
     (
         ROUTER,
-        '        totals["net"], totals["units"], _kg(totals.get("weight_kg")),',
-        '        totals["net"], totals["units"], _kg(sum(\n'
+        '        totals["net"], int(totals.get("units_ordered") or 0), totals["units"], '
+        '_kg(totals.get("weight_kg")),',
+        '        totals["net"], int(totals.get("units_ordered") or 0), totals["units"], _kg(sum(\n'
         '            (p.get("weight_kg") or 0) for p in data["parents"]) or None),',
         "the TOTAL row re-sums the rows, and each parent already contains its sizes — the "
         "double-count `build_portfolio_xlsx` has no `_totals_row` in order to avoid "
@@ -350,8 +351,9 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         DOCS,
-        '            elif heading in ("Sales", "Ad spend", "Ad sales", "Net", "Units", '
-        '"Weight (kg)",\n                             "Net %", "TACOS", "ACOS"):',
+        '            elif heading in ("Sales", "Ad spend", "Ad sales", "Net", "Units", "Units ordered", '
+        '"Net units",\n                             "Weight (kg)",\n'
+        '                             "Net %", "TACOS", "ACOS"):',
         '            elif heading in ("Sales", "Ad spend", "Net", "Units", "Net %", "TACOS"):',
         "the new numeric columns render left-aligned, so digits do not line up down the column — "
         "the pre-existing miss this change fixed for ACOS and Ad sales "
@@ -373,6 +375,7 @@ TESTS = [
     # that guard its targets reports a gap that does not exist — or, worse, hides one that does.
     "tests/test_portfolio_ui_fixes.py",
     "tests/test_portfolio_columns_render.py",
+    "tests/test_portfolio_units_ordered.py",
 ]
 
 

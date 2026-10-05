@@ -23,7 +23,12 @@ COLUMNS: list[dict] = [
     {"id": "tacos",       "label": "TACOS",    "locked": False},
     {"id": "acos",        "label": "ACOS",     "locked": False},
     {"id": "net_pct",     "label": "Net %",    "locked": False},
-    {"id": "units",       "label": "Units",    "locked": True},
+    # **Two unit columns, because one could never match Seller Central.** "Units" used to show
+    # units AFTER refunds (`netUnitsSold`), which the Business Report never shows: Bengali Posta
+    # read 106 + 84 against the report's 113 + 86, the 7 + 2 refunded. `units_ordered` is the
+    # Business Report's own figure; net units stay, labelled, because verdicts are decided on them.
+    {"id": "units_ordered", "label": "Units ordered", "locked": True},
+    {"id": "units",       "label": "Net units", "locked": True},
     {"id": "weight_kg",   "label": "Weight",   "locked": True},
     {"id": "returns_pct", "label": "Returns",  "locked": False},
     {"id": "rating",      "label": "Rating",   "locked": False},

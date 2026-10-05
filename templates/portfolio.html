@@ -1359,12 +1359,18 @@ const COLUMN_DEFS = {
                 total: t => pct(t.ratio(t.net, t.sales), {sign: true})},
   // Units and Weight can move but never hide (the server says so). Weight is units × the pack size
   // from the MRP sheet, summed up from the sizes on a parent row.
+  units_ordered: {num: true, sortKey: "units_ordered", width: 90,
+                tip: "units ordered, before refunds — the figure Seller Central's Business Report shows",
+                row: r => n(r.units_ordered).toLocaleString("en-IN"),
+                detail: r => n(r.units_ordered).toLocaleString("en-IN"),
+                total: t => n(t.ordered).toLocaleString("en-IN")},
   units:       {num: true, sortKey: "units", width: 80,
+                tip: "units ordered minus units refunded — what verdicts and weight are decided on",
                 row: r => n(r.units).toLocaleString("en-IN"),
                 detail: r => n(r.units).toLocaleString("en-IN"),
                 total: t => n(t.units).toLocaleString("en-IN")},
   weight_kg:   {num: true, sortKey: "weight_kg", width: 90,
-                tip: "units × pack size, from the MRP sheet — a dash where the sheet has no weight",
+                tip: "net units × pack size, from the MRP sheet — a dash where the sheet has no weight",
                 row: r => kg(r.weight_kg), detail: r => kg(r.weight_kg),
                 total: t => (t.weighed ? kg(t.weight) : '<span class="dim">—</span>') + (t.weightUnknown
                   ? `<span class="tnote">${n(t.weightUnknown)} row(s) have no pack weight in the
@@ -1391,7 +1397,7 @@ const COLUMN_DEFS = {
 };
 
 // Used only when `data.columns` has not arrived (and by the render tests' smoke check).
-const FALLBACK_ORDER = ["verdict", "sales", "ad_spend", "tacos", "acos", "net_pct", "units",
+const FALLBACK_ORDER = ["verdict", "sales", "ad_spend", "tacos", "acos", "net_pct", "units_ordered", "units",
                         "weight_kg", "returns_pct", "rating", "decision"];
 
 /* The client twin of `app/portfolio/columns.normalise_column_layout`, rule for rule. It exists for
@@ -1402,7 +1408,7 @@ function normaliseLayout(saved, vocab){
   const movable = (known ? vocab.map(c => c.id) : ["product"].concat(FALLBACK_ORDER))
     .filter(id => id !== "product");
   const locked = new Set(known ? vocab.filter(c => c.locked).map(c => c.id)
-                               : ["product", "sales", "ad_spend", "units", "weight_kg"]);
+                               : ["product", "sales", "ad_spend", "units_ordered", "units", "weight_kg"]);
   const def = {order: movable.slice(), hidden: ["returns_pct"]};
   if(!saved || typeof saved !== "object" || Array.isArray(saved)) return def;
   const order = saved.order, hidden = saved.hidden === undefined ? [] : saved.hidden;

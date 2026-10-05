@@ -536,7 +536,7 @@ async def download_portfolio(
             "", _pct(size["net_pct"]), _pct(size["tacos"]), _acos(size),
             size["sales"], size["ad_spend"],
             size.get("ad_attributed_sales") or 0,
-            size["net"], size["units"], _kg(size.get("weight_kg")),
+            size["net"], int(size.get("units_ordered") or 0), size["units"], _kg(size.get("weight_kg")),
             "", "", "",
         ]
 
@@ -549,7 +549,7 @@ async def download_portfolio(
             _pct(parent["net_pct"]), _pct(parent["tacos"]), _acos(parent),
             parent["sales"], parent["ad_spend"],
             parent.get("ad_attributed_sales") or 0,
-            parent["net"], parent["units"], _kg(parent.get("weight_kg")),
+            parent["net"], int(parent.get("units_ordered") or 0), parent["units"], _kg(parent.get("weight_kg")),
             _stars(parent["rating"], parent["rating_count"]),
             parent["decision"] or "",
             # The flavour count belongs in the reason column on the parent line, because in a
@@ -568,7 +568,7 @@ async def download_portfolio(
                     "", _pct(group["net_pct"]), _pct(group["tacos"]), _acos(group),
                     group["sales"], group["ad_spend"],
                     group.get("ad_attributed_sales") or 0,
-                    group["net"], group["units"], _kg(group.get("weight_kg")),
+                    group["net"], int(group.get("units_ordered") or 0), group["units"], _kg(group.get("weight_kg")),
                     "", "", f"{len(group['sizes'])} size(s)",
                 ])
                 for size in group["sizes"]:
@@ -590,7 +590,7 @@ async def download_portfolio(
         # `totals["weight_kg"]` is `_sum_sizes`' own figure, NEVER a re-sum over `rows` — each
         # parent row already contains its sizes, so re-summing would double-count. The same reason
         # `build_portfolio_xlsx` has no `_totals_row`.
-        totals["net"], totals["units"], _kg(totals.get("weight_kg")),
+        totals["net"], int(totals.get("units_ordered") or 0), totals["units"], _kg(totals.get("weight_kg")),
         "", "",
         "Money and units are summed; percentages are recomputed from those sums, never averaged.",
     ])
@@ -598,7 +598,8 @@ async def download_portfolio(
     subtitle = (
         f"{window[0]} to {window[1]} (IST) · " if window else ""
     ) + (
-        f"{totals['parents']} products · {totals['units']} units · "
+        f"{totals['parents']} products · {totals.get('units_ordered') or 0} units ordered "
+        f"({totals['units']} net of refunds) · "
         f"{_kg(totals.get('weight_kg'))} · "
         f"net {_pct(totals['net_pct'])} of sales · TACOS {_pct(totals['tacos'])}"
         + (f" · ACOS {_pct(totals.get('acos'))}" if totals.get("acos") else "")
@@ -622,10 +623,10 @@ async def download_portfolio(
         "Portfolio review",
         subtitle,
         ["Product", "Brand", "ASIN", "Verdict", "Net %", "TACOS", "ACOS",
-         "Sales", "Ad spend", "Ad sales", "Net", "Units", "Weight (kg)",
+         "Sales", "Ad spend", "Ad sales", "Net", "Units ordered", "Net units", "Weight (kg)",
          "Rating", "Decision", "Why"],
         rows,
-        [30, 16, 12, 10, 9, 8, 8, 12, 11, 12, 12, 8, 12, 14, 10, 52],
+        [30, 16, 12, 10, 9, 8, 8, 12, 11, 12, 12, 10, 9, 12, 14, 10, 52],
     )
     filename = f"portfolio-{(window or ('', ''))[1] or 'latest'}.xlsx"
     return StreamingResponse(

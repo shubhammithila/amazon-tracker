@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2522 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2527 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -2095,6 +2095,30 @@ across `dataCells`, `detailCells` (its colspan) and `totalsRow`, plus `table{min
 left behind when a column is added is the same defect as none at all, applied to the last column.
 Verified in a browser at both settings, and at a 375px viewport where the table scrolls inside its
 wrapper with **zero** document-level overflow.
+
+### "Units ordered" matches Seller Central; "Net units" is after refunds
+Reported as *"there is a difference between the units actually sold as per the business report and
+what is being shown"*, for Bengali Posta over 5 Sep – 4 Oct: the screen read **106 + 84** against
+the Business Report's **113 + 86**.
+
+**The data was right and the label was wrong.** `economics_daily.units_ordered` held 113 and 86,
+exactly the report. The column called "Units" showed `netUnitsSold`, which is units ordered minus the
+7 + 2 refunded, a figure the Business Report never shows. Measured before changing anything:
+- **Not staleness.** All 30 days were re-fetched from Data Kiosk and matched what was stored, day by
+  day.
+- **Not the channel merge.** 87 of 114 ASINs matched the report exactly on `units_ordered`.
+- **The remaining 50 units of 14,785 (0.3%) are replacement orders**, plus a few pending lines.
+  Taken from Amazon's All Orders report for the window, the replacement units equal the gap exactly
+  on 18 of the 27 short ASINs. The Business Report counts a free replacement as a unit ordered; the
+  profit API does not, which is right for a profit view. The app is never ABOVE the report on any
+  ASIN, and that one-sidedness is what rules out a timezone shift.
+
+Both columns are now shown, both locked: **Units ordered** (reconciles with Seller Central) and
+**Net units** (what verdicts and weight are computed on). They are in the Excel too. A saved layout
+picks up the new column after Net % via `normalise_column_layout`, so no existing user loses it.
+`tests/test_portfolio_units_ordered.py` builds its rows with the two figures DIFFERENT. The shared
+fixture has 10 and 10, so a renderer reading the wrong field would pass, and the first version of the
+Excel test (`ordered >= net`) did let a both-columns-net mutation through.
 
 ### The size rows are plain; the SKU detail row keeps the channel split
 Reported as *"the sku wise analysis is looking too jumbled up. too much info on the left. keep it
