@@ -247,7 +247,8 @@ def test_all_scheduled_jobs_are_registered(monkeypatch):
     jobs = _registered_jobs(monkeypatch, hour=6)
     assert set(jobs) == {
         "daily_product_scrape", "daily_keyword_track", "daily_history_purge",
-        "order_refresh", "portfolio_refresh", "ads_refresh", "projections_refresh",
+        "order_refresh", "portfolio_refresh", "ads_refresh", "ads_refresh_retry",
+        "projections_refresh",
     }
 
 
@@ -348,13 +349,16 @@ def test_the_nightly_ads_refresh_only_reads_and_never_edits_a_bid(monkeypatch):
         "a searched name no longer exists, so this test would pass without proving anything"
     )
 
-    source = inspect.getsource(sched.scheduled_ads_refresh)
-    for forbidden in ("apply_changes", "plan_run", "open_run", "/apply"):
-        assert forbidden not in source, (
-            f"the nightly ads job references {forbidden!r} — a scheduled bid change is exactly "
-            f"what this feature refuses to do"
-        )
-    assert "refresh.run" in source or "ads_refresh.run" in source
+    # Both scheduled ads jobs: the morning refresh AND the afternoon gap-fill. A second unattended
+    # job is a second place a bid change could creep in.
+    for job in (sched.scheduled_ads_refresh, sched.scheduled_ads_retry):
+        source = inspect.getsource(job)
+        for forbidden in ("apply_changes", "plan_run", "open_run", "/apply"):
+            assert forbidden not in source, (
+                f"{job.__name__} references {forbidden!r} — a scheduled bid change is exactly "
+                f"what this feature refuses to do"
+            )
+        assert "refresh.run" in source or "ads_refresh.run" in source
 
 
 def test_the_order_refresh_runs_every_thirty_minutes(monkeypatch):

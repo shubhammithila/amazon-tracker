@@ -486,7 +486,8 @@ async def start_refresh(
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
-    started = refresh.start(start=window_start, end=window_end)
+    started = refresh.start(start=window_start, end=window_end,
+                            freshen_days=refresh.MANUAL_FRESHEN_DAYS)
     if not started:
         return JSONResponse(
             {"error": "A refresh is already running.", "status": refresh.status()},

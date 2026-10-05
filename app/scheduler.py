@@ -299,6 +299,11 @@ async def scheduled_portfolio_refresh():
 #: overlapping them on a 951 MB box would double the peak for no benefit.
 ADS_REFRESH_IST = (8, 0)
 
+#: A second, afternoon pass that fills only what the morning run could not get — in practice a
+#: Sponsored Brands report Amazon throttled. Six hours later the allowance has usually recovered, so a
+#: throttled morning no longer means a whole day reading "not summable" or a manual Refresh.
+ADS_RETRY_IST = (14, 0)
+
 
 async def scheduled_ads_refresh():
     """Pull campaign, ad group and per-target performance once a night.
@@ -331,7 +336,10 @@ async def scheduled_ads_refresh():
 
     from app.ads import refresh as ads_refresh
 
-    result = await ads_refresh.run(days=60)
+    # **60 days HELD, but only the last 14 plus any gap FETCHED.** Re-fetching all 60 was two reports
+    # per ad type, and Amazon refused the second Sponsored Brands report on alternate nights — see
+    # `ads_refresh.NIGHTLY_SETTLE_DAYS`.
+    result = await ads_refresh.run(days=60, settle_days=ads_refresh.NIGHTLY_SETTLE_DAYS)
     if result.get("refused"):
         logger.info("Ads refresh skipped: one is already running")
     elif result.get("error"):
@@ -342,6 +350,27 @@ async def scheduled_ads_refresh():
             result.get("campaigns", 0), result.get("rows", 0),
             result.get("window_start"), result.get("window_end"),
         )
+
+
+async def scheduled_ads_retry():
+    """Fill any day the morning run missed. **Free when nothing is missing**: `only_if_missing`
+    returns before the first Amazon call, so on a good day this job does nothing at all.
+
+    Data only, like the morning job — it never reaches a bid.
+    """
+    if not get_settings().ads_configured:
+        return
+
+    from app.ads import refresh as ads_refresh
+
+    result = await ads_refresh.run(days=60, only_if_missing=True)
+    if result.get("skipped"):
+        logger.info("Ads retry: nothing missing")
+    elif result.get("refused"):
+        logger.info("Ads retry skipped: a refresh is already running")
+    else:
+        logger.info("Ads retry: fetched %s (sb_error=%s)", result.get("fetched"),
+                    result.get("sb_error"))
 
 
 #: **07:00 IST, before both the portfolio pull (07:30) and the ads one (08:00)** — see
@@ -566,6 +595,17 @@ def setup_scheduler():
     # **Both times, IST and UTC.** `journalctl` stamps UTC, the intent is IST, and printing one
     # leaves the next reader to redo the arithmetic that was wrong here for the life of the feature.
     parts.append(f"ads at {ist.label(*ADS_REFRESH_IST)}")
+
+    retry_utc = ist.utc_hhmm(*ADS_RETRY_IST)
+    scheduler.add_job(
+        scheduled_ads_retry,
+        CronTrigger(hour=retry_utc[0], minute=retry_utc[1]),
+        id="ads_refresh_retry",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    parts.append(f"ads gap-fill at {ist.label(*ADS_RETRY_IST)}")
 
     # Same flag pair again — a weekly forecast recompute is as safe unattended as the nightly
     # portfolio and ads pulls; none of the three ever writes to Amazon.

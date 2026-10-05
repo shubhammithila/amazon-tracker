@@ -57,6 +57,8 @@ def reset_state() -> None:
         "sb_error": None,
         "window_start": None,
         "window_end": None,
+        #: {"sp": [start, end] | None, "sb": ...}: what this run asked Amazon for.
+        "fetched": None,
         "error": None,
         "refused": False,
     })
@@ -135,6 +137,69 @@ def default_window(days: int = 7, *, today: date | None = None) -> tuple[str, st
     return start.isoformat(), end.isoformat()
 
 
+#: The two report types a refresh can request. Always both: the account runs Sponsored Brands, and a
+#: product left out of the plan would never fill its gaps.
+AD_PRODUCTS = ("sp", "sb")
+
+#: **The nightly job re-fetches only the last 14 days, not all 60.** Amazon credits a sale to the
+#: click's day for up to 14 days afterwards (`attributedSalesSameSku14d`), so a day older than that
+#: no longer changes and fetching it again buys nothing. Re-fetching 60 days was two reports per ad
+#: type a night, and Amazon's Sponsored Brands allowance is a few reports a DAY: measured on
+#: production, the second SB report was refused on alternate nights (runs 30, 32, 34, 36, 39 and 40),
+#: which is what left the tab reading "Sponsored Brands is missing 2 of these days" most mornings.
+#: Fourteen days is one report per ad type.
+NIGHTLY_SETTLE_DAYS = 14
+
+#: When the owner presses Refresh on a window that is already complete, the last few days are
+#: re-fetched so the press still brings fresh figures — for **Sponsored Products only**. SB is the
+#: report Amazon rations, and spending one on days we already hold is how a manual press used up the
+#: allowance the nightly job needed.
+MANUAL_FRESHEN_DAYS = 3
+
+
+def plan_ranges(
+    window_start: str,
+    window_end: str,
+    held: dict[str, set[str]],
+    *,
+    settle_days: int = 0,
+    freshen_days: int = 0,
+) -> dict[str, tuple[str, str] | None]:
+    """Per ad product, the one contiguous range to fetch — or ``None`` to skip it. Pure.
+
+    The range runs from the EARLIER of (the first day missing in the window, the start of the
+    settling tail) to the window's end. One contiguous span rather than a list of gaps, because each
+    span is a report and a report's cost is mostly Amazon's queue time, not its length: three
+    one-day reports cost three times one three-day report.
+
+    ``freshen_days`` applies only when NOTHING is missing for EITHER product, and only to Sponsored
+    Products — the manual-press fallback described at `MANUAL_FRESHEN_DAYS`.
+    """
+    first_day, last_day = date.fromisoformat(window_start), date.fromisoformat(window_end)
+    wanted = repository.expected_days(window_start, window_end)
+
+    def settle_start(n: int) -> str | None:
+        if n <= 0:
+            return None
+        return max(first_day, last_day - timedelta(days=n - 1)).isoformat()
+
+    plan: dict[str, tuple[str, str] | None] = {}
+    for product in AD_PRODUCTS:
+        have = held.get(product, set())
+        missing = [d for d in wanted if d not in have]
+        starts = [s for s in (missing[0] if missing else None, settle_start(settle_days)) if s]
+        plan[product] = (min(starts), window_end) if starts else None
+
+    if freshen_days and not any(plan.values()):
+        plan["sp"] = (settle_start(freshen_days), window_end)
+    return plan
+
+
+async def _held_days(db_factory) -> dict[str, set[str]]:
+    async with db_factory() as db:
+        return {p: await repository.daily_days_held(db, ad_product=p) for p in AD_PRODUCTS}
+
+
 async def _attribute_sb_to_portfolio(db_factory, start: str, end: str) -> None:
     """Copy the SB spend just stored onto the Portfolio tab's rows, attributed per ASIN.
 
@@ -169,8 +234,19 @@ async def run(
     sleep=None,
     db_factory=async_session,
     today: date | None = None,
+    settle_days: int = 0,
+    freshen_days: int = 0,
+    only_if_missing: bool = False,
 ) -> dict:
     """Refresh the entity cache and one window of performance. Returns the final `status()`.
+
+    **Fetches only what the window is missing, per ad product** (`plan_ranges`), plus the last
+    ``settle_days`` days whose attributed sales may still move. Reported as *"the refresh is taking
+    too much time"*: the button re-downloaded Sponsored Products for the whole window (~7 minutes)
+    when SP already held every day and only two days of Sponsored Brands were missing.
+
+    ``only_if_missing`` is the afternoon retry's mode: with nothing missing it returns at once,
+    without a single Amazon call, so running it daily costs nothing on a good day.
 
     **Refuses rather than queues** when a refresh is already running: two concurrent report requests
     would double the wait and race on the same rows, and the screen can simply say so.
@@ -196,6 +272,15 @@ async def run(
 
     window_start, window_end = (start, end) if (start and end) else default_window(days, today=today)
 
+    plan = plan_ranges(
+        window_start, window_end, await _held_days(db_factory),
+        settle_days=settle_days, freshen_days=freshen_days,
+    )
+    if only_if_missing and not any(plan.values()):
+        logger.info("ads refresh: %s..%s is complete for every ad product, nothing to fetch",
+                    window_start, window_end)
+        return {**status(), "skipped": True}
+
     reset_state()
     STATE.update({
         "running": True,
@@ -203,6 +288,9 @@ async def run(
         "phase": "campaigns",
         "window_start": window_start,
         "window_end": window_end,
+        # What this run will actually ask Amazon for, so the screen can say "fetched SB 3-4 Oct"
+        # rather than implying the whole window was re-downloaded.
+        "fetched": {p: (list(r) if r else None) for p, r in plan.items()},
     })
 
     try:
@@ -289,10 +377,14 @@ async def run(
                 "ads refresh: stored %d daily row(s) for %s..%s", stored, chunk_start, chunk_end
             )
 
-        await reports.fetch_targeting(
-            window_start, window_end, daily=True,
-            sleep=sleep, on_progress=on_report_progress, on_chunk=store_sp_chunk,
-        )
+        if plan["sp"]:
+            await reports.fetch_targeting(
+                *plan["sp"], daily=True,
+                sleep=sleep, on_progress=on_report_progress, on_chunk=store_sp_chunk,
+            )
+        else:
+            logger.info("ads refresh: Sponsored Products already holds %s..%s, not re-requested",
+                        window_start, window_end)
         daily_stored = STATE["daily_rows"]
 
         async with db_factory() as db:
@@ -335,13 +427,19 @@ async def run(
             await _attribute_sb_to_portfolio(db_factory, chunk_start, chunk_end)
 
         try:
-            await reports.fetch_targeting(
-                window_start, window_end, ad_product="sb", daily=True, sleep=sleep,
-                on_chunk=store_sb_chunk,
-            )
-            logger.info(
-                "ads refresh: %d Sponsored Brands daily row(s) stored", STATE["sb_rows"]
-            )
+            if plan["sb"]:
+                await reports.fetch_targeting(
+                    *plan["sb"], ad_product="sb", daily=True, sleep=sleep,
+                    on_chunk=store_sb_chunk,
+                )
+                logger.info(
+                    "ads refresh: %d Sponsored Brands daily row(s) stored", STATE["sb_rows"]
+                )
+            else:
+                # Not requested at all: SB is the report Amazon rations to a few a day, and asking
+                # for days already held is how the nightly job used to lose its own allowance.
+                logger.info("ads refresh: Sponsored Brands already holds %s..%s, not re-requested",
+                            window_start, window_end)
         except AdsError as exc:
             # Isolated: the SP rows above are already committed and current. A throttled SB report is
             # "not now", not a failed refresh — `sbTargeting` has been measured returning 429 after
@@ -353,10 +451,10 @@ async def run(
 
         STATE.update({"phase": "done", "percent": 100})
         logger.info(
-            "ads refresh: %d campaign(s), %d ad group(s), %d SP daily row(s), %d SB daily row(s) "
-            "for %s..%s (purged %d old daily row(s))",
-            len(campaigns), len(ad_groups), daily_stored, STATE.get("sb_rows", 0),
-            window_start, window_end, purged,
+            "ads refresh: %d campaign(s), %d ad group(s), %d SP daily row(s) for %s, "
+            "%d SB daily row(s) for %s, window %s..%s (purged %d old daily row(s))",
+            len(campaigns), len(ad_groups), daily_stored, plan["sp"] or "nothing",
+            STATE.get("sb_rows", 0), plan["sb"] or "nothing", window_start, window_end, purged,
         )
 
     except AdsNotConfigured as exc:

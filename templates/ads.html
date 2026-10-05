@@ -953,6 +953,15 @@ function renderRefreshNote(){
   if(data.window) bits.push(`${data.window[0]} → ${data.window[1]}`);
   bits.push(data.cached ? `${n((data.totals || {}).targets)} target rows cached` : "not fetched");
   if(r.finished_at) bits.push(`refreshed ${String(r.finished_at).slice(0, 16).replace("T", " ")}`);
+  /* What the last refresh actually asked Amazon for. A refresh now fetches only the days each ad
+     type is missing, so "SB 03 Oct → 04 Oct, SP already complete" is the honest description — and
+     the reason it took 5 minutes rather than 15. */
+  if(r.fetched){
+    const names = {sp: "SP", sb: "SB"};
+    bits.push("fetched " + Object.entries(r.fetched).map(([p, range]) =>
+      range ? `${names[p] || p} ${range[0]} → ${range[1]}` : `${names[p] || p} already complete`
+    ).join(", "));
+  }
   $("refresh-note").textContent = bits.join(" · ");
   $("subtitle").innerHTML = `Campaign performance and bulk bid edits, straight from the Amazon
     Advertising API. ${n((data.totals || {}).campaigns)} campaigns in

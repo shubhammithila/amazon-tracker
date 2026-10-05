@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2510 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2521 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3534,6 +3534,34 @@ makes any range touching the gap decline to answer rather than sum short.
 
 `KEEP_BACKUPS` dropped 5 → 3 in the same change: the database roughly doubles, and five copies of it
 would make the backups the largest thing on an 8 GB disk. Net free space ~835 MB.
+
+### 60 days are HELD; only what is missing is FETCHED
+Reported as *"the refresh is taking too much time"* and *"the data fetch should be independent of my
+laptop"*. The second was already true — `ads_refresh` had run on the server at 08:00 IST every night —
+but the screen made it look otherwise, and the cause was the first.
+
+**Re-fetching all 60 days every night was two reports per ad type, and Amazon rations Sponsored
+Brands reports to a few a DAY.** Measured in `ads_refresh`: the SB half was refused on alternate
+nights (runs 30, 32, 34, 36, 39, 40), so most mornings read "Sponsored Brands is missing 2 of these
+days". The owner then pressed Refresh, which re-downloaded **Sponsored Products for the whole window**
+(~7 minutes) although SP already held every day, and asked for SB again — spending more of the same
+allowance.
+
+`refresh.plan_ranges` (pure) now decides, **per ad product**, one contiguous range: from the earlier of
+the first missing day and the start of a settling tail, to the window's end — or nothing.
+
+| Caller | Settling tail | Effect |
+|---|---|---|
+| nightly 08:00 IST | `NIGHTLY_SETTLE_DAYS = 14` | one report per ad type, not two; 14 because sales attribute to the click's day for 14 days |
+| afternoon gap-fill 14:00 IST (`ads_refresh_retry`) | none, `only_if_missing` | **returns before any Amazon call** when nothing is missing |
+| the Refresh button | none; if nothing is missing, `MANUAL_FRESHEN_DAYS = 3` of **SP only** | the reported case becomes one 2-day SB report |
+
+- **SB is never re-requested for days already held**, by any caller. It is the rationed report.
+- **An old gap pulls the range back to it**, so a missed night heals the next morning rather than
+  ageing out. That can make one range longer than 31 days (two chunks); it only happens after a gap.
+- `STATE["fetched"]` says what was asked for, and the refresh note on screen prints it — "SB 3 Oct →
+  4 Oct, SP already complete" — so a short top-up does not read as a full re-download.
+- The "never edits a bid" source test now covers **both** scheduled ads jobs.
 
 ## Disk space — the app now grows with USAGE, not just time
 
