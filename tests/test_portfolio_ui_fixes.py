@@ -725,3 +725,24 @@ def test_the_collapsed_line_states_the_hidden_SIZES_and_their_RUPEES_without_exp
         "the EXPANDED note does not total the excluded rupees — the collapsed line alone leaves "
         "the named products with no sum to reconcile against"
     )
+
+
+def test_the_totals_cells_have_the_SAME_padding_as_the_body_cells_so_figures_line_up():
+    """Reported as "alignment of the total line is off". Moving the totals row into the thead took
+    its cells out of reach of the `tbody td` rule, so they lost its 7px 10px padding and every
+    right-aligned figure sat ~10px off the column beneath it. Measured in a browser after the fix:
+    all 15 columns' text edges identical to the first product row."""
+    css = _css(_source())
+    def prop(selector, name):
+        found = re.search(name + r"\s*:\s*([^;}]+)", _rule(css, selector))
+        return found.group(1).strip() if found else None
+    assert prop("thead tr.totals td", "padding") == prop("tbody td", "padding")
+    assert prop("thead tr.totals td", "white-space") == "nowrap"
+
+
+def test_the_totals_row_carries_no_explanatory_note():
+    """Asked for: "money and units summed ye sab line ka jaroorat nai hai"."""
+    body = _source()
+    fn = body[body.index("function totalsRow("):]
+    fn = fn[: fn.index("\n}\n")]
+    assert "tnote" not in fn and "summed" not in fn

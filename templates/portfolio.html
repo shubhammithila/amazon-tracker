@@ -240,6 +240,10 @@ tr.size.nested td:first-child{padding-left:52px}
    at the top; moving it into the thead also ends the old collision where a short filtered grid
    made the two sticky layers overlap. Same z-index as the headings: they never overlap now. */
 thead tr.totals td{background:var(--surface2);font-weight:700;font-size:13px;color:var(--text);
+  /* The SAME padding and nowrap as `tbody td`. Those come from a `tbody td` rule, so a cell that
+     moved into the thead lost them, and its right-aligned figures sat ~10px off the column below.
+     Reported against a screenshot as "alignment of the total line is off". */
+  padding:7px 10px;white-space:nowrap;
   border-bottom:2px solid var(--border-strong);text-transform:none;letter-spacing:0;
   position:sticky;top:var(--pf-head-h, 31px);z-index:2}
 .tnote{display:block;font-size:10.5px;color:var(--text-dim);font-weight:500;white-space:normal;
@@ -1632,8 +1636,7 @@ function computeTotals(list){
 function totalsRow(list, isSkus){
   const t = computeTotals(list);
   return `<tr class="totals">
-    <td data-col="product">All ${n(list.length).toLocaleString("en-IN")} ${isSkus ? "pack size(s)" : "product(s)"} shown
-      <span class="tnote">money and units summed; percentages recomputed from those sums, not averaged</span></td>
+    <td data-col="product">All ${n(list.length).toLocaleString("en-IN")} ${isSkus ? "pack size(s)" : "product(s)"} shown</td>
     ${visibleColumns().slice(1).map(c => cell(c, c.total(t))).join("")}
   </tr>`;
 }
