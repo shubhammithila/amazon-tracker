@@ -324,10 +324,15 @@ async def start_refresh(
 
     # Fire and forget. The task holds its own session: the request's session closes when this
     # handler returns, so using it would fail once the response was sent.
-    if window:
-        asyncio.create_task(refresh.run(start=window[0], end=window[1]))
-    else:
-        asyncio.create_task(refresh.run())
+    # Economics for the whole window; the ad report only for the days `ads_daily` is missing — see
+    # `refresh.plan_manual` for the outage a whole-window ad report caused.
+    from app import ist
+    from app.portfolio import economics as economics_api
+
+    if not window:
+        window = economics_api.window_for(ist.today(), economics_api.WINDOW_DAYS)
+    plan = await refresh.plan_manual(window[0], window[1])
+    asyncio.create_task(refresh.run(**plan))
     return JSONResponse({"started": True, "refresh": refresh.status()})
 
 

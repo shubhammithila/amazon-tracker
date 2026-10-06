@@ -375,6 +375,45 @@ async def run(
     return status()
 
 
+async def ads_days_held(db_factory=async_session) -> set[str]:
+    """Days the ACOS store (`ads_daily`) holds any row for. Its rows are per (ASIN, SKU), never at
+    `ASIN_GRAIN`, so `repository.days_held(table=AdsDaily)` would answer an empty set."""
+    from sqlalchemy import select
+
+    from app.models import AdsDaily
+
+    async with db_factory() as db:
+        rows = await db.execute(select(AdsDaily.day).distinct())
+        return {r[0] for r in rows.all()}
+
+
+async def plan_manual(start: str, end: str, db_factory=async_session) -> dict:
+    """The keyword arguments for `run` when the owner presses Refresh on a window.
+
+    **Economics for the whole window, the ad report only for days MISSING.** Reported as "app is not
+    working. Could not reach the server": a 90-day press re-requested the ACOS report for all 90 days,
+    three reports of ~15 minutes held in the one web process, while `ads_daily` already had 85 of the
+    87 days. The process sat at its 400 MB memory ceiling (4,669 throttle events in 25 minutes) and
+    every page took 35-59 seconds until it was restarted. Economics are cheap (~1 minute for 90 days)
+    and are what a press is for, since fees post late; the ad report is the expensive half.
+
+    **At most one ad report per press** (`ads.MAX_REPORT_DAYS`), taking the MOST RECENT missing days,
+    so a press can never again hold three reports in memory. Older gaps are filled by later presses
+    or the nightly job.
+    """
+    first, last = date.fromisoformat(start), date.fromisoformat(end)
+    wanted = [(first + timedelta(days=i)).isoformat() for i in range((last - first).days + 1)]
+    held = await ads_days_held(db_factory)
+    missing = [d for d in wanted if d not in held]
+    if not missing:
+        return {"econ_start": start, "econ_end": end, "skip_ads": True}
+    span_end = date.fromisoformat(missing[-1])
+    span_start = max(date.fromisoformat(missing[0]),
+                     span_end - timedelta(days=ads.MAX_REPORT_DAYS - 1))
+    return {"start": span_start.isoformat(), "end": span_end.isoformat(),
+            "econ_start": start, "econ_end": end}
+
+
 async def run_incremental(
     db_factory=async_session,
     *,

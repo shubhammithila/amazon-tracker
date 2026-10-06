@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2552 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2557 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -2815,6 +2815,30 @@ reproduce the 4 Oct damage every night Amazon's answer was incomplete.
 > **`test_the_nightly_run_is_a_NO_OP_when_the_day_is_already_held` was the bug, written as a test.**
 > It asserted that a held day costs nothing, and that is precisely why late fees were never picked
 > up. It now asserts the opposite: economics are re-read, and the ad report is skipped.
+
+### The Refresh button asks for the ad report only for MISSING days
+Reported as *"app is not working. Could not reach the server"*. Nothing had crashed. A Portfolio
+Refresh on the 90-day window re-requested the ACOS report for **all 90 days**, three ~15-minute
+reports in the one web process, while `ads_daily` already held 85 of the 87 days. The process sat at
+its memory ceiling, **4,669 throttle events in 25 minutes, 538 MB in swap**, and every page took
+**35–59 seconds**, which the screens report as "Could not reach the server". Restarting it brought
+pages back to 1.6–3.2 s.
+
+`refresh.plan_manual` now re-reads the **economics for the whole window**, which is what a press is
+for since fees post late (~1 minute for 90 days). It asks for the ad report only for the days
+`ads_daily` is missing, as **at most one report** (`ads.MAX_REPORT_DAYS`, the newest days first), and
+skips it entirely when nothing is missing. `ads_days_held` reads `ads_daily` directly: its rows carry
+a real SKU, never `ASIN_GRAIN`, so the economics helper's grain filter would see nothing and refetch
+everything, the outage silently restored. A test proves this with a stored row, not source text,
+because this function's docstring names the filter.
+
+**The service file had drifted.** Production's `/etc/systemd/system/tracker.service` held
+`MemoryHigh=400M`/`MemoryMax=600M` against the repo's 500M/700M, and neither had
+`--timeout-graceful-shutdown`. So on 6 Oct the first of four deploys hung for **90 seconds** at
+"Waiting for background tasks to complete" until systemd SIGKILLed it. The repo file now carries
+`--timeout-graceful-shutdown 15` and `OOMPolicy=kill`, and was installed on production by hand.
+**`update-ec2.sh` does not install the unit**, so a change to that file needs the `cp` +
+`daemon-reload` written in its own comment.
 
 ### The nightly job fetches YESTERDAY, not the window
 `refresh.run_incremental` asks `range_completeness` which days are missing and fetches **only those**,
