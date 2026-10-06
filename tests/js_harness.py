@@ -19,7 +19,7 @@ TEMPLATE = Path(__file__).parent.parent / "templates" / "portfolio.html"
 
 #: Everything the column builders and the panel read, copied verbatim from the template.
 FUNCTIONS = [
-    "esc", "stars", "money", "pct", "kg", "acosCell", "verdictClass", "groupFlag", "sizeName",
+    "esc", "stars", "money", "netMoney", "pct", "kg", "acosCell", "verdictClass", "groupFlag", "sizeName",
     "normaliseLayout", "visibleColumns", "cell", "tableMinWidth", "headerHtml", "dataCells",
     "detailCells", "computeTotals", "totalsRow", "sizeRowHtml",
 ]
@@ -108,6 +108,7 @@ def run_portfolio_js(body: str, *, panel: bool = False):
     parts.append(body)
     path = os.path.join(tempfile.gettempdir(), "pf_render_test.js")
     Path(path).write_text("\n".join(parts), encoding="utf-8")
-    result = subprocess.run([node, path], capture_output=True, text=True, timeout=30)
+    # UTF-8 explicitly: Node writes UTF-8, and the Windows default (cp1252) turned every ₹ into mojibake.
+    result = subprocess.run([node, path], capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert result.returncode == 0, result.stderr[-2000:]
     return json.loads(result.stdout.strip().splitlines()[-1])

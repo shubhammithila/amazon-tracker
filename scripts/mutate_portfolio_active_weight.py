@@ -352,7 +352,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         DOCS,
-        '            elif heading in ("Sales", "Sales (ex-GST)", "Ad spend", "Ad sales", "Net", "Units",\n'
+        '            elif heading in ("Sales", "Sales (ex-GST)", "Refunds", "Amazon fees", "Ad spend", "Ad sales",\n'
+        '                             "Net", "Units",\n'
         '                             "Units ordered", "Net units", "Weight (kg)", "Weight ordered (kg)",\n'
         '                             "Net weight (kg)",\n'
         '                             "Net %", "TACOS", "ACOS"):',
@@ -378,6 +379,7 @@ TESTS = [
     "tests/test_portfolio_ui_fixes.py",
     "tests/test_portfolio_columns_render.py",
     "tests/test_portfolio_units_ordered.py",
+    "tests/test_portfolio_fee_columns.py",
 ]
 
 

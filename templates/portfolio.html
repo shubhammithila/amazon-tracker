@@ -483,7 +483,9 @@ let rulesOpen = false;
 const FIELDS = {
   sales:        {label: "Sales (ex-GST)", get: r => r.sales,        kind: "money"},
   ad_spend:     {label: "Ad spend",     get: r => r.ad_spend,     kind: "money"},
-  net:          {label: "Net",          get: r => r.net,          kind: "money"},
+  net:          {label: "Net (₹)",      get: r => r.net,          kind: "money"},
+  fees_total:   {label: "Amazon fees",  get: r => r.fees_total,   kind: "money"},
+  refunded:     {label: "Refunds",      get: r => r.refunded,     kind: "money"},
   net_pct:      {label: "Net %",        get: r => r.net_pct,      kind: "pct"},
   tacos:        {label: "TACOS",        get: r => r.tacos,        kind: "pct"},
   acos:         {label: "ACOS",         get: r => r.acos,         kind: "pct"},
@@ -536,6 +538,13 @@ function message(text, cls){
 /* Money in the Indian convention the rest of the app uses: 1,20,035 not 120,035. */
 function money(v){
   return "₹" + Math.round(n(v)).toLocaleString("en-IN");
+}
+
+/* Net in rupees, red when the row loses money before product cost. `money()` alone would print
+   "₹-5,000", which reads like a typo beside the Net % column's signed "−12.0%". */
+function netMoney(v){
+  const x = Math.round(n(v));
+  return x < 0 ? `<span class="neg">−₹${Math.abs(x).toLocaleString("en-IN")}</span>` : money(x);
 }
 
 /* **A dash, never a zero.** A product with no sales has no TACOS, and rendering that as 0%
@@ -1345,9 +1354,20 @@ const COLUMN_DEFS = {
                 detail: () => "", total: () => ""},
   sales:       {num: true, sortKey: "sales", width: 100,
                 row: r => money(r.sales), detail: r => money(r.sales), total: t => money(t.sales)},
+  refunded:    {num: true, sortKey: "refunded", width: 90,
+                tip: "sales refunded to customers in this window",
+                row: r => money(r.refunded), detail: r => money(r.refunded),
+                total: t => money(t.refundedSales)},
+  fees_total:  {num: true, sortKey: "fees_total", width: 100,
+                tip: "every Amazon fee except advertising: FBA fulfilment and weight fees, fixed closing, referral, Easy Ship postage, refund commission, less reimbursements",
+                row: r => money(r.fees_total), detail: r => money(r.fees_total),
+                total: t => money(t.fees)},
   ad_spend:    {num: true, sortKey: "ad_spend", width: 100,
                 row: r => money(r.ad_spend), detail: r => money(r.ad_spend),
                 total: t => money(t.spend)},
+  net:         {num: true, sortKey: "net", width: 100,
+                tip: "Sales − Refunds − Amazon fees − Ad spend, before your product cost (pre-COGS)",
+                row: r => netMoney(r.net), detail: r => netMoney(r.net), total: t => netMoney(t.net)},
   tacos:       {num: true, sortKey: "tacos", width: 80, tip: "ad spend over TOTAL sales",
                 row: r => pct(r.tacos), detail: r => pct(r.tacos),
                 total: t => pct(t.ratio(t.spend, t.sales))},
@@ -1403,7 +1423,7 @@ const COLUMN_DEFS = {
 };
 
 // Used only when `data.columns` has not arrived (and by the render tests' smoke check).
-const FALLBACK_ORDER = ["verdict", "sales", "ad_spend", "tacos", "acos", "net_pct", "units_ordered", "units",
+const FALLBACK_ORDER = ["verdict", "sales", "refunded", "fees_total", "ad_spend", "net", "tacos", "acos", "net_pct", "units_ordered", "units",
                         "weight_ordered_kg", "weight_kg", "returns_pct", "rating", "decision"];
 
 /* The client twin of `app/portfolio/columns.normalise_column_layout`, rule for rule. It exists for
@@ -1561,6 +1581,7 @@ function dataCells(r){
 function computeTotals(list){
   const sum = key => list.reduce((a, r) => a + n(r[key]), 0);
   const sales = sum("sales"), spend = sum("ad_spend"), net = sum("net");
+  const fees = sum("fees_total"), refundedSales = sum("refunded");
   const adsCost = sum("ads_cost"), attributed = sum("ad_attributed_sales");
   const units = sum("units"), ordered = sum("units_ordered"), refunded = sum("units_refunded");
 
@@ -1616,7 +1637,7 @@ function computeTotals(list){
   // travels as the same flag a single row uses.
   const infinite = adsCost > 0 && attributed === 0;
 
-  return {sales, spend, net, adsCost, attributed, units, ordered, refunded,
+  return {sales, spend, net, fees, refundedSales, adsCost, attributed, units, ordered, refunded,
           weighed: weighed.length, weight, weightUnknown, weighedOrdered, weightOrdered, ratio,
           rating, reviews, decided, infinite};
 }

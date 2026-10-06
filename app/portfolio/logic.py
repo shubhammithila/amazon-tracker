@@ -447,7 +447,16 @@ def size_row(econ: Mapping, catalogue: Mapping, ads: Mapping | None = None) -> d
     sales = econ.get("sales") or {}
 
     ordered = _num(sales.get("orderedProductSales"))
-    refunded = _num(sales.get("refundedProductSales"))
+    # `refundedProductSales` when Amazon sends it; otherwise ordered minus `netProductSales`, which is
+    # the same figure (measured on live rows: ₹704.90 - ₹426.80 = ₹278.10 refunded, exactly). Without
+    # the fallback a row lacking the field reads ₹0 refunded while `netProceeds` still takes the
+    # refund off, and the Refunds/Amazon fees/Net columns would no longer add up across the row.
+    if sales.get("refundedProductSales") is not None:
+        refunded = _num(sales.get("refundedProductSales"))
+    elif sales.get("netProductSales") is not None:
+        refunded = round(_num(sales.get("orderedProductSales")) - _num(sales.get("netProductSales")), 2)
+    else:
+        refunded = 0.0
     units = int(sales.get("netUnitsSold") or 0)
     units_ordered = int(sales.get("unitsOrdered") or 0)
     units_refunded = int(sales.get("unitsRefunded") or 0)
@@ -1340,6 +1349,9 @@ def _sum_sizes(sizes: Sequence[Mapping]) -> dict:
     ads = round(sum(_num(s.get("ad_spend")) for s in sizes), 2)
     net = round(sum(_num(s.get("net")) for s in sizes), 2)
     fees_total = round(sum(_num(s.get("fees_total")) for s in sizes), 2)
+    # Refunded SALES in rupees, so a parent row reads Sales - Refunds - Amazon fees - Ad spend = Net
+    # on screen, the same as each of its sizes.
+    refunded = round(sum(_num(s.get("refunded")) for s in sizes), 2)
     units = sum(int(s.get("units") or 0) for s in sizes)
     units_ordered = sum(int(s.get("units_ordered") or 0) for s in sizes)
     units_refunded = sum(int(s.get("units_refunded") or 0) for s in sizes)
@@ -1381,6 +1393,7 @@ def _sum_sizes(sizes: Sequence[Mapping]) -> dict:
         "ad_spend": ads,
         "net": net,
         "fees_total": fees_total,
+        "refunded": refunded,
         "fees": fees,
         "units": units,
         "units_ordered": units_ordered,

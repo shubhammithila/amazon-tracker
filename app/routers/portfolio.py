@@ -534,7 +534,7 @@ async def download_portfolio(
         return [
             f"{indent}{_size_name(size)}", _channel_note(size), size["asin"],
             "", _pct(size["net_pct"]), _pct(size["tacos"]), _acos(size),
-            size["sales"], size["ad_spend"],
+            size["sales"], size.get("refunded") or 0, size.get("fees_total") or 0, size["ad_spend"],
             size.get("ad_attributed_sales") or 0,
             size["net"], int(size.get("units_ordered") or 0), size["units"], _kg(size.get("weight_ordered_kg")), _kg(size.get("weight_kg")),
             "", "", "",
@@ -547,7 +547,7 @@ async def download_portfolio(
             parent["product"], parent["brand"], "",
             parent["verdict"],
             _pct(parent["net_pct"]), _pct(parent["tacos"]), _acos(parent),
-            parent["sales"], parent["ad_spend"],
+            parent["sales"], parent.get("refunded") or 0, parent.get("fees_total") or 0, parent["ad_spend"],
             parent.get("ad_attributed_sales") or 0,
             parent["net"], int(parent.get("units_ordered") or 0), parent["units"], _kg(parent.get("weight_ordered_kg")), _kg(parent.get("weight_kg")),
             _stars(parent["rating"], parent["rating_count"]),
@@ -566,7 +566,7 @@ async def download_portfolio(
                 rows.append([
                     f"    {group['flavour']}", "", "",
                     "", _pct(group["net_pct"]), _pct(group["tacos"]), _acos(group),
-                    group["sales"], group["ad_spend"],
+                    group["sales"], group.get("refunded") or 0, group.get("fees_total") or 0, group["ad_spend"],
                     group.get("ad_attributed_sales") or 0,
                     group["net"], int(group.get("units_ordered") or 0), group["units"], _kg(group.get("weight_ordered_kg")), _kg(group.get("weight_kg")),
                     "", "", f"{len(group['sizes'])} size(s)",
@@ -585,7 +585,7 @@ async def download_portfolio(
         f"TOTAL — {totals['parents']} products, {totals['skus']} pack sizes", "", "",
         "",
         _pct(totals["net_pct"]), _pct(totals["tacos"]), _acos(totals),
-        totals["sales"], totals["ad_spend"],
+        totals["sales"], totals.get("refunded") or 0, totals.get("fees_total") or 0, totals["ad_spend"],
         totals.get("ad_attributed_sales") or 0,
         # `totals["weight_kg"]` is `_sum_sizes`' own figure, NEVER a re-sum over `rows` — each
         # parent row already contains its sizes, so re-summing would double-count. The same reason
@@ -623,11 +623,11 @@ async def download_portfolio(
         "Portfolio review",
         subtitle,
         ["Product", "Brand", "ASIN", "Verdict", "Net %", "TACOS", "ACOS",
-         "Sales (ex-GST)", "Ad spend", "Ad sales", "Net", "Units ordered", "Net units",
+         "Sales (ex-GST)", "Refunds", "Amazon fees", "Ad spend", "Ad sales", "Net", "Units ordered", "Net units",
          "Weight ordered (kg)", "Net weight (kg)",
          "Rating", "Decision", "Why"],
         rows,
-        [30, 16, 12, 10, 9, 8, 8, 14, 11, 12, 12, 10, 9, 14, 12, 14, 10, 52],
+        [30, 16, 12, 10, 9, 8, 8, 14, 11, 12, 11, 12, 12, 10, 9, 14, 12, 14, 10, 52],
     )
     filename = f"portfolio-{(window or ('', ''))[1] or 'latest'}.xlsx"
     return StreamingResponse(

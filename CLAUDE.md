@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2542 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2552 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -2136,6 +2136,25 @@ Checked after the units fix, against Amazon's All Orders report for 5 Sep – 4 
 > Sales with nothing failing. Found while adding Weight ordered.
 > `test_EVERY_sortable_column_has_a_sort_field_so_it_does_not_silently_sort_by_sales` checks this
 > against the page's own objects, and fails with the old code.
+
+### Refunds · Amazon fees · Ad spend · Net (₹): a row reads as Amazon's own sum
+Asked for as *"a column showing amazon fees combined except for the ads cost… 100 − 40 (amazon fees)
+− 30 (ads) = net 30"*. Amazon's net also takes **refunds** off, so a fees column alone would leave a
+row that does not add up on screen. Three columns therefore sit between Sales and TACOS, in the
+order of the sum: **Sales − Refunds − Amazon fees − Ad spend = Net (₹)**. All are hideable.
+
+- **Verified on every live row before shipping**: all 269 sizes of 1 Oct reconcile to the paisa from
+  Amazon's raw answer, and every stored day 1 Sep – 5 Oct reconciles at ASIN grain. ABC Sattu 500 g
+  over 30 days: ₹1,69,072 − ₹12,403 − ₹50,018 − ₹1,25,355 (SP + SB) = −₹18,703.
+- **The parent had no refunds figure**, which `_sum_sizes` now sums. A first check on production read
+  ABC Sattu's parent as ₹26,771 off, and that was exactly its two sizes' refunds (₹12,403 + ₹14,368).
+- **`refunded` falls back to ordered − `netProductSales`** when `refundedProductSales` is absent. The
+  two are the same figure on live rows (₹704.90 − ₹426.80 = ₹278.10). The test fixture is an older
+  shape that lacks the field, so without the fallback its rows read ₹0 refunded while `netProceeds`
+  still took the refund off.
+- `tests/test_portfolio_fee_columns.py` asserts the identity on every parent AND size row through
+  the real route, plus the same figures in the Excel. `tests/js_harness.py` now decodes Node's output
+  as UTF-8, because the Windows default turned every ₹ into mojibake.
 
 ### The size rows are plain; the SKU detail row keeps the channel split
 Reported as *"the sku wise analysis is looking too jumbled up. too much info on the left. keep it

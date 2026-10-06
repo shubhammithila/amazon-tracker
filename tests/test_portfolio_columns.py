@@ -21,11 +21,11 @@ def test_users_has_a_nullable_preferences_column():
 
 from app.portfolio import columns as C
 
-ALL = ["verdict", "sales", "ad_spend", "tacos", "acos", "net_pct",
+ALL = ["verdict", "sales", "refunded", "fees_total", "ad_spend", "net", "tacos", "acos", "net_pct",
        "units_ordered", "units", "weight_ordered_kg", "weight_kg", "returns_pct", "rating", "decision"]
 
 
-def test_the_vocabulary_is_exactly_the_agreed_fourteen_columns():
+def test_the_vocabulary_is_exactly_the_agreed_seventeen_columns():
     assert [c["id"] for c in C.COLUMNS] == ["product"] + ALL
     locked = {c["id"] for c in C.COLUMNS if c["locked"]}
     assert locked == {"product", "sales", "ad_spend", "units_ordered", "units", "weight_ordered_kg", "weight_kg"}
@@ -72,8 +72,9 @@ def test_a_NEW_column_appears_at_its_default_position_for_an_existing_user():
     after the nearest default-order predecessor the user still has."""
     saved = [c for c in reversed(ALL) if c != "tacos"]      # user reversed everything; no tacos
     out = C.normalise_column_layout({"order": saved, "hidden": []})
-    # In the default order tacos follows ad_spend, so it lands right after ad_spend here.
-    assert out["order"].index("tacos") == out["order"].index("ad_spend") + 1
+    # In the default order tacos follows net (Sales - Refunds - Amazon fees - Ad spend = Net, then
+    # TACOS), so it lands right after net here.
+    assert out["order"].index("tacos") == out["order"].index("net") + 1
     assert sorted(out["order"]) == sorted(ALL)
 
 
