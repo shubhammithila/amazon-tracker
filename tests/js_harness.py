@@ -19,7 +19,7 @@ TEMPLATE = Path(__file__).parent.parent / "templates" / "portfolio.html"
 
 #: Everything the column builders and the panel read, copied verbatim from the template.
 FUNCTIONS = [
-    "esc", "stars", "money", "netMoney", "pct", "kg", "acosCell", "verdictClass", "groupFlag", "sizeName",
+    "esc", "stars", "money", "pct", "kg", "acosCell", "verdictClass", "groupFlag", "sizeName",
     "normaliseLayout", "visibleColumns", "cell", "tableMinWidth", "headerHtml", "dataCells",
     "detailCells", "computeTotals", "totalsRow", "sizeRowHtml",
 ]

@@ -483,9 +483,9 @@ let rulesOpen = false;
 const FIELDS = {
   sales:        {label: "Sales (ex-GST)", get: r => r.sales,        kind: "money"},
   ad_spend:     {label: "Ad spend",     get: r => r.ad_spend,     kind: "money"},
-  net:          {label: "Net (₹)",      get: r => r.net,          kind: "money"},
-  fees_total:   {label: "Amazon fees",  get: r => r.fees_total,   kind: "money"},
-  refunded:     {label: "Refunds",      get: r => r.refunded,     kind: "money"},
+  net:          {label: "Net",          get: r => r.net,          kind: "money"},
+  fees_pct:     {label: "Amazon fees %", get: r => r.fees_pct,    kind: "pct"},
+  refunds_pct:  {label: "Refunds %",    get: r => r.refunds_pct,  kind: "pct"},
   net_pct:      {label: "Net %",        get: r => r.net_pct,      kind: "pct"},
   tacos:        {label: "TACOS",        get: r => r.tacos,        kind: "pct"},
   acos:         {label: "ACOS",         get: r => r.acos,         kind: "pct"},
@@ -538,13 +538,6 @@ function message(text, cls){
 /* Money in the Indian convention the rest of the app uses: 1,20,035 not 120,035. */
 function money(v){
   return "₹" + Math.round(n(v)).toLocaleString("en-IN");
-}
-
-/* Net in rupees, red when the row loses money before product cost. `money()` alone would print
-   "₹-5,000", which reads like a typo beside the Net % column's signed "−12.0%". */
-function netMoney(v){
-  const x = Math.round(n(v));
-  return x < 0 ? `<span class="neg">−₹${Math.abs(x).toLocaleString("en-IN")}</span>` : money(x);
 }
 
 /* **A dash, never a zero.** A product with no sales has no TACOS, and rendering that as 0%
@@ -1354,31 +1347,30 @@ const COLUMN_DEFS = {
                 detail: () => "", total: () => ""},
   sales:       {num: true, sortKey: "sales", width: 100,
                 row: r => money(r.sales), detail: r => money(r.sales), total: t => money(t.sales)},
-  refunded:    {num: true, sortKey: "refunded", width: 90,
-                tip: "sales refunded to customers in this window",
-                row: r => money(r.refunded), detail: r => money(r.refunded),
-                total: t => money(t.refundedSales)},
-  fees_total:  {num: true, sortKey: "fees_total", width: 100,
-                tip: "every Amazon fee except advertising: FBA fulfilment and weight fees, fixed closing, referral, Easy Ship postage, refund commission, less reimbursements",
-                row: r => money(r.fees_total), detail: r => money(r.fees_total),
-                total: t => money(t.fees)},
   ad_spend:    {num: true, sortKey: "ad_spend", width: 100,
                 row: r => money(r.ad_spend), detail: r => money(r.ad_spend),
                 total: t => money(t.spend)},
-  net:         {num: true, sortKey: "net", width: 100,
-                tip: "Sales − Refunds − Amazon fees − Ad spend, before your product cost (pre-COGS)",
-                row: r => netMoney(r.net), detail: r => netMoney(r.net), total: t => netMoney(t.net)},
+  // **Shares of SALES, reading as Amazon's own sum**: 100% − Refunds % − Amazon fees % − TACOS = Net %.
+  refunds_pct: {num: true, sortKey: "refunds_pct", width: 85,
+                tip: "sales refunded to customers, as % of sales (by value — Returns is by units)",
+                row: r => pct(r.refunds_pct), detail: r => pct(r.refunds_pct),
+                total: t => pct(t.ratio(t.refundedSales, t.sales))},
+  fees_pct:    {num: true, sortKey: "fees_pct", width: 100,
+                tip: "every Amazon fee except advertising, as % of sales: FBA fulfilment and weight fees, fixed closing, referral, Easy Ship postage, refund commission, less reimbursements",
+                row: r => pct(r.fees_pct), detail: r => pct(r.fees_pct),
+                total: t => pct(t.ratio(t.fees, t.sales))},
   tacos:       {num: true, sortKey: "tacos", width: 80, tip: "ad spend over TOTAL sales",
                 row: r => pct(r.tacos), detail: r => pct(r.tacos),
                 total: t => pct(t.ratio(t.spend, t.sales))},
+  net_pct:     {num: true, sortKey: "net_pct", width: 80,
+                tip: "100% − Refunds % − Amazon fees % − TACOS, before your product cost (pre-COGS)",
+                row: r => pct(r.net_pct, {sign: true}), detail: r => pct(r.net_pct, {sign: true}),
+                total: t => pct(t.ratio(t.net, t.sales), {sign: true})},
   acos:        {num: true, sortKey: "acos", width: 80,
                 tip: "ad spend over ad-ATTRIBUTED sales — shown for context; no verdict is decided on it",
                 row: r => acosCell(r), detail: r => acosCell(r),
                 total: t => acosCell({acos: t.adsCost ? t.ratio(t.adsCost, t.attributed) : null,
                                       acos_infinite: t.infinite})},
-  net_pct:     {num: true, sortKey: "net_pct", width: 80,
-                row: r => pct(r.net_pct, {sign: true}), detail: r => pct(r.net_pct, {sign: true}),
-                total: t => pct(t.ratio(t.net, t.sales), {sign: true})},
   // Units and Weight can move but never hide (the server says so). Weight is units × the pack size
   // from the MRP sheet, summed up from the sizes on a parent row.
   units_ordered: {num: true, sortKey: "units_ordered", width: 90,
@@ -1423,7 +1415,7 @@ const COLUMN_DEFS = {
 };
 
 // Used only when `data.columns` has not arrived (and by the render tests' smoke check).
-const FALLBACK_ORDER = ["verdict", "sales", "refunded", "fees_total", "ad_spend", "net", "tacos", "acos", "net_pct", "units_ordered", "units",
+const FALLBACK_ORDER = ["verdict", "sales", "ad_spend", "refunds_pct", "fees_pct", "tacos", "net_pct", "acos", "units_ordered", "units",
                         "weight_ordered_kg", "weight_kg", "returns_pct", "rating", "decision"];
 
 /* The client twin of `app/portfolio/columns.normalise_column_layout`, rule for rule. It exists for

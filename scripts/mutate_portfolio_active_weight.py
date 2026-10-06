@@ -352,7 +352,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         DOCS,
-        '            elif heading in ("Sales", "Sales (ex-GST)", "Refunds", "Amazon fees", "Ad spend", "Ad sales",\n'
+        '            elif heading in ("Sales", "Sales (ex-GST)", "Refunds %", "Amazon fees %", "Ad spend", "Ad sales",\n'
         '                             "Net", "Units",\n'
         '                             "Units ordered", "Net units", "Weight (kg)", "Weight ordered (kg)",\n'
         '                             "Net weight (kg)",\n'

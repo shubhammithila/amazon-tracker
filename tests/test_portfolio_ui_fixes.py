@@ -247,13 +247,14 @@ def test_the_money_columns_are_all_tagged_num_in_all_three_render_functions():
     source = _source()
     defs = source[source.index("const COLUMN_DEFS = {"):]
     defs = defs[: defs.index("\n};")]
-    order = ["verdict", "sales", "ad_spend", "tacos", "acos", "net_pct", "units",
-             "weight_kg", "returns_pct", "rating", "decision"]
+    order = ["verdict", "sales", "ad_spend", "refunds_pct", "fees_pct", "tacos", "net_pct", "acos",
+             "units", "weight_kg", "returns_pct", "rating", "decision"]
     for i, col in enumerate(order):
         start = defs.index(f"  {col}:")
         end = defs.index(f"  {order[i + 1]}:") if i + 1 < len(order) else len(defs)
         is_num = "num: true" in defs[start:end]
-        should = col in {"sales", "ad_spend", "tacos", "acos", "net_pct", "units",
+        should = col in {"sales", "ad_spend", "refunds_pct", "fees_pct", "tacos", "acos", "net_pct",
+                         "units",
                          "weight_kg", "returns_pct"}
         assert is_num == should, (
             f"{col}: num is {is_num}, expected {should} — "

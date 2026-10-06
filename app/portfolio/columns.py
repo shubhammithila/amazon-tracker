@@ -22,17 +22,16 @@ COLUMNS: list[dict] = [
     # measured, app sales = order price / 1.05 to within 0.2% for 5 Sep - 4 Oct — so Seller
     # Central's Business Report reads ~5% higher. The label says so rather than leaving a gap to explain.
     {"id": "sales",       "label": "Sales (ex-GST)", "locked": True},
-    # **Refunds, Amazon fees and Net (₹) read left to right as Amazon's own sum** — asked for as
-    # "100 - 40 (Amazon fees) - 30 (ads) = net 30". Sales - Refunds - Amazon fees - Ad spend = Net,
-    # exactly, on every row; refunds are a fourth term the example left out, and without them the
-    # row would not add up on screen. Fees exclude ads, which keep their own column.
-    {"id": "refunded",    "label": "Refunds",  "locked": False},
-    {"id": "fees_total",  "label": "Amazon fees", "locked": False},
     {"id": "ad_spend",    "label": "Ad spend", "locked": True},
-    {"id": "net",         "label": "Net (₹)",  "locked": False},
+    # **Percentages of sales that read left to right as Amazon's own sum** — asked for as
+    # "100 - 40 (Amazon fees) - 30 (ads) = net 30", then "I dont want values I want %".
+    # 100% - Refunds % - Amazon fees % - TACOS = Net %, on every row. Refunds are a term the example
+    # left out; without them the row would not add up. Fees exclude ads, which TACOS carries.
+    {"id": "refunds_pct", "label": "Refunds %", "locked": False},
+    {"id": "fees_pct",    "label": "Amazon fees %", "locked": False},
     {"id": "tacos",       "label": "TACOS",    "locked": False},
-    {"id": "acos",        "label": "ACOS",     "locked": False},
     {"id": "net_pct",     "label": "Net %",    "locked": False},
+    {"id": "acos",        "label": "ACOS",     "locked": False},
     # **Two unit columns, because one could never match Seller Central.** "Units" used to show
     # units AFTER refunds (`netUnitsSold`), which the Business Report never shows: Bengali Posta
     # read 106 + 84 against the report's 113 + 86, the 7 + 2 refunded. `units_ordered` is the

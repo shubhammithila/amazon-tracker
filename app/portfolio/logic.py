@@ -575,6 +575,10 @@ def size_row(econ: Mapping, catalogue: Mapping, ads: Mapping | None = None) -> d
         "fees_total": round(sum(fees.values()), 2),
         "net": round(net, 2),
         "net_pct": _ratio(net, ordered),
+        # Shares of sales, so a row reads 100% - Refunds % - Amazon fees % - TACOS = Net %, the way
+        # the owner reads it ("100 - 40 fees - 30 ads = 30"). Same denominator as net_pct and tacos.
+        "refunds_pct": _ratio(refunded, ordered),
+        "fees_pct": _ratio(sum(fees.values()), ordered),
         # `ad_spend`, not `ads` — `ads` is the parameter holding the Advertising API rows.
         "tacos": _ratio(ad_spend, ordered),
         "returns_pct": _ratio(units_refunded, units_ordered),
@@ -1406,6 +1410,9 @@ def _sum_sizes(sizes: Sequence[Mapping]) -> dict:
         "ad_clicks": ad_clicks,
         "ad_impressions": ad_impressions,
         "net_pct": _ratio(net, sales),
+        # Recomputed from the sums, never averaged — `_sum_sizes`' rule for every percentage.
+        "refunds_pct": _ratio(refunded, sales),
+        "fees_pct": _ratio(fees_total, sales),
         # TWO ad ratios, and they answer different questions:
         #   tacos = spend / TOTAL sales      -> how ad-dependent is this product?
         #   acos  = spend / ATTRIBUTED sales -> do the ads pay for themselves?
