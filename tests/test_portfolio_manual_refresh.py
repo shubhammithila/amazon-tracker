@@ -90,3 +90,11 @@ async def test_ads_days_held_sees_rows_that_carry_a_REAL_sku(db):
         return Ctx()
 
     assert await refresh.ads_days_held(factory) == {"2026-09-30"}
+
+
+async def test_an_OLD_gap_does_not_stretch_the_report_to_its_full_reach(held):
+    """Dry-run on production found this: 8 Jul, 26 Sep and 3 Oct missing in a 90-day window.
+    Clamping the span to one report's REACH asked for 3 Sep - 3 Oct, 31 days, to fill two."""
+    held["days"] = _days("2026-07-08", 90) - {"2026-07-08", "2026-09-26", "2026-10-03"}
+    plan = await refresh.plan_manual("2026-07-08", "2026-10-05")
+    assert (plan["start"], plan["end"]) == ("2026-09-26", "2026-10-03")

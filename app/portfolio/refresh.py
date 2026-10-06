@@ -408,8 +408,11 @@ async def plan_manual(start: str, end: str, db_factory=async_session) -> dict:
     if not missing:
         return {"econ_start": start, "econ_end": end, "skip_ads": True}
     span_end = date.fromisoformat(missing[-1])
-    span_start = max(date.fromisoformat(missing[0]),
-                     span_end - timedelta(days=ads.MAX_REPORT_DAYS - 1))
+    # The earliest missing day WITHIN one report's reach of the newest one — not the edge of that
+    # reach. Dry-run on production: with 8 Jul, 26 Sep and 3 Oct missing, clamping to the edge asked
+    # for a 31-day report (3 Sep - 3 Oct) to fill two days; this asks for 26 Sep - 3 Oct.
+    reach = span_end - timedelta(days=ads.MAX_REPORT_DAYS - 1)
+    span_start = min(date.fromisoformat(d) for d in missing if date.fromisoformat(d) >= reach)
     return {"start": span_start.isoformat(), "end": span_end.isoformat(),
             "econ_start": start, "econ_end": end}
 
