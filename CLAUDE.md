@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2558 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2564 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -2784,6 +2784,33 @@ attributed SALES" above).
 total carries no information about which day each sale fell on, so there was nothing to split. The
 downgrade recreates both tables **empty** for the same reason. `scripts/backfill_portfolio_daily.py`
 fills the history once after deploy; the nightly job keeps it current from then on.
+
+### Every figure is ex-GST — fees had been counted WITH their 18% GST
+Asked as *"are the fees including gst or excluding… some waivers are also running"*, then *"we do
+claim itc on amazon fees. keep everything ex-gst only in the app"*. Measured by asking Data Kiosk for
+each fee's parts (`amount`, `promotionAmount`, `taxAmount`, `totalAmount`) over 30 days:
+
+| | |
+|---|---|
+| `totalAmount` | always `amount − promotionAmount + taxAmount`, every fee type |
+| GST (`taxAmount`) | exactly **18%** of (amount − waiver); **₹2.41 lakh of ₹15.33 lakh** |
+| waivers (`promotionAmount`) | **₹2.50 lakh**, all on `WeightBasedFee` (34.8% of it); none elsewhere |
+| ad charge | `taxAmount` **0**; matches the Advertising API `cost` to 0.1% |
+
+So waivers were always netted, and ads and sales were already ex-GST. Only fees carried GST, and
+`netProceeds` subtracts it, so Net % read ~5.5 points low for a seller who claims the GST back as ITC.
+
+`logic._fee_parts` is now the only reader of a raw fee: each fee is `totalAmount − taxAmount`, and
+`size_row` adds the fee GST back to `netProceeds`. The query asks for `taxAmount`. **Storage goes
+through `size_row`, so stored rows are ex-GST too and carry no `taxAmount`**; read back through
+`_summed_amazon_row` they yield 0 GST, which is what stops it being added twice. The merchant/FBA
+split (`channel_split`) adds it back as well.
+
+> **Deploying this needed a one-off re-read that BYPASSED the fee guard.** `incomplete_settled_days`
+> refuses a fresh answer whose settled-day fees fall below 85% of what is stored, and ex-GST fees are
+> 1/1.18 = 84.7% of with-GST ones. The nightly re-read would have read the change of basis as an
+> incomplete answer and kept the old with-GST figures. Re-read once with `save_economics_daily`
+> directly, right after deploy.
 
 ### Fees post LATE, so 30 days of economics are re-read every night
 Asked as *"check once if the fees of amazon which are being fetched are correct or updated"*. They were

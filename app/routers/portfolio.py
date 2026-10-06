@@ -622,6 +622,7 @@ async def download_portfolio(
            f"{_money(data['inactive_sales'])}); add ?include_inactive=1 to keep them"
            if data.get("inactive_hidden_skus") else "")
         + " · margins are PRE-COGS (they exclude what it costs to make the product)"
+        + " · every figure is ex-GST (Amazon fees exclude their 18% GST, claimed as ITC)"
     )
 
     stream = documents.build_portfolio_xlsx(

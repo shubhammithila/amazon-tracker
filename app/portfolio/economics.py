@@ -41,7 +41,12 @@ Three traps, each of which cost real debugging time:
   query is built by ONE function and pinned by a test.
 * **``totalAmount``, not ``amount``.** ``amount`` is the rate-card figure;
   ``totalAmount`` is ``amount - promotionAmount + taxAmount``, which is what the account was
-  actually charged.
+  actually charged — so waivers (``promotionAmount``, measured ₹2.5 lakh in 30 days, all on the
+  weight-based fee) are already netted.
+* **``taxAmount`` is fetched too, and SUBTRACTED.** It is the 18% GST on each fee, which F2D claims
+  back as input tax credit, so it is not a cost. Every figure in the app is ex-GST: sales already
+  were (``orderedProductSales`` excludes the 5% GST on the order), and the ad charge carries zero
+  tax (measured; it matches the Advertising API's ``cost`` to 0.1%). See ``logic._fee_parts``.
 """
 from __future__ import annotations
 
@@ -199,7 +204,7 @@ query PortfolioEconomics {
       }
       fees {
         feeTypeName
-        charges { aggregatedDetail { totalAmount { amount currencyCode } } }
+        charges { aggregatedDetail { totalAmount { amount currencyCode } taxAmount { amount currencyCode } } }
       }
       ads {
         adTypeName

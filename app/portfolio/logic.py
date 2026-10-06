@@ -374,6 +374,30 @@ def _num(value) -> float:
         return 0.0
 
 
+def _fee_parts(econ: Mapping) -> tuple[dict, float]:
+    """``({fee name: amount EX-GST}, total fee GST)`` for one Amazon economics row.
+
+    **Every fee is shown ex-GST**, asked for as *"we do claim itc on amazon fees. keep everything
+    ex-gst only in the app"*. Amazon's `totalAmount` is amount - waiver + 18% GST; the GST
+    (`taxAmount`) is subtracted here, the only place a raw fee is read. Measured over 30 days:
+    ₹15.33 lakh of fees held ₹2.41 lakh of GST, about 5.5 points of Net %.
+
+    A row with no `taxAmount` — every STORED row, which is already ex-GST — yields 0 GST, so the
+    read path through `_summed_amazon_row` passes through unchanged. Amazon reports fees as
+    CHARGES (positive numbers that reduce proceeds); a reimbursement is negative and carries no tax.
+    """
+    fees: dict[str, float] = {}
+    gst = 0.0
+    for fee in econ.get("fees") or []:
+        name = fee.get("feeTypeName") or "Other"
+        for charge in fee.get("charges") or []:
+            detail = charge.get("aggregatedDetail") or {}
+            tax = _num(detail.get("taxAmount"))
+            fees[name] = round(fees.get(name, 0.0) + _num(detail.get("totalAmount")) - tax, 2)
+            gst += tax
+    return fees, round(gst, 2)
+
+
 def _ratio(part: float, whole: float) -> float | None:
     """``part / whole``, or **None** when there is no denominator.
 
@@ -461,16 +485,7 @@ def size_row(econ: Mapping, catalogue: Mapping, ads: Mapping | None = None) -> d
     units_ordered = int(sales.get("unitsOrdered") or 0)
     units_refunded = int(sales.get("unitsRefunded") or 0)
 
-    fees = {}
-    for fee in econ.get("fees") or []:
-        name = fee.get("feeTypeName") or "Other"
-        total = sum(
-            _num((charge.get("aggregatedDetail") or {}).get("totalAmount"))
-            for charge in (fee.get("charges") or [])
-        )
-        # Amazon reports fees as CHARGES (positive numbers that reduce proceeds). Stored as
-        # given, with the sign convention stated once here rather than guessed at each use.
-        fees[name] = round(fees.get(name, 0.0) + total, 2)
+    fees, fee_gst = _fee_parts(econ)
 
     # `ad_spend` deliberately NOT named `ads`: the parameter of that name carries the
     # Advertising API rows, and shadowing it here silently disabled ACOS in an earlier draft.
@@ -481,7 +496,10 @@ def size_row(econ: Mapping, catalogue: Mapping, ads: Mapping | None = None) -> d
         ad_spend += amount
         ad_types[ad.get("adTypeName") or "Other"] = round(amount, 2)
 
-    net = _num((econ.get("netProceeds") or {}).get("total"))
+    # Amazon's `netProceeds` subtracts the fees INCLUDING their GST; the GST is claimed back as
+    # input tax credit, so it is added back here. On a stored row `fee_gst` is 0 — the stored fees
+    # and net are already ex-GST, written through this same function — so it is never added twice.
+    net = _num((econ.get("netProceeds") or {}).get("total")) + fee_gst
 
     # ── ACOS, from the Advertising API rather than from the economics feed ──
     #
@@ -865,7 +883,9 @@ def channel_split(sku_rows: Sequence, ads_by_sku: Mapping | None = None) -> dict
         bucket["skus"].append(sku)
         bucket["sales"] = round(bucket["sales"] + _num(sales.get("orderedProductSales")), 2)
         bucket["units"] += int(sales.get("netUnitsSold") or 0)
-        bucket["net"] = round(bucket["net"] + _num((row.get("netProceeds") or {}).get("total")), 2)
+        # Ex-GST, like `size_row`: the GST on fees is input tax credit, not a cost.
+        bucket["net"] = round(bucket["net"] + _num((row.get("netProceeds") or {}).get("total"))
+                              + _fee_parts(row)[1], 2)
         bucket["ads_cost"] = round(bucket["ads_cost"] + ads_cost, 2)
         bucket["ad_attributed_sales"] = round(bucket["ad_attributed_sales"] + attributed, 2)
 

@@ -881,12 +881,14 @@ function renderBanners(){
   const notes = [];
   if(data.pre_cogs){
     notes.push({
-      short: "Margins are pre-COGS",
+      short: "Margins are pre-COGS · all figures ex-GST",
       full: `<strong>Every margin here is pre-COGS.</strong> It is Amazon's net proceeds — sales
         minus Amazon's fees minus ads — and does <strong>not</strong> include what it costs to make
         the product. A size showing a small profit may still lose money. Enter your cost per unit in
         Seller Central (SKU Central / Revenue Calculator) and Amazon returns it here, making these
-        true margins.`,
+        true margins. <strong>Every figure is ex-GST</strong>: sales exclude the GST on the order,
+        Amazon's fees exclude their 18% GST (claimed back as input tax credit), and ad spend carries
+        no GST in Amazon's figures.`,
     });
   }
   /* Fresh: a date on the collapsed line. Stale: its own banner below, not both. */
@@ -1355,7 +1357,7 @@ const COLUMN_DEFS = {
                 row: r => pct(r.refunds_pct), detail: r => pct(r.refunds_pct),
                 total: t => pct(t.ratio(t.refundedSales, t.sales))},
   fees_pct:    {num: true, sortKey: "fees_pct", width: 100,
-                tip: "every Amazon fee except advertising, as % of sales: FBA fulfilment and weight fees, fixed closing, referral, Easy Ship postage, refund commission, less reimbursements",
+                tip: "every Amazon fee except advertising, as % of sales, after waivers and EXCLUDING the 18% GST (claimed as ITC): FBA fulfilment and weight fees, fixed closing, referral, Easy Ship postage, refund commission, less reimbursements",
                 row: r => pct(r.fees_pct), detail: r => pct(r.fees_pct),
                 total: t => pct(t.ratio(t.fees, t.sales))},
   tacos:       {num: true, sortKey: "tacos", width: 80, tip: "ad spend over TOTAL sales",
