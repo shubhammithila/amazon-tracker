@@ -41,23 +41,20 @@ def _function(source: str, name: str) -> str:
 # ─── The totals row ──────────────────────────────────────────────────────────
 
 
-def test_the_totals_row_is_a_tfoot_and_not_another_data_row():
-    """Asked for as "show total/average of all columns".
+def test_the_totals_row_is_at_the_TOP_in_the_thead_and_not_a_data_row():
+    """Asked for as "show total/average of all columns", then "move the totals row at the top".
 
-    A real `tfoot` rather than a last `tbody` row, for two reasons that are not cosmetic:
-
-    * **Sorting reorders the tbody.** A total inside it could drift into the middle of the list,
-      where it reads as one product carrying the sales of the whole account.
-    * It is a SUMMARY of the column rather than a member of it, and the element is what says so to
-      a screen reader — which matters more here than usual, because its percentages are recomputed
-      rather than summed, and a reader announcing it as data would invite adding it to the rows
-      above.
+    **The second row of the thead**, never a first `tbody` row, for the reason it used to be a
+    `tfoot`: sorting reorders the tbody, so a total inside it could drift into the list and read as
+    one product carrying the sales of the whole account. It is also still a SUMMARY of the columns
+    rather than a member of them, which the thead says to a screen reader.
     """
     source = _template()
     assert "function totalsRow(" in source, "there is no totals row"
-    assert "<tfoot>${totalsRow(" in source, (
-        "the totals row is not in a tfoot, so sorting could move it into the middle of the data"
+    assert "<thead><tr>${headerHtml()}</tr>${totalsRow(" in source, (
+        "the totals row is not directly under the headings in the thead"
     )
+    assert "<tbody>${totalsRow(" not in source and "<tfoot>${totalsRow(" not in source
 
 
 def _totals_source() -> str:

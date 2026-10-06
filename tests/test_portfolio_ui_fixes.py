@@ -111,31 +111,29 @@ def test_the_table_header_is_not_offset_into_the_first_row():
         )
 
 
-def test_the_totals_row_is_pinned_ABOVE_the_headings_when_they_meet():
-    """They meet on a short filtered grid, and there the summary should win.
+def test_the_totals_row_sticks_directly_UNDER_the_headings_at_a_MEASURED_offset():
+    """Moved to the top of the table, it must stick below the heading row, not on top of it.
 
-    `tfoot` and `thead` only overlap when the table is shorter than the cap — a two-row
-    filtered view — and the totals sitting *under* the headings there would hide the figure
-    the row exists to show. Asserted as a RELATION, not as literals, so the ladder can be
-    retuned without rewriting the test as a copy of the CSS.
-
-    The tfoot's `position:sticky` was DECLARED long before this change and was inert,
-    because `bottom:0` had no scroll region to stick to either.
+    A hardcoded `top` is the ops.html `top:56px` defect again: a guess either leaves a gap the rows
+    show through or parks the totals over the headings, and the heading height follows the font. So
+    `top` reads `--pf-head-h`, and `sizeTable` (which runs after every render and on resize) sets it
+    from the first heading row's measured height.
     """
     css = _css(_source())
-    def z(selector):
-        found = re.search(r"z-index\s*:\s*(\d+)", _rule(css, selector))
-        assert found, f"{selector} has no z-index"
-        return int(found.group(1))
-
-    header_z, thead_z, tfoot_z = z("header"), z("thead th"), z("tfoot tr.totals td")
-    assert tfoot_z > thead_z, (
-        f"the totals row (z={tfoot_z}) sits under the headings (z={thead_z}), so on a short "
-        "filtered grid the figure it exists to show is hidden"
+    rule = _rule(css, "thead tr.totals td")
+    assert "position:sticky" in rule.replace(" ", ""), "the totals row is not sticky"
+    assert re.search(r"top\s*:\s*var\(--pf-head-h", rule), (
+        "the totals row's sticky offset is not the measured heading height"
     )
-    assert header_z > tfoot_z, (
-        f"the page header (z={header_z}) must stay above the table's own sticky layers"
+    source = _source()
+    body = source[source.index("function sizeTable("):]
+    body = body[: body.index("\n}\n")]
+    assert 'querySelector("thead tr:first-child")' in body and '"--pf-head-h"' in body, (
+        "nothing measures the heading row, so the totals offset is a guess"
     )
+    header_z = int(re.search(r"z-index\s*:\s*(\d+)", _rule(css, "header")).group(1))
+    totals_z = int(re.search(r"z-index\s*:\s*(\d+)", rule).group(1))
+    assert header_z > totals_z, "the page header must stay above the table's own sticky layers"
 
 
 def test_the_table_height_is_measured_rather_than_hardcoded():

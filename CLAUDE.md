@@ -2704,8 +2704,18 @@ narrow the grid, so a constant account total there would silently answer a diffe
 the rows above it — the "86 orders beside 87 lines" defect this file already records. The label says
 how many rows it covers.
 
-A real `<tfoot>`, not a last `tbody` row: **sorting reorders the tbody**, and a total that could
-drift into the middle of the list would read as one product carrying the whole account's sales.
+**It is the SECOND row of the `thead`**, directly under the headings — it was a `<tfoot>` until
+asked for *"move the totals row at the top of the table"*. Never a `tbody` row, in either place:
+**sorting reorders the tbody**, and a total that could drift into the middle of the list would read
+as one product carrying the whole account's sales. Its cells stick at `top: var(--pf-head-h)`, the
+heading row's height MEASURED by `sizeTable()` after every render.
+
+> **`--pf-head-h` first lived on `.table-wrap` and read EMPTY after a product was expanded**, because
+> `renderTable` replaces the wrapper with `innerHTML`. It now sits on the document root beside
+> `--pf-table-cap`, which is there for the same reason. Found in the browser. Also learned there:
+> measure the CELLS, not the `tr`. A row's box scrolls away while its sticky cells stay pinned, so
+> measuring rows reports a working sticky header as broken. Verified on cells at scrollTop 0, 150,
+> 400 and 672: headings 1–31px, totals 31–82px, throughout.
 
 **A parent is exactly the SUM of its sizes**, never a separate parent-level query (which Amazon
 would happily answer). The size rows sit directly beneath the parent row, so two independent

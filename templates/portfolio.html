@@ -232,21 +232,16 @@ tr.flav td:first-child{padding-left:30px}
 tr.parent.row-inactive td{color:var(--text-muted)}
 tr.size.nested td:first-child{padding-left:52px}
 
-/* The totals row. Heavier than the data and pinned to the bottom of the grid, so a long list
-   still shows what the column adds up to without scrolling back. `position:sticky` on the cells
-   rather than the row, because a `tr` is not a positioned box in the table layout model.
-
-   **This `position:sticky` was DECLARED here and inert until the wrapper gained a height cap**,
-   for the same reason the header's was: `bottom:0` had no scroll region to stick to. It now does
-   what this comment has claimed since it was written — a real behaviour change, and the wanted
-   one.
-
-   z-index 3, above the header's 2. They only meet when the grid is shorter than the cap — a
-   two-row filtered table — and there the summary should sit over the headings rather than under
-   them. Was 1, which lost that collision. */
-tfoot tr.totals td{background:var(--surface2);font-weight:700;font-size:13px;color:var(--text);
-  border-top:2px solid var(--border-strong);border-bottom:none;
-  position:sticky;bottom:0;z-index:3}
+/* The totals row: the SECOND row of the thead, pinned directly under the headings, so the
+   column's total stays in view while a long list scrolls beneath it. `position:sticky` on the
+   cells rather than the row, because a `tr` is not a positioned box in the table layout model.
+   `top` is the heading row's MEASURED height (`--pf-head-h`, set by `sizeTable`), with 31px as
+   the fallback before the first measurement. It was a sticky tfoot at the bottom until asked for
+   at the top; moving it into the thead also ends the old collision where a short filtered grid
+   made the two sticky layers overlap. Same z-index as the headings: they never overlap now. */
+thead tr.totals td{background:var(--surface2);font-weight:700;font-size:13px;color:var(--text);
+  border-bottom:2px solid var(--border-strong);text-transform:none;letter-spacing:0;
+  position:sticky;top:var(--pf-head-h, 31px);z-index:2}
 .tnote{display:block;font-size:10.5px;color:var(--text-dim);font-weight:500;white-space:normal;
   max-width:340px;line-height:1.45;margin-top:2px}
 .asin{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--text-dim)}
@@ -1329,7 +1324,7 @@ function sizeName(s){
    (`data.columns`, from app/portfolio/columns.py); this holds only how each one RENDERS.
 
    Each renderer returns a cell's INNER html for one row type: `row` (product and SKU rows),
-   `detail` (size and flavour rows), `total` (the tfoot, given `computeTotals`' result). The header,
+   `detail` (size and flavour rows), `total` (the totals row, given `computeTotals`' result). The header,
    `dataCells`, `detailCells` and `totalsRow` all map over `visibleColumns()` — there is no second
    place a column can be shown or hidden, which is what three hand-written builders each checking a
    `showExtra` flag used to be, and where a heading and the cells under it drifted apart before.
@@ -1815,15 +1810,14 @@ function renderTable(){
          what SURGICAL means.`}</div>
     <div class="table-wrap">
       <table style="min-width:${tableMinWidth()}px">
-        <thead><tr>${headerHtml()}</tr></thead>
+        ${/* **The totals row is the SECOND row of the thead**, asked for as "move the totals row
+             at the top of the table". In the thead rather than a first tbody row for the reason
+             it used to be a tfoot: sorting reorders the tbody, and a total that could drift into
+             the list would read as one product carrying the whole account. It is still a summary
+             of the columns rather than a member of them, which the thead says to a screen reader
+             as the tfoot did. It sticks directly under the headings (see `--pf-head-h`). */""}
+        <thead><tr>${headerHtml()}</tr>${totalsRow(list, isSkus)}</thead>
         <tbody>${html}</tbody>
-        ${/* A real `tfoot`, not a last `tbody` row. It is a summary of the column rather than
-             another member of it, and the element is what says so to a screen reader — which
-             matters more here than usual, because the row's percentages are recomputed rather
-             than summed and a reader announcing it as data would invite adding it to the rows
-             above. It also survives sorting without any special case: sorting reorders the
-             tbody, and a total that could drift into the middle of the list would be wrong. */""}
-        <tfoot>${totalsRow(list, isSkus)}</tfoot>
       </table>
     </div>
   </div>`;
@@ -1862,6 +1856,15 @@ function sizeTable(){
   // 8px of breathing room, so the box does not sit flush against the viewport edge.
   const cap = Math.max(200, Math.round(window.innerHeight - chrome - 8));
   document.documentElement.style.setProperty("--pf-table-cap", cap + "px");
+  /* The totals row sticks directly UNDER the headings, so its offset is the heading row's height.
+     Measured rather than hardcoded: it follows the font, and a guessed constant either leaves a
+     gap rows show through or parks the totals over the headings — the ops.html `top:56px` defect. */
+  const headRow = wrap.querySelector("thead tr:first-child");
+  /* On the ROOT, like `--pf-table-cap`: renderTable replaces `.table-wrap` with innerHTML, so a
+     variable set on the wrapper vanished on the next render — found in the browser, reading empty
+     after a product was expanded. */
+  if(headRow) document.documentElement.style.setProperty(
+    "--pf-head-h", Math.round(headRow.getBoundingClientRect().height) + "px");
 }
 
 /* A measurement is only true for the viewport it was taken in. Rotating the tablet or
