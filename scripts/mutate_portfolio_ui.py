@@ -67,10 +67,10 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         PF,
-        "position:sticky;bottom:0;z-index:3}",
-        "position:sticky;bottom:0;z-index:1}",
-        "on a short filtered grid the totals row slides UNDER the headings, hiding the figure it "
-        "exists to show — test_the_totals_row_is_pinned_ABOVE_the_headings_when_they_meet",
+        "position:sticky;top:var(--pf-head-h, 31px);z-index:2}",
+        "position:sticky;top:0;z-index:2}",
+        "the totals row (now under the headings) sticks at 0 and slides UNDER them, hiding the figure "
+        "it exists to show — re-pointed when c543d1e moved the totals from tfoot to thead",
     ),
     (
         PF,
@@ -222,7 +222,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         TESTS_FILE,
-        'FRAGMENTS = {"nav.html", "_icons.html", "_icon_sprite.html"}',
+        'FRAGMENTS = {"nav.html", "_icons.html", "_icon_sprite.html", "_portfolio_tabs.html"}',
         'FRAGMENTS = {"nav.html"}',
         "proves the exemption is load-bearing rather than cargo-culted: the two partials have no "
         "<head>, so the suite must FAIL when they are held to the stylesheet-link rule",

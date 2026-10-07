@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2564 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2690 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -139,7 +139,7 @@ app/
 ├── main.py              # FastAPI app entry point
 ├── config.py            # Settings (pydantic-settings, .env)
 ├── database.py          # Async SQLAlchemy engine
-├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry, AmazonOrder/AmazonOrderItem/OrderPackedEntry/OrderPackedState/ProductRawStock, EconomicsDaily/AdsDaily/EconomicsRefresh/ProductDecision/PortfolioSettings/AdsRefresh)
+├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry, AmazonOrder/AmazonOrderItem/OrderPackedEntry/OrderPackedState/ProductRawStock, EconomicsDaily/AdsDaily/EconomicsRefresh/ProductDecision/PortfolioSettings/AdsRefresh, CustomerOrderLine/RepeatRefresh)
 ├── scheduler.py         # APScheduler. Times STATED IN IST via app/ist.py (the box is UTC):
 │                        # portfolio 07:30 IST, ads 08:00 IST, orders every 30m,
 │                        # product scrape 05:00 IST under its OWN flag (SCRAPE_ENABLED)
@@ -171,6 +171,13 @@ app/
 │   ├── repository.py    # PER-DAY economics/ads cache, range_completeness, purge_daily,
 │   │                    # one-query ratings, owner decisions
 │   └── refresh.py       # run_incremental (nightly, yesterday only) + run (manual, a window)
+├── repeat/              # Portfolio -> Repeat customers (FBA order lines keyed to a hashed buyer)
+│   ├── keys.py          # salted HMAC of the masked buyer email; the email is never stored
+│   ├── fetch.py         # GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL, <=30-day chunks
+│   ├── parse.py         # report rows -> lines (IST day, skip free replacements)
+│   ├── logic.py         # THE calculation: same / came_from / went_on / basket / brand, pure
+│   ├── service.py       # payload for one brand; as_of = latest fetch - 3 days
+│   └── refresh.py       # nightly 7 days at 10:00 IST; scripts/backfill_repeat.py for 18 months
 └── invoice/
     ├── company_data.py  # F2D Tech GSTINs, supplier info, priority FC addresses, transporters
     ├── hsn_codes.py     # HSN code master (default 1106 @ 5% for all food products)
@@ -2978,6 +2985,69 @@ rating and a prose reason. Widening it would silently change four working docume
 > it. Found by a test asserting the pre-COGS caveat was in the file: without it a workbook showing
 > "+8.8% net" leaves the app with no caveat attached and gets read as profit. The portfolio builder
 > writes it into row 1.
+
+## Portfolio → Repeat customers — who comes back, and to what
+
+`/portfolio-page/repeat`, a sub-tab beside Profit (`templates/_portfolio_tabs.html` holds the
+switch, included by both pages). Asked for as *"30-60-90 day repeat % of a parent… overall Mithila…
+cross product flows and basket… a customer buys chana sattu and again buys chana sattu thats repeat.
+but buys jau sattu thats also a repeat and should be shown in jau sattu as a cross flow repeat"*.
+
+### The customer key exists, and it was measured before anything was designed
+`GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL` carries `buyer-email` on every row, an Amazon relay
+address (`…@marketplace.amazon.in`). Measured 06 Oct 2026 on 90 days / 32,351 orders:
+
+| Check | Result |
+|---|---|
+| one key per order | **0** orders with two keys |
+| stable across months | 785 July buyers reappear in August, 624 in September |
+| SKU → parent coverage | **100%** via `economics_daily` MSKU rows |
+| history depth | ≥ **18 months** (Apr 2025 probe DONE) |
+| report window | 90 days is **FATAL**; 30 works; **30–40 min per chunk**, serial queue |
+| vs Brand Analytics (Sep, same ASIN) | customers **914/925, 737/747, 223/223**; our repeat 0.3–0.6 pt lower |
+
+**Only `HMAC-SHA256(salt, email)[:32]` is stored.** The salt is created once in `portfolio_settings`
+(`customer_key_salt`). **Rotating it severs every customer's history.** No email, name, phone,
+address or pincode column exists, and a test asserts it.
+
+### FBA ONLY — and a pincode is not a substitute
+Easy Ship orders carry no buyer field without Amazon's restricted customer-data role, which is
+being applied for. The obvious workaround was measured and rejected: on FBA data, where the true
+customer is known, "next order from the same pincode" was the same customer **15%** of the time
+(3.6% across products), because 1,168 pincodes held more than 5 customers in 90 days. So each row
+shows `fba_share` and is marked **partial** below 60%; Kulthi Dal is the example (186 FBA customers
+against Brand Analytics' 509). `CustomerOrderLine.channel` exists so Easy Ship lines can be added
+the day the role is granted, with no schema change.
+
+### The definitions (the owner's choices)
+- **Follow-up window.** For N = 30/60/90 the cohort is customers who bought in the 30 days ending
+  `as_of − N`, anchored at their FIRST purchase there; **same** = bought it again on a LATER day
+  within N days. Every customer has the full window, so the three are comparable.
+- **From other** (on the DESTINATION row) = share of its buyers who bought a different product of
+  ours in the N days BEFORE. The expand panel names "came from", "went on to" and "bought together".
+- **Same day is not a repeat; same order is a basket, not a cross flow.**
+- **The brand total counts UNIQUE customers**, so it is not the sum of the rows.
+- **A dash, never 0%**, below 20 buyers or when history does not reach `period_start − N`.
+- `as_of` = newest fetched day − **3** (an order can ship up to 3 days after purchase).
+
+### How it is tested
+`tests/test_repeat_logic.py` hand-builds histories with unequal values;
+`tests/test_repeat_reference.py` compares `logic.metrics` with a deliberately naive day-by-day
+restatement on **40 random histories** (one boundary flipped → all 40 fail);
+`scripts/mutate_repeat.py` **18/18 caught** — the first pass had 4 survivors, each a test whose
+fixture could not see the difference (a history months short of the boundary, a fetch never
+including today, a total with no cross-flow value to hide). `scripts/validate_repeat.py 2026-09`
+re-runs the Brand Analytics comparison on production and exits 1 on disagreement.
+
+> **Found in the browser:** the sprite's refresh icon filled the whole card, because `.ico` sizing
+> lived in `portfolio.html` only. A test now asserts the rule on this page.
+
+### Operations
+Migration `a4c7e2f19b30` (detector branch added, newest first). Nightly job `repeat_refresh` at
+**10:00 IST**, last 7 days, after every other reporting job. One-off backfill in `screen`:
+`venv/bin/python scripts/backfill_repeat.py` — newest chunks first, resumable, ~9–12 h. A failed
+chunk STOPS the run, because a later chunk recorded as done would make coverage look contiguous
+across a gap. Retention 400 days. Never writes to Amazon.
 
 ## Ads tab — campaign performance, and bulk bid edits
 

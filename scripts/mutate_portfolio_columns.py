@@ -61,7 +61,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
      "a protected column's tick box is clickable in the panel"),
     ("deploy/update-ec2.sh",
      'elif "preferences_json" in cols("users"):\n'
-     '    print("c3d8e1f5a702")                           # head: per-login display preferences\n',
+     '    print("c3d8e1f5a702")                           # per-login display preferences\n',
      "", "the baseline detector is stale and stamps production BACKWARDS"),
 ]
 
