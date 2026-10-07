@@ -989,6 +989,63 @@ class EconomicsRefresh(Base):
     finished_at = Column(DateTime)
 
 
+class CustomerOrderLine(Base):
+    """One SHIPPED order line, keyed to a hashed customer. The Repeat sub-tab's only source.
+
+    From `GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL`, whose masked `buyer-email` is stable per
+    buyer (0 of 32,351 orders carried two keys; 785 July buyers reappeared in August). **Only a
+    salted HMAC of it is stored** — no email, name, phone or address column exists, and a test
+    asserts that.
+
+    `channel` is "fba" for every row today: Easy Ship orders carry no buyer field without Amazon's
+    restricted customer-data role. A pincode cannot stand in for it — measured on FBA data, "next
+    order from the same pincode" was the same customer only 15% of the time. The column exists so
+    Easy Ship lines can be added once that role is granted, with no schema change.
+
+    UNIQUE on (order, shipment item): the nightly fetch overlaps 7 days, so a re-read must update.
+    `child_asin`/`parent_asin` are resolved at ingest (and re-tried while NULL) because the SKU map
+    comes from `economics_daily`, which keeps only 90 days.
+    """
+    __tablename__ = "customer_order_lines"
+    __table_args__ = (
+        Index("idx_customer_order_lines_item", "amazon_order_id", "shipment_item_id", unique=True),
+        Index("idx_customer_order_lines_day", "purchase_day"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    amazon_order_id = Column(String(30), nullable=False)
+    shipment_item_id = Column(String(30), nullable=False)
+    buyer_key = Column(String(32), nullable=False)
+    #: IST calendar day of the PURCHASE, `YYYY-MM-DD`.
+    purchase_day = Column(String(10), nullable=False)
+    channel = Column(String(8), nullable=False, default="fba", server_default="fba")
+    seller_sku = Column(String(80), nullable=False, default="", server_default="")
+    child_asin = Column(String(10))
+    parent_asin = Column(String(10))
+    units = Column(Integer, nullable=False, default=0, server_default="0")
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RepeatRefresh(Base):
+    """One fetch of the shipments report. Done windows define what history is COVERED."""
+    __tablename__ = "repeat_refresh"
+
+    id = Column(Integer, primary_key=True)
+    window_start = Column(String(10))
+    window_end = Column(String(10))
+    #: "done" | "failed"
+    status = Column(String(12), nullable=False, default="done")
+    rows_seen = Column(Integer, default=0)
+    lines_stored = Column(Integer, default=0)
+    skipped_no_date = Column(Integer, default=0)
+    skipped_zero_price = Column(Integer, default=0)
+    skipped_no_key = Column(Integer, default=0)
+    unresolved_sku = Column(Integer, default=0)
+    error = Column(Text)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    finished_at = Column(DateTime)
+
+
 class ProjectionRow(Base):
     """One parent product's purchasing forecast row. **Keyed on the parent product NAME, not an
     ASIN** — the same choice `ProductRawStock` makes, for the same reason: this is a purchasing
