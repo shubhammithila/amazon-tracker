@@ -325,6 +325,8 @@ thead tr.totals td{background:var(--surface2);font-weight:700;font-size:13px;col
   font-weight:600;padding:7px 13px;cursor:pointer}
 .seg-btn:hover{color:var(--text)}
 .seg-btn.on{background:var(--accent);color:var(--on-accent)}
+a.seg-btn{text-decoration:none;display:inline-block}
+.pf-tabs{margin:4px 0 6px}
 .win-btn{background:transparent;border:1px solid var(--border-strong);border-radius:8px;
   color:var(--text);font-size:12.5px;padding:6px 12px;cursor:pointer;position:relative}
 .win-btn:hover{border-color:var(--accent)}
@@ -382,6 +384,7 @@ th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 <main>
 
 <h2>Portfolio review</h2>
+{% include "_portfolio_tabs.html" %}
 <div class="subtitle" id="subtitle">Loading…</div>
 
 <div id="messages"></div>

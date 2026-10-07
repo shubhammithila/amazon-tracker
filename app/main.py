@@ -221,7 +221,16 @@ async def invoice_page(request: Request, grant=Depends(require_area(permissions.
 @app.get("/portfolio-page", response_class=HTMLResponse)
 async def portfolio_page(request: Request, grant=Depends(require_area(permissions.PORTFOLIO))):
     return templates.TemplateResponse(
-        request, "portfolio.html", {"active": "portfolio", "grant": grant}
+        request, "portfolio.html", {"active": "portfolio", "grant": grant, "pf_tab": "profit"}
+    )
+
+
+@app.get("/portfolio-page/repeat", response_class=HTMLResponse)
+async def portfolio_repeat_page(request: Request,
+                                grant=Depends(require_area(permissions.PORTFOLIO))):
+    return templates.TemplateResponse(
+        request, "portfolio_repeat.html",
+        {"active": "portfolio", "grant": grant, "pf_tab": "repeat"},
     )
 
 

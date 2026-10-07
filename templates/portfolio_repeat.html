@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Repeat customers — Amazon Tracker</title>
+{% import "_icons.html" as icons %}
+{#
+  Portfolio -> Repeat customers. Every figure comes from app/repeat/logic.py, read through
+  GET /portfolio/repeat; this page holds no arithmetic beyond formatting.
+
+  * **FBA orders only.** Easy Ship orders carry no customer key without Amazon's restricted role,
+    so each row shows its FBA share and a row under the threshold is marked "partial".
+  * **Follow-up windows.** For 30/60/90 days, the cohort is customers who bought in the 30 days
+    ending N days ago, followed for N days, so every customer has had the full window to return.
+  * **The top row is the BRAND**, counted per unique customer — not the sum of the rows, because
+    one customer buying two products is one brand customer.
+  * **A dash, never 0%,** when a cohort is too small or the history does not reach far enough;
+    the reason is on hover.
+#}
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px}
+header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
+header h1{font-size:16px;font-weight:600}
+.nav-links{display:flex;gap:16px;margin-left:32px}
+.nav-links a{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
+.nav-links a:hover,.nav-links a.active{color:var(--text);border-color:var(--accent)}
+.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:13px;text-decoration:none}
+main{max-width:1280px;margin:0 auto;padding:16px 20px 80px}
+h2{font-size:19px;font-weight:600;margin-bottom:6px}
+.subtitle{color:var(--text-muted);font-size:12.5px;margin:8px 0 12px;line-height:1.5}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;box-shadow:var(--shadow)}
+.banner{border-radius:8px;padding:10px 13px;font-size:12.5px;margin-bottom:10px;line-height:1.55}
+.banner.error{background:var(--red-soft);border:1px solid var(--red);color:var(--red)}
+.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+select{padding:7px 10px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px}
+.seg{display:inline-flex;border:1px solid var(--border-strong);border-radius:8px;overflow:hidden}
+.seg-btn{background:transparent;border:none;color:var(--text-muted);font-size:12.5px;font-weight:600;padding:7px 13px;cursor:pointer;text-decoration:none;display:inline-block}
+.seg-btn:hover{color:var(--text)}
+.seg-btn.on{background:var(--accent);color:var(--on-accent)}
+.table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border)}
+table{width:100%;min-width:980px;border-collapse:separate;border-spacing:0}
+thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;font-size:10.5px;
+  font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:left;white-space:nowrap;
+  border-bottom:2px solid var(--border-strong)}
+thead th.grp{text-align:center;border-left:1px solid var(--border)}
+thead tr.totals td{background:var(--surface2);font-weight:700;font-size:13px;padding:7px 10px;white-space:nowrap;border-bottom:2px solid var(--border-strong)}
+tbody td{padding:7px 10px;font-size:13px;border-bottom:1px solid var(--border);white-space:nowrap}
+th.num,td.num{text-align:right}
+tbody tr.row{cursor:pointer}
+tbody tr.row:hover td{background:var(--accent-soft)}
+tr.detail td{background:var(--surface2);white-space:normal;line-height:1.7;font-size:12.5px}
+tr.detail a{color:var(--accent);margin-right:6px}
+tr.detail a.on{font-weight:700;text-decoration:none}
+.dim{color:var(--text-dim)}
+.partial{color:var(--yellow);font-size:11px;font-weight:600}
+</style>
+<link rel="stylesheet" href="/static/theme.css"/>
+</head>
+<body>
+{% include "_icon_sprite.html" %}
+<header>
+<span>📊</span><h1>Amazon Tracker v2</h1>
+{% include "nav.html" %}
+<div class="header-right"><a href="/logout">Logout</a></div>
+</header>
+<main>
+
+<h2>Portfolio review</h2>
+{% include "_portfolio_tabs.html" %}
+<div class="subtitle" id="subtitle">Loading…</div>
+
+<div id="messages"></div>
+
+<div class="card">
+  <div class="controls">
+    <select id="brand" aria-label="Brand"></select>
+    <button class="btn" id="refresh-btn">{{ icons.icon("refresh") }} Refresh from Amazon</button>
+    <span id="refresh-note" class="dim" style="font-size:12px"></span>
+  </div>
+</div>
+
+<div class="table-wrap" id="table"></div>
+
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let data = {rows: [], windows: {}, total: {}, brands: []};
+let open = new Set();
+let flowWindow = "60";
+const WINS = ["30", "60", "90"];
+function esc(s){
+  return String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+}
+function num(v){ return v == null ? "—" : Number(v).toLocaleString("en-IN"); }
+function pct(v){ return v == null ? "—" : (v * 100).toFixed(1) + "%"; }
+function cellPct(id, v, why){
+  return `<td class="num" data-col="${id}"${why ? ` title="${esc(why)}"` : ""}>${pct(v)}</td>`;
+}
+function winCells(w, n, cross){
+  const win = data.windows[n] || {};
+  const c = win.available ? (w[n] || {}) : {};
+  const why = !win.available ? (win.reason || "")
+    : (c.buyers != null && c.buyers < data.min_cohort ? `only ${c.buyers} buyers — too few for a percentage` : "");
+  return `<td class="num" data-col="buyers-${n}">${win.available ? num(c.buyers) : "—"}</td>`
+    + cellPct(`same-${n}`, c.same_pct ?? c.repeat_pct, why)
+    + cellPct(`from-${n}`, cross ? c.came_from_pct : null, cross ? why : "a brand total has no cross flow");
+}
+function rowHtml(r){
+  const partial = r.fba_share != null && r.fba_share < data.fba_partial_below;
+  return `<tr class="row" data-p="${esc(r.parent_asin)}"><td data-col="product">${esc(r.product)}</td>`
+    + `<td class="num" data-col="fba">${pct(r.fba_share)}${partial
+        ? ' <span class="partial" title="Many of its orders ship by Easy Ship, which carries no customer key, so its repeat reads low">partial</span>'
+        : ""}</td>`
+    + WINS.map(n => winCells(r.w, n, true)).join("") + `</tr>`;
+}
+function totalRowHtml(){
+  return `<tr class="totals"><td data-col="product">${esc(data.brand || "Brand")} — all products</td><td class="num" data-col="fba"></td>`
+    + WINS.map(n => winCells(data.total || {}, n, false)).join("") + `</tr>`;
+}
+function flowsHtml(r, n){
+  const list = (rows, k) => rows && rows.length
+    ? rows.map(x => `${esc(x.product)} <b>${num(x[k])}</b>`).join(" · ") : "—";
+  const f = (r.flows || {})[n] || {};
+  const b = r.basket || {};
+  return `<div class="dim">Window: ${WINS.map(w => `<a href="#" data-flow="${w}"${w === n ? ' class="on"' : ""}>${w} days</a>`).join("")}</div>`
+    + `<div><b>Came from</b> — bought another product of ours in the ${n} days before: ${list(f.came_from, "customers")}</div>`
+    + `<div><b>Went on to</b> — bought next, within ${n} days: ${list(f.went_on, "customers")}</div>`
+    + `<div><b>Bought together</b> — in the same order, last 90 days (${pct(b.multi_pct)} of its ${num(b.orders)} orders): ${list(b.with, "orders")}</div>`;
+}
+function render(){
+  const cols = 2 + WINS.length * 3;
+  const head = `<tr><th rowspan="2">Product</th><th rowspan="2" class="num" title="Share of its units shipped by FBA. Easy Ship orders carry no customer key.">FBA share</th>`
+    + WINS.map(n => `<th colspan="3" class="grp">${n}-day</th>`).join("") + `</tr><tr>`
+    + WINS.map(() => `<th class="num" title="Customers who bought it in the 30-day cohort period">Buyers</th>`
+      + `<th class="num" title="Bought the SAME product again on a later day">Same repeat</th>`
+      + `<th class="num" title="Had bought a DIFFERENT product of ours in the days before">From other</th>`).join("")
+    + `</tr>`;
+  const body = data.rows.length ? data.rows.map(r => rowHtml(r) + (open.has(r.parent_asin)
+      ? `<tr class="detail"><td colspan="${cols}">${flowsHtml(r, flowWindow)}</td></tr>` : "")).join("")
+    : `<tr><td colspan="${cols}" class="dim">No customers in this brand yet.</td></tr>`;
+  $("table").innerHTML = `<table><thead>${head}${totalRowHtml()}</thead><tbody>${body}</tbody></table>`;
+}
+async function load(){
+  const brand = $("brand").value;
+  const res = await fetch("/portfolio/repeat" + (brand ? "?brand=" + encodeURIComponent(brand) : ""));
+  if(!res.ok){ $("subtitle").textContent = "Could not load repeat customers."; return; }
+  data = await res.json();
+  $("brand").innerHTML = (data.brands.length ? data.brands : [data.brand])
+    .map(b => `<option${b === data.brand ? " selected" : ""}>${esc(b)}</option>`).join("");
+  $("subtitle").textContent = data.as_of
+    ? `FBA orders only · customers who bought in a 30-day period, followed for 30 / 60 / 90 days · data to ${data.as_of}`
+      + (data.history_from ? ` · history from ${data.history_from}` : "")
+    : "No customer history yet — press Refresh from Amazon, or run the backfill.";
+  const last = data.last_refresh;
+  $("messages").innerHTML = last && last.status === "failed"
+    ? `<div class="banner error">The last refresh failed: ${esc(last.error)}</div>` : "";
+  render();
+}
+$("brand").addEventListener("change", load);
+$("table").addEventListener("click", e => {
+  const flow = e.target.closest("[data-flow]");
+  if(flow){ e.preventDefault(); flowWindow = flow.dataset.flow; render(); return; }
+  const row = e.target.closest("tr.row");
+  if(!row) return;
+  const p = row.dataset.p;
+  open.has(p) ? open.delete(p) : open.add(p);
+  render();
+});
+$("refresh-btn").addEventListener("click", async () => {
+  const r = await fetch("/portfolio/repeat/refresh", {method: "POST"});
+  $("refresh-note").textContent = r.ok
+    ? "Fetching the last 7 days — Amazon takes 5 to 15 minutes. Reload the page afterwards."
+    : (await r.json()).error;
+});
+load();
+</script>
+</body>
+</html>

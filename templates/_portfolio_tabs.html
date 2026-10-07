@@ -1,0 +1,6 @@
+{# Profit | Repeat customers: the two Portfolio sub-tabs. A fragment (no <head>), so it is exempt
+   from the stylesheet-link rule in tests/test_theme.py; each page styles .seg itself. #}
+<div class="seg pf-tabs">
+  <a class="seg-btn{% if pf_tab == 'profit' %} on{% endif %}" href="/portfolio-page">Profit</a>
+  <a class="seg-btn{% if pf_tab == 'repeat' %} on{% endif %}" href="/portfolio-page/repeat">Repeat customers</a>
+</div>

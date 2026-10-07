@@ -31,8 +31,8 @@ CONSTS = ["n", "ico", "COLUMN_DEFS", "FALLBACK_ORDER", "FIELDS"]
 _TOP_LEVEL = ("\nconst ", "\nlet ", "\n$(", "\ndocument.", "\nload()", "\n/*", "\n//")
 
 
-def _script() -> str:
-    source = TEMPLATE.read_text(encoding="utf-8")
+def _script(template: Path = TEMPLATE) -> str:
+    source = template.read_text(encoding="utf-8")
     return source[source.rindex("<script>") + len("<script>"): source.rindex("</script>")]
 
 
@@ -110,5 +110,23 @@ def run_portfolio_js(body: str, *, panel: bool = False):
     Path(path).write_text("\n".join(parts), encoding="utf-8")
     # UTF-8 explicitly: Node writes UTF-8, and the Windows default (cp1252) turned every ₹ into mojibake.
     result = subprocess.run([node, path], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stderr[-2000:]
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+def run_template_js(template: Path, functions: list[str], consts: list[str], body: str):
+    """Run named functions from ANY template under Node. Same extraction rules as above."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed; the render tests need it")
+    script = _script(template)
+    parts = ["let data = {}; const $ = () => null;",
+             "function emit(v){ console.log(JSON.stringify(v)); }"]
+    parts += [_const(script, n) for n in consts] + [_function(script, n) for n in functions]
+    parts.append(body)
+    path = os.path.join(tempfile.gettempdir(), "tpl_render_test.js")
+    Path(path).write_text("\n".join(parts), encoding="utf-8")
+    result = subprocess.run([node, path], capture_output=True, text=True, encoding="utf-8",
+                            timeout=30)
     assert result.returncode == 0, result.stderr[-2000:]
     return json.loads(result.stdout.strip().splitlines()[-1])
