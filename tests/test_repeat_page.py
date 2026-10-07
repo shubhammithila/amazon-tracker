@@ -83,3 +83,8 @@ async def test_both_portfolio_pages_carry_the_switch_with_the_right_tab_lit(auth
 
 def test_the_page_never_mentions_a_buyer_key():
     assert "buyer_key" not in T.read_text(encoding="utf-8")
+
+
+def test_the_page_sizes_its_icons():
+    """Found in the browser: without the `.ico` rule the sprite's refresh icon filled the card."""
+    assert ".ico{width:1em;height:1em" in T.read_text(encoding="utf-8")

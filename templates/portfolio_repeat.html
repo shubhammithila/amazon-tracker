@@ -54,6 +54,8 @@ tr.detail td{background:var(--surface2);white-space:normal;line-height:1.7;font-
 tr.detail a{color:var(--accent);margin-right:6px}
 tr.detail a.on{font-weight:700;text-decoration:none}
 .dim{color:var(--text-dim)}
+/* The sprite's icons have no intrinsic size; without this an <svg> fills its container. */
+.ico{width:1em;height:1em;flex:none;vertical-align:-0.125em}
 .partial{color:var(--yellow);font-size:11px;font-weight:600}
 </style>
 <link rel="stylesheet" href="/static/theme.css"/>
