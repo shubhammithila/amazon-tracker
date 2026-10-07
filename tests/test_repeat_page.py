@@ -12,10 +12,12 @@ CONSTS = ["WINS"]
 DATA = """data = {min_cohort: 20, fba_partial_below: 0.6, brand: "Mithila Foods",
  windows: {"30": {available: true}, "60": {available: true},
            "90": {available: false, reason: "needs order history from 2026-03-06"}},
- total: {"30": {buyers: 1200, repeat_pct: 0.086}, "60": {buyers: 1100, repeat_pct: 0.127}}};
+ total: {"30": {buyers: 1200, repeat_pct: 0.086, came_from_pct: 0.5},
+         "60": {buyers: 1100, repeat_pct: 0.127}}};
 const ROW = {parent_asin: "P1", product: "Jau Sattu", fba_share: 0.92,
  w: {"30": {buyers: 1404, same_pct: 0.077, came_from_pct: 0.071, went_on_pct: 0.05},
-     "60": {buyers: 1300, same_pct: 0.143, came_from_pct: 0.091, went_on_pct: 0.06}},
+     "60": {buyers: 1300, same_pct: 0.143, came_from_pct: 0.091, went_on_pct: 0.06},
+     "90": {buyers: 999, same_pct: 0.55, came_from_pct: 0.44}},
  flows: {"60": {came_from: [{product: "Chana Sattu", customers: 73}],
                 went_on: [{product: "Jeera Chana Sattu", customers: 58}]}},
  basket: {orders: 900, multi_pct: 0.21, with: [{product: "Makkai Sattu", orders: 193}]}};"""
@@ -40,6 +42,7 @@ def test_an_unavailable_window_renders_a_dash_not_zero():
 
 
 def test_the_total_row_is_the_brand_figure_and_has_no_cross_flow():
+    """The fixture's total even CARRIES a came_from_pct: a brand total must never show one."""
     got = _cells("totalRowHtml()")
     assert got["product"].startswith("Mithila Foods")
     assert got["buyers-30"] == "1,200" and got["same-30"] == "8.6%" and got["from-30"] == "—"

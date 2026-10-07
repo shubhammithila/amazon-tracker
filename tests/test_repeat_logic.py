@@ -133,3 +133,10 @@ def test_name_parents_uses_the_shared_name_and_disambiguates_a_DERIVED_collision
         "P3": ["Chana Sattu"],
     })
     assert names == {"P1": "Roasted Chana (2 flavours)", "P2": "Roasted Chana", "P3": "Chana Sattu"}
+
+
+def test_the_history_check_is_exact_at_the_boundary():
+    """History must reach period_start - N exactly: one day short is unavailable, exact is not."""
+    need = logic.period(90, AS_OF)[0] - timedelta(days=90)
+    assert logic.window_status(90, AS_OF, need) == (True, None)
+    assert logic.window_status(90, AS_OF, need + timedelta(days=1))[0] is False

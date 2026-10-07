@@ -117,3 +117,12 @@ def test_names_match_the_profit_view_for_the_same_children():
                 for p in data["parents"]}
     assert logic.name_parents(children) == profit
     assert profit["B0RCPAR001"] == "Roasted Chana (2 flavours)"
+
+
+async def test_a_fetch_that_includes_TODAY_still_ends_as_of_at_yesterday_minus_the_lag(
+        auth_client, db, catalogue):
+    await _seed(db)
+    await repository.record_run(db, window_start=ist.today().isoformat(),
+                                window_end=ist.today().isoformat(), status="done")
+    data = (await auth_client.get("/portfolio/repeat")).json()
+    assert data["as_of"] == (ist.yesterday() - timedelta(days=3)).isoformat()
