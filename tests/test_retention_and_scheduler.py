@@ -248,7 +248,7 @@ def test_all_scheduled_jobs_are_registered(monkeypatch):
     assert set(jobs) == {
         "daily_product_scrape", "daily_keyword_track", "daily_history_purge",
         "order_refresh", "portfolio_refresh", "ads_refresh", "ads_refresh_retry",
-        "projections_refresh",
+        "projections_refresh", "repeat_refresh",
     }
 
 
@@ -311,6 +311,22 @@ def test_the_projections_job_fires_at_09_30_IST_AFTER_portfolio_and_ads(monkeypa
     assert sched.PROJECTIONS_REFRESH_IST > sched.ADS_REFRESH_IST
 
 
+
+def test_the_repeat_job_fires_at_10_IST_after_every_other_reporting_job(monkeypatch):
+    """Asserted on the IST constant, never a UTC hour. After the portfolio pull, because the
+    repeat refresh reads the economics SKU map that pull keeps current."""
+    from app import ist as ist_module
+    from app import scheduler as sched
+
+    jobs = _registered_jobs(monkeypatch, hour=6)
+    assert sched.REPEAT_REFRESH_IST == (10, 0)
+    hour, minute = ist_module.utc_hhmm(*sched.REPEAT_REFRESH_IST)
+    assert f"hour='{hour}'" in jobs["repeat_refresh"]
+    assert f"minute='{minute}'" in jobs["repeat_refresh"]
+    assert sched.REPEAT_REFRESH_IST > sched.PORTFOLIO_REFRESH_IST
+    assert sched.REPEAT_REFRESH_IST > sched.ADS_REFRESH_IST
+    assert sched.REPEAT_REFRESH_IST > sched.PROJECTIONS_REFRESH_IST
+
 def test_the_startup_log_states_the_IST_time_and_the_UTC_one(monkeypatch, caplog):
     """`journalctl` stamps UTC while the intent is IST, so a line naming one leaves the next reader
     to redo the arithmetic that was wrong here for the life of the feature."""
@@ -353,7 +369,8 @@ def test_the_nightly_ads_refresh_only_reads_and_never_edits_a_bid(monkeypatch):
 
     # Both scheduled ads jobs: the morning refresh AND the afternoon gap-fill. A second unattended
     # job is a second place a bid change could creep in.
-    for job in (sched.scheduled_ads_refresh, sched.scheduled_ads_retry):
+    for job in (sched.scheduled_ads_refresh, sched.scheduled_ads_retry,
+                sched.scheduled_repeat_refresh):
         source = inspect.getsource(job)
         for forbidden in ("apply_changes", "plan_run", "open_run", "/apply"):
             assert forbidden not in source, (

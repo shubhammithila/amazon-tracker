@@ -414,6 +414,30 @@ async def scheduled_projections_refresh():
         )
 
 
+
+#: **10:00 IST**, after the 07:30 portfolio, 08:00 ads and Sunday 09:30 projections jobs, so the
+#: economics SKU map the repeat refresh reads is already current. Seven days, because a shipment can
+#: land days after its purchase; the windows overlap and the upsert makes that safe.
+REPEAT_REFRESH_IST = (10, 0)
+
+
+async def scheduled_repeat_refresh():
+    """Pull the last 7 days of FBA shipments into the Repeat customers sub-tab.
+
+    **This job never edits Amazon.** It reads a report and stores hashed order lines.
+    """
+    if not get_settings().spapi_configured:
+        logger.debug("Repeat refresh skipped: SP-API is not configured")
+        return
+
+    from app.repeat import refresh as repeat_refresh
+
+    result = await repeat_refresh.run_incremental()
+    if result.get("error"):
+        logger.warning("Repeat refresh failed: %s", result["error"])
+    else:
+        logger.info("Repeat refresh: %d line(s)", result.get("lines_stored", 0))
+
 async def scheduled_order_refresh():
     """Pull Amazon Easy Ship orders into the local tables, every 30 minutes.
 
@@ -624,6 +648,18 @@ def setup_scheduler():
         coalesce=True,
     )
     parts.append(f"projections weekly at {ist.label(*PROJECTIONS_REFRESH_IST)}")
+
+    # Same flag pair again: a report read that never writes to Amazon.
+    repeat_utc = ist.utc_hhmm(*REPEAT_REFRESH_IST)
+    scheduler.add_job(
+        scheduled_repeat_refresh,
+        CronTrigger(hour=repeat_utc[0], minute=repeat_utc[1]),
+        id="repeat_refresh",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    parts.append(f"repeat customers at {ist.label(*REPEAT_REFRESH_IST)}")
 
     scheduler.start()
     # Built from `parts` rather than one f-string: `keyword_hour` and `purge_hour` only exist
