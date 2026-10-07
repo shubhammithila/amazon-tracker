@@ -13,7 +13,7 @@ from app.database import engine, Base, async_session
 from app import permissions
 from app.routers import (
     admin_users, ads, auth, invoice, keywords, orders, portfolio, product_prices, products,
-    projections, scrape, shipment, ws,
+    projections, repeat, scrape, shipment, ws,
 )
 from app.routers.auth import (
     ForbiddenException,
@@ -138,6 +138,7 @@ app.include_router(keywords.router)
 app.include_router(ws.router)
 app.include_router(invoice.router)
 app.include_router(portfolio.router)
+app.include_router(repeat.router)
 app.include_router(ads.router)
 app.include_router(projections.router)
 app.include_router(shipment.router)
