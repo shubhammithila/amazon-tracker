@@ -73,3 +73,61 @@ async def test_a_FATAL_report_raises(monkeypatch):
     monkeypatch.setattr(fetch.spapi, "_get", fake_get)
     with pytest.raises(fetch.ReportFailed):
         await fetch.fetch_rows(date(2026, 9, 1), date(2026, 9, 2), client=object(), sleep=no_sleep)
+
+
+async def test_a_QUOTA_refusal_waits_and_retries_instead_of_failing(monkeypatch):
+    """8 Oct: "You exceeded your quota for the requested resource" ended a run outright."""
+    tries, waits = [], []
+
+    async def fake_post(*a, **k):
+        tries.append(1)
+        if len(tries) < 3:
+            raise fetch.spapi.SpApiError(
+                "Amazon said: You exceeded your quota for the requested resource.", status=429)
+        return {"reportId": "R1"}
+
+    async def fake_get(path, *a, **k):
+        if path.endswith("/reports/R1"):
+            return {"processingStatus": "DONE", "reportDocumentId": "D1"}
+        return {"url": "https://s3/doc"}
+
+    class Client:
+        async def get(self, url, **kw):
+            class R:
+                content = b"amazon-order-id\n171-1\n"
+            return R()
+
+    async def sleep(s):
+        waits.append(s)
+
+    monkeypatch.setattr(fetch.spapi, "_post", fake_post)
+    monkeypatch.setattr(fetch.spapi, "_get", fake_get)
+    rows = await fetch.fetch_rows(date(2026, 9, 1), date(2026, 9, 2), client=Client(), sleep=sleep)
+    assert rows == [{"amazon-order-id": "171-1"}] and len(tries) == 3
+    assert waits == list(fetch.QUOTA_WAITS[:2])
+
+
+async def test_a_quota_refusal_that_never_clears_still_raises(monkeypatch):
+    async def fake_post(*a, **k):
+        raise fetch.spapi.SpApiError("Amazon said: You exceeded your quota", status=429)
+
+    async def sleep(_):
+        pass
+    monkeypatch.setattr(fetch.spapi, "_post", fake_post)
+    with pytest.raises(fetch.spapi.SpApiError):
+        await fetch.fetch_rows(date(2026, 9, 1), date(2026, 9, 2), client=object(), sleep=sleep)
+
+
+async def test_any_other_error_is_NOT_retried(monkeypatch):
+    tries = []
+
+    async def fake_post(*a, **k):
+        tries.append(1)
+        raise fetch.spapi.SpApiError("Amazon said: Access denied", status=403)
+
+    async def sleep(_):
+        raise AssertionError("must not wait on a non-quota error")
+    monkeypatch.setattr(fetch.spapi, "_post", fake_post)
+    with pytest.raises(fetch.spapi.SpApiError):
+        await fetch.fetch_rows(date(2026, 9, 1), date(2026, 9, 2), client=object(), sleep=sleep)
+    assert len(tries) == 1

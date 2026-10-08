@@ -118,8 +118,17 @@ async def done_runs(db: AsyncSession) -> list[tuple[str, str]]:
     return [(a, b) for a, b in rows if a and b]
 
 
-async def last_run(db: AsyncSession) -> dict | None:
-    row = (await db.execute(select(RepeatRefresh).order_by(RepeatRefresh.id.desc()).limit(1))
+async def last_run(db: AsyncSession, ending_from: str | None = None) -> dict | None:
+    """The newest run, or the newest one whose window reaches `ending_from` or later.
+
+    The filter is what keeps an OLD backfill chunk from speaking for today's data. On 8 Oct a
+    chunk for Dec-Jan was refused on quota after every needed day was already stored, and the
+    screen then led with "The last refresh failed" above figures that were complete.
+    """
+    query = select(RepeatRefresh)
+    if ending_from:
+        query = query.where(RepeatRefresh.window_end >= ending_from)
+    row = (await db.execute(query.order_by(RepeatRefresh.id.desc()).limit(1))
            ).scalar_one_or_none()
     if not row:
         return None

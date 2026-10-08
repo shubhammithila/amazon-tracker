@@ -246,6 +246,23 @@ thead tr.totals td{background:var(--surface2);font-weight:700;font-size:13px;col
   padding:7px 10px;white-space:nowrap;
   border-bottom:2px solid var(--border-strong);text-transform:none;letter-spacing:0;
   position:sticky;top:var(--pf-head-h, 31px);z-index:2}
+/* The Product column stays put while the figures scroll sideways. Asked for as "while scrolling
+   left the first column i.e. the product names should also be frozen". Every product cell carries
+   data-col="product", so one rule reaches the heading, the totals row and every row type.
+   `left:0` is measured from `.table-wrap`, the same scrollport as the sticky headings.
+   An OPAQUE background is required, or the figures slide through the names: a plain body row has
+   none of its own, so it gets --surface here; size, flavour and hover rows keep their own tint
+   (the rules below are more specific than this one). z-index 1 in the body, 3 in the thead so the
+   corner cell sits above both the headings (2) and the body column. */
+[data-col="product"]{position:sticky;left:0;z-index:1;background:var(--surface);
+  box-shadow:inset -1px 0 0 var(--border-strong)}
+thead [data-col="product"],thead tr.totals td[data-col="product"]{z-index:3;background:var(--surface2)}
+tbody tr.parent:hover td[data-col="product"]{background:var(--accent-soft)}
+tr.size td[data-col="product"],tr.flav td[data-col="product"]{background:var(--surface2)}
+/* The verdict reason and the decision controls sit in ONE full-width cell, which scrolls with the
+   figures. With the names frozen beside it, scrolling right left an empty grey band under the
+   product. Pinning the cell's blocks keeps them under the name, where they belong. */
+tbody td[colspan] > div{position:sticky;left:10px;width:fit-content;max-width:calc(100vw - 80px)}
 .tnote{display:block;font-size:10.5px;color:var(--text-dim);font-weight:500;white-space:normal;
   max-width:340px;line-height:1.45;margin-top:2px}
 .asin{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--text-dim)}

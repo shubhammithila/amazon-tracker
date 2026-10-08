@@ -12,6 +12,9 @@ SHIP_LAG_DAYS = 3
 #: Below this FBA share a product's repeat % reads low: Easy Ship orders carry no customer key.
 FBA_PARTIAL_BELOW = 0.6
 DEFAULT_BRAND = "Mithila Foods"
+#: Newest stored day older than this many days before yesterday: the data is stale and the screen
+#: says so, whatever the last run said. The nightly run normally keeps it at 0.
+STALE_AFTER_DAYS = 2
 
 
 def _empty(brand, last):
@@ -23,12 +26,15 @@ def _empty(brand, last):
 async def build_payload(db, brand: str | None, today: date) -> dict:
     brand = brand or DEFAULT_BRAND
     runs = await repository.done_runs(db)
-    last = await repository.last_run(db)
+    # Only a run that fetched RECENT days can say the screen's data is at risk; see last_run.
+    last = await repository.last_run(
+        db, ending_from=(today - timedelta(days=STALE_AFTER_DAYS + 1)).isoformat())
     if not runs:
         return _empty(brand, last)
     catalogue, _, _ = await load_catalogue()
     latest = min(max(date.fromisoformat(b) for _, b in runs), today - timedelta(days=1))
     as_of = latest - timedelta(days=SHIP_LAG_DAYS)
+    stale_days = max(0, ((today - timedelta(days=1)) - latest).days)
     history_from = logic.covered_from(runs, as_of)
     since = (as_of - timedelta(days=max(logic.WINDOWS) * 2 + logic.PERIOD_DAYS)).isoformat()
     lines = await repository.load_lines(db, since)
@@ -82,4 +88,6 @@ async def build_payload(db, brand: str | None, today: date) -> dict:
             "history_from": history_from.isoformat() if history_from else None,
             "brand": brand, "brands": sorted(set(brand_of.values())), "windows": windows,
             "total": total, "rows": rows, "last_refresh": last,
+            "newest_day": latest.isoformat(),
+            "stale_days": stale_days if stale_days > STALE_AFTER_DAYS else 0,
             "min_cohort": logic.MIN_COHORT, "fba_partial_below": FBA_PARTIAL_BELOW}

@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2709 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2732 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -2728,6 +2728,14 @@ narrow the grid, so a constant account total there would silently answer a diffe
 the rows above it — the "86 orders beside 87 lines" defect this file already records. The label says
 how many rows it covers.
 
+**The Product column is frozen** (`[data-col="product"]{position:sticky;left:0}`), asked for as
+*"while scrolling left the first column i.e. the product names should also be frozen"*. It needs an
+OPAQUE background or the figures slide through the names; size, flavour and hover rows keep their
+own tint, and the corner cells sit at z-index 3 above both sticky layers. The verdict reason and
+decision controls live in one `colspan` cell, which would otherwise scroll away and leave an empty
+grey band under the frozen name, so its blocks are pinned too. Checked in a browser on production
+data: name, heading and totals cell all at the wrapper's left edge after 600px of sideways scroll.
+
 **It is the SECOND row of the `thead`**, directly under the headings — it was a `<tfoot>` until
 asked for *"move the totals row at the top of the table"*. Never a `tbody` row, in either place:
 **sorting reorders the tbody**, and a total that could drift into the middle of the list would read
@@ -3099,10 +3107,34 @@ re-runs the Brand Analytics comparison on production and exits 1 on disagreement
 
 ### Operations
 Migration `a4c7e2f19b30` (detector branch added, newest first). Nightly job `repeat_refresh` at
-**10:00 IST**, last 7 days, after every other reporting job. One-off backfill in `screen`:
-`venv/bin/python scripts/backfill_repeat.py` — newest chunks first, resumable, ~9–12 h. A failed
-chunk STOPS the run, because a later chunk recorded as done would make coverage look contiguous
-across a gap. Retention 400 days. Never writes to Amazon.
+**10:00 IST**, after every other reporting job. One-off backfill in `screen`:
+`venv/bin/python scripts/backfill_repeat.py` — newest chunks first, resumable, skips any chunk whose
+days are already stored. A failed chunk STOPS the run, because a later chunk recorded as done would
+make coverage look contiguous across a gap. Retention 400 days. Never writes to Amazon.
+
+### Only what the screen needs is fetched, and a refused old chunk is not news
+Reported as *"The last refresh failed: Amazon said: You exceeded your quota… I dont want this
+error. fetch last 90 day only. and then keep adding one day per day."* The banner was RIGHT and
+irrelevant: the backfill (then 18 months) had its eleventh 30-day report in three hours refused,
+for **Dec 2025 – Jan 2026**, after every day the screen reads was already stored.
+
+- **`refresh.HISTORY_DAYS = 213`** is the whole fetch horizon: the 90-day column's 30-day cohort,
+  plus its 90-day look-back, plus the 3-day ship lag. "Only 90 days" would blank the 60- and 90-day
+  columns, so the horizon is what those columns need and not a day more. Nothing is deleted.
+- **The nightly run adds the new day** (`incremental_start`): one report re-reading the last 7 days,
+  because an order bought on day D ships D+1..D+3. After missed nights it starts at the first
+  missing day, so a gap heals itself.
+- **A quota refusal waits and retries** (`fetch.QUOTA_WAITS`, 1 + 3 + 7 minutes) at create and
+  poll; any other error is raised at once.
+- **The banner is about STALENESS** (`stale_days`, more than 2 days behind yesterday), never "some
+  run failed". `last_run(ending_from=…)` only lets a run that fetched recent days speak, so an old
+  chunk can never put a red box over complete figures. The failure text rides along when stale.
+
+### Every column sorts, both ways
+Same controls as Profit: click a heading for highest first (Product A–Z), again to reverse; Enter
+and Space; `aria-sort`; held in `sessionStorage`. A dash sorts **last in both directions**, and an
+unavailable window sorts as all dashes rather than by the figures it hides. Tested by EXECUTING
+`sortedRows` under Node. The brand row is in the thead and never moves.
 
 ## Ads tab — campaign performance, and bulk bid edits
 

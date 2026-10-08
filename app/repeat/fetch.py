@@ -26,8 +26,32 @@ POLL_INTERVAL = 30.0
 POLL_MAX = 240
 
 
+#: Waits after Amazon answers "You exceeded your quota" (HTTP 429). Measured on 8 Oct: the
+#: backfill's eleventh report in three hours was refused at CREATE, so the quota is a budget over
+#: hours, not a per-second burst. A few minutes' patience saves a nightly run; anything longer is
+#: better left to the next night, which fills the gap itself (see refresh.run_incremental).
+QUOTA_WAITS = (60.0, 180.0, 420.0)
+
+
 class ReportFailed(Exception):
     pass
+
+
+def _is_quota(exc: Exception) -> bool:
+    return isinstance(exc, spapi.SpApiError) and (
+        exc.status == 429 or "quota" in str(exc).lower())
+
+
+async def _patient(call, sleep):
+    """`call()`, retried after each wait in QUOTA_WAITS when Amazon refuses on quota."""
+    for wait in QUOTA_WAITS:
+        try:
+            return await call()
+        except Exception as exc:
+            if not _is_quota(exc):
+                raise
+            await sleep(wait)
+    return await call()
 
 
 def split_days(start: date, end: date, size: int = MAX_REPORT_DAYS) -> list[tuple[date, date]]:
@@ -44,15 +68,18 @@ async def fetch_rows(start: date, end: date, *, client, sleep=asyncio.sleep) -> 
     """Every row Amazon holds for the IST days start..end inclusive."""
     if (end - start).days + 1 > MAX_REPORT_DAYS:
         raise ValueError(f"{start}..{end} is over {MAX_REPORT_DAYS} days; Amazon refuses it")
-    created = await spapi._post(f"{REPORTS}/reports", {
+    body = {
         "reportType": REPORT_TYPE,
         "marketplaceIds": [get_settings().sp_api_marketplace_id],
         "dataStartTime": ist.utc_instant(start),
         "dataEndTime": ist.utc_instant(end + timedelta(days=1)),
-    }, client=client)
+    }
+    created = await _patient(
+        lambda: spapi._post(f"{REPORTS}/reports", body, client=client), sleep)
     report_id = created["reportId"]
     for _ in range(POLL_MAX):
-        status = await spapi._get(f"{REPORTS}/reports/{report_id}", client=client)
+        status = await _patient(
+            lambda: spapi._get(f"{REPORTS}/reports/{report_id}", client=client), sleep)
         state = status.get("processingStatus")
         if state == "DONE":
             return await _download(status["reportDocumentId"], client)

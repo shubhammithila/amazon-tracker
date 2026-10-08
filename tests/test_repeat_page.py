@@ -91,3 +91,57 @@ def test_the_page_never_mentions_a_buyer_key():
 def test_the_page_sizes_its_icons():
     """Found in the browser: without the `.ico` rule the sprite's refresh icon filled the card."""
     assert ".ico{width:1em;height:1em" in T.read_text(encoding="utf-8")
+
+
+# ── sorting ─────────────────────────────────────────────────────────────────────────────────────
+# Asked for as "make it sortable from each column like we did in the portfolio. top to bottom,
+# bottom to top for each column". Executed, not grepped: the order IS the behaviour.
+
+SORT_DATA = DATA + """
+data.rows = [
+ {parent_asin: "A", product: "Jau Sattu", fba_share: 0.9,
+  w: {"30": {buyers: 50, same_pct: 0.10, came_from_pct: 0.02}, "60": {buyers: 80, same_pct: 0.20}}},
+ {parent_asin: "B", product: "Chana Sattu", fba_share: 0.5,
+  w: {"30": {buyers: 900, same_pct: null, came_from_pct: 0.09}, "60": {buyers: 70, same_pct: 0.05}}},
+ {parent_asin: "C", product: "Ragi Atta", fba_share: null,
+  w: {"30": {buyers: 300, same_pct: 0.30, came_from_pct: 0.01}, "60": {buyers: 90, same_pct: 0.12}}}];"""
+
+
+def _order(key, direction):
+    return run_template_js(T, ["sortValue", "sortedRows"], [], SORT_DATA + f"""
+sort = {{key: {key!r}, dir: {direction}}};
+emit(sortedRows().map(r => r.parent_asin));""")
+
+
+@pytest.mark.parametrize("key, desc", [
+    ("buyers-30", ["B", "C", "A"]), ("buyers-60", ["C", "A", "B"]),
+    ("from-30", ["B", "A", "C"]), ("same-60", ["A", "C", "B"])])
+def test_every_window_column_sorts_both_ways(key, desc):
+    assert _order(key, -1) == desc
+    assert _order(key, 1) == desc[::-1]
+
+
+def test_product_sorts_by_name():
+    assert _order("product", 1) == ["B", "A", "C"]          # Chana, Jau, Ragi
+    assert _order("product", -1) == ["C", "A", "B"]
+
+
+def test_a_dash_sorts_LAST_in_both_directions():
+    """Too few buyers is not 0%: ranking it lowest would mislabel the least-known product."""
+    assert _order("same-30", -1)[-1] == "B" and _order("same-30", 1)[-1] == "B"
+    assert _order("fba", -1) == ["A", "B", "C"] and _order("fba", 1) == ["B", "A", "C"]
+
+
+def test_an_unavailable_window_sorts_as_all_dashes_not_by_hidden_numbers():
+    """The 90-day window is unavailable in DATA; its stored numbers must not order the rows."""
+    assert _order("same-90", -1) == ["B", "A", "C"]          # every value null -> by name
+
+
+def test_every_column_header_is_a_sort_control():
+    src = T.read_text(encoding="utf-8")
+    body = src[src.index("function render(){"):src.index("async function load(")]
+    for key in ('"product"', '"fba"', "`buyers-${n}`", "`same-${n}`", "`from-${n}`"):
+        assert f"th({key}" in body, f"{key} has no sort control"
+    assert 'tabindex="0" role="button" aria-sort' in src
+    assert "sortedRows().map(" in body, "the body must render in the sorted order"
+    assert 'addEventListener("keydown"' in src

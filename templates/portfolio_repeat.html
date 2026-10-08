@@ -57,6 +57,15 @@ tr.detail a.on{font-weight:700;text-decoration:none}
 /* The sprite's icons have no intrinsic size; without this an <svg> fills its container. */
 .ico{width:1em;height:1em;flex:none;vertical-align:-0.125em}
 .partial{color:var(--yellow);font-size:11px;font-weight:600}
+/* Sortable headings, the Profit view's controls copied: a real button in the tab order, the
+   direction on aria-sort, and one chevron rotated rather than two glyphs of different widths. */
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:var(--text)}
+th.sorted{color:var(--accent)}
+th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.arrow{font-size:9px;margin-left:3px}
+.ico-r90{transform:rotate(90deg)}
+.ico-r270{transform:rotate(270deg)}
 </style>
 <link rel="stylesheet" href="/static/theme.css"/>
 </head>
@@ -131,15 +140,64 @@ function flowsHtml(r, n){
     + `<div><b>Went on to</b> — bought next, within ${n} days: ${list(f.went_on, "customers")}</div>`
     + `<div><b>Bought together</b> — in the same order, last 90 days (${pct(b.multi_pct)} of its ${num(b.orders)} orders): ${list(b.with, "orders")}</div>`;
 }
+/* Every column sorts, as on the Profit view: click once for highest first (A to Z for Product),
+   again to reverse. Held in sessionStorage so a reload or a brand switch keeps the order.
+   The BRAND row is in the thead and never moves; only product rows are reordered.
+   A dash sorts LAST in both directions: "too few buyers" or "history too short" is not a small
+   percentage, and ranking it as 0% would put the least-known products at one end of the list. */
+const ico = (name, extra) =>
+  `<svg class="ico${extra ? " " + extra : ""}" aria-hidden="true" focusable="false"><use href="#i-${name}"/></svg>`;
+let sort = (() => {
+  try { return JSON.parse(sessionStorage.getItem("repeat.sort")) || {key: null, dir: -1}; }
+  catch { return {key: null, dir: -1}; }
+})();
+function sortValue(r, key){
+  if(key === "product") return r.product;
+  if(key === "fba") return r.fba_share;
+  const [what, n] = key.split("-");
+  if(!(data.windows[n] || {}).available) return null;
+  const c = (r.w || {})[n] || {};
+  return {buyers: c.buyers, same: c.same_pct, from: c.came_from_pct}[what] ?? null;
+}
+function sortedRows(){
+  if(!sort.key) return data.rows;     // the server's order: most buyers first
+  const key = sort.key, dir = sort.dir;
+  return data.rows.slice().sort((a, b) => {
+    const x = sortValue(a, key), y = sortValue(b, key);
+    if(x == null || y == null){
+      if(x == null && y == null) return a.product.localeCompare(b.product);
+      return x == null ? 1 : -1;
+    }
+    const d = typeof x === "string" ? x.localeCompare(y) : x - y;
+    return d ? d * dir : a.product.localeCompare(b.product);
+  });
+}
+function th(key, label, extra, title){
+  const on = sort.key === key;
+  const aria = on ? (sort.dir < 0 ? "descending" : "ascending") : "none";
+  return `<th scope="col" class="sortable${extra ? " " + extra : ""}${on ? " sorted" : ""}" data-sort="${key}"`
+    + ` tabindex="0" role="button" aria-sort="${aria}" aria-label="Sort by ${esc(label)}"`
+    + `${title ? ` title="${esc(title)}"` : ""}>${esc(label)}${
+      on ? `<span class="arrow">${ico("chevron", sort.dir < 0 ? "ico-r90" : "ico-r270")}</span>` : ""}</th>`;
+}
+function applySort(key){
+  // A new column starts highest first (A to Z for names); the same column flips.
+  sort = sort.key === key ? {key, dir: -sort.dir} : {key, dir: key === "product" ? 1 : -1};
+  sessionStorage.setItem("repeat.sort", JSON.stringify(sort));
+  render();
+  const again = document.querySelector(`[data-sort="${CSS.escape(key)}"]`);
+  if(again) again.focus();
+}
 function render(){
   const cols = 2 + WINS.length * 3;
-  const head = `<tr><th rowspan="2">Product</th><th rowspan="2" class="num" title="Share of its units shipped by FBA. Easy Ship orders carry no customer key.">FBA share</th>`
+  const head = `<tr>${th("product", "Product", "", "").replace("<th ", '<th rowspan="2" ')}`
+    + th("fba", "FBA share", "num", "Share of its units shipped by FBA. Easy Ship orders carry no customer key.").replace("<th ", '<th rowspan="2" ')
     + WINS.map(n => `<th colspan="3" class="grp">${n}-day</th>`).join("") + `</tr><tr>`
-    + WINS.map(() => `<th class="num" title="Customers who bought it in the 30-day cohort period">Buyers</th>`
-      + `<th class="num" title="Bought the SAME product again on a later day">Same repeat</th>`
-      + `<th class="num" title="Had bought a DIFFERENT product of ours in the days before">From other</th>`).join("")
+    + WINS.map(n => th(`buyers-${n}`, "Buyers", "num", "Customers who bought it in the 30-day cohort period")
+      + th(`same-${n}`, "Same repeat", "num", "Bought the SAME product again on a later day")
+      + th(`from-${n}`, "From other", "num", "Had bought a DIFFERENT product of ours in the days before")).join("")
     + `</tr>`;
-  const body = data.rows.length ? data.rows.map(r => rowHtml(r) + (open.has(r.parent_asin)
+  const body = data.rows.length ? sortedRows().map(r => rowHtml(r) + (open.has(r.parent_asin)
       ? `<tr class="detail"><td colspan="${cols}">${flowsHtml(r, flowWindow)}</td></tr>` : "")).join("")
     : `<tr><td colspan="${cols}" class="dim">No customers in this brand yet.</td></tr>`;
   $("table").innerHTML = `<table><thead>${head}${totalRowHtml()}</thead><tbody>${body}</tbody></table>`;
@@ -155,25 +213,38 @@ async function load(){
     ? `FBA orders only · customers who bought in a 30-day period, followed for 30 / 60 / 90 days · data to ${data.as_of}`
       + (data.history_from ? ` · history from ${data.history_from}` : "")
     : "No customer history yet — press Refresh from Amazon, or run the backfill.";
+  // A banner only when the data is actually OLD. A refused fetch that left every needed day
+  // stored is not a problem the owner can act on, so it is not shown; the nightly run retries.
   const last = data.last_refresh;
-  $("messages").innerHTML = last && last.status === "failed"
-    ? `<div class="banner error">The last refresh failed: ${esc(last.error)}</div>` : "";
+  $("messages").innerHTML = data.stale_days
+    ? `<div class="banner error">Customer data is ${data.stale_days} day(s) behind — newest day stored is ${esc(data.newest_day)}.`
+      + (last && last.status === "failed" ? ` The last refresh failed: ${esc(last.error)}` : "")
+      + ` The nightly refresh fills the missing days by itself.</div>`
+    : "";
   render();
 }
 $("brand").addEventListener("change", load);
 $("table").addEventListener("click", e => {
   const flow = e.target.closest("[data-flow]");
   if(flow){ e.preventDefault(); flowWindow = flow.dataset.flow; render(); return; }
+  const header = e.target.closest("[data-sort]");
+  if(header){ applySort(header.dataset.sort); return; }
   const row = e.target.closest("tr.row");
   if(!row) return;
   const p = row.dataset.p;
   open.has(p) ? open.delete(p) : open.add(p);
   render();
 });
+$("table").addEventListener("keydown", e => {
+  const header = e.target.closest("[data-sort]");
+  if(!header || (e.key !== "Enter" && e.key !== " ")) return;
+  e.preventDefault();          // Space would otherwise also scroll the page
+  applySort(header.dataset.sort);
+});
 $("refresh-btn").addEventListener("click", async () => {
   const r = await fetch("/portfolio/repeat/refresh", {method: "POST"});
   $("refresh-note").textContent = r.ok
-    ? "Fetching the last 7 days — Amazon takes 5 to 15 minutes. Reload the page afterwards."
+    ? "Fetching the newest days — Amazon takes 5 to 15 minutes. Reload the page afterwards."
     : (await r.json()).error;
 });
 load();
