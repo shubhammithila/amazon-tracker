@@ -245,3 +245,22 @@ def test_the_filename_names_the_window_and_the_filter():
     assert export.filename(("2026-09-08", "2026-10-07"), 'Sattu · search "jau"', "xlsx") == \
         "portfolio-2026-09-08_2026-10-07-sattu-search-jau.xlsx"
     assert export.filename(None, "", "pdf") == "portfolio.pdf"
+
+
+def test_no_number_or_heading_is_broken_across_lines_in_the_pdf():
+    """Found on the first real download: proportional shrinking printed "₹8,48,22 / 5", "+11.4 / %",
+    "ACO / S" and split an ASIN over two lines. Numbers and ASINs must never wrap; only names may."""
+    from pypdf import PdfReader
+
+    parent = {"parent_asin": "B0HJWNQMDH", "product": "Bengali Chana Sattu Premium Roasted",
+              "brand": "Mithila Foods", "verdict": "SURGICAL", "sales": 1586326.87,
+              "ad_spend": 848225.18, "refunds_pct": 0.0609, "fees_pct": 0.2908, "tacos": 0.535,
+              "net_pct": 0.114, "acos": 1.32, "units_ordered": 5258, "units": 4949,
+              "weight_ordered_kg": 4290.0, "weight_kg": 4021.5, "returns_pct": 0.059,
+              "rating": 4.1, "rating_count": 1273, "decision": "kill", "sizes": []}
+    table = export.build_table({"parents": [parent]})
+    text = PdfReader(export.build_pdf(table, "Portfolio")).pages[0].extract_text()
+    flat = text.replace("\n", " ")
+    for token in ("₹15,86,327", "₹8,48,225", "+11.4%", "132%", "4,021.5 kg", "B0HJWNQMDH",
+                  "ACOS", "Rating", "Reviews", "Returns"):
+        assert token in flat, f"{token!r} is broken across lines in the PDF"

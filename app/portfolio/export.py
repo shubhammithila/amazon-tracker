@@ -399,10 +399,6 @@ def build_pdf(table: Table, title: str) -> io.BytesIO:
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table as PTable, TableStyle
 
     regular, bold = _fonts()
-    size = 7
-    left = ParagraphStyle("l", fontName=regular, fontSize=size, leading=size + 2)
-    right = ParagraphStyle("r", parent=left, alignment=2)
-    head = ParagraphStyle("h", parent=left, fontName=bold, alignment=1)
 
     def esc(s: str) -> str:
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -415,14 +411,43 @@ def build_pdf(table: Table, title: str) -> io.BytesIO:
         grid.append([display(r.values.get(c.id), c.kind) for c in table.columns])
 
     page_w = landscape(A4)[0] - 20 * mm
-    natural = []
-    for i, col in enumerate(table.columns):
-        font = bold
-        widest = max(stringWidth(str(row[i]), font, size) for row in grid[1:]) if len(grid) > 1 else 0
-        widest = max(widest, min(stringWidth(col.header, bold, size), 60))
-        natural.append(min(widest + 8, 150 if col.id == "product" else 90))
-    scale = min(1.0, page_w / sum(natural))
-    widths = [w * scale for w in natural]
+    # Text that may wrap (product and brand names, the total's label) gives up width first. Every
+    # other column is NEVER narrower than its widest value, and a heading wraps only between words:
+    # proportional shrinking printed "₹8,48,22 / 5" and "ACO / S" on the first real download.
+    flexible = {"product", "brand"}
+
+    def widths_at(size: float):
+        pad = 6
+        out, floors = [], []
+        for i, col in enumerate(table.columns):
+            body = [str(row[i]) for row in grid[1:]] or [""]
+            widest = max(stringWidth(v, bold, size) for v in body)
+            word = max(stringWidth(w, bold, size) for w in str(col.header).split())
+            if col.id in flexible:
+                out.append(min(widest, 150) + pad)
+                floors.append(max(word, 55) + pad)
+            else:
+                need = max(widest, word) + pad
+                out.append(need)
+                floors.append(need)
+        return out, floors
+
+    for size in (7, 6.5, 6, 5.5):
+        natural, floors = widths_at(size)
+        excess = sum(natural) - page_w
+        if excess <= 0:
+            widths = natural
+            break
+        give = {i: natural[i] - floors[i] for i, c in enumerate(table.columns) if c.id in flexible}
+        room = sum(give.values())
+        if room >= excess:
+            widths = [w - (give.get(i, 0) / room * excess if room else 0) for i, w in enumerate(natural)]
+            break
+    else:
+        widths = [w * page_w / sum(natural) for w in natural]
+    left = ParagraphStyle("l", fontName=regular, fontSize=size, leading=size + 2)
+    right = ParagraphStyle("r", parent=left, alignment=2)
+    head = ParagraphStyle("h", parent=left, fontName=bold, alignment=1)
 
     cells = []
     for ri, row in enumerate(grid):
