@@ -7,7 +7,7 @@ from tests.js_harness import run_template_js
 
 pytestmark = pytest.mark.regression
 T = Path(__file__).parent.parent / "templates" / "portfolio_repeat.html"
-FUNCS = ["esc", "num", "pct", "cellPct", "winCells", "rowHtml", "totalRowHtml", "flowsHtml"]
+FUNCS = ["esc", "num", "pct", "cellPct", "winCells", "rowHtml", "totalRowHtml"]
 CONSTS = ["WINS"]
 DATA = """data = {min_cohort: 20, fba_partial_below: 0.6, brand: "Mithila Foods",
  windows: {"30": {available: true}, "60": {available: true},
@@ -62,11 +62,21 @@ emit([rowHtml(Object.assign({}, ROW, {fba_share: 0.4})).includes("partial"),
     assert out == [True, False]
 
 
-def test_the_expand_panel_names_sources_destinations_and_basket():
-    out = run_template_js(T, FUNCS, CONSTS, DATA + 'emit(flowsHtml(ROW, "60"));')
-    assert "Came from" in out and "Chana Sattu <b>73</b>" in out
-    assert "Went on to" in out and "Jeera Chana Sattu <b>58</b>" in out
-    assert "Bought together" in out and "Makkai Sattu <b>193</b>" in out and "21.0%" in out
+def test_there_is_no_expand_panel():
+    """Removed on request ("I dont want this"): a click on a row opens nothing."""
+    src = T.read_text(encoding="utf-8")
+    for gone in ("flowsHtml", 'class="detail"', "data-flow", "open.has("):
+        assert gone not in src, gone
+
+
+def test_the_headings_and_the_brand_total_stay_in_view_when_scrolling():
+    src = T.read_text(encoding="utf-8")
+    css = src[src.index("<style>"):src.index("</style>")]
+    assert "max-height:var(--rp-cap" in css, "an uncapped wrapper never scrolls, so sticky is inert"
+    assert "position:sticky;top:0" in css
+    assert "thead tr.sub th{top:var(--rp-h1" in css
+    assert "top:calc(var(--rp-h1, 31px) + var(--rp-h2, 31px))" in css
+    assert '<tr class="sub">' in src and "sizeTable();" in src
 
 
 def test_a_product_name_is_escaped():

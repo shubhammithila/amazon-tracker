@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2732 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2733 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3135,6 +3135,11 @@ Same controls as Profit: click a heading for highest first (Product A–Z), agai
 and Space; `aria-sort`; held in `sessionStorage`. A dash sorts **last in both directions**, and an
 unavailable window sorts as all dashes rather than by the figures it hides. Tested by EXECUTING
 `sortedRows` under Node. The brand row is in the thead and never moves.
+
+**The headings and the brand total are frozen** while the products scroll (three sticky layers at
+measured offsets inside a height-capped wrapper), and **there is no expand panel** — asked for as
+*"I dont want this"*. The came-from / went-on / basket data still travels in the payload; nothing
+renders it.
 
 ## Ads tab — campaign performance, and bulk bid edits
 

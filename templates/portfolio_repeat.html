@@ -39,20 +39,24 @@ select{padding:7px 10px;border:1px solid var(--border-strong);border-radius:8px;
 .seg-btn{background:transparent;border:none;color:var(--text-muted);font-size:12.5px;font-weight:600;padding:7px 13px;cursor:pointer;text-decoration:none;display:inline-block}
 .seg-btn:hover{color:var(--text)}
 .seg-btn.on{background:var(--accent);color:var(--on-accent)}
-.table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border)}
+.table-wrap{overflow:auto;border-radius:10px;border:1px solid var(--border);
+  max-height:var(--rp-cap, calc(100vh - 60px));min-height:200px;overscroll-behavior:contain}
+/* The headings AND the brand total stay in view while the products scroll. Asked for as "freeze the
+   top column including the totals when we scroll down". Sticky inside `.table-wrap`, which must be
+   height-capped to scroll at all: an uncapped wrapper never scrolls, so a sticky header inside it
+   has no travel (the Profit tab's recorded non-fix). Three stacked layers: the group row at 0, the
+   column row below it, the total below both. Offsets are the MEASURED row heights (sizeTable). */
 table{width:100%;min-width:980px;border-collapse:separate;border-spacing:0}
 thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;font-size:10.5px;
   font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:left;white-space:nowrap;
-  border-bottom:2px solid var(--border-strong)}
+  border-bottom:2px solid var(--border-strong);position:sticky;top:0;z-index:2}
+thead tr.sub th{top:var(--rp-h1, 31px)}
 thead th.grp{text-align:center;border-left:1px solid var(--border)}
-thead tr.totals td{background:var(--surface2);font-weight:700;font-size:13px;padding:7px 10px;white-space:nowrap;border-bottom:2px solid var(--border-strong)}
+thead tr.totals td{background:var(--surface2);font-weight:700;font-size:13px;padding:7px 10px;white-space:nowrap;border-bottom:2px solid var(--border-strong);
+  position:sticky;top:calc(var(--rp-h1, 31px) + var(--rp-h2, 31px));z-index:2}
 tbody td{padding:7px 10px;font-size:13px;border-bottom:1px solid var(--border);white-space:nowrap}
 th.num,td.num{text-align:right}
-tbody tr.row{cursor:pointer}
 tbody tr.row:hover td{background:var(--accent-soft)}
-tr.detail td{background:var(--surface2);white-space:normal;line-height:1.7;font-size:12.5px}
-tr.detail a{color:var(--accent);margin-right:6px}
-tr.detail a.on{font-weight:700;text-decoration:none}
 .dim{color:var(--text-dim)}
 /* The sprite's icons have no intrinsic size; without this an <svg> fills its container. */
 .ico{width:1em;height:1em;flex:none;vertical-align:-0.125em}
@@ -98,8 +102,6 @@ th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 <script>
 const $ = id => document.getElementById(id);
 let data = {rows: [], windows: {}, total: {}, brands: []};
-let open = new Set();
-let flowWindow = "60";
 const WINS = ["30", "60", "90"];
 function esc(s){
   return String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
@@ -129,16 +131,6 @@ function rowHtml(r){
 function totalRowHtml(){
   return `<tr class="totals"><td data-col="product">${esc(data.brand || "Brand")} — all products</td><td class="num" data-col="fba"></td>`
     + WINS.map(n => winCells(data.total || {}, n, false)).join("") + `</tr>`;
-}
-function flowsHtml(r, n){
-  const list = (rows, k) => rows && rows.length
-    ? rows.map(x => `${esc(x.product)} <b>${num(x[k])}</b>`).join(" · ") : "—";
-  const f = (r.flows || {})[n] || {};
-  const b = r.basket || {};
-  return `<div class="dim">Window: ${WINS.map(w => `<a href="#" data-flow="${w}"${w === n ? ' class="on"' : ""}>${w} days</a>`).join("")}</div>`
-    + `<div><b>Came from</b> — bought another product of ours in the ${n} days before: ${list(f.came_from, "customers")}</div>`
-    + `<div><b>Went on to</b> — bought next, within ${n} days: ${list(f.went_on, "customers")}</div>`
-    + `<div><b>Bought together</b> — in the same order, last 90 days (${pct(b.multi_pct)} of its ${num(b.orders)} orders): ${list(b.with, "orders")}</div>`;
 }
 /* Every column sorts, as on the Profit view: click once for highest first (A to Z for Product),
    again to reverse. Held in sessionStorage so a reload or a brand switch keeps the order.
@@ -192,16 +184,28 @@ function render(){
   const cols = 2 + WINS.length * 3;
   const head = `<tr>${th("product", "Product", "", "").replace("<th ", '<th rowspan="2" ')}`
     + th("fba", "FBA share", "num", "Share of its units shipped by FBA. Easy Ship orders carry no customer key.").replace("<th ", '<th rowspan="2" ')
-    + WINS.map(n => `<th colspan="3" class="grp">${n}-day</th>`).join("") + `</tr><tr>`
+    + WINS.map(n => `<th colspan="3" class="grp">${n}-day</th>`).join("") + `</tr><tr class="sub">`
     + WINS.map(n => th(`buyers-${n}`, "Buyers", "num", "Customers who bought it in the 30-day cohort period")
       + th(`same-${n}`, "Same repeat", "num", "Bought the SAME product again on a later day")
       + th(`from-${n}`, "From other", "num", "Had bought a DIFFERENT product of ours in the days before")).join("")
     + `</tr>`;
-  const body = data.rows.length ? sortedRows().map(r => rowHtml(r) + (open.has(r.parent_asin)
-      ? `<tr class="detail"><td colspan="${cols}">${flowsHtml(r, flowWindow)}</td></tr>` : "")).join("")
+  const body = data.rows.length ? sortedRows().map(rowHtml).join("")
     : `<tr><td colspan="${cols}" class="dim">No customers in this brand yet.</td></tr>`;
   $("table").innerHTML = `<table><thead>${head}${totalRowHtml()}</thead><tbody>${body}</tbody></table>`;
+  sizeTable();
 }
+/* Measure the two heading rows so each sticky layer sits exactly under the one above, and cap the
+   box at the window height (measured, not 100vh, which is wrong on phones whose toolbars move).
+   The cells are measured, not the rows: a row's box scrolls away while its sticky cells stay. */
+function sizeTable(){
+  const root = document.documentElement.style;
+  root.setProperty("--rp-cap", Math.max(300, window.innerHeight - 70) + "px");
+  const grp = $("table").querySelector("thead th.grp");
+  const sub = $("table").querySelector("thead tr.sub th");
+  if(grp) root.setProperty("--rp-h1", Math.round(grp.getBoundingClientRect().height) + "px");
+  if(sub) root.setProperty("--rp-h2", Math.round(sub.getBoundingClientRect().height) + "px");
+}
+window.addEventListener("resize", sizeTable);
 async function load(){
   const brand = $("brand").value;
   const res = await fetch("/portfolio/repeat" + (brand ? "?brand=" + encodeURIComponent(brand) : ""));
@@ -225,15 +229,8 @@ async function load(){
 }
 $("brand").addEventListener("change", load);
 $("table").addEventListener("click", e => {
-  const flow = e.target.closest("[data-flow]");
-  if(flow){ e.preventDefault(); flowWindow = flow.dataset.flow; render(); return; }
   const header = e.target.closest("[data-sort]");
-  if(header){ applySort(header.dataset.sort); return; }
-  const row = e.target.closest("tr.row");
-  if(!row) return;
-  const p = row.dataset.p;
-  open.has(p) ? open.delete(p) : open.add(p);
-  render();
+  if(header) applySort(header.dataset.sort);
 });
 $("table").addEventListener("keydown", e => {
   const header = e.target.closest("[data-sort]");
