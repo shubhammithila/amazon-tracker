@@ -157,3 +157,18 @@ def _url() -> str:
     from app.config import get_settings
 
     return get_settings().database_url
+
+
+def test_git_ignores_the_sqlite_sidecar_files_so_a_deploy_stash_cannot_sweep_them():
+    """`deploy/update-ec2.sh` runs `git stash push --include-untracked`. `*.db` never matched
+    `tracker.db-wal`, so every deploy moved the live WAL — committed writes not yet copied into
+    the database — out of the folder while the app was running. Measured on production: 27 deploys
+    between 13 Sep and 7 Oct 2026 stashed a WAL file (up to 103 MB), and on 7 Oct it undid the
+    Repeat-customers migration twice. `-u` skips IGNORED files, so ignoring them is the fix."""
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    for name in ("tracker.db-wal", "tracker.db-shm", "tracker.db-journal", "tracker.db"):
+        result = subprocess.run(["git", "check-ignore", "-q", name], cwd=root)
+        assert result.returncode == 0, f"{name} is not gitignored; a deploy stash would move it"

@@ -1107,6 +1107,22 @@ job failing turned into the whole app failing.
   under the same URL branch as the pooling options. The deferred Postgres move depends on nothing
   SQLite-specific leaking out, and a test asserts that.
 
+> **The deploy's `git stash --include-untracked` swept the LIVE WAL out of the folder, and it undid
+> a migration twice.** `.gitignore` had `*.db` but not `*.db-wal`/`*.db-shm`, so every deploy since WAL
+> mode was switched on stashed the sidecar files while the app was running. The WAL holds COMMITTED
+> writes not yet copied into `tracker.db`. Found on 7 Oct: the deploy logged `c3d8e1f5a702 ->
+> a4c7e2f19b30`, its own table check passed, and after the restart the database was back on the old
+> revision with `tracker.db` last written before the deploy. **27 stashes (13 Sep - 7 Oct) hold a WAL
+> file, up to 103 MB each**; whether recent app writes were lost each time depends on timing (the
+> running app usually still held the file open and checkpointed it on shutdown), so it cannot be
+> stated per deploy. Those stashes are left in place: they are the only copy of anything lost.
+>
+> Fixed by ignoring the sidecars (`-u` skips IGNORED files) and, on the box,
+> `.git/info/exclude` carries the same patterns so the protection does not depend on which
+> `.gitignore` the stash happens to read. `tests/test_database_locking.py` asserts the ignore with
+> `git check-ignore`. A normal write was proven to survive a restart; it is only the stash that lost
+> data. **After any deploy that migrates, check `alembic current` rather than the deploy log.**
+
 > **WAL raises the ceiling; it does not remove it.** SQLite still allows exactly one writer, which is
 > the constraint the shipment feature's write separation is built around and the reason the
 > PostgreSQL move is in the plan appendix. This fixes readers being blocked by a writer — the actual

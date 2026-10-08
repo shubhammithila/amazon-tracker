@@ -3,6 +3,12 @@ __pycache__/
 *.pyo
 .env
 *.db
+# SQLite's WAL sidecars hold COMMITTED writes not yet copied into the .db. They must be ignored:
+# the deploy runs `git stash --include-untracked`, which otherwise swept them out of the folder
+# while the app was running (27 deploys, 13 Sep - 7 Oct 2026) and twice undid a migration.
+*.db-wal
+*.db-shm
+*.db-journal
 *.sqlite
 *.sqlite3
 venv/
