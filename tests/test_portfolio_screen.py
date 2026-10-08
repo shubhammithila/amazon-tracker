@@ -502,10 +502,13 @@ def test_the_inactive_toggle_is_a_QUERY_PARAMETER_and_not_a_client_side_filter()
     body = _function(source, "payloadQuery")
     assert "include_inactive=1" in body, "the flag never reaches the server"
 
-    # ONE builder, used by the fetch AND the Excel link, so the file cannot hold different products
-    # from the grid it came from.
+    # The download reads the SAME state the fetch does — the window and the toggle — so the file
+    # cannot hold different products from the grid it came from. (It used to be an Excel link built
+    # from `payloadQuery()`; it is now a POST of exactly the visible rows, carrying both.)
     assert 'fetch("/portfolio" + payloadQuery())' in source
-    assert '"/portfolio/download.xlsx" + payloadQuery()' in source
+    export_body = _function(source, "exportPayload")
+    assert "include_inactive: !!includeInactive" in export_body
+    assert "window_.start" in export_body and "window_.end" in export_body
     assert "windowQuery" not in source, (
         "a second query builder survives, so the file and the screen can diverge"
     )

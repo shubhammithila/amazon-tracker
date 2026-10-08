@@ -4,9 +4,16 @@ Run on the server after the backfill:  venv/bin/python scripts/validate_repeat.p
 
 Brand Analytics counts ALL channels; this app sees FBA only. So on ASINs that ship almost entirely
 by FBA (ours >= 95% of Amazon's customer count, and >= 100 customers):
-  * unique customers must agree within 3%                      -> proves the customer key
-  * our repeat % must not EXCEED Amazon's by more than 0.5 pt   -> Easy Ship repeats can only be
-                                                                   missing, never extra
+  * our unique customers must never EXCEED Amazon's (1% slack)  -> one buyer is never split into
+                                                                    two keys; FEWER is expected,
+                                                                    because Easy Ship buyers are
+                                                                    invisible to us
+  * our repeat % must not EXCEED Amazon's by more than 0.5 pt    -> Easy Ship repeats can only be
+                                                                    missing, never extra
+
+The first version demanded agreement "within 3%" and flagged Beetroot Sattu on 8 Oct at 163 against
+169 — a product just over the 95% inclusion line, i.e. six Easy Ship buyers, not an error. A two-sided
+tolerance tested FBA dominance a second time; the one-sided test is the property that matters.
 Measured 06 Oct 2026 on the prototype: 914/925, 737/747, 223/223 customers; ours 0.3-0.6 pt lower.
 Exit 1 on any failure, or when no ASIN was comparable.
 """
@@ -73,7 +80,7 @@ async def main(month: str) -> int:
         checked += 1
         ours_rep = sum(1 for o in buyers.values() if len(o) > 1) / ours
         their_rep = float(x.get("repeatCustomersPctTotal") or 0)
-        bad = abs(ours - theirs) / theirs > 0.03 or ours_rep > their_rep + 0.005
+        bad = ours > theirs * 1.01 or ours_rep > their_rep + 0.005
         failures += bad
         print(f"{asin:12} {ours:6d} {theirs:7d} {ours_rep:9.1%} {their_rep:11.1%}  "
               f"{'FAIL' if bad else 'ok'}")

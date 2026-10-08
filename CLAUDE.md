@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2690 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2709 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -308,9 +308,9 @@ The test is now **"is something wrong?"**, not "is something true?":
 **Nothing is dropped and no figure is rounded away.** The exclusion still states units AND rupees,
 still names the products biggest-sales-first with the count left exact, and still says which shown
 products lost a size — one click away instead of ~150px of standing yellow. Two things make that
-safe: the **subtitle** independently carries "35 active products · 56 hidden as inactive", and
-**`build_portfolio_xlsx` writes the same exclusion into row 1 of the workbook**, which is the path
-that actually needs it since a file leaves the app with no screen beside it.
+safe: the **subtitle** independently carries "35 active products · 56 hidden as inactive". (The
+workbook used to repeat the exclusion in row 1; the owner then asked for *"no additional commentary…
+just data"*, so the file now holds exactly the rows the screen showed, toggle included.)
 
 **A stale ratings date is promoted OUT of the line into its own banner**, because it is the one item
 that is sometimes a problem rather than always a fact — rule 6 splits BEST BET from SCALE on
@@ -2359,8 +2359,9 @@ spend, Units and Weight can move but never hide.
   the next per-user setting needs no migration. `PUT /portfolio/column-prefs` takes the username
   from the SESSION only, never the body. A shared-password session has no user row, so it gets a
   **409** and the screen falls back to `localStorage` (`column_scope: "browser"`), saying so.
-- **The Excel always has every column**, by decision. A file leaves the app, and a column the
-  owner hid on screen is still a column someone else reads.
+- **The download follows the screen's columns now** (see "The download is exactly what is on screen"
+  below). It used to always carry every column, by decision; the owner then asked for *"the same
+  format as what we see on the screen"*. `GET /portfolio/download.xlsx` still carries every column.
 - **Hiding the sorted column resets the sort to Sales**, or the table would sort by an invisible
   figure with no header to click.
 
@@ -3001,6 +3002,44 @@ rating and a prose reason. Widening it would silently change four working docume
 > it. Found by a test asserting the pre-COGS caveat was in the file: without it a workbook showing
 > "+8.8% net" leaves the app with no caveat attached and gets read as profit. The portfolio builder
 > writes it into row 1.
+
+### The download is exactly what is on screen — Excel and PDF
+Asked for as *"if I have just selected sattu… download only sattu"*, *"searched or put a filter… download
+just that too"*, *"text which are numbers stored as numbers or %"*, *"same format as what we see on the
+screen"*, *"no additional commentary in the excel. just data"* and *"give both pdf and excel option"*.
+
+**The browser chooses the ROWS; the server computes every NUMBER.** `POST /portfolio/export` receives
+the ids `visible()` returned (the one function applying group tab, category card, custom filters,
+search and grain), in screen order, plus `open`, the visible column ids, view, window and
+`include_inactive`. It rebuilds `_dashboard` and keeps only those ids, so no filter rule has a second
+copy and no figure travels from the client. `app/portfolio/export.py` builds both formats.
+
+Measured on the file it replaced: percentages, weights and ratings were TEXT (`'30.0%'`,
+`'1,453.0 kg'`, `'4.0 (388)'`), row 1 was a ~600-character sentence, size rows carried prose in the
+Brand column, every cell was `General`, no filter buttons.
+
+| | Now |
+|---|---|
+| layout | row 1 totals · row 2 headings with AutoFilter · data; frozen at E3; Arial |
+| columns | Product · Brand · Size · ASIN, then the screen's visible columns in its order and labels; Rating splits into Rating + Reviews |
+| money | number, `₹` with lakh grouping (`[>=10000000]…;[>=100000]…`) |
+| percentages | fractions, `0.0%`; Net % signed; ACOS `0%` or the text `no sales` |
+| weight | number, `0.0" kg"` |
+| missing | a BLANK cell, never 0 |
+| sizes | outline-grouped under their product, open where open on screen |
+| caveats | hover notes on the Net % (pre-COGS) and Amazon fees % (ex-GST) headings, not rows |
+
+- **Totals are the page's `computeTotals` ported to Python** (`export.totals`) and pinned by a test that
+  runs the page's own JavaScript on the same rows. Written as values, because percentages need rupee
+  sums that are not columns; a comment on the Total cell says how they were computed.
+- **PDF** is landscape A4, headings repeated, collapsed sizes left out (as on screen), every cell a
+  `Paragraph`, in **DejaVu Sans Condensed, bundled in `app/fonts/`** — the production box has no
+  TrueType fonts and reportlab's base fonts have no ₹. A test extracts the PDF text and finds ₹.
+- **`GET /portfolio/download.xlsx` stays** as the unfiltered export (every row and column, same format).
+- Seven older tests read the old text-format workbook and were rewritten to assert the requirement;
+  two that counted `_kg(` calls in route source now assert the rows themselves.
+  `scripts/mutate_portfolio_export.py` **15/15 caught**; three entries in older harnesses were
+  re-pointed (one had been stale since `c543d1e`).
 
 ## Portfolio → Repeat customers — who comes back, and to what
 

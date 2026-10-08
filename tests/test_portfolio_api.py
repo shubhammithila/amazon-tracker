@@ -386,7 +386,8 @@ async def test_the_export_states_that_margins_are_pre_cogs(auth_client, db):
     """A file leaves the app and gets read without the screen's banner beside it.
 
     So the caveat travels IN the document — otherwise a spreadsheet showing "+8.8% net" gets
-    forwarded to someone who reads it as profit.
+    forwarded to someone who reads it as profit. It used to be a sentence in row 1; the owner asked
+    for *"no additional commentary… just data"*, so it is now a hover note on the Net % heading.
     """
     import io
 
@@ -394,13 +395,10 @@ async def test_the_export_states_that_margins_are_pre_cogs(auth_client, db):
 
     await _seed_snapshot(db)
     response = await auth_client.get("/portfolio/download.xlsx")
-    book = load_workbook(io.BytesIO(response.content))
-    text = " ".join(
-        str(cell.value or "")
-        for row in book.active.iter_rows(max_row=6)
-        for cell in row
-    )
-    assert "PRE-COGS" in text.upper(), text[:300]
+    sheet = load_workbook(io.BytesIO(response.content)).active
+    heads = {c.value: c for c in sheet[2]}
+    net = next(c for label, c in heads.items() if label and label.startswith("Net %"))
+    assert net.comment and "PRE-COGS" in net.comment.text.upper()
 
 
 async def test_the_portfolio_pages_are_gated_on_the_area(client, db):

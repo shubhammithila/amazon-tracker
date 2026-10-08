@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import permissions, users as users_repo
 from app.database import get_db
-from app.portfolio import columns, economics, logic, refresh, repository
+from app.portfolio import columns, economics, export, logic, refresh, repository
 from app.routers.auth import get_current_username, require_area
 from app.shipment import catalogue, documents
 # The category classification lives on the SHIPMENT side, keyed on the product name. Imported
@@ -518,205 +518,83 @@ async def download_portfolio(
     db: AsyncSession = Depends(get_db),
     grant=Depends(require_area(permissions.PORTFOLIO)),
 ):
-    """The portfolio as Excel: parents with their sizes indented beneath.
+    """EVERY product and every column, in the same format as the filtered export.
 
-    Built through the same ``_dashboard`` the screen uses, so the file and the monitor cannot
-    disagree about a margin. Takes the same window parameters as the screen — **and the same
-    ``include_inactive``**, because a workbook that silently holds different products from the grid
-    it was downloaded from is worse than no workbook.
+    The screen's buttons use `POST /portfolio/export`, which downloads exactly the rows on screen;
+    this stays as the way to get everything. Built through `_dashboard`, so the file and the screen
+    cannot disagree about a figure.
     """
     window, error = _requested_window(start, end, days)
     if error:
         return JSONResponse({"error": error}, status_code=400)
-
     data = await _dashboard(db, window, include_inactive=include_inactive)
-    window = data.get("window")
-    totals = data["totals"]
-
-    def _size_line(size: dict, indent: str) -> list:
-        # Indented rather than a separate sheet: the pack-size detail is only meaningful
-        # under its parent, and two sheets get read separately.
-        return [
-            f"{indent}{_size_name(size)}", _channel_note(size), size["asin"],
-            "", _pct(size["net_pct"]), _pct(size["tacos"]), _acos(size),
-            size["sales"], _pct(size.get("refunds_pct")), _pct(size.get("fees_pct")), size["ad_spend"],
-            size.get("ad_attributed_sales") or 0,
-            size["net"], int(size.get("units_ordered") or 0), size["units"], _kg(size.get("weight_ordered_kg")), _kg(size.get("weight_kg")),
-            "", "", "",
-        ]
-
-    rows = []
-    for parent in data["parents"]:
-        flavours = parent.get("flavours") or []
-        rows.append([
-            parent["product"], parent["brand"], "",
-            parent["verdict"],
-            _pct(parent["net_pct"]), _pct(parent["tacos"]), _acos(parent),
-            parent["sales"], _pct(parent.get("refunds_pct")), _pct(parent.get("fees_pct")), parent["ad_spend"],
-            parent.get("ad_attributed_sales") or 0,
-            parent["net"], int(parent.get("units_ordered") or 0), parent["units"], _kg(parent.get("weight_ordered_kg")), _kg(parent.get("weight_kg")),
-            _stars(parent["rating"], parent["rating_count"]),
-            parent["decision"] or "",
-            # The flavour count belongs in the reason column on the parent line, because in a
-            # spreadsheet the indentation alone does not say how many levels deep a row is.
-            (f"{len(flavours)} flavours x {len(parent['sizes'])} sizes. "
-             if flavours else "") + parent["verdict_reason"],
-        ])
-        # **The same two levels the screen shows.** A file with one flat weight level under a
-        # multi-flavour product would repeat "250 g" three times with no way to tell the rows
-        # apart — and a spreadsheet is where those rows get sorted and filtered by hand, so an
-        # ambiguous label there is worse than on screen, not better.
-        if parent.get("flavour_groups"):
-            for group in parent["flavour_groups"]:
-                rows.append([
-                    f"    {group['flavour']}", "", "",
-                    "", _pct(group["net_pct"]), _pct(group["tacos"]), _acos(group),
-                    group["sales"], _pct(group.get("refunds_pct")), _pct(group.get("fees_pct")), group["ad_spend"],
-                    group.get("ad_attributed_sales") or 0,
-                    group["net"], int(group.get("units_ordered") or 0), group["units"], _kg(group.get("weight_ordered_kg")), _kg(group.get("weight_kg")),
-                    "", "", f"{len(group['sizes'])} size(s)",
-                ])
-                for size in group["sizes"]:
-                    rows.append(_size_line(size, "        "))
-        else:
-            for size in parent["sizes"]:
-                rows.append(_size_line(size, "    "))
-
-    # The account total, as its own last row. `_totals_row` in `documents` cannot produce it:
-    # it sums every trailing column with `int(...)`, and these columns hold percentages, an em
-    # dash and prose. The percentages are `totals`' own — recomputed from the sums by
-    # `logic._sum_sizes`, never averaged.
-    rows.append([
-        f"TOTAL — {totals['parents']} products, {totals['skus']} pack sizes", "", "",
-        "",
-        _pct(totals["net_pct"]), _pct(totals["tacos"]), _acos(totals),
-        totals["sales"], _pct(totals.get("refunds_pct")), _pct(totals.get("fees_pct")), totals["ad_spend"],
-        totals.get("ad_attributed_sales") or 0,
-        # `totals["weight_kg"]` is `_sum_sizes`' own figure, NEVER a re-sum over `rows` — each
-        # parent row already contains its sizes, so re-summing would double-count. The same reason
-        # `build_portfolio_xlsx` has no `_totals_row`.
-        totals["net"], int(totals.get("units_ordered") or 0), totals["units"], _kg(totals.get("weight_ordered_kg")), _kg(totals.get("weight_kg")),
-        "", "",
-        "Money and units are summed; percentages are recomputed from those sums, never averaged.",
-    ])
-
-    subtitle = (
-        f"{window[0]} to {window[1]} (IST) · " if window else ""
-    ) + (
-        f"{totals['parents']} products · {totals.get('units_ordered') or 0} units ordered "
-        f"({totals['units']} net of refunds) · "
-        f"{_kg(totals.get('weight_kg'))} · "
-        f"net {_pct(totals['net_pct'])} of sales · TACOS {_pct(totals['tacos'])}"
-        + (f" · ACOS {_pct(totals.get('acos'))}" if totals.get("acos") else "")
-        + " · TACOS is ad spend over TOTAL sales; ACOS is over ad-ATTRIBUTED sales"
-        + " · no verdict is decided on ACOS"
-        # The excluded rows are NAMED in the subtitle, because a workbook leaves the app without the
-        # screen's banner beside it — the same reason the pre-COGS caveat is written into row 1.
-        + (f" · {totals['weight_unknown']} pack size(s) have no weight in the MRP sheet and are "
-           "excluded from the weight total" if totals.get("weight_unknown") else "")
-        # **The Active exclusion has to be stated in RUPEES.** A file reading Rs 43,79,614 where the
-        # Business Report says Rs 44,46,806 is a reconciliation gap with nothing in the document to
-        # explain it — which is precisely the 3,337-vs-3,259 report that created this discipline.
-        + (f" · EXCLUDES {data['inactive_hidden_skus']} pack size(s) marked Active=N in the MRP "
-           f"sheet ({data['inactive_sales_units']} units, "
-           f"{_money(data['inactive_sales'])}); add ?include_inactive=1 to keep them"
-           if data.get("inactive_hidden_skus") else "")
-        + " · margins are PRE-COGS (they exclude what it costs to make the product)"
-        + " · every figure is ex-GST (Amazon fees exclude their 18% GST, claimed as ITC)"
-    )
-
-    stream = documents.build_portfolio_xlsx(
-        "Portfolio review",
-        subtitle,
-        ["Product", "Brand", "ASIN", "Verdict", "Net %", "TACOS", "ACOS",
-         "Sales (ex-GST)", "Refunds %", "Amazon fees %", "Ad spend", "Ad sales", "Net", "Units ordered", "Net units",
-         "Weight ordered (kg)", "Net weight (kg)",
-         "Rating", "Decision", "Why"],
-        rows,
-        [30, 16, 12, 10, 9, 8, 8, 14, 11, 12, 11, 12, 12, 10, 9, 14, 12, 14, 10, 52],
-    )
-    filename = f"portfolio-{(window or ('', ''))[1] or 'latest'}.xlsx"
+    table = export.build_table(data)
     return StreamingResponse(
-        stream,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        export.build_xlsx(table),
+        media_type=XLSX_TYPE,
+        headers={"Content-Disposition":
+                 f'attachment; filename="{export.filename(data.get("window"), "", "xlsx")}"'},
     )
 
 
-def _pct(value) -> str:
-    """A percentage for a spreadsheet cell, or a dash when there is no denominator.
+XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+#: A hand-built request is not a trust boundary: bound what it may ask for.
+MAX_EXPORT_IDS = 5000
 
-    A dash rather than 0%: a product with no sales has no TACOS, and printing "0%" would rank it
-    among the most ad-efficient products in the portfolio.
+
+@router.post("/export")
+async def export_portfolio(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    grant=Depends(require_area(permissions.PORTFOLIO)),
+):
+    """Exactly the rows on screen, as Excel or PDF.
+
+    The browser sends WHICH rows (`ids`, as its own `visible()` returned them, in screen order),
+    which are expanded (`open`), which columns in what order (`columns`), the grain (`view`) and the
+    window; the figures are rebuilt here from `_dashboard`. So every filter the screen has — the
+    category card, the group tab, custom filters, search — is honoured without a second copy of it,
+    and no number comes from the client.
     """
-    return "—" if value is None else f"{value * 100:.1f}%"
-
-
-def _money(value) -> str:
-    """Rupees for a sentence rather than a cell — the workbook subtitle and nothing else.
-
-    Indian grouping is deliberately NOT attempted here: `f"{x:,.0f}"` gives 6,719,253-style groups,
-    which is wrong for lakhs, and a locale-aware formatter would be a dependency for one sentence.
-    The rupee sign plus plain grouping is unambiguous enough for a caveat line, and every figure in
-    the cells themselves is a real number the spreadsheet formats itself.
-    """
-    return f"Rs {_num_or_zero(value):,.0f}"
-
-
-def _num_or_zero(value) -> float:
     try:
-        return float(value or 0)
-    except (TypeError, ValueError):
-        return 0.0
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Send a JSON body."}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Send a JSON object."}, status_code=400)
+    fmt = body.get("format")
+    if fmt not in ("xlsx", "pdf"):
+        return JSONResponse({"error": "format must be xlsx or pdf."}, status_code=400)
+    view = "skus" if body.get("view") == "skus" else "products"
 
+    def strings(key):
+        value = body.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ValueError(key)
+        return value[:MAX_EXPORT_IDS]
 
-def _kg(value) -> str:
-    """Weight sold for a spreadsheet cell, or a dash where the sheet carries no pack weight.
+    try:
+        ids, opened, columns = strings("ids"), strings("open") or [], strings("columns")
+    except ValueError as exc:
+        return JSONResponse({"error": f"{exc} must be a list of strings."}, status_code=400)
+    if ids is None:
+        return JSONResponse({"error": "ids is required — the rows to export."}, status_code=400)
 
-    **A dash rather than 0**, for the reason `shipment_weight` states: a row silently contributing
-    nothing is how a 130 kg shipment reports 90. Its own helper rather than `_pct`'s cousin because
-    the unit belongs in the cell — a bare number in a column of kilograms beside a column of units
-    is two counts with nothing saying which is which.
-    """
-    return "—" if value is None else f"{value:,.1f} kg"
+    window, error = _requested_window(body.get("start"), body.get("end"), None)
+    if error:
+        return JSONResponse({"error": error}, status_code=400)
+    data = await _dashboard(db, window, include_inactive=bool(body.get("include_inactive")))
+    table = export.build_table(data, view=view, ids=ids, open_ids=opened, columns=columns)
 
-
-def _stars(rating, count) -> str:
-    return "—" if rating is None else f"{rating:.1f} ({count or 0})"
-
-
-def _acos(row: dict) -> str:
-    """ACOS for a cell, distinguishing THREE states that must not look alike.
-
-    * never advertised      -> em dash. No ACOS exists; 0% would rank it as the most efficient.
-    * spend, no attribution -> "no sales" rather than a number. Measured: Rs 55,217 across 591
-                               rows produced zero attributed sales, and a ratio cannot say that.
-    * spend and attribution -> the percentage.
-    """
-    if row.get("acos_infinite"):
-        return "spend, no sales"
-    return _pct(row.get("acos"))
-
-
-def _channel_note(size: dict) -> str:
-    """"merchant + FBA" style note for a size row, or blank when the split is unknown.
-
-    Shown because the split is decision-relevant: measured, one product's merchant SKU spent
-    Rs 1,444 on ads for zero attributed sales while its FBA twin returned 36% ACOS.
-    """
-    channels = size.get("channels") or {}
-    if not channels:
-        return ""
-    parts = []
-    for name in ("merchant", "fba"):
-        bucket = channels.get(name)
-        if bucket:
-            parts.append(f"{name} {int(round(bucket.get('sales') or 0)):,}")
-    return " + ".join(parts)
-
-
-def _size_name(size: dict) -> str:
-    from app.shipment.logic import weight_label
-
-    weight = float(size.get("weight") or 0)
-    return weight_label(weight) if weight else (size.get("asin") or "")
+    label = str(body.get("label") or "")[:120]
+    span = data.get("window")
+    name = export.filename(span, label, fmt)
+    if fmt == "xlsx":
+        stream, media = export.build_xlsx(table), XLSX_TYPE
+    else:
+        title = "Portfolio" + (f" · {span[0]} to {span[1]} (IST)" if span else "")             + (f" · {label}" if label else "")
+        stream, media = export.build_pdf(table, title), "application/pdf"
+    return StreamingResponse(stream, media_type=media,
+                             headers={"Content-Disposition": f'attachment; filename="{name}"'})

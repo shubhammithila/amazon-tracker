@@ -395,7 +395,9 @@ th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
   <div class="controls" id="window-bar" style="margin-bottom:8px"></div>
   <div class="controls" style="margin-bottom:0">
     <button class="btn" id="refresh-btn">{{ icons.icon("refresh") }} Refresh from Amazon</button>
-    <a class="btn-outline" id="excel-link" href="/portfolio/download.xlsx">{{ icons.icon("download") }} Excel</a>
+    <!-- Download exactly what is on screen: the rows visible() returns, the columns shown. -->
+    <button class="btn-outline" data-export="xlsx" title="Download the rows and columns on screen">{{ icons.icon("download") }} Excel</button>
+    <button class="btn-outline" data-export="pdf" title="Download the rows and columns on screen">{{ icons.icon("download") }} PDF</button>
     <button class="btn-outline" id="rules-btn">{{ icons.icon("settings") }} Verdict rules</button>
     <span id="refresh-note" class="dim" style="font-size:12px">—</span>
   </div>
@@ -597,6 +599,64 @@ function payloadQuery(){
   return parts.length ? "?" + parts.join("&") : "";
 }
 
+/* ── The download: EXACTLY what is on screen ──────────────────────────────────────────────────
+   Asked for as "if I have just selected sattu… download only sattu" and "searched or put a filter…
+   download just that too". The rows are the ids `visible()` returned — the one function that
+   applies the group tab, the category card, custom filters, search and the grain — in screen
+   order. The SERVER rebuilds every figure from its own data, so the file cannot disagree with the
+   grid about a number, and no second copy of the filter rules exists to drift. */
+function filterLabel(){
+  const bits = [];
+  if(category) bits.push(category);
+  if(filter) bits.push(filter);
+  const q = ($("search").value || "").trim();
+  if(q) bits.push(`search "${q}"`);
+  if(filters.length) bits.push(`${filters.length} filter(s)`);
+  if(view === "skus") bits.push("SKUs");
+  return bits.join(" · ");
+}
+
+function exportPayload(format){
+  const skus = view === "skus";
+  return {
+    format, view: skus ? "skus" : "products",
+    start: (window_ && window_.start) || null, end: (window_ && window_.end) || null,
+    include_inactive: !!includeInactive,
+    ids: visible().map(r => skus ? r.asin : r.parent_asin),
+    // Expanded products open in the file too; in Excel the rest are one [+] away.
+    open: skus ? [] : [...open].filter(k => !String(k).startsWith("sku:")),
+    columns: visibleColumns().slice(1).map(c => c.id),
+    label: filterLabel(),
+  };
+}
+
+async function downloadExport(format, btn){
+  const was = btn.innerHTML;
+  btn.disabled = true;
+  btn.textContent = "Preparing…";
+  try{
+    const r = await fetch("/portfolio/export", {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(exportPayload(format))});
+    if(!r.ok){
+      const body = await r.json().catch(() => ({}));
+      message(body.error || "Could not build the download.", "error");
+      return;
+    }
+    const name = ((r.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/) || [])[1]
+      || `portfolio.${format}`;
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }catch(err){
+    message("Could not reach the server.", "error");
+  }finally{
+    btn.disabled = false;
+    btn.innerHTML = was;
+  }
+}
+
 async function load(){
   try{
     const r = await fetch("/portfolio" + payloadQuery());
@@ -604,7 +664,6 @@ async function load(){
     if(!r.ok){ message(body.error || "Could not load the portfolio.", "error"); return; }
     data = body;
     applyLayoutFrom(data);
-    $("excel-link").href = "/portfolio/download.xlsx" + payloadQuery();
     render();
     renderRefresh(data.refresh);
   }catch(err){
@@ -2231,6 +2290,8 @@ async function saveDecision(parentAsin){
 
 /* ── Refresh ──────────────────────────────────────────────────────────────── */
 $("refresh-btn").addEventListener("click", () => startRefresh(window_));
+document.querySelectorAll("[data-export]").forEach(b =>
+  b.addEventListener("click", () => downloadExport(b.dataset.export, b)));
 
 async function startRefresh(win){
   $("refresh-btn").disabled = true;

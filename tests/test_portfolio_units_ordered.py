@@ -99,8 +99,11 @@ def test_sales_is_labelled_ex_GST_everywhere_it_is_shown():
     assert {c["id"]: c["label"] for c in C.COLUMNS}["sales"] == "Sales (ex-GST)"
     text = Path("templates/portfolio.html").read_text(encoding="utf-8")
     assert '<div class="k">Sales (ex-GST)</div>' in text, "the KPI tile still says plain Sales"
-    router = Path("app/routers/portfolio.py").read_text(encoding="utf-8")
-    assert '"Sales (ex-GST)"' in router, "the Excel header still says plain Sales"
+    # The download's headings ARE the screen's labels now, so the label reaches the file by
+    # construction — asserted on the built table rather than on source text.
+    from app.portfolio import export
+    headers = [c.header for c in export.build_table({"parents": []}).columns]
+    assert "Sales (ex-GST)" in headers, "the Excel header still says plain Sales"
 
 
 def test_weight_ordered_is_units_ORDERED_times_the_pack_and_sums_up_to_the_parent():

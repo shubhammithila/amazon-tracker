@@ -114,8 +114,9 @@ async def test_the_workbook_carries_the_same_percentages_as_the_screen(auth_clie
     asin, ref, fee = h.index("ASIN"), h.index("Refunds %"), h.index("Amazon fees %")
     by_asin = {r[asin]: (r[ref], r[fee]) for r in rows[at + 1:] if r[asin]}
 
-    def pct(v):
-        return "—" if v is None else f"{v * 100:.1f}%"
-
+    # Stored as FRACTIONS with a 0.0% format now, not as "5.3%" text — the owner asked for numbers
+    # stored as numbers. A missing figure is a blank cell.
     for s in (s for p in screen["parents"] for s in p["sizes"]):
-        assert by_asin[s["asin"]] == (pct(s["refunds_pct"]), pct(s["fees_pct"])), s["asin"]
+        got = by_asin[s["asin"]]
+        for value, expected in zip(got, (s["refunds_pct"], s["fees_pct"])):
+            assert value == pytest.approx(expected) if expected is not None else value is None, s["asin"]

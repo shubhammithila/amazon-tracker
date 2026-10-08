@@ -206,25 +206,41 @@ def test_the_weight_column_sorts_and_filters_like_any_other_number():
     assert "weight_kg:" in fields, "the weight column cannot be sorted or filtered on"
 
 
-def test_the_workbook_carries_the_weight_on_every_row_type():
-    """The file must not disagree with the screen, and it has FOUR row builders.
+def _weighted_parent():
+    size = lambda asin, w, wo: {"asin": asin, "weight": 1, "weight_kg": w,  # noqa: E731
+                                "weight_ordered_kg": wo}
+    return {"parent_asin": "P1", "product": "Roasted Chana", "weight_kg": 10.0,
+            "weight_ordered_kg": 11.0, "sizes": [size("A", 4.0, 4.5), size("B", 6.0, 6.5)],
+            "flavour_groups": [{"flavour": "Peri Peri", "weight_kg": 4.0, "weight_ordered_kg": 4.5,
+                                "sizes": [size("A", 4.0, 4.5)]},
+                               {"flavour": "Nimbu", "weight_kg": 6.0, "weight_ordered_kg": 6.5,
+                                "sizes": [size("B", 6.0, 6.5)]}]}
 
-    Size rows, parent rows, flavour-group rows and the TOTAL row are built separately, so a weight
-    cell missed in any one of them shifts that row's trailing columns — the spreadsheet equivalent of
-    the header/body column mismatch this tab has already shipped once.
+
+def test_the_workbook_carries_the_weight_on_every_row_type():
+    """Parent, flavour and size rows each carry BOTH weights, as numbers.
+
+    This used to count `_kg(` calls in the route's source — four hand-written row builders, each of
+    which could drop a cell. The export now builds every row from one function, so the property is
+    asserted on the rows themselves.
     """
-    from app.routers import portfolio as router
-    import inspect
-    source = inspect.getsource(router.download_portfolio)
-    assert source.count("_kg(") >= 4, (
-        f"only {source.count('_kg(')} row builders carry a weight cell; there are four "
-        "(size, parent, flavour group, TOTAL) plus the subtitle"
-    )
-    # Two weight columns since "Weight ordered" was added: net of refunds, and on units ordered.
-    assert '"Net weight (kg)"' in source and '"Weight ordered (kg)"' in source, (
-        "the header is missing a weight column"
-    )
-    assert source.count("_kg(") >= 8, "a row builder carries one weight cell where there are two"
+    import io
+
+    from openpyxl import load_workbook
+
+    from app.portfolio import export
+    table = export.build_table({"parents": [_weighted_parent()]},
+                               columns=["weight_ordered_kg", "weight_kg"], open_ids=["P1"])
+    kinds = [r.kind for r in table.rows]
+    assert kinds == ["parent", "flavour", "size", "flavour", "size"]
+    assert [r.values["weight_kg"] for r in table.rows] == [10.0, 4.0, 4.0, 6.0, 6.0]
+    assert [r.values["weight_ordered_kg"] for r in table.rows] == [11.0, 4.5, 4.5, 6.5, 6.5]
+    sheet = load_workbook(export.build_xlsx(table)).active
+    for row in range(3, 8):
+        for col in (5, 6):
+            cell = sheet.cell(row, col)
+            assert isinstance(cell.value, (int, float)) and '" kg"' in cell.number_format
+            assert cell.alignment.horizontal == "right"
 
 
 def test_every_NUMERIC_workbook_column_is_right_aligned():
@@ -253,25 +269,24 @@ def test_every_NUMERIC_workbook_column_is_right_aligned():
 
 
 def test_the_workbooks_TOTAL_uses_the_aggregate_not_a_resum_of_the_rows():
-    """Re-summing `rows` would double-count: each parent row already contains its sizes.
+    """Re-summing every row would double-count: each parent row already contains its sizes.
 
-    The same reason `build_portfolio_xlsx` has no `_totals_row` at all — its own docstring says so.
+    The total sums the TOP-LEVEL rows the screen totals (products, or pack sizes in the SKU view),
+    never the size rows nested beneath them — 10 kg here, not 10 + 4 + 6 + 4 + 6.
     """
-    from app.routers import portfolio as router
-    import inspect
-    source = inspect.getsource(router.download_portfolio)
-    assert 'totals.get("weight_kg")' in source, (
-        "the TOTAL row does not use _sum_sizes' own weight figure"
-    )
+    from app.portfolio import export
+    table = export.build_table({"parents": [_weighted_parent()]}, columns=["weight_kg"])
+    assert table.totals["weight_kg"] == 10.0
 
 
 def test_a_dash_and_not_a_zero_reaches_a_spreadsheet_cell():
-    """`_kg(None)` must be the em dash, for the reason the screen shows one.
+    """An unknown weight is a BLANK cell, never 0 kg, for the reason the screen shows a dash.
 
-    A workbook leaves the app with no banner beside it, so a 0 here is indistinguishable from a
-    measured zero to whoever opens the file next week.
+    A workbook leaves the app with no banner beside it, so a 0 there is indistinguishable from a
+    measured zero to whoever opens the file next week. A genuine zero still reads as one.
     """
-    from app.routers.portfolio import _kg
-    assert _kg(None) == "—"
-    assert _kg(0.0) == "0.0 kg", "a genuine zero must still read as a measurement"
-    assert _kg(953.5) == "953.5 kg"
+    from app.portfolio import export
+    assert export.display(None, "kg") == ""
+    assert export.display(0.0, "kg") == "0 kg", "a genuine zero must still read as a measurement"
+    assert export.display(953.5, "kg") == "953.5 kg"
+    assert export.display(1453.0, "kg") == "1,453 kg"

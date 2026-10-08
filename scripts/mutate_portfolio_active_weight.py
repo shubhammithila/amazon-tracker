@@ -158,9 +158,9 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         ROUTER,
         "    data = await _dashboard(db, window, include_inactive=include_inactive)\n"
-        "    window = data.get(\"window\")",
+        "    table = export.build_table(data)",
         "    data = await _dashboard(db, window)\n"
-        "    window = data.get(\"window\")",
+        "    table = export.build_table(data)",
         "the WORKBOOK ignores the toggle, so the file holds different products from the grid it was "
         "downloaded from — test_the_WORKBOOK_follows_the_toggle_and_names_what_it_excluded",
     ),
@@ -340,14 +340,11 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
 
     # ── The export ──
     (
-        ROUTER,
-        '        totals["net"], int(totals.get("units_ordered") or 0), totals["units"], '
-        '_kg(totals.get("weight_ordered_kg")), _kg(totals.get("weight_kg")),',
-        '        totals["net"], int(totals.get("units_ordered") or 0), totals["units"], '
-        '_kg(totals.get("weight_ordered_kg")), _kg(sum(\n'
-        '            (p.get("weight_kg") or 0) for p in data["parents"]) or None),',
-        "the TOTAL row re-sums the rows, and each parent already contains its sizes — the "
-        "double-count `build_portfolio_xlsx` has no `_totals_row` in order to avoid "
+        "app/portfolio/export.py",
+        '    return Table(cols, rows, f"Total — {len(chosen):,} {noun}", totals(chosen))',
+        '    return Table(cols, rows, f"Total — {len(chosen):,} {noun}", totals(chosen + [s for p in '
+        'chosen for s in (p.get("sizes") or [])]))',
+        "the TOTAL re-sums the size rows too, and each parent already contains its sizes "
         "— test_the_workbooks_TOTAL_uses_the_aggregate_not_a_resum_of_the_rows",
     ),
     (

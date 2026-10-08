@@ -427,11 +427,13 @@ async def test_a_DECISION_on_a_hidden_product_still_records_its_FIGURES(auth_cli
     assert snapshot["verdict"], "the verdict at the time was not recorded"
 
 
-async def test_the_WORKBOOK_follows_the_toggle_and_names_what_it_excluded(auth_client, seeded):
+async def test_the_WORKBOOK_follows_the_toggle(auth_client, seeded):
     """A file holding different products from the grid it came from is worse than no file.
 
-    The subtitle has to state the exclusion in RUPEES, because a workbook leaves the app without the
-    screen's banner beside it — the same reason the pre-COGS caveat is written into row 1.
+    **This test used to also assert a row-1 subtitle naming the exclusion in rupees.** The owner then
+    asked for *"no additional commentary in the excel. just data"*, so the workbook carries only the
+    rows: the screen's own banner and subtitle still state the exclusion, and the file now holds
+    exactly what the screen showed, toggle included — for the filtered POST and the full GET alike.
     """
     import io
 
@@ -452,13 +454,14 @@ async def test_the_WORKBOOK_follows_the_toggle_and_names_what_it_excluded(auth_c
         ).content
     )
     assert len(shown) > len(hidden), "include_inactive did not reach the workbook"
+    assert str(hidden[0][0]).startswith("Total") and hidden[1][0] == "Product",         "row 1 must be the totals and row 2 the headings — no commentary above them"
 
-    # `build_portfolio_xlsx` inserts the subtitle ABOVE the header row, so it is row 1 — the first
-    # thing read, which is the point of putting the caveats there.
-    subtitle = " ".join(str(c) for c in hidden[0] if c)
-    assert "Active=N" in subtitle, f"the file does not say it excluded anything: {subtitle!r}"
-    assert "21,633" in subtitle, "the excluded RUPEES are not stated, so the total cannot reconcile"
-    assert "121 units" in subtitle
-    # With the toggle on there is nothing excluded, so the caveat must NOT appear — a caveat that
-    # fires on every render is the kind that trains its reader to skip the one that matters.
-    assert "Active=N" not in " ".join(str(c) for c in shown[0] if c)
+    # The filtered export honours the same toggle: an inactive product is only exportable when the
+    # screen is showing inactive products, because the server rebuilds the rows itself.
+    every = (await auth_client.get(f"/portfolio?start={DAY}&end={DAY}&include_inactive=1")).json()
+    ids = [p["parent_asin"] for p in every["parents"]]
+    body = {"format": "xlsx", "ids": ids, "start": DAY, "end": DAY}
+    off = _rows_of((await auth_client.post("/portfolio/export", json=body)).content)
+    on = _rows_of((await auth_client.post("/portfolio/export",
+                                          json={**body, "include_inactive": True})).content)
+    assert len(on) > len(off), "the filtered export let a hidden inactive product through"
