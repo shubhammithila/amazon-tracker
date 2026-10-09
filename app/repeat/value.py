@@ -21,6 +21,7 @@ from __future__ import annotations
 import calendar
 from collections import defaultdict
 from dataclasses import dataclass, field
+from functools import lru_cache
 from datetime import date, timedelta
 from statistics import median
 from typing import Iterable, Mapping
@@ -44,6 +45,7 @@ def month_of(d: date) -> str:
     return d.isoformat()[:7]
 
 
+@lru_cache(maxsize=512)
 def month_end(month: str) -> date:
     y, m = int(month[:4]), int(month[5:7])
     return date(y, m, calendar.monthrange(y, m)[1])
@@ -88,6 +90,12 @@ def compute(lines, in_scope, as_of: date, priced_from: date | None,
             econ: Mapping, econ_days: set, child_key=lambda child, parent: parent) -> dict:
     """``econ``: {(month, amazon_parent, child): (ad_spend, all_channel_units)}; ``econ_days``: days
     held. ``child_key`` maps an economics child to the row key (the flavour split)."""
+    # The scope as a SET, decided once per product rather than once per line: measured, calling the
+    # predicate per line was 1.5 million calls and a fifth of a 50-second build on production.
+    allowed = {line["parent_asin"] for line in lines if line["parent_asin"]}
+    allowed |= {child_key(c, p) for (_, p, c) in econ}
+    allowed = {p for p in allowed if in_scope(p)}
+    in_scope = allowed.__contains__
     hist = _histories(lines, in_scope)
 
     # ── who was acquired when, and by what ──
@@ -96,21 +104,29 @@ def compute(lines, in_scope, as_of: date, priced_from: date | None,
         first = orders[0]
         events = [((o.day - first.day).days, sum(o.revenue.values()), o.priced) for o in orders]
         customers.append((month_of(first.day), _first_product(first), first.day, events))
+    # What each customer had spent by each horizon, computed ONCE rather than per row it appears in.
+    spent_by = [{n: sum(r for d, r, _ in ev if d <= n) for n in HORIZONS} for _, _, _, ev in customers]
+    index = {id(c): i for i, c in enumerate(customers)}
 
     # ── LTV per (scope) for each horizon, over cohorts that have fully matured AND are priced ──
+    ok_memo: dict = {}
+
     def cohort_ok(month: str, n: int) -> bool:
-        start = date.fromisoformat(month + "-01")
-        return (month_end(month) + timedelta(days=n) <= as_of
-                and priced_from is not None and start >= priced_from)
+        key = (month, n)
+        if key not in ok_memo:
+            start = date.fromisoformat(month + "-01")
+            ok_memo[key] = (month_end(month) + timedelta(days=n) <= as_of
+                            and priced_from is not None and start >= priced_from)
+        return ok_memo[key]
 
     def ltv(group) -> dict:
         out = {}
         for n in HORIZONS:
-            eligible = [ev for m, _, _, ev in group if cohort_ok(m, n)]
+            eligible = [index[id(c)] for c in group if cohort_ok(c[0], n)]
             if len(eligible) < MIN_CUSTOMERS:
                 out[str(n)] = None
                 continue
-            out[str(n)] = sum(r for ev in eligible for d, r, _ in ev if d <= n) / len(eligible)
+            out[str(n)] = sum(spent_by[i][n] for i in eligible) / len(eligible)
         return out
 
     def payback(group, cac: float | None) -> int | None:
@@ -184,9 +200,12 @@ def compute(lines, in_scope, as_of: date, priced_from: date | None,
     products = sorted({fp for _, fp, _, _ in customers})
     every = set(products) | {k for (_, k) in spend}
 
+    by_product: dict[str, list] = defaultdict(list)
+    for c in customers:
+        by_product[c[1]].append(c)
     rows = []
     for p in products:
-        group = [c for c in customers if c[1] == p]
+        group = by_product[p]
         c = cac_over([p], full_months)
         l = ltv(group)
         rows.append({

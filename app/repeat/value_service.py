@@ -1,6 +1,7 @@
 """Assemble the Customer value sub-tab. Reads stored rows only; never calls Amazon."""
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from datetime import date, timedelta
 
@@ -39,13 +40,13 @@ async def _data_version(db) -> tuple:
 
 async def build_payload(db, brand: str | None, today: date) -> dict:
     brand = brand or service.DEFAULT_BRAND
-    key = (brand, today, await _data_version(db))
-    if key in _CACHE:
-        return _CACHE[key]
-    payload = await _build(db, brand, today)
-    _CACHE.clear()                       # one version at a time: older keys can never match again
-    _CACHE[key] = payload
-    return payload
+    version = (today, await _data_version(db))
+    if _CACHE.get("version") != version:
+        _CACHE.clear()                   # one data version at a time; every brand under it
+        _CACHE["version"] = version
+    if brand not in _CACHE:
+        _CACHE[brand] = await _build(db, brand, today)
+    return _CACHE[brand]
 
 
 async def _build(db, brand: str, today: date) -> dict:
@@ -65,12 +66,14 @@ async def _build(db, brand: str, today: date) -> dict:
     def scoped(p):
         return ctx.in_brand(p)
 
-    def figures(in_scope):
-        return value.compute(ctx.lines, in_scope, as_of,
-                             date.fromisoformat(priced) if priced else None,
-                             econ, econ_days, child_key=child_key)
+    async def figures(in_scope):
+        # CPU-bound, so it runs in a worker thread: on the event loop it froze every other page of
+        # the app for the length of the build (measured 50-137 s before the speed-ups).
+        return await asyncio.to_thread(value.compute, ctx.lines, in_scope, as_of,
+                                       date.fromisoformat(priced) if priced else None,
+                                       econ, econ_days, child_key=child_key)
 
-    result = figures(scoped)
+    result = await figures(scoped)
     for row in result["rows"]:
         p = row["parent_asin"]
         row["product"] = ctx.names.get(p, p)
@@ -85,7 +88,7 @@ async def _build(db, brand: str, today: date) -> dict:
         per_category[r["category"]] += 1
     categories = []
     for cat, count in per_category.items():
-        part = figures(lambda p, cat=cat: scoped(p) and ctx.category_of.get(p) == cat)
+        part = await figures(lambda p, cat=cat: scoped(p) and ctx.category_of.get(p) == cat)
         categories.append({"category": cat, "products": count, "total": part["total"],
                            "grid": part["grid"]})
     categories.sort(key=lambda c: (-c["total"]["new_customers"], c["category"]))
