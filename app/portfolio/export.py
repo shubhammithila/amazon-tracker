@@ -427,7 +427,8 @@ def build_pdf(table: Table, title: str) -> io.BytesIO:
             widest = max(stringWidth(v, bold, size) for v in body)
             word = max(stringWidth(w, bold, size) for w in str(col.header).split())
             if col.id in flexible:
-                out.append(min(widest, 150) + pad)
+                # Never narrower than its own heading word: "Categ / ory" on the Repeat PDF.
+                out.append(max(min(widest, 150), word) + pad)
                 floors.append(max(word, 55) + pad)
             else:
                 need = max(widest, word) + pad

@@ -225,3 +225,17 @@ def test_the_download_keeps_the_screens_order_and_only_its_rows():
                "total": {}, "categories": [], "brand": "B"}
     got = [r.values["product"] for r in export.build_table(payload, ["C", "A"], None).rows]
     assert got == ["Gamma", "Alpha"]
+
+
+
+async def test_no_heading_word_breaks_in_the_pdf(auth_client, db, catalogue):
+    """First real download printed "Categ / ory": a short-valued text column was narrower than
+    its own heading."""
+    import io
+
+    from pypdf import PdfReader
+    await _seed(db)
+    await _classify(db)          # "Sattu": a value much shorter than its heading
+    r = await auth_client.post("/portfolio/repeat/export", json={"format": "pdf", "ids": ["B0PARENT01"]})
+    text = PdfReader(io.BytesIO(r.content)).pages[0].extract_text()
+    assert "Category" in text.replace("\n", " ")
