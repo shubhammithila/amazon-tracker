@@ -67,8 +67,11 @@ async def export_repeat(body: dict = Body(...), db: AsyncSession = Depends(get_d
         data = pf_export.build_xlsx(table, "Repeat customers", freeze="B3",
                                     total_note=export.TOTAL_NOTE)
     else:
-        title = (f"Repeat customers · {scope} · FBA orders, data to {payload.get('as_of') or '—'}"
-                 " · % of buyers (same, from other) and of units (repeat units)")
-        data = pf_export.build_pdf(table, title)
+        title = f"Repeat customers · {scope}"
+        subtitle = (f"FBA orders only · customers who bought in a 30-day period, followed for "
+                    f"90 / 60 / 30 days · data to {payload.get('as_of') or '—'} · "
+                    f"history from {payload.get('history_from') or '—'} · {len(table.rows)} product(s)")
+        data = export.build_pdf(table, title, subtitle,
+                                partial_below=payload.get("fba_partial_below") or 0.6)
     return StreamingResponse(data, media_type=MEDIA[fmt], headers={
         "Content-Disposition": f'attachment; filename="{stem}.{fmt}"'})

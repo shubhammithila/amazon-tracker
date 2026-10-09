@@ -1068,8 +1068,12 @@ def portfolio(
     channels: Mapping | None = None,
     thresholds: Mapping | None = None,
     include_inactive: bool = False,
+    flavour_keys: Mapping[str, str] | None = None,
 ) -> dict:
     """The whole dashboard: parent products, their sizes, verdicts and totals.
+
+    ``flavour_keys`` (child ASIN -> flavour id, `repository.flavour_keys`) splits a multi-flavour
+    Amazon parent into one row per flavour. Without it a parent holds all its flavours, grouped.
 
     ONE function behind the screen, the Excel export and every test, so a printed row cannot
     disagree with the monitor about a margin — the same reasoning the shipment feature's
@@ -1098,6 +1102,7 @@ def portfolio(
     decisions = decisions or {}
     limits = thresholds_or_default(thresholds)
     channels = channels or {}
+    flavour_keys = flavour_keys or {}
     by_parent: dict[str, dict] = {}
     unmatched: set[str] = set()
 
@@ -1109,9 +1114,10 @@ def portfolio(
             unmatched.add(size["asin"])
         size["channels"] = channels.get(size["asin"]) or {}
 
-        parent_asin = size["parent_asin"] or size["asin"]
+        family_asin = size["parent_asin"] or size["asin"]
+        parent_asin = flavour_keys.get(size["asin"]) or family_asin
         parent = by_parent.setdefault(parent_asin, {
-            "parent_asin": parent_asin, "sizes": [],
+            "parent_asin": parent_asin, "family_asin": family_asin, "sizes": [],
             "product": "", "brand": "",
         })
         parent["sizes"].append(size)
@@ -1197,6 +1203,9 @@ def portfolio(
         decision = decisions.get(parent_asin) or {}
         parents.append({
             "parent_asin": parent_asin,
+            # Amazon's parent, which pools reviews: split flavours share ONE review count, so the
+            # totals de-duplicate reviews on this, not on the row id.
+            "family_asin": parent["family_asin"],
             "product": product or parent_asin,
             "brand": parent["brand"],
             # The flavour dimension, empty when the parent has only one.

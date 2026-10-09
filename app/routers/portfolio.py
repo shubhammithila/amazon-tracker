@@ -92,6 +92,7 @@ async def _dashboard(
         channels=logic.channel_split(sku_rows, ads_by_sku),
         thresholds=thresholds,
         include_inactive=include_inactive,
+        flavour_keys=await repository.flavour_keys(db, sheet_catalogue),
     )
     result["catalogue_source"] = source
     result["catalogue_warning"] = catalogue_warning

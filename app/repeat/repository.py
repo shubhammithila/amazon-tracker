@@ -92,18 +92,22 @@ async def resolve_missing(db: AsyncSession, mapping: dict[str, tuple[str, str]])
     return fixed
 
 
-async def units_by_parent(db: AsyncSession, start: str, end: str):
-    """(FBA units from our lines, ALL-channel units ordered from economics) per parent."""
-    fba = dict((await db.execute(
-        select(CustomerOrderLine.parent_asin, func.sum(CustomerOrderLine.units))
+async def units_by_child(db: AsyncSession, start: str, end: str):
+    """(FBA units from our lines, ALL-channel units from economics), keyed (parent, child).
+
+    Per child so the caller can group them exactly as it groups the rows, including a parent
+    split into its flavours."""
+    fba = {(p, c): v for p, c, v in await db.execute(
+        select(CustomerOrderLine.parent_asin, CustomerOrderLine.child_asin,
+               func.sum(CustomerOrderLine.units))
         .where(CustomerOrderLine.purchase_day.between(start, end),
                CustomerOrderLine.parent_asin.is_not(None))
-        .group_by(CustomerOrderLine.parent_asin))).all())
+        .group_by(CustomerOrderLine.parent_asin, CustomerOrderLine.child_asin))}
     parent = func.coalesce(EconomicsDaily.parent_asin, EconomicsDaily.child_asin)
-    allc = dict((await db.execute(
-        select(parent, func.sum(EconomicsDaily.units_ordered))
+    allc = {(p, c): v for p, c, v in await db.execute(
+        select(parent, EconomicsDaily.child_asin, func.sum(EconomicsDaily.units_ordered))
         .where(EconomicsDaily.day.between(start, end), EconomicsDaily.seller_sku == "")
-        .group_by(parent))).all())
+        .group_by(parent, EconomicsDaily.child_asin))}
     return ({k: int(v or 0) for k, v in fba.items()}, {k: int(v or 0) for k, v in allc.items()})
 
 

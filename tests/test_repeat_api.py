@@ -64,7 +64,7 @@ async def test_the_brand_filter_keeps_other_brands_out(auth_client, db, catalogu
     await _seed(db, howrah=True)
     mithila = (await auth_client.get("/portfolio/repeat")).json()
     assert [r["parent_asin"] for r in mithila["rows"]] == ["B0PARENT01"]
-    assert mithila["brands"] == ["Howrah Foods", "Mithila Foods"]
+    assert mithila["brands"] == ["All brands", "Howrah Foods", "Mithila Foods"]
     howrah = (await auth_client.get("/portfolio/repeat?brand=Howrah%20Foods")).json()
     assert [r["product"] for r in howrah["rows"]] == ["Bengali Posta"]
     assert howrah["total"]["30"]["buyers"] == 30
@@ -239,3 +239,62 @@ async def test_no_heading_word_breaks_in_the_pdf(auth_client, db, catalogue):
     r = await auth_client.post("/portfolio/repeat/export", json={"format": "pdf", "ids": ["B0PARENT01"]})
     text = PdfReader(io.BytesIO(r.content)).pages[0].extract_text()
     assert "Category" in text.replace("\n", " ")
+
+
+
+# ── All brands · flavours split · FBA share on net-negative units ──────────────────────────────
+
+async def test_all_brands_shows_every_product_under_one_unique_customer_total(auth_client, db, catalogue):
+    await _seed(db, howrah=True)
+    data = (await auth_client.get("/portfolio/repeat?brand=All%20brands")).json()
+    assert {r["parent_asin"] for r in data["rows"]} == {"B0PARENT01", "B0HOWRAHP1"}
+    assert data["total"]["30"]["buyers"] == 25 + 30          # different customers, counted once each
+    assert data["brands"][0] == "All brands"
+
+
+async def _econ_row(db, child, parent, units, day):
+    from app.models import EconomicsDaily
+    db.add(EconomicsDaily(day=day, child_asin=child, parent_asin=parent, seller_sku="",
+                          units_ordered=units))
+    await db.commit()
+
+
+async def test_a_product_whose_units_net_NEGATIVE_has_no_fba_share(auth_client, db, catalogue):
+    """Ragi Thekua: Amazon's units netted to -1 over 90 days, and the share printed "-0.0%"."""
+    await _seed(db)
+    day = (ist.yesterday() - timedelta(days=10)).isoformat()
+    await _econ_row(db, "B0CHILD001", "B0PARENT01", -1, day)
+    row = (await auth_client.get("/portfolio/repeat")).json()["rows"][0]
+    assert row["fba_share"] is None
+
+
+async def test_a_multi_flavour_parent_is_one_row_PER_FLAVOUR_keyed_like_the_profit_view(
+        auth_client, db, monkeypatch):
+    from app.portfolio import repository as pf_repository
+    cat = {"B0PERI0001": {"name": "Peri Peri Roasted Chana", "brand": "Mithila Foods"},
+           "B0HING0001": {"name": "Hing Jeera Roasted Chana", "brand": "Mithila Foods"}}
+
+    async def fake():
+        return cat, None, "sheet"
+    monkeypatch.setattr("app.repeat.service.load_catalogue", fake)
+    as_of = ist.yesterday() - timedelta(days=3)
+    first = as_of - timedelta(days=30 + 10)
+    lines = []
+    for child, n in (("B0PERI0001", 25), ("B0HING0001", 22)):
+        for i in range(n):
+            lines.append({"amazon_order_id": f"{child}{i}", "shipment_item_id": "1",
+                          "buyer_key": f"{child}k{i}", "purchase_day": first.isoformat(),
+                          "seller_sku": "s", "child_asin": child, "parent_asin": "B0RCPARENT",
+                          "units": 1})
+        await _econ_row(db, child, "B0RCPARENT", 5, first.isoformat())
+    await repository.save_lines(db, lines)
+    await repository.record_run(db, window_start=(as_of - timedelta(days=400)).isoformat(),
+                                window_end=(as_of + timedelta(days=3)).isoformat(), status="done")
+    data = (await auth_client.get("/portfolio/repeat")).json()
+    got = {r["parent_asin"]: (r["product"], r["w"]["30"]["buyers"]) for r in data["rows"]}
+    assert got == {"B0PERI0001": ("Peri Peri Roasted Chana", 25),
+                   "B0HING0001": ("Hing Jeera Roasted Chana", 22)}
+    # The same ids the Profit view uses, from the one shared map.
+    async with __import__("app.database", fromlist=["async_session"]).async_session() as s2:
+        keys = await pf_repository.flavour_keys(s2, cat)
+    assert set(keys.values()) == set(got)

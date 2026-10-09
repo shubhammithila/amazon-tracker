@@ -162,7 +162,7 @@ def totals(rows: Sequence[Mapping]) -> dict:
     for r in rows:
         if r.get("rating") is None:
             continue
-        family = r.get("parent_asin") or r.get("asin")
+        family = r.get("family_asin") or r.get("parent_asin") or r.get("asin")
         if family in seen:
             continue
         seen.add(family)

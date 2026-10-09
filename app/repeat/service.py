@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, timedelta
 
+from app.portfolio import repository as pf_repository
 from app.portfolio.logic import CATEGORY_UNCLASSIFIED, _first_category
 from app.repeat import logic, repository
 from app.shipment import repository as ship_repository
@@ -15,6 +16,8 @@ SHIP_LAG_DAYS = 3
 #: Below this FBA share a product's repeat % reads low: Easy Ship orders carry no customer key.
 FBA_PARTIAL_BELOW = 0.6
 DEFAULT_BRAND = "Mithila Foods"
+#: The brand selector's "everything" choice: every brand's products, one unique-customer total.
+ALL_BRANDS = "All brands"
 #: Newest stored day older than this many days before yesterday: the data is stale and the screen
 #: says so, whatever the last run said. The nightly run normally keeps it at 0.
 STALE_AFTER_DAYS = 2
@@ -42,6 +45,15 @@ async def build_payload(db, brand: str | None, today: date) -> dict:
     history_from = logic.covered_from(runs, as_of)
     since = (as_of - timedelta(days=max(logic.WINDOWS) * 2 + logic.PERIOD_DAYS)).isoformat()
     lines = await repository.load_lines(db, since)
+    # A multi-flavour parent becomes one row per flavour, keyed EXACTLY as the Profit view keys it
+    # (one shared map), so the same flavour reads the same on both sub-tabs.
+    flavour_of = await pf_repository.flavour_keys(db, catalogue)
+    for line in lines:
+        line["parent_asin"] = flavour_of.get(line["child_asin"]) or line["parent_asin"]
+    everything = brand == ALL_BRANDS
+
+    def in_brand(p):
+        return everything or brand_of.get(p) == brand
 
     units = defaultdict(lambda: defaultdict(int))
     brand_of: dict[str, str] = {}
@@ -60,23 +72,39 @@ async def build_payload(db, brand: str | None, today: date) -> dict:
     # "Sattu" here holds exactly the products "Sattu" holds there.
     stored = {row.product_key: row.priority for row in await ship_repository.load_categories(db)}
     category_of = {}
-    for p, kids in ((p, k) for p, k in units.items() if brand_of.get(p) == brand):
+    for p, kids in ((p, k) for p, k in units.items() if in_brand(p)):
         candidates = [names.get(p, p)] + [(catalogue.get(c) or {}).get("name") or "" for c in kids]
         priority = _first_category(candidates, stored)
         category_of[p] = (CATEGORY_LABELS.get(priority, CATEGORY_LABELS[6])
                           if priority is not None else CATEGORY_UNCLASSIFIED)
 
-    m = logic.metrics(logic.build_orders(lines), brand_of, as_of, history_from,
+    # "All brands" is totalled as one brand, so its top row counts each customer once overall.
+    totals_by = {p: ALL_BRANDS for p in brand_of} if everything else brand_of
+    m = logic.metrics(logic.build_orders(lines), totals_by, as_of, history_from,
                       group_of=category_of)
-    fba, allc = await repository.units_by_parent(
+    fba_child, all_child = await repository.units_by_child(
         db, (as_of - timedelta(days=89)).isoformat(), as_of.isoformat())
+    # Keyed by Amazon's parent (or the flavour), so a child that sold only by Easy Ship still
+    # counts in its product's denominator — that is exactly the sale the FBA share is about.
+    fba, allc = defaultdict(int), defaultdict(int)
+    for (parent, child), v in fba_child.items():
+        fba[flavour_of.get(child) or parent] += v
+    for (parent, child), v in all_child.items():
+        allc[flavour_of.get(child) or parent] += v
+
+    def fba_share(p):
+        # Units can net NEGATIVE (a refund adjustment: Ragi Thekua read -1 over 90 days), so a
+        # share is only shown when there were real units to share; never a "-0.0%".
+        if allc.get(p, 0) <= 0:
+            return None
+        return min(1.0, fba.get(p, 0) / allc[p])
 
     def label(p):
         return names.get(p, p)
 
     rows = []
     for p, per in m["parents"].items():
-        if brand_of.get(p) != brand:
+        if not everything and brand_of.get(p) != brand:
             continue
         w = {str(n): {"buyers": c["buyers"], "same_pct": logic.pct(c["same"], c["buyers"]),
                       "units_pct": logic.units_pct(c["repeat_units"], c["units"], c["buyers"]),
@@ -90,7 +118,7 @@ async def build_payload(db, brand: str | None, today: date) -> dict:
         rows.append({
             "parent_asin": p, "product": label(p), "brand": brand_of.get(p, ""),
             "category": category_of.get(p, CATEGORY_UNCLASSIFIED),
-            "fba_share": min(1.0, fba.get(p, 0) / allc[p]) if allc.get(p) else None,
+            "fba_share": fba_share(p),
             "w": w, "flows": flows,
             "basket": {"orders": b["orders"], "multi_pct": logic.pct(b["multi"], b["orders"]),
                        "with": [{"product": label(q), "orders": v} for q, v in b["with"]]},
@@ -102,7 +130,7 @@ async def build_payload(db, brand: str | None, today: date) -> dict:
                          "units_pct": logic.units_pct(c["repeat_units"], c["units"], c["buyers"])}
                 for n, c in counts.items()}
 
-    total = group_total(m["brands"].get(brand, {}))
+    total = group_total(m["brands"].get(ALL_BRANDS if everything else brand, {}))
     # Per category, unique customers like the brand total, so a category's figure is NOT the sum
     # or average of its rows. Biggest first by 90-day buyers ("where are the customers").
     per_category = defaultdict(int)
@@ -117,7 +145,8 @@ async def build_payload(db, brand: str | None, today: date) -> dict:
                for n, w in m["windows"].items()}
     return {"as_of": as_of.isoformat(),
             "history_from": history_from.isoformat() if history_from else None,
-            "brand": brand, "brands": sorted(set(brand_of.values())), "windows": windows,
+            "brand": brand, "brands": [ALL_BRANDS] + sorted(set(brand_of.values())),
+            "windows": windows,
             "total": total, "rows": rows, "categories": categories, "last_refresh": last,
             "newest_day": latest.isoformat(),
             "stale_days": stale_days if stale_days > STALE_AFTER_DAYS else 0,

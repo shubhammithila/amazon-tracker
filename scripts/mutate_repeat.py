@@ -54,7 +54,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
      "a failed chunk is skipped and later chunks claim the coverage"),
     (S, "today - timedelta(days=1))", "today)",
      "as_of reaches today's incomplete day"),
-    (S, "        if brand_of.get(p) != brand:\n            continue\n", "",
+    (S, "        if not everything and brand_of.get(p) != brand:\n            continue\n", "",
      "other brands leak into the Mithila table"),
     (T, "cross ? c.came_from_pct : null", "c.came_from_pct",
      "the brand total shows a cross flow it cannot have"),
@@ -89,6 +89,13 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
      '            f"same-{n}": c.get("units_pct"),', "the download puts units in the customer column"),
     (S, "                      group_of=category_of)", "                      group_of=brand_of)",
      "category totals are computed over brands"),
+    (S, "    if allc.get(p, 0) <= 0:", "    if not allc.get(p):", "net-negative units still get a share"),
+    (S, "        line[\"parent_asin\"] = flavour_of.get(line[\"child_asin\"]) or line[\"parent_asin\"]",
+     "        pass", "flavours are not split on the Repeat tab"),
+    (S, "    totals_by = {p: ALL_BRANDS for p in brand_of} if everything else brand_of",
+     "    totals_by = brand_of", "All brands has no overall total"),
+    (T, "${ok ? pct(t.units_pct) : \"—\"}</div>", "${ok ? pct(t.repeat_pct) : \"—\"}</div>",
+     "the card headline is the customer share"),
 ]
 
 TESTS = [

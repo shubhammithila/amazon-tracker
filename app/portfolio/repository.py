@@ -924,3 +924,40 @@ async def save_settings(db: AsyncSession, values: dict, *, updated_by: str = "")
     row.updated_at = datetime.utcnow()
     await db.commit()
     return logic.thresholds_or_default(cleaned)
+
+
+
+async def flavour_keys(db: AsyncSession, catalogue: dict) -> dict[str, str]:
+    """child ASIN -> the id of its FLAVOUR, for every child of a multi-flavour parent.
+
+    Asked for as *"for the roasted chana flavours, can you make it separate… in the profit tab also.
+    data should corroborate"*. A parent whose children carry more than one catalogue name (Amazon
+    groups 5 roasted-chana flavours under one parent) becomes one row per flavour on BOTH sub-tabs.
+
+    The id is the flavour's lowest child ASIN: 10 characters like any parent id (so it fits
+    `product_decision.parent_asin`), and taken from every child ever stored rather than from one
+    window's rows, so it does not change with the date range and the two tabs always agree.
+    Single-flavour parents are absent: they keep their own parent ASIN.
+    """
+    children: dict[str, set[str]] = {}
+    for parent, child in await db.execute(
+            select(EconomicsDaily.parent_asin, EconomicsDaily.child_asin)
+            .where(EconomicsDaily.seller_sku == ASIN_GRAIN, EconomicsDaily.parent_asin.is_not(None))
+            .distinct()):
+        children.setdefault(parent, set()).add(child)
+    out: dict[str, str] = {}
+    for kids in children.values():
+        by_name: dict[str, list[str]] = {}
+        for child in kids:
+            name = str((catalogue.get(child) or {}).get("name") or "").strip().casefold()
+            # A child the sheet does not name is not a flavour: it stays on its parent's row.
+            # (Keyed on its own ASIN instead, every unnamed child would read as a new flavour.)
+            if name:
+                by_name.setdefault(name, []).append(child)
+        if len(by_name) < 2:
+            continue
+        for group in by_name.values():
+            key = min(group)
+            for child in group:
+                out[child] = key
+    return out

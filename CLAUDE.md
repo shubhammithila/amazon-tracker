@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2752 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2760 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3155,6 +3155,39 @@ renders it.
   and `total_note`), so %s are real % cells and a dash is a blank. Headings read `90d buyers`,
   `90d same repeat`… because one heading row cannot hold the screen's two-level header.
   `mutate_repeat.py` is 30/30.
+
+### A multi-flavour parent is one row PER FLAVOUR — on both sub-tabs
+Asked for as *"for the roasted chana flavours… make it separate… in the profit tab also. data should
+corroborate"*. Amazon files 5 roasted-chana flavours × 3 sizes under ONE parent (`B0DWFC3QT9`); four
+more parents hold several flavours (sesame laddoo ×3, badi ×4, tilkut ×2, bengali bori ×2). All five
+now split, because one rule for every multi-flavour parent is what keeps the two tabs agreeing.
+
+- **`portfolio.repository.flavour_keys`** is the ONE map both tabs use: child ASIN → flavour id, the
+  flavour's lowest child ASIN. 10 characters, so it fits `product_decision.parent_asin`, and taken
+  from every child ever stored, so it does not move with the date range. A child the sheet does not
+  NAME is not a flavour (keyed on its own ASIN, every unnamed test child split into a row).
+- **`family_asin`** keeps Amazon's parent on each Profit row, and BOTH review de-duplications (the
+  page's `computeTotals`, `export.totals`) key on it: the flavours share one review pool, and
+  de-duplicating on the row id would count 477 reviews five times.
+- No stored decision sat on any of the five parents (checked on production), so nothing was orphaned.
+- The old `flavour_groups` machinery is untouched and now simply finds one flavour per row.
+
+### Brand selector: "All brands"
+`service.ALL_BRANDS`: every brand's products, one unique-customer total (the brand mapping is
+collapsed to one key for `metrics`), categories across all of them.
+
+### The FBA share no longer reads −0.0%, and why Makhana reads 177 → 1 → 23
+Amazon's units can net NEGATIVE over a window (Ragi Thekua: −1, a refund adjustment), so a share is
+shown only when there were real units. The share is keyed by Amazon's parent (or flavour), so a child
+that sold only by Easy Ship still counts in the denominator. **Makhana's collapse is real data, not a
+bug**: its 400 g pack stopped selling through FBA after June (271 units in June, 1 in July) while 476
+of its 506 units in the last 90 days went Easy Ship — FBA-only customer data can barely see it, and
+the "partial" flag is the screen saying so.
+
+### The PDF is laid out like the screen
+`repeat.export.build_pdf`, a sibling of the Portfolio one: the two-row 90 / 60 / 30-day heading,
+full page width, the total row shaded, Repeat units in bold, "partial" flags, a key to the four
+measures and "Page x of y".
 
 ### "Repeat units" — Brand Analytics' measure, beside ours
 Asked why Brand Analytics showed **25–26%** repeat while the app topped out at **23.1%**. Different

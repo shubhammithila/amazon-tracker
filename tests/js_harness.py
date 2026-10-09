@@ -120,7 +120,7 @@ def run_template_js(template: Path, functions: list[str], consts: list[str], bod
     if not node:
         pytest.skip("node is not installed; the render tests need it")
     script = _script(template)
-    parts = ["let data = {}; const $ = () => null;",
+    parts = ["let data = {}; let $ = () => null;   // let, so a test can stand a render target in",
              "function emit(v){ console.log(JSON.stringify(v)); }"]
     parts += [_const(script, n) for n in consts] + [_function(script, n) for n in functions]
     parts.append(body)

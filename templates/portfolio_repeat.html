@@ -176,8 +176,8 @@ function renderCategories(){
     return `<button class="cat${category === c.category ? " on" : ""}" data-cat="${esc(c.category)}"
       title="${esc(c.category)}: ${c.products} product(s). 90-day figures for the category as a whole, unique customers">
       <div class="cat-name">${esc(c.category)} <span class="cat-n">${c.products}</span></div>
-      <div class="cat-fig">${ok ? pct(t.repeat_pct) : "—"}</div>
-      <div class="cat-meta">90d repeat · units ${ok ? pct(t.units_pct) : "—"} · ${ok ? num(t.buyers) : "—"} buyers</div>
+      <div class="cat-fig">${ok ? pct(t.units_pct) : "—"}</div>
+      <div class="cat-meta">90d repeat units · customers ${ok ? pct(t.repeat_pct) : "—"} · ${ok ? num(t.buyers) : "—"} buyers</div>
     </button>`;
   }).join("") + `</div>`;
 }

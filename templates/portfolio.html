@@ -1694,7 +1694,8 @@ function computeTotals(list){
   const rated = [];
   for(const r of list){
     if(r.rating === null || r.rating === undefined) continue;
-    const family = r.parent_asin || r.asin;
+    // `family_asin` first: a flavour split into its own row still shares its family's reviews.
+    const family = r.family_asin || r.parent_asin || r.asin;
     if(seen.has(family)) continue;
     seen.add(family);
     rated.push(r);

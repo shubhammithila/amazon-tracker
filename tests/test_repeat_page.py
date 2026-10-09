@@ -216,3 +216,18 @@ def test_the_download_sends_the_screens_rows_in_the_screens_order():
     body = src[src.index("function exportPayload("):src.index("async function downloadExport(")]
     assert "sortedRows().map(r => r.parent_asin)" in body and "category" in body
     assert 'data-export="xlsx"' in src and 'data-export="pdf"' in src
+
+
+
+def test_a_category_cards_headline_is_its_repeat_UNITS_share():
+    """Asked for as "put the units% in bold not the buyers one"."""
+    out = run_template_js(T, ["esc", "num", "pct", "renderCategories"], [], CAT_DATA + """
+data.windows = {"90": {available: true}};
+data.categories[0].total = {"90": {buyers: 4078, repeat_pct: 0.178, units_pct: 0.367}};
+const box = {innerHTML: ""};
+$ = () => box;
+renderCategories();
+emit(box.innerHTML);""")
+    fig = out.split('class="cat-fig">', 1)[1].split("<", 1)[0]
+    assert fig == "36.7%"
+    assert "customers 17.8%" in out
