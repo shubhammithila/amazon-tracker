@@ -30,6 +30,7 @@ from app.portfolio import columns as column_vocab
 COLUMN_KINDS: dict[str, str] = {
     "verdict": "text", "sales": "money", "ad_spend": "money",
     "refunds_pct": "pct", "fees_pct": "pct", "tacos": "pct", "net_pct": "pct_signed",
+    "net_per_kg": "per_kg",
     "acos": "acos", "units_ordered": "int", "units": "int",
     "weight_ordered_kg": "kg", "weight_kg": "kg", "returns_pct": "pct",
     "rating": "rating", "decision": "text",
@@ -53,6 +54,7 @@ EXCEL_FORMATS = {
     "pct_signed": "+0.0%;-0.0%;0.0%",
     "acos": "0%",
     "rating": "0.0",
+    "per_kg": '"₹"#,##0.00;-"₹"#,##0.00',  # a rate, so paise matter: ₹93.45/kg
     "reviews": _indian_format(),
     "text": "General",
 }
@@ -158,6 +160,8 @@ def totals(rows: Sequence[Mapping]) -> dict:
     units, ordered, refunded = s("units"), s("units_ordered"), s("units_refunded")
     weighed = [r for r in rows if r.get("weight_kg") is not None]
     weighed_ordered = [r for r in rows if r.get("weight_ordered_kg") is not None]
+    weight = sum(r["weight_kg"] for r in weighed) if weighed else None
+    net_weighed = sum(_num(r.get("net_weighed")) for r in weighed)
     seen, rated = set(), []
     for r in rows:
         if r.get("rating") is None:
@@ -180,7 +184,8 @@ def totals(rows: Sequence[Mapping]) -> dict:
         "units_ordered": int(ordered), "units": int(units),
         "weight_ordered_kg": sum(r["weight_ordered_kg"] for r in weighed_ordered)
                              if weighed_ordered else None,
-        "weight_kg": sum(r["weight_kg"] for r in weighed) if weighed else None,
+        "weight_kg": weight,
+        "net_per_kg": net_weighed / weight if weight and weight > 0 else None,
         "returns_pct": _ratio(refunded, ordered),
         "rating": rating, "reviews": int(reviews) if rating is not None else None,
         "decision": f"{decided} decided" if decided else None,
@@ -377,6 +382,8 @@ def display(value, kind: str) -> str:
         return ("-" if value < 0 else "") + indian(whole) + (f".{int(round(frac * 10))}" if frac else "") + " kg"
     if kind == "rating":
         return f"{value:.1f}"
+    if kind == "per_kg":
+        return ("-" if value < 0 else "") + "₹" + indian(int(abs(value))) + f"{abs(value) % 1:.2f}"[1:]
     return str(value)
 
 

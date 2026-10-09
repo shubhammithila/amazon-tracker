@@ -15,8 +15,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 E, T = "app/portfolio/export.py", "templates/portfolio.html"
+L = "app/portfolio/logic.py"
 
 MUTATIONS: list[tuple[str, str, str, str]] = [
+    (L, "    net_per_kg = round(net_weighed / weight_kg, 2) if weight_kg and weight_kg > 0 else None",
+     "    net_per_kg = round(net / weight_kg, 2) if weight_kg and weight_kg > 0 else None",
+     "a parent's Net/kg counts the rupees of sizes with no weight"),
+    (L, "    net_per_kg = round(net_weighed / weight_kg, 2) if weight_kg and weight_kg > 0 else None",
+     "    net_per_kg = (round(sum(_num(s.get('net_per_kg')) for s in sizes) / len(sizes), 2) if sizes else None)",
+     "a parent's Net/kg is an average of its sizes"),
+    (E, '        "net_per_kg": net_weighed / weight if weight and weight > 0 else None,',
+     '        "net_per_kg": s("net") / weight if weight and weight > 0 else None,',
+     "the file's total Net/kg counts unweighed rupees"),
+    (T, "total: t => perKg(t.weight > 0 ? t.netWeighed / t.weight : null)},",
+     "total: t => perKg(t.weight > 0 ? t.net / t.weight : null)},",
+     "the screen's total Net/kg counts unweighed rupees"),
     (E, "    if ids is None:\n        chosen = source", "    if True:\n        chosen = source",
      "the filter is ignored and every product is downloaded"),
     (E, "chosen = [by_id[i] for i in dict.fromkeys(ids) if i in by_id]",
@@ -57,6 +70,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
 ]
 
 TESTS = [
+    "tests/test_portfolio_net_per_kg.py",
     "tests/test_portfolio_export.py", "tests/test_portfolio_weight.py", "tests/test_portfolio_api.py",
     "tests/test_portfolio_screen.py",
 ]

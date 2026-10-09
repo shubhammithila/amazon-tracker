@@ -508,6 +508,7 @@ const FIELDS = {
   fees_pct:     {label: "Amazon fees %", get: r => r.fees_pct,    kind: "pct"},
   refunds_pct:  {label: "Refunds %",    get: r => r.refunds_pct,  kind: "pct"},
   net_pct:      {label: "Net %",        get: r => r.net_pct,      kind: "pct"},
+  net_per_kg:   {label: "Net ₹/kg",     get: r => r.net_per_kg,   kind: "money"},
   tacos:        {label: "TACOS",        get: r => r.tacos,        kind: "pct"},
   acos:         {label: "ACOS",         get: r => r.acos,         kind: "pct"},
   units_ordered: {label: "Units ordered", get: r => r.units_ordered, kind: "int"},
@@ -557,6 +558,12 @@ function message(text, cls){
 }
 
 /* Money in the Indian convention the rest of the app uses: 1,20,035 not 120,035. */
+/* ₹ per kg, to the paisa: a rate, unlike the whole-rupee money columns. A dash with no weight. */
+function perKg(v){
+  if(v === null || v === undefined) return '<span class="dim">—</span>';
+  const s = Math.abs(v).toLocaleString("en-IN", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  return `<span class="${v < 0 ? "neg" : ""}">${v < 0 ? "−" : ""}₹${s}</span>`;
+}
 function money(v){
   return "₹" + Math.round(n(v)).toLocaleString("en-IN");
 }
@@ -1446,6 +1453,10 @@ const COLUMN_DEFS = {
                 tip: "100% − Refunds % − Amazon fees % − TACOS, before your product cost (pre-COGS)",
                 row: r => pct(r.net_pct, {sign: true}), detail: r => pct(r.net_pct, {sign: true}),
                 total: t => pct(t.ratio(t.net, t.sales), {sign: true})},
+  net_per_kg:  {num: true, sortKey: "net_per_kg", width: 90,
+                tip: "net (after refunds, Amazon fees and ads, before your product cost) over net weight sold. Set it against your purchase price per kg",
+                row: r => perKg(r.net_per_kg), detail: r => perKg(r.net_per_kg),
+                total: t => perKg(t.weight > 0 ? t.netWeighed / t.weight : null)},
   acos:        {num: true, sortKey: "acos", width: 80,
                 tip: "ad spend over ad-ATTRIBUTED sales — shown for context; no verdict is decided on it",
                 row: r => acosCell(r), detail: r => acosCell(r),
@@ -1495,7 +1506,7 @@ const COLUMN_DEFS = {
 };
 
 // Used only when `data.columns` has not arrived (and by the render tests' smoke check).
-const FALLBACK_ORDER = ["verdict", "sales", "ad_spend", "refunds_pct", "fees_pct", "tacos", "net_pct", "acos", "units_ordered", "units",
+const FALLBACK_ORDER = ["verdict", "sales", "ad_spend", "refunds_pct", "fees_pct", "tacos", "net_pct", "net_per_kg", "acos", "units_ordered", "units",
                         "weight_ordered_kg", "weight_kg", "returns_pct", "rating", "decision"];
 
 /* The client twin of `app/portfolio/columns.normalise_column_layout`, rule for rule. It exists for
@@ -1674,6 +1685,8 @@ function computeTotals(list){
   const weighedOrderedRows = list.filter(r => r.weight_ordered_kg !== null && r.weight_ordered_kg !== undefined);
   const weightOrdered = weighedOrderedRows.reduce((a, r) => a + r.weight_ordered_kg, 0);
   const weighedOrdered = weighedOrderedRows.length;
+  // Net ₹/kg divides the net of the rows that HAVE a weight by that weight: like by like.
+  const netWeighed = weighed.reduce((a, r) => a + n(r.net_weighed), 0);
 
   // A ratio with no denominator is a dash, never 0% — `_ratio`'s rule on the server, and for the
   // same reason: 0% TACOS would read as the most ad-efficient set of products on the account.
@@ -1711,7 +1724,7 @@ function computeTotals(list){
   const infinite = adsCost > 0 && attributed === 0;
 
   return {sales, spend, net, fees, refundedSales, adsCost, attributed, units, ordered, refunded,
-          weighed: weighed.length, weight, weightUnknown, weighedOrdered, weightOrdered, ratio,
+          weighed: weighed.length, weight, weightUnknown, weighedOrdered, weightOrdered, ratio, netWeighed,
           rating, reviews, decided, infinite};
 }
 

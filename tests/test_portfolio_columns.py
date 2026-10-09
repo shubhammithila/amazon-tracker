@@ -21,11 +21,11 @@ def test_users_has_a_nullable_preferences_column():
 
 from app.portfolio import columns as C
 
-ALL = ["verdict", "sales", "ad_spend", "refunds_pct", "fees_pct", "tacos", "net_pct", "acos",
+ALL = ["verdict", "sales", "ad_spend", "refunds_pct", "fees_pct", "tacos", "net_pct", "net_per_kg", "acos",
        "units_ordered", "units", "weight_ordered_kg", "weight_kg", "returns_pct", "rating", "decision"]
 
 
-def test_the_vocabulary_is_exactly_the_agreed_sixteen_columns():
+def test_the_vocabulary_is_exactly_the_agreed_seventeen_columns():
     assert [c["id"] for c in C.COLUMNS] == ["product"] + ALL
     locked = {c["id"] for c in C.COLUMNS if c["locked"]}
     assert locked == {"product", "sales", "ad_spend", "units_ordered", "units", "weight_ordered_kg", "weight_kg"}

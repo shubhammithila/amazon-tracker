@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2760 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2767 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -2185,6 +2185,20 @@ no rupee Net column: `net` stays in the payload and the Excel, and is not on scr
 - **`acos` moved after `net_pct`**, so the sum's four terms sit together. Two tests hand-listed the
   old order and sliced the definitions by it, so their slices ran backwards; both now list the new
   order.
+
+### Net ₹/kg — what a kilogram earns after every deduction
+Asked for as *"net value… x rs/kg… what per kg value I am getting after all deductions… link it to my
+purchase later to get the exact profit"*, for parents and their sizes. Sits beside Net %.
+
+- **Net (pre-COGS) over NET weight**: both after refunds, so a refunded pack leaves the rupees and the
+  kilograms alike. Set against the purchase price per kg, the difference is the real profit per kg.
+- **A parent divides the SUMS** (`net_weighed / weight_kg` in `_sum_sizes`), never averages its
+  sizes' rates: 400 units at ₹25/kg beside 10 at ₹90/kg is ₹25.80/kg, not ₹57.50.
+- **`net_weighed` is the net of sizes whose weight is KNOWN**, so a size the sheet has no weight for
+  leaves the numerator as its kilograms leave the denominator; otherwise the rate is overstated by
+  that size's rupees. The totals row (page `computeTotals`, `export.totals`) follows the same rule.
+- A dash with no weight or no units, never ₹0/kg; a loss reads as a negative rate. Two decimals in
+  the Excel (`per_kg` format) because it is a rate, unlike the whole-rupee money columns.
 
 ### The size rows are plain; the SKU detail row keeps the channel split
 Reported as *"the sku wise analysis is looking too jumbled up. too much info on the left. keep it

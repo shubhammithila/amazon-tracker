@@ -566,6 +566,15 @@ def size_row(econ: Mapping, catalogue: Mapping, ads: Mapping | None = None) -> d
         # weight rule — a dash, never 0 kg.
         "weight_ordered_kg": line_weight(units_ordered, pack_weight) if pack_weight > 0 else None,
         "weight_unknown": 1 if (units > 0 and pack_weight <= 0) else 0,
+        # ── Net ₹ per kg: what a kilogram earns after every Amazon deduction ──
+        # Asked for as "what per kg value I am getting after all deductions… to link it to my
+        # purchase later". Net (pre-COGS) over NET weight: both are after refunds, so a refunded
+        # pack is out of the money and out of the kilograms alike. `net_weighed` is the net of a
+        # size whose weight is KNOWN, so a parent divides like by like — net of every size over the
+        # weight of only some would overstate the rate. A dash with no weight, never ₹0/kg.
+        "net_weighed": round(net, 2) if pack_weight > 0 else 0.0,
+        "net_per_kg": (round(net / line_weight(units, pack_weight), 2)
+                       if pack_weight > 0 and units > 0 else None),
         "sales": round(ordered, 2),
         "refunded": round(refunded, 2),
         "units": units,
@@ -1415,6 +1424,10 @@ def _sum_sizes(sizes: Sequence[Mapping]) -> dict:
     known_ordered = [s.get("weight_ordered_kg") for s in sizes if s.get("weight_ordered_kg") is not None]
     weight_ordered_kg = round(sum(_num(w) for w in known_ordered), 3) if known_ordered else None
     weight_unknown = sum(int(s.get("weight_unknown") or 0) for s in sizes)
+    # Rupees over kilograms from the SUMS, never the mean of the sizes' rates: a 1-unit pack at
+    # ₹900/kg beside 400 units at ₹100/kg averages to ₹500/kg, which no kilogram earned.
+    net_weighed = round(sum(_num(s.get("net_weighed")) for s in sizes), 2)
+    net_per_kg = round(net_weighed / weight_kg, 2) if weight_kg and weight_kg > 0 else None
 
     fees: dict[str, float] = {}
     for size in sizes:
@@ -1434,6 +1447,8 @@ def _sum_sizes(sizes: Sequence[Mapping]) -> dict:
         "weight_kg": weight_kg,
         "weight_ordered_kg": weight_ordered_kg,
         "weight_unknown": weight_unknown,
+        "net_weighed": net_weighed,
+        "net_per_kg": net_per_kg,
         "ads_cost": ads_cost,
         "ad_attributed_sales": attributed,
         "ad_clicks": ad_clicks,

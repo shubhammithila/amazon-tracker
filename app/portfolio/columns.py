@@ -31,6 +31,9 @@ COLUMNS: list[dict] = [
     {"id": "fees_pct",    "label": "Amazon fees %", "locked": False},
     {"id": "tacos",       "label": "TACOS",    "locked": False},
     {"id": "net_pct",     "label": "Net %",    "locked": False},
+    # Net (pre-COGS) rupees per kilogram of net weight sold: set it against the purchase price per
+    # kg and the difference is the real profit per kg.
+    {"id": "net_per_kg",  "label": "Net ₹/kg", "locked": False},
     {"id": "acos",        "label": "ACOS",     "locked": False},
     # **Two unit columns, because one could never match Seller Central.** "Units" used to show
     # units AFTER refunds (`netUnitsSold`), which the Business Report never shows: Bengali Posta
