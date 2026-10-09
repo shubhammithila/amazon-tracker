@@ -129,3 +129,99 @@ async def test_a_fetch_that_includes_TODAY_still_ends_as_of_at_yesterday_minus_t
                                 window_end=ist.today().isoformat(), status="done")
     data = (await auth_client.get("/portfolio/repeat")).json()
     assert data["as_of"] == (ist.yesterday() - timedelta(days=3)).isoformat()
+
+
+# ── categories and the download ────────────────────────────────────────────────────────────────
+
+async def _classify(db, name="chana sattu", priority=1):
+    from app.models import ProductCategory
+    db.add(ProductCategory(product_key=name, priority=priority))
+    await db.commit()
+
+
+async def test_rows_carry_the_profit_views_category_and_each_category_has_its_own_total(
+        auth_client, db, catalogue):
+    await _seed(db, howrah=True)
+    await _classify(db)
+    data = (await auth_client.get("/portfolio/repeat")).json()
+    row = next(r for r in data["rows"] if r["parent_asin"] == "B0PARENT01")
+    assert row["category"] == "Sattu"
+    sattu = next(c for c in data["categories"] if c["category"] == "Sattu")
+    assert sattu["products"] == 1 and sattu["total"]["30"]["buyers"] == 25
+    assert sattu["total"]["30"]["repeat_pct"] == pytest.approx(5 / 25)
+    # Howrah's product is a different brand, so it is in neither the rows nor the categories.
+    assert all(c["category"] != "Unclassified" for c in data["categories"])
+
+
+async def test_an_unclassified_product_is_its_own_bucket_never_guessed(auth_client, db, catalogue):
+    await _seed(db)
+    data = (await auth_client.get("/portfolio/repeat")).json()
+    assert data["rows"][0]["category"] == "Unclassified"
+    assert [c["category"] for c in data["categories"]] == ["Unclassified"]
+
+
+async def test_the_excel_holds_the_screens_rows_as_numbers_90_days_first(auth_client, db, catalogue):
+    import io
+
+    from openpyxl import load_workbook
+    await _seed(db)
+    r = await auth_client.post("/portfolio/repeat/export",
+                               json={"format": "xlsx", "ids": ["B0PARENT01"]})
+    assert r.status_code == 200, r.text
+    ws = load_workbook(io.BytesIO(r.content)).active
+    heads = [c.value for c in ws[2]]
+    assert heads[:3] == ["Product", "Category", "FBA share"]
+    assert heads.index("90d buyers") < heads.index("60d buyers") < heads.index("30d buyers")
+    assert ws.freeze_panes == "B3"
+    assert ws.cell(1, 1).value == "Mithila Foods — all products"
+    assert ws.cell(3, 1).value == "Chana Sattu"
+    same30 = ws.cell(3, heads.index("30d same repeat") + 1)
+    assert same30.value == pytest.approx(5 / 25) and same30.number_format == "0.0%"
+    units30 = ws.cell(3, heads.index("30d repeat units") + 1)
+    assert units30.value == pytest.approx(10 / 30)
+
+
+async def test_a_category_download_is_totalled_for_that_category(auth_client, db, catalogue):
+    import io
+
+    from openpyxl import load_workbook
+    await _seed(db)
+    await _classify(db)
+    r = await auth_client.post("/portfolio/repeat/export",
+                               json={"format": "xlsx", "ids": ["B0PARENT01"], "category": "Sattu"})
+    ws = load_workbook(io.BytesIO(r.content)).active
+    assert ws.cell(1, 1).value == "Sattu — all products"
+    assert "sattu" in r.headers["content-disposition"]
+
+
+async def test_the_pdf_downloads_and_bad_requests_are_refused(auth_client, db, catalogue):
+    await _seed(db)
+    r = await auth_client.post("/portfolio/repeat/export", json={"format": "pdf", "ids": ["B0PARENT01"]})
+    assert r.status_code == 200 and r.content.startswith(b"%PDF")
+    assert (await auth_client.post("/portfolio/repeat/export", json={"format": "csv"})).status_code == 400
+    assert (await auth_client.post("/portfolio/repeat/export",
+                                   json={"format": "xlsx", "ids": [1]})).status_code == 400
+
+
+def test_an_unavailable_window_downloads_as_blanks_not_its_hidden_figures():
+    from app.repeat import export
+    payload = {"windows": {"90": {"available": False}, "60": {"available": True},
+                           "30": {"available": True}},
+               "rows": [{"parent_asin": "P", "product": "X", "category": "Rest", "fba_share": 1.0,
+                         "w": {"90": {"buyers": 99, "same_pct": 0.5}, "60": {"buyers": 40, "same_pct": 0.1}}}],
+               "total": {}, "categories": [], "brand": "B"}
+    values = export.build_table(payload, ["P"], None).rows[0].values
+    assert values["buyers-90"] is None and values["same-90"] is None
+    assert values["buyers-60"] == 40
+
+
+
+def test_the_download_keeps_the_screens_order_and_only_its_rows():
+    """The screen sends the ids it shows, sorted and filtered; the file must be those rows exactly."""
+    from app.repeat import export
+    row = lambda pid, name: {"parent_asin": pid, "product": name, "category": "Rest",  # noqa: E731
+                             "fba_share": 1.0, "w": {}}
+    payload = {"windows": {}, "rows": [row("A", "Alpha"), row("B", "Beta"), row("C", "Gamma")],
+               "total": {}, "categories": [], "brand": "B"}
+    got = [r.values["product"] for r in export.build_table(payload, ["C", "A"], None).rows]
+    assert got == ["Gamma", "Alpha"]

@@ -95,14 +95,18 @@ def _top(counter: Counter) -> list[tuple[str, int]]:
 
 
 def metrics(orders: Sequence[Order], brand_of: Mapping[str, str], as_of: date,
-            history_from: date | None) -> dict:
+            history_from: date | None, group_of: Mapping[str, str] | None = None) -> dict:
+    """`group_of` (parent -> group, e.g. its category) is totalled exactly like a brand: unique
+    customers, anchored at their first purchase of ANY product in the group. Same code path as the
+    brand total, so a category total cannot be counted differently from the brand one."""
     by_buyer: dict[str, list[Order]] = defaultdict(list)
     for o in orders:
         by_buyer[o.buyer].append(o)
     for history in by_buyer.values():
         history.sort(key=lambda o: (o.day, o.order_id))
     out = {"windows": {}, "parents": defaultdict(dict), "brands": defaultdict(dict),
-           "flows": defaultdict(dict)}
+           "groups": defaultdict(dict), "flows": defaultdict(dict)}
+    mappings = {"brands": brand_of, "groups": group_of or {}}
     for n in WINDOWS:
         start, end = period(n, as_of)
         ok, reason = window_status(n, as_of, history_from)
@@ -113,8 +117,8 @@ def metrics(orders: Sequence[Order], brand_of: Mapping[str, str], as_of: date,
         counts = defaultdict(lambda: {"buyers": 0, "same": 0, "came_from": 0, "went_on": 0,
                                       "units": 0, "repeat_units": 0})
         came, went = defaultdict(Counter), defaultdict(Counter)
-        brand_counts = defaultdict(lambda: {"buyers": 0, "repeat": 0, "units": 0,
-                                            "repeat_units": 0})
+        group_counts = {key: defaultdict(lambda: {"buyers": 0, "repeat": 0, "units": 0,
+                                                  "repeat_units": 0}) for key in mappings}
         for history in by_buyer.values():
             in_period = [o for o in history if start <= o.day <= end]
             if not in_period:
@@ -142,26 +146,28 @@ def metrics(orders: Sequence[Order], brand_of: Mapping[str, str], as_of: date,
                 if src:
                     c["came_from"] += 1
                     came[p].update(src)
-            brand_anchor: dict[str, date] = {}
-            for o in in_period:
-                for p in o.parents:
-                    if brand_of.get(p):
-                        brand_anchor.setdefault(brand_of[p], o.day)
-            for b, anchor in brand_anchor.items():
-                bc = brand_counts[b]
-                bc["buyers"] += 1
-                bought = sum(u for o in history if anchor <= o.day <= anchor + span
-                             for q, u in o.units if brand_of.get(q) == b)
-                bc["units"] += bought
-                if any(anchor < o.day <= anchor + span
-                       and any(brand_of.get(q) == b for q in o.parents) for o in history):
-                    bc["repeat"] += 1
-                    bc["repeat_units"] += bought
+            for key, mapping in mappings.items():
+                group_anchor: dict[str, date] = {}
+                for o in in_period:
+                    for p in o.parents:
+                        if mapping.get(p):
+                            group_anchor.setdefault(mapping[p], o.day)
+                for b, anchor in group_anchor.items():
+                    bc = group_counts[key][b]
+                    bc["buyers"] += 1
+                    bought = sum(u for o in history if anchor <= o.day <= anchor + span
+                                 for q, u in o.units if mapping.get(q) == b)
+                    bc["units"] += bought
+                    if any(anchor < o.day <= anchor + span
+                           and any(mapping.get(q) == b for q in o.parents) for o in history):
+                        bc["repeat"] += 1
+                        bc["repeat_units"] += bought
         for p, c in counts.items():
             out["parents"][p][n] = dict(c)
             out["flows"][p][n] = {"came_from": _top(came[p]), "went_on": _top(went[p])}
-        for b, bc in brand_counts.items():
-            out["brands"][b][n] = dict(bc)
+        for key, counts_by_group in group_counts.items():
+            for b, bc in counts_by_group.items():
+                out[key][b][n] = dict(bc)
     first = as_of - timedelta(days=BASKET_DAYS - 1)
     basket = defaultdict(lambda: {"orders": 0, "multi": 0, "with": Counter()})
     for o in orders:

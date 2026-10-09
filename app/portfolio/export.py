@@ -248,7 +248,13 @@ def build_table(data: Mapping, *, view: str = "products", ids: Sequence[str] | N
 
 # ── Excel ───────────────────────────────────────────────────────────────────────────────────────
 
-def build_xlsx(table: Table, sheet: str = "Portfolio") -> io.BytesIO:
+TOTAL_NOTE = ("Calculated by the app for the rows below, exactly as the Portfolio screen totals "
+              "them: money and units are summed, percentages are recomputed from those sums (never "
+              "averaged), and rating is weighted by reviews.")
+
+
+def build_xlsx(table: Table, sheet: str = "Portfolio", *, freeze: str = "E3",
+               total_note: str = TOTAL_NOTE) -> io.BytesIO:
     """Row 1 totals, row 2 headings with filter buttons, row 3+ data. No title, no commentary."""
     from openpyxl import Workbook
     from openpyxl.comments import Comment
@@ -282,10 +288,7 @@ def build_xlsx(table: Table, sheet: str = "Portfolio") -> io.BytesIO:
     for c, col in enumerate(table.columns, 1):
         value = table.total_label if c == 1 else table.totals.get(col.id)
         put(1, c, value, col, bold, total_fill)
-    ws.cell(row=1, column=1).comment = Comment(
-        "Calculated by the app for the rows below, exactly as the Portfolio screen totals them: "
-        "money and units are summed, percentages are recomputed from those sums (never averaged), "
-        "and rating is weighted by reviews.", "Amazon Tracker")
+    ws.cell(row=1, column=1).comment = Comment(total_note, "Amazon Tracker")
 
     # Row 2: headings. The two caveats that change how a figure is READ travel as hover notes on
     # their headings — not as rows of commentary, which the owner asked to be rid of, and not
@@ -322,7 +325,7 @@ def build_xlsx(table: Table, sheet: str = "Portfolio") -> io.BytesIO:
 
     last = get_column_letter(len(table.columns))
     ws.auto_filter.ref = f"A2:{last}{max(2, len(table.rows) + 2)}"
-    ws.freeze_panes = "E3"
+    ws.freeze_panes = freeze
     ws.sheet_view.zoomScale = 100
     ws.page_setup.orientation = "landscape"
     ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
@@ -414,7 +417,7 @@ def build_pdf(table: Table, title: str) -> io.BytesIO:
     # Text that may wrap (product and brand names, the total's label) gives up width first. Every
     # other column is NEVER narrower than its widest value, and a heading wraps only between words:
     # proportional shrinking printed "₹8,48,22 / 5" and "ACO / S" on the first real download.
-    flexible = {"product", "brand"}
+    flexible = {"product", "brand", "category"}
 
     def widths_at(size: float):
         pad = 6

@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
-from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Body, Depends
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import ist, permissions
 from app.database import get_db
-from app.repeat import refresh, service
+from app.portfolio import export as pf_export
+from app.repeat import export, refresh, service
 from app.routers.auth import require_area
 
 router = APIRouter(prefix="/portfolio/repeat", tags=["repeat"])
@@ -33,3 +35,40 @@ async def start_refresh(grant=Depends(require_area(permissions.PORTFOLIO))):
 @router.get("/refresh-status")
 async def refresh_status(grant=Depends(require_area(permissions.PORTFOLIO))):
     return refresh.STATE
+
+
+MAX_EXPORT_IDS = 5000
+MEDIA = {"xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+         "pdf": "application/pdf"}
+
+
+@router.post("/export")
+async def export_repeat(body: dict = Body(...), db: AsyncSession = Depends(get_db),
+                        grant=Depends(require_area(permissions.PORTFOLIO))):
+    """The rows on screen, in the screen's order, as Excel or PDF.
+
+    `ids` is the order the screen shows (its sort and category filter applied); the server
+    rebuilds the payload and reads every number from it, so nothing numeric travels from the client.
+    """
+    fmt = body.get("format")
+    if fmt not in MEDIA:
+        return JSONResponse({"error": "format must be xlsx or pdf"}, status_code=400)
+    ids = body.get("ids")
+    if ids is not None and (not isinstance(ids, list) or len(ids) > MAX_EXPORT_IDS
+                            or not all(isinstance(i, str) for i in ids)):
+        return JSONResponse({"error": "ids must be a list of product ids"}, status_code=400)
+    category = body.get("category") or None
+    payload = await service.build_payload(db, body.get("brand"), ist.today())
+    table = export.build_table(payload, ids, category)
+    scope = category or payload.get("brand") or ""
+    stem = "repeat-" + "-".join(x for x in (
+        re.sub(r"[^a-z0-9]+", "-", scope.lower()).strip("-"), payload.get("as_of") or "") if x)
+    if fmt == "xlsx":
+        data = pf_export.build_xlsx(table, "Repeat customers", freeze="B3",
+                                    total_note=export.TOTAL_NOTE)
+    else:
+        title = (f"Repeat customers · {scope} · FBA orders, data to {payload.get('as_of') or '—'}"
+                 " · % of buyers (same, from other) and of units (repeat units)")
+        data = pf_export.build_pdf(table, title)
+    return StreamingResponse(data, media_type=MEDIA[fmt], headers={
+        "Content-Disposition": f'attachment; filename="{stem}.{fmt}"'})

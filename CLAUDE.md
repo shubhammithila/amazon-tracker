@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2739 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2751 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3140,6 +3140,21 @@ unavailable window sorts as all dashes rather than by the figures it hides. Test
 measured offsets inside a height-capped wrapper), and **there is no expand panel** — asked for as
 *"I dont want this"*. The came-from / went-on / basket data still travels in the payload; nothing
 renders it.
+
+### Categories, 90 days first, a frozen name column, and a download
+- **The Profit view's categories** (Sattu · Chana · Flours · Rice · Seeds · Rest · Unclassified),
+  read the same way — the owner's stored choice for the parent name or any child's catalogue name,
+  never a keyword guess. A card filters the table, and its figures (and the top row while it is
+  picked) are the **category's own unique-customer total**, from `metrics(..., group_of=...)`, the
+  same code path as the brand total — never an average of its rows.
+- **Windows read 90 · 60 · 30**, longest first, as asked.
+- **The Product column is frozen**, the Profit view's rule copied.
+- **Excel and PDF** via `POST /portfolio/repeat/export`: the screen sends only the row ORDER (its
+  sort and category applied); the server rebuilds the payload and takes every number from it.
+  `app/repeat/export.py` reuses `app/portfolio/export.py`'s writers (`build_xlsx` gained `freeze`
+  and `total_note`), so %s are real % cells and a dash is a blank. Headings read `90d buyers`,
+  `90d same repeat`… because one heading row cannot hold the screen's two-level header.
+  `mutate_repeat.py` is 30/30.
 
 ### "Repeat units" — Brand Analytics' measure, beside ours
 Asked why Brand Analytics showed **25–26%** repeat while the app topped out at **23.1%**. Different

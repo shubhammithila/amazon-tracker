@@ -7,9 +7,10 @@ from tests.js_harness import run_template_js
 
 pytestmark = pytest.mark.regression
 T = Path(__file__).parent.parent / "templates" / "portfolio_repeat.html"
-FUNCS = ["esc", "num", "pct", "cellPct", "winCells", "rowHtml", "totalRowHtml"]
+FUNCS = ["esc", "num", "pct", "cellPct", "winCells", "rowHtml", "currentGroup", "totalRowHtml"]
 CONSTS = ["WINS"]
-DATA = """data = {min_cohort: 20, fba_partial_below: 0.6, brand: "Mithila Foods",
+DATA = """category = "";
+data = {min_cohort: 20, fba_partial_below: 0.6, brand: "Mithila Foods",
  windows: {"30": {available: true}, "60": {available: true},
            "90": {available: false, reason: "needs order history from 2026-03-06"}},
  total: {"30": {buyers: 1200, repeat_pct: 0.086, units_pct: 0.214, came_from_pct: 0.5},
@@ -118,7 +119,8 @@ data.rows = [
 
 
 def _order(key, direction):
-    return run_template_js(T, ["sortValue", "sortedRows"], [], SORT_DATA + f"""
+    return run_template_js(T, ["shownRows", "sortValue", "sortedRows"], [], SORT_DATA + f"""
+category = "";
 sort = {{key: {key!r}, dir: {direction}}};
 emit(sortedRows().map(r => r.parent_asin));""")
 
@@ -168,3 +170,49 @@ def test_repeat_units_sit_beside_the_customer_share_for_rows_and_the_brand():
     assert cols.index("same-30") + 1 == cols.index("units-30") < cols.index("from-30")
     src = T.read_text(encoding="utf-8")
     assert '<th colspan="4" class="grp">' in src and "WINS.length * 4" in src
+
+
+
+# ── 90 first · frozen product column · categories · downloads ─────────────────────────────────
+
+def test_the_windows_run_90_then_60_then_30():
+    cols = list(_cells("rowHtml(ROW)"))
+    assert cols.index("buyers-90") < cols.index("buyers-60") < cols.index("buyers-30")
+
+
+def test_the_product_column_is_frozen_on_every_row_type():
+    src = T.read_text(encoding="utf-8")
+    css = src[src.index("<style>"):src.index("</style>")]
+    assert '[data-col="product"]{position:sticky;left:0' in css
+    assert "background:var(--surface)" in css.split('[data-col="product"]{', 1)[1].split("}", 1)[0]
+    assert 'thead th[data-col="product"],thead tr.totals td[data-col="product"]{z-index:3' in css
+    assert "key === \"product\" ? ' data-col=\"product\"'" in src, "the heading cell is not frozen"
+
+
+CAT_DATA = SORT_DATA + """
+data.rows[0].category = "Sattu"; data.rows[1].category = "Sattu"; data.rows[2].category = "Rest";
+data.brand = "Mithila Foods";
+data.categories = [{category: "Sattu", products: 2, total: {"30": {buyers: 111, repeat_pct: 0.123, units_pct: 0.234}}},
+                   {category: "Rest", products: 1, total: {}}];"""
+
+
+def test_a_category_filters_the_rows_and_swaps_the_total_for_its_own():
+    out = run_template_js(T, ["esc", "num", "pct", "cellPct", "winCells", "currentGroup",
+                              "totalRowHtml", "shownRows", "sortValue", "sortedRows"], ["WINS"],
+                          CAT_DATA + """
+sort = {key: null, dir: -1};
+category = "Sattu";
+const picked = sortedRows().map(r => r.parent_asin);
+const total = totalRowHtml();
+category = "";
+emit({picked, total, all: sortedRows().length, brand: totalRowHtml()});""")
+    assert out["picked"] == ["A", "B"] and out["all"] == 3
+    assert "Sattu — all products" in out["total"] and "12.3%" in out["total"] and "23.4%" in out["total"]
+    assert "Mithila Foods — all products" in out["brand"] and "12.3%" not in out["brand"]
+
+
+def test_the_download_sends_the_screens_rows_in_the_screens_order():
+    src = T.read_text(encoding="utf-8")
+    body = src[src.index("function exportPayload("):src.index("async function downloadExport(")]
+    assert "sortedRows().map(r => r.parent_asin)" in body and "category" in body
+    assert 'data-export="xlsx"' in src and 'data-export="pdf"' in src

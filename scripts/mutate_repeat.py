@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 L, P, K = "app/repeat/logic.py", "app/repeat/parse.py", "app/repeat/keys.py"
 R, F, S = "app/repeat/repository.py", "app/repeat/refresh.py", "app/repeat/service.py"
 T = "templates/portfolio_repeat.html"
+X = "app/repeat/export.py"
 
 MUTATIONS: list[tuple[str, str, str, str]] = [
     (L, "after = [o for o in history if anchor < o.day <= anchor + span]",
@@ -75,6 +76,19 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
      "units are counted as one per line"),
     (T, "    + cellPct(`units-${n}`, c.units_pct, why)", "    + cellPct(`units-${n}`, c.same_pct, why)",
      "the Repeat units column shows the customer share"),
+    (T, "  return category ? data.rows.filter(r => r.category === category) : data.rows;",
+     "  return data.rows;", "picking a category does not filter the table"),
+    (T, "(g ? g.total : data.total)", "data.total", "a category shows the brand's total"),
+    (T, 'const WINS = ["90", "60", "30"];', 'const WINS = ["30", "60", "90"];',
+     "the windows are back to 30 first"),
+    (T, "{format, brand: data.brand, category, ids: sortedRows().map(r => r.parent_asin)}",
+     "{format, brand: data.brand, category}", "the download ignores the screen's rows and order"),
+    (X, "        chosen = [by_id[i] for i in dict.fromkeys(ids) if i in by_id]",
+     "        chosen = list(by_id.values())", "the download ignores the ids it was sent"),
+    (X, '            f"same-{n}": c.get("same_pct", c.get("repeat_pct")),',
+     '            f"same-{n}": c.get("units_pct"),', "the download puts units in the customer column"),
+    (S, "                      group_of=category_of)", "                      group_of=brand_of)",
+     "category totals are computed over brands"),
 ]
 
 TESTS = [

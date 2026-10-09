@@ -33,7 +33,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
      "the total TACOS is an average of rows, not recomputed from sums"),
     (E, '    "net_pct": "PRE-COGS:', '    "net_pct_off": "PRE-COGS:',
      "the pre-COGS caveat disappears from the file"),
-    (E, '    ws.freeze_panes = "E3"', '    ws.freeze_panes = None',
+    (E, '    ws.freeze_panes = freeze', '    ws.freeze_panes = None',
      "the headings and totals scroll away"),
     (E, "            return \"no sales\"\n        return row.get(\"acos\")",
      "            return None\n        return row.get(\"acos\")",

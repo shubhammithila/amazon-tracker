@@ -4,8 +4,11 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, timedelta
 
+from app.portfolio.logic import CATEGORY_UNCLASSIFIED, _first_category
 from app.repeat import logic, repository
+from app.shipment import repository as ship_repository
 from app.shipment.catalogue import load_catalogue
+from app.shipment.logic import CATEGORY_LABELS
 
 #: An order bought on day D can ship D+1..D+3, so the newest days of a fetch are incomplete.
 SHIP_LAG_DAYS = 3
@@ -19,7 +22,8 @@ STALE_AFTER_DAYS = 2
 
 def _empty(brand, last):
     return {"as_of": None, "history_from": None, "brand": brand, "brands": [], "windows": {},
-            "total": {}, "rows": [], "last_refresh": last, "min_cohort": logic.MIN_COHORT,
+            "total": {}, "rows": [], "categories": [], "last_refresh": last,
+            "min_cohort": logic.MIN_COHORT,
             "fba_partial_below": FBA_PARTIAL_BELOW}
 
 
@@ -51,7 +55,19 @@ async def build_payload(db, brand: str | None, today: date) -> dict:
             for c, _ in sorted(kids.items(), key=lambda kv: (-kv[1], kv[0]))]
         for p, kids in units.items()})
 
-    m = logic.metrics(logic.build_orders(lines), brand_of, as_of, history_from)
+    # The Profit view's categories, read the same way: the owner's stored choice for the parent
+    # name or any of its children's catalogue names, never a keyword guess. One vocabulary, so
+    # "Sattu" here holds exactly the products "Sattu" holds there.
+    stored = {row.product_key: row.priority for row in await ship_repository.load_categories(db)}
+    category_of = {}
+    for p, kids in ((p, k) for p, k in units.items() if brand_of.get(p) == brand):
+        candidates = [names.get(p, p)] + [(catalogue.get(c) or {}).get("name") or "" for c in kids]
+        priority = _first_category(candidates, stored)
+        category_of[p] = (CATEGORY_LABELS.get(priority, CATEGORY_LABELS[6])
+                          if priority is not None else CATEGORY_UNCLASSIFIED)
+
+    m = logic.metrics(logic.build_orders(lines), brand_of, as_of, history_from,
+                      group_of=category_of)
     fba, allc = await repository.units_by_parent(
         db, (as_of - timedelta(days=89)).isoformat(), as_of.isoformat())
 
@@ -73,6 +89,7 @@ async def build_payload(db, brand: str | None, today: date) -> dict:
         b = m["basket"].get(p, {"orders": 0, "multi": 0, "with": []})
         rows.append({
             "parent_asin": p, "product": label(p), "brand": brand_of.get(p, ""),
+            "category": category_of.get(p, CATEGORY_UNCLASSIFIED),
             "fba_share": min(1.0, fba.get(p, 0) / allc[p]) if allc.get(p) else None,
             "w": w, "flows": flows,
             "basket": {"orders": b["orders"], "multi_pct": logic.pct(b["multi"], b["orders"]),
@@ -80,16 +97,28 @@ async def build_payload(db, brand: str | None, today: date) -> dict:
         })
     rows.sort(key=lambda r: (-max((v["buyers"] for v in r["w"].values()), default=0),
                              r["product"].casefold()))
-    total = {str(n): {"buyers": c["buyers"], "repeat_pct": logic.pct(c["repeat"], c["buyers"]),
-                      "units_pct": logic.units_pct(c["repeat_units"], c["units"], c["buyers"])}
-             for n, c in m["brands"].get(brand, {}).items()}
+    def group_total(counts):
+        return {str(n): {"buyers": c["buyers"], "repeat_pct": logic.pct(c["repeat"], c["buyers"]),
+                         "units_pct": logic.units_pct(c["repeat_units"], c["units"], c["buyers"])}
+                for n, c in counts.items()}
+
+    total = group_total(m["brands"].get(brand, {}))
+    # Per category, unique customers like the brand total, so a category's figure is NOT the sum
+    # or average of its rows. Biggest first by 90-day buyers ("where are the customers").
+    per_category = defaultdict(int)
+    for r in rows:
+        per_category[r["category"]] += 1
+    categories = sorted(
+        ({"category": cat, "products": count, "total": group_total(m["groups"].get(cat, {}))}
+         for cat, count in per_category.items()),
+        key=lambda c: (-((c["total"].get("90") or {}).get("buyers") or 0), c["category"]))
     windows = {str(n): {"period": [w["period"][0].isoformat(), w["period"][1].isoformat()],
                         "available": w["available"], "reason": w["reason"]}
                for n, w in m["windows"].items()}
     return {"as_of": as_of.isoformat(),
             "history_from": history_from.isoformat() if history_from else None,
             "brand": brand, "brands": sorted(set(brand_of.values())), "windows": windows,
-            "total": total, "rows": rows, "last_refresh": last,
+            "total": total, "rows": rows, "categories": categories, "last_refresh": last,
             "newest_day": latest.isoformat(),
             "stale_days": stale_days if stale_days > STALE_AFTER_DAYS else 0,
             "min_cohort": logic.MIN_COHORT, "fba_partial_below": FBA_PARTIAL_BELOW}

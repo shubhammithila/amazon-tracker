@@ -61,6 +61,26 @@ tbody tr.row:hover td{background:var(--accent-soft)}
 /* The sprite's icons have no intrinsic size; without this an <svg> fills its container. */
 .ico{width:1em;height:1em;flex:none;vertical-align:-0.125em}
 .partial{color:var(--yellow);font-size:11px;font-weight:600}
+.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border-strong);border-radius:8px;padding:7px 13px;font-size:12.5px;cursor:pointer}
+.btn-outline:disabled{opacity:.6;cursor:default}
+/* The Profit view's category strip: the same buckets, read from the same stored classification.
+   Each card is a button because it filters the table, and its figures are the CATEGORY's own
+   unique-customer total, not an average of its rows. */
+.cat-strip{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.cat{flex:1 1 140px;text-align:left;background:var(--surface);border:1px solid var(--border);
+  border-radius:10px;padding:8px 11px;cursor:pointer;font:inherit;color:inherit}
+.cat:hover{border-color:var(--accent)}
+.cat.on{border-color:var(--accent);background:var(--accent-soft)}
+.cat-name{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted)}
+.cat-n{font-weight:600;opacity:.8}
+.cat-fig{font-size:17px;font-weight:700;line-height:1.2;margin-top:1px}
+.cat-meta{font-size:11.5px;color:var(--text-muted)}
+/* The Product column stays put while the windows scroll sideways, as on the Profit view. Opaque
+   backgrounds or the figures slide through the names; the corner cells sit above both layers. */
+[data-col="product"]{position:sticky;left:0;z-index:1;background:var(--surface);
+  box-shadow:inset -1px 0 0 var(--border-strong)}
+thead th[data-col="product"],thead tr.totals td[data-col="product"]{z-index:3;background:var(--surface2)}
+tbody tr.row:hover td[data-col="product"]{background:var(--accent-soft)}
 /* Sortable headings, the Profit view's controls copied: a real button in the tab order, the
    direction on aria-sort, and one chevron rotated rather than two glyphs of different widths. */
 th.sortable{cursor:pointer;user-select:none}
@@ -93,8 +113,13 @@ th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
     <select id="brand" aria-label="Brand"></select>
     <button class="btn" id="refresh-btn">{{ icons.icon("refresh") }} Refresh from Amazon</button>
     <span id="refresh-note" class="dim" style="font-size:12px"></span>
+    <span style="margin-left:auto"></span>
+    <button class="btn-outline" data-export="xlsx" title="Download the rows on screen, in this order">{{ icons.icon("download") }} Excel</button>
+    <button class="btn-outline" data-export="pdf" title="Download the rows on screen, in this order">{{ icons.icon("download") }} PDF</button>
   </div>
 </div>
+
+<div id="categories"></div>
 
 <div class="table-wrap" id="table"></div>
 
@@ -102,7 +127,9 @@ th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 <script>
 const $ = id => document.getElementById(id);
 let data = {rows: [], windows: {}, total: {}, brands: []};
-const WINS = ["30", "60", "90"];
+/* Longest window first, as asked: 90 then 60 then 30. */
+const WINS = ["90", "60", "30"];
+let category = "";
 function esc(s){
   return String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 }
@@ -129,9 +156,30 @@ function rowHtml(r){
         : ""}</td>`
     + WINS.map(n => winCells(r.w, n, true)).join("") + `</tr>`;
 }
+/* With a category picked, the top row is THAT category's total: unique customers across its
+   products, computed on the server like the brand's. Never re-added from the rows below. */
+function currentGroup(){
+  return category ? (data.categories || []).find(c => c.category === category) : null;
+}
 function totalRowHtml(){
-  return `<tr class="totals"><td data-col="product">${esc(data.brand || "Brand")} — all products</td><td class="num" data-col="fba"></td>`
-    + WINS.map(n => winCells(data.total || {}, n, false)).join("") + `</tr>`;
+  const g = currentGroup();
+  const label = g ? g.category : (data.brand || "Brand");
+  return `<tr class="totals"><td data-col="product">${esc(label)} — all products</td><td class="num" data-col="fba"></td>`
+    + WINS.map(n => winCells((g ? g.total : data.total) || {}, n, false)).join("") + `</tr>`;
+}
+function renderCategories(){
+  const cats = data.categories || [];
+  if(!cats.length){ $("categories").innerHTML = ""; return; }
+  $("categories").innerHTML = `<div class="cat-strip">` + cats.map(c => {
+    const t = (c.total || {})["90"] || {};
+    const ok = (data.windows["90"] || {}).available;
+    return `<button class="cat${category === c.category ? " on" : ""}" data-cat="${esc(c.category)}"
+      title="${esc(c.category)}: ${c.products} product(s). 90-day figures for the category as a whole, unique customers">
+      <div class="cat-name">${esc(c.category)} <span class="cat-n">${c.products}</span></div>
+      <div class="cat-fig">${ok ? pct(t.repeat_pct) : "—"}</div>
+      <div class="cat-meta">90d repeat · units ${ok ? pct(t.units_pct) : "—"} · ${ok ? num(t.buyers) : "—"} buyers</div>
+    </button>`;
+  }).join("") + `</div>`;
 }
 /* Every column sorts, as on the Profit view: click once for highest first (A to Z for Product),
    again to reverse. Held in sessionStorage so a reload or a brand switch keeps the order.
@@ -152,10 +200,13 @@ function sortValue(r, key){
   const c = (r.w || {})[n] || {};
   return {buyers: c.buyers, same: c.same_pct, units: c.units_pct, from: c.came_from_pct}[what] ?? null;
 }
+function shownRows(){
+  return category ? data.rows.filter(r => r.category === category) : data.rows;
+}
 function sortedRows(){
-  if(!sort.key) return data.rows;     // the server's order: most buyers first
+  if(!sort.key) return shownRows();     // the server's order: most buyers first
   const key = sort.key, dir = sort.dir;
-  return data.rows.slice().sort((a, b) => {
+  return shownRows().slice().sort((a, b) => {
     const x = sortValue(a, key), y = sortValue(b, key);
     if(x == null || y == null){
       if(x == null && y == null) return a.product.localeCompare(b.product);
@@ -168,7 +219,7 @@ function sortedRows(){
 function th(key, label, extra, title){
   const on = sort.key === key;
   const aria = on ? (sort.dir < 0 ? "descending" : "ascending") : "none";
-  return `<th scope="col" class="sortable${extra ? " " + extra : ""}${on ? " sorted" : ""}" data-sort="${key}"`
+  return `<th scope="col"${key === "product" ? ' data-col="product"' : ""} class="sortable${extra ? " " + extra : ""}${on ? " sorted" : ""}" data-sort="${key}"`
     + ` tabindex="0" role="button" aria-sort="${aria}" aria-label="Sort by ${esc(label)}"`
     + `${title ? ` title="${esc(title)}"` : ""}>${esc(label)}${
       on ? `<span class="arrow">${ico("chevron", sort.dir < 0 ? "ico-r90" : "ico-r270")}</span>` : ""}</th>`;
@@ -191,8 +242,9 @@ function render(){
       + th(`units-${n}`, "Repeat units", "num", "Share of UNITS bought by those repeat customers, their first order included. Brand Analytics' measure, so it reads higher than the customer share")
       + th(`from-${n}`, "From other", "num", "Had bought a DIFFERENT product of ours in the days before")).join("")
     + `</tr>`;
-  const body = data.rows.length ? sortedRows().map(rowHtml).join("")
+  const body = shownRows().length ? sortedRows().map(rowHtml).join("")
     : `<tr><td colspan="${cols}" class="dim">No customers in this brand yet.</td></tr>`;
+  renderCategories();
   $("table").innerHTML = `<table><thead>${head}${totalRowHtml()}</thead><tbody>${body}</tbody></table>`;
   sizeTable();
 }
@@ -213,10 +265,12 @@ async function load(){
   const res = await fetch("/portfolio/repeat" + (brand ? "?brand=" + encodeURIComponent(brand) : ""));
   if(!res.ok){ $("subtitle").textContent = "Could not load repeat customers."; return; }
   data = await res.json();
+  // Another brand has other categories; a filter that no longer exists would empty the table.
+  if(category && !(data.categories || []).some(c => c.category === category)) category = "";
   $("brand").innerHTML = (data.brands.length ? data.brands : [data.brand])
     .map(b => `<option${b === data.brand ? " selected" : ""}>${esc(b)}</option>`).join("");
   $("subtitle").textContent = data.as_of
-    ? `FBA orders only · customers who bought in a 30-day period, followed for 30 / 60 / 90 days · data to ${data.as_of}`
+    ? `FBA orders only · customers who bought in a 30-day period, followed for 90 / 60 / 30 days · data to ${data.as_of}`
       + (data.history_from ? ` · history from ${data.history_from}` : "")
     : "No customer history yet — press Refresh from Amazon, or run the backfill.";
   // A banner only when the data is actually OLD. A refused fetch that left every needed day
@@ -234,6 +288,45 @@ $("table").addEventListener("click", e => {
   const header = e.target.closest("[data-sort]");
   if(header) applySort(header.dataset.sort);
 });
+$("categories").addEventListener("click", e => {
+  const card = e.target.closest("[data-cat]");
+  if(!card) return;
+  category = category === card.dataset.cat ? "" : card.dataset.cat;   // a second click clears it
+  render();
+});
+/* The download is the table on screen: these rows, in this order, with this total. The server
+   rebuilds the payload and takes every number from it; only the row ORDER travels from here. */
+function exportPayload(format){
+  return {format, brand: data.brand, category, ids: sortedRows().map(r => r.parent_asin)};
+}
+async function downloadExport(format, btn){
+  const was = btn.innerHTML;
+  btn.disabled = true;
+  btn.textContent = "Preparing…";
+  try{
+    const r = await fetch("/portfolio/repeat/export", {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(exportPayload(format))});
+    if(!r.ok){
+      const body = await r.json().catch(() => ({}));
+      $("refresh-note").textContent = body.error || "Could not build the download.";
+      return;
+    }
+    const name = ((r.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/) || [])[1]
+      || `repeat.${format}`;
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }catch(err){
+    $("refresh-note").textContent = "Could not reach the server.";
+  }finally{
+    btn.disabled = false;
+    btn.innerHTML = was;
+  }
+}
+document.querySelectorAll("[data-export]").forEach(b =>
+  b.addEventListener("click", () => downloadExport(b.dataset.export, b)));
 $("table").addEventListener("keydown", e => {
   const header = e.target.closest("[data-sort]");
   if(!header || (e.key !== "Enter" && e.key !== " ")) return;
