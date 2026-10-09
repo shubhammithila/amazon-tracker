@@ -3254,6 +3254,18 @@ product column, sorting, Excel/PDF.
 - `value.compute` is checked against a naive restatement on 25 random histories, and
   `mutate_repeat.py` is 42/42.
 
+### It is built off the event loop, and cached per data version
+The first build took **50 s (137 s under a concurrent request) and froze every other page** while it
+ran: CPU work inside an async route. Now `asyncio.to_thread`, a memoised cohort check (1.2 million
+`calendar.monthrange` calls), each customer's spend per horizon computed once, and a set for the
+scope instead of a predicate per line: **6.6 s cold, 0.06 s cached, another page 0.03 s during the
+build**. The cache holds every brand under one data version (latest refresh, lines, unpriced count,
+economics), so it is never stale and never rebuilt by switching brand.
+
+**Verified on production after the backfill (107,653 lines, 0 unpriced):** LTV 30/60/90/180 =
+₹337 / ₹365 / ₹394 / ₹487 against a naive SQL recompute within 0.03%, once that recompute also
+starts at 1 Jan (Amazon's January report carries a few orders placed on 31 Dec).
+
 ### "Reorder in" on Repeat customers
 Median days between a customer's orders of the same product (same-day orders are one trip), shown
 after FBA share; a dash below 20 reorders.
