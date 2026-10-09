@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Customer value — Amazon Tracker</title>
+{% import "_icons.html" as icons %}
+{#
+  Portfolio -> Customer value: LTV, CAC, LTV:CAC, payback, and the cohort heat map. Every figure
+  comes from app/repeat/value.py through GET /portfolio/value; this page only formats and sorts.
+
+  * LTV is what customers PAID (ex-GST, after promotions), the owner's choice — revenue, not profit,
+    until a purchase cost per kg is added.
+  * CAC = ad spend x FBA unit share / new FBA customers, months with complete ad data only.
+  * A product row is the customers it BROUGHT IN (their first product); the top row is the brand's or
+    the chosen category's own total, counted per customer, never an average of the rows.
+#}
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px}
+header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
+header h1{font-size:16px;font-weight:600}
+.nav-links{display:flex;gap:16px;margin-left:32px}
+.nav-links a{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
+.nav-links a:hover,.nav-links a.active{color:var(--text);border-color:var(--accent)}
+.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:13px;text-decoration:none}
+main{max-width:1280px;margin:0 auto;padding:16px 20px 80px}
+h2{font-size:19px;font-weight:600;margin-bottom:6px}
+.subtitle{color:var(--text-muted);font-size:12.5px;margin:8px 0 12px;line-height:1.5}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;box-shadow:var(--shadow)}
+.banner{border-radius:8px;padding:10px 13px;font-size:12.5px;margin-bottom:10px;line-height:1.55}
+.banner.error{background:var(--red-soft);border:1px solid var(--red);color:var(--red)}
+.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+select{padding:7px 10px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px}
+.seg{display:inline-flex;border:1px solid var(--border-strong);border-radius:8px;overflow:hidden}
+.seg-btn{background:transparent;border:none;color:var(--text-muted);font-size:12.5px;font-weight:600;padding:7px 13px;cursor:pointer;text-decoration:none;display:inline-block}
+.seg-btn:hover{color:var(--text)}
+.seg-btn.on{background:var(--accent);color:var(--on-accent)}
+.table-wrap{overflow:auto;border-radius:10px;border:1px solid var(--border);
+  max-height:var(--rp-cap, calc(100vh - 60px));min-height:200px;overscroll-behavior:contain}
+/* The headings AND the brand total stay in view while the products scroll. Asked for as "freeze the
+   top column including the totals when we scroll down". Sticky inside `.table-wrap`, which must be
+   height-capped to scroll at all: an uncapped wrapper never scrolls, so a sticky header inside it
+   has no travel (the Profit tab's recorded non-fix). Three stacked layers: the group row at 0, the
+   column row below it, the total below both. Offsets are the MEASURED row heights (sizeTable). */
+table{width:100%;min-width:1180px;border-collapse:separate;border-spacing:0}
+thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;font-size:10.5px;
+  font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:left;white-space:nowrap;
+  border-bottom:2px solid var(--border-strong);position:sticky;top:0;z-index:2}
+thead th.grp{text-align:center;border-left:1px solid var(--border)}
+thead tr.totals td{background:var(--surface2);font-weight:700;font-size:13px;padding:7px 10px;white-space:nowrap;border-bottom:2px solid var(--border-strong);
+  position:sticky;top:var(--rp-h1, 31px);z-index:2}
+tbody td{padding:7px 10px;font-size:13px;border-bottom:1px solid var(--border);white-space:nowrap}
+th.num,td.num{text-align:right}
+tbody tr.row:hover td{background:var(--accent-soft)}
+.dim{color:var(--text-dim)}
+/* The sprite's icons have no intrinsic size; without this an <svg> fills its container. */
+.ico{width:1em;height:1em;flex:none;vertical-align:-0.125em}
+.partial{color:var(--yellow);font-size:11px;font-weight:600}
+.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border-strong);border-radius:8px;padding:7px 13px;font-size:12.5px;cursor:pointer}
+.btn-outline:disabled{opacity:.6;cursor:default}
+/* The Profit view's category strip: the same buckets, read from the same stored classification.
+   Each card is a button because it filters the table, and its figures are the CATEGORY's own
+   unique-customer total, not an average of its rows. */
+.cat-strip{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.cat{flex:1 1 140px;text-align:left;background:var(--surface);border:1px solid var(--border);
+  border-radius:10px;padding:8px 11px;cursor:pointer;font:inherit;color:inherit}
+.cat:hover{border-color:var(--accent)}
+.cat.on{border-color:var(--accent);background:var(--accent-soft)}
+.cat-name{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted)}
+.cat-n{font-weight:600;opacity:.8}
+.cat-fig{font-size:17px;font-weight:700;line-height:1.2;margin-top:1px}
+.cat-meta{font-size:11.5px;color:var(--text-muted)}
+/* The Product column stays put while the windows scroll sideways, as on the Profit view. Opaque
+   backgrounds or the figures slide through the names; the corner cells sit above both layers. */
+[data-col="product"]{position:sticky;left:0;z-index:1;background:var(--surface);
+  box-shadow:inset -1px 0 0 var(--border-strong)}
+thead th[data-col="product"],thead tr.totals td[data-col="product"]{z-index:3;background:var(--surface2)}
+tbody tr.row:hover td[data-col="product"]{background:var(--accent-soft)}
+/* Sortable headings, the Profit view's controls copied: a real button in the tab order, the
+   direction on aria-sort, and one chevron rotated rather than two glyphs of different widths. */
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:var(--text)}
+th.sorted{color:var(--accent)}
+th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.arrow{font-size:9px;margin-left:3px}
+.ico-r90{transform:rotate(90deg)}
+.ico-r270{transform:rotate(270deg)}
+
+.tiles{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.tile{flex:1 1 200px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 13px}
+.tile-fig{font-size:22px;font-weight:700;line-height:1.2}
+.tile-name{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted)}
+.tile-meta{font-size:11.5px;color:var(--text-muted);margin-top:2px;line-height:1.45}
+/* LTV:CAC reads at a glance: 3x and over is healthy, 1-3x thin, under 1x losing on acquisition. */
+.good{color:var(--green)} .thin{color:var(--yellow)} .bad{color:var(--red)}
+h3{font-size:14px;font-weight:700;margin:16px 0 4px}
+.note{color:var(--text-muted);font-size:12px;margin-bottom:8px;line-height:1.5}
+/* The cohort heat map. Colour from the ONE accent variable mixed into the surface, so the theme
+   stays the only home of colour (tests/test_theme.py), and the number is always printed in the cell. */
+table.grid{min-width:760px}
+table.grid td.heat{text-align:right;font-variant-numeric:tabular-nums}
+.banner.info{background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue)}
+</style>
+<link rel="stylesheet" href="/static/theme.css"/>
+</head>
+<body>
+{% include "_icon_sprite.html" %}
+<header>
+<span>📊</span><h1>Amazon Tracker v2</h1>
+{% include "nav.html" %}
+<div class="header-right"><a href="/logout">Logout</a></div>
+</header>
+<main>
+
+<h2>Portfolio review</h2>
+{% include "_portfolio_tabs.html" %}
+<div class="subtitle" id="subtitle">Loading…</div>
+<div id="messages"></div>
+
+<div class="card">
+  <div class="controls">
+    <select id="brand" aria-label="Brand"></select>
+    <span style="margin-left:auto"></span>
+    <button class="btn-outline" data-export="xlsx" title="Download the rows on screen, in this order">{{ icons.icon("download") }} Excel</button>
+    <button class="btn-outline" data-export="pdf" title="Download the rows on screen, in this order">{{ icons.icon("download") }} PDF</button>
+    <span id="note" class="dim" style="font-size:12px"></span>
+  </div>
+</div>
+
+<div class="tiles" id="tiles"></div>
+<div id="categories"></div>
+<div class="table-wrap" id="table"></div>
+
+<h3>Cohorts: customers by the month they first bought</h3>
+<div class="note" id="grid-note"></div>
+<div class="controls" style="margin-bottom:8px">
+  <div class="seg" id="grid-mode">
+    <button class="seg-btn on" data-mode="active">% still buying</button>
+    <button class="seg-btn" data-mode="revenue">₹ per customer, to date</button>
+  </div>
+</div>
+<div class="table-wrap" id="grid"></div>
+
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let data = {rows: [], total: {}, categories: [], brands: [], grid: [], horizons: [30, 60, 90, 180]};
+let category = "";
+let gridMode = "active";
+function esc(s){
+  return String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+}
+function num(v){ return v == null ? "—" : Number(v).toLocaleString("en-IN"); }
+function money(v){ return v == null ? "—" : "₹" + Math.round(v).toLocaleString("en-IN"); }
+function pct(v){ return v == null ? "—" : (v * 100).toFixed(1) + "%"; }
+function times(v){ return v == null ? "—" : Number(v).toFixed(1) + "×"; }
+function days(v){ return v == null ? "—" : v === 0 ? "first order" : v + " d"; }
+function ratioClass(v){ return v == null ? "" : v >= 3 ? "good" : v >= 1 ? "thin" : "bad"; }
+const ico = (name, extra) =>
+  `<svg class="ico${extra ? " " + extra : ""}" aria-hidden="true" focusable="false"><use href="#i-${name}"/></svg>`;
+
+/* The figures for the scope on screen: the brand, or the picked category's own total. */
+function scope(){
+  const g = category ? (data.categories || []).find(c => c.category === category) : null;
+  return g ? {label: g.category, total: g.total, grid: g.grid}
+           : {label: data.brand || "Brand", total: data.total || {}, grid: data.grid || []};
+}
+function renderTiles(){
+  const t = scope().total, l = t.ltv || {};
+  const months = (data.cac_months || []).map(m => `${m.month} ${money(m.cac)}`).join(" · ");
+  $("tiles").innerHTML = `
+    <div class="tile"><div class="tile-name">CAC</div><div class="tile-fig">${money(t.cac)}</div>
+      <div class="tile-meta">ad spend × FBA share ÷ new customers${months && !category ? " · by month " + esc(months) : ""}</div></div>
+    <div class="tile"><div class="tile-name">90-day LTV</div><div class="tile-fig">${money(l["90"])}</div>
+      <div class="tile-meta">what a new customer paid us in their first 90 days · 30d ${money(l["30"])} · 180d ${money(l["180"])}</div></div>
+    <div class="tile"><div class="tile-name">LTV : CAC</div><div class="tile-fig ${ratioClass(t.ltv_cac)}">${times(t.ltv_cac)}</div>
+      <div class="tile-meta">90-day LTV over CAC · 3× and over is healthy</div></div>
+    <div class="tile"><div class="tile-name">Payback</div><div class="tile-fig">${days(t.payback_days)}</div>
+      <div class="tile-meta">days until a new customer's spend covers their CAC</div></div>`;
+}
+function renderCategories(){
+  const cats = data.categories || [];
+  if(!cats.length){ $("categories").innerHTML = ""; return; }
+  $("categories").innerHTML = `<div class="cat-strip">` + cats.map(c => {
+    const t = c.total || {};
+    return `<button class="cat${category === c.category ? " on" : ""}" data-cat="${esc(c.category)}"
+      title="${esc(c.category)}: customers first brought in by its ${c.products} product(s)">
+      <div class="cat-name">${esc(c.category)} <span class="cat-n">${c.products}</span></div>
+      <div class="cat-fig">${money((t.ltv || {})["90"])}</div>
+      <div class="cat-meta">90d LTV · CAC ${money(t.cac)} · <span class="${ratioClass(t.ltv_cac)}">${times(t.ltv_cac)}</span></div>
+    </button>`;
+  }).join("") + `</div>`;
+}
+
+/* Every column sorts, as on the other sub-tabs. A dash sorts LAST both ways. */
+let sort = (() => {
+  try { return JSON.parse(sessionStorage.getItem("value.sort")) || {key: null, dir: -1}; }
+  catch { return {key: null, dir: -1}; }
+})();
+function sortValue(r, key){
+  if(key === "product") return r.product;
+  if(key === "category") return r.category;
+  if(key.startsWith("ltv-")) return (r.ltv || {})[key.slice(4)] ?? null;
+  return r[key] ?? null;
+}
+function shownRows(){
+  return category ? data.rows.filter(r => r.category === category) : data.rows;
+}
+function sortedRows(){
+  if(!sort.key) return shownRows();
+  const key = sort.key, dir = sort.dir;
+  return shownRows().slice().sort((a, b) => {
+    const x = sortValue(a, key), y = sortValue(b, key);
+    if(x == null || y == null){
+      if(x == null && y == null) return a.product.localeCompare(b.product);
+      return x == null ? 1 : -1;
+    }
+    const d = typeof x === "string" ? x.localeCompare(y) : x - y;
+    return d ? d * dir : a.product.localeCompare(b.product);
+  });
+}
+function th(key, label, extra, title){
+  const on = sort.key === key;
+  const aria = on ? (sort.dir < 0 ? "descending" : "ascending") : "none";
+  return `<th scope="col"${key === "product" ? ' data-col="product"' : ""} class="sortable${extra ? " " + extra : ""}${on ? " sorted" : ""}" data-sort="${key}"`
+    + ` tabindex="0" role="button" aria-sort="${aria}" aria-label="Sort by ${esc(label)}"`
+    + `${title ? ` title="${esc(title)}"` : ""}>${esc(label)}${
+      on ? `<span class="arrow">${ico("chevron", sort.dir < 0 ? "ico-r90" : "ico-r270")}</span>` : ""}</th>`;
+}
+function applySort(key){
+  sort = sort.key === key ? {key, dir: -sort.dir}
+       : {key, dir: (key === "product" || key === "category") ? 1 : -1};
+  sessionStorage.setItem("value.sort", JSON.stringify(sort));
+  renderTable();
+  const again = document.querySelector(`[data-sort="${CSS.escape(key)}"]`);
+  if(again) again.focus();
+}
+function cells(r){
+  const l = r.ltv || {};
+  return `<td class="num" data-col="new">${num(r.new_customers)}</td>`
+    + data.horizons.map(n => `<td class="num" data-col="ltv-${n}">${money(l[String(n)])}</td>`).join("")
+    + `<td class="num" data-col="cac">${money(r.cac)}</td>`
+    + `<td class="num ${ratioClass(r.ltv_cac)}" data-col="ltv_cac">${times(r.ltv_cac)}</td>`
+    + `<td class="num" data-col="payback">${days(r.payback_days)}</td>`;
+}
+function rowHtml(r){
+  return `<tr class="row" data-p="${esc(r.parent_asin)}"><td data-col="product">${esc(r.product)}</td>`
+    + `<td data-col="category">${esc(r.category)}</td>` + cells(r) + `</tr>`;
+}
+function totalRowHtml(){
+  const s = scope();
+  return `<tr class="totals"><td data-col="product">${esc(s.label)} — all products</td><td data-col="category"></td>`
+    + cells(s.total) + `</tr>`;
+}
+function renderTable(){
+  const head = `<tr>${th("product", "Product", "", "The product a customer's FIRST order was mostly for: the product that brought them in")}`
+    + th("category", "Category", "", "")
+    + th("new_customers", "New customers", "num", "Customers whose first ever order (since 1 Jan) was for this product")
+    + data.horizons.map(n => th(`ltv-${n}`, `LTV ${n}d`, "num", `What those customers paid us in their first ${n} days, per customer (ex-GST, after promotions)`)).join("")
+    + th("cac", "CAC", "num", "Its ad spend × FBA unit share ÷ the new customers it brought in, months with full ad data")
+    + th("ltv_cac", "LTV : CAC", "num", "90-day LTV over CAC")
+    + th("payback_days", "Payback", "num", "Days until a new customer's cumulative spend covers the CAC")
+    + `</tr>`;
+  const rows = sortedRows();
+  const body = rows.length ? rows.map(rowHtml).join("")
+    : `<tr><td colspan="${6 + data.horizons.length}" class="dim">No customers in this brand yet.</td></tr>`;
+  $("table").innerHTML = `<table><thead>${head}${totalRowHtml()}</thead><tbody>${body}</tbody></table>`;
+  sizeTable();
+}
+/* The heat map: a cohort per row, months since its first order across. The number is printed in
+   every cell; colour only helps the eye find the pattern. */
+function heat(v, max){
+  if(v == null) return "";
+  const share = Math.max(0, Math.min(1, max ? v / max : 0));
+  return ` style="background:color-mix(in srgb, var(--accent) ${Math.round(6 + share * 44)}%, var(--surface))"`;
+}
+function renderGrid(){
+  const g = scope().grid || [];
+  if(!g.length){ $("grid").innerHTML = ""; return; }
+  const width = Math.max(...g.map(r => r.cells.length));
+  const pick = c => c ? (gridMode === "active" ? c.active_pct : c.revenue_per_customer) : null;
+  const vals = g.flatMap(r => r.cells.slice(gridMode === "active" ? 1 : 0).map(pick)).filter(v => v != null);
+  const max = vals.length ? Math.max(...vals) : 0;
+  const head = `<tr><th data-col="product">First bought</th><th class="num">Customers</th>`
+    + Array.from({length: width}, (_, k) => `<th class="num">${k === 0 ? "Month 0" : "+" + k}</th>`).join("") + `</tr>`;
+  const body = g.map(r => {
+    const flag = r.month < (data.short_history_before || "")
+      ? ` <span class="partial" title="History begins 1 Jan 2026, so some of these customers may have bought before">early</span>` : "";
+    return `<tr class="row"><td data-col="product">${esc(r.month)}${flag}</td><td class="num">${num(r.customers)}</td>`
+      + r.cells.map((c, k) => {
+        if(!c) return `<td class="num dim"></td>`;
+        const v = pick(c);
+        const shown = gridMode === "active" ? (k === 0 ? "100%" : pct(v)) : money(v);
+        return `<td class="heat"${k === 0 && gridMode === "active" ? "" : heat(v, max)}>${shown}</td>`;
+      }).join("") + `</tr>`;
+  }).join("");
+  $("grid").innerHTML = `<table class="grid"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+  $("grid-note").textContent = gridMode === "active"
+    ? "Share of each month's new customers who ordered again in each later month. Only complete months are shown."
+    : "Average spend per customer from their first order to the end of each month (ex-GST). Blank until that month's prices are loaded.";
+}
+function sizeTable(){
+  const root = document.documentElement.style;
+  root.setProperty("--rp-cap", Math.max(300, window.innerHeight - 70) + "px");
+  const first = $("table").querySelector("thead th");
+  if(first) root.setProperty("--rp-h1", Math.round(first.getBoundingClientRect().height) + "px");
+}
+window.addEventListener("resize", sizeTable);
+function render(){
+  renderTiles();
+  renderCategories();
+  renderTable();
+  renderGrid();
+}
+async function load(){
+  const brand = $("brand").value;
+  const res = await fetch("/portfolio/value" + (brand ? "?brand=" + encodeURIComponent(brand) : ""));
+  if(!res.ok){ $("subtitle").textContent = "Could not load customer value."; return; }
+  data = await res.json();
+  if(category && !(data.categories || []).some(c => c.category === category)) category = "";
+  $("brand").innerHTML = (data.brands.length ? data.brands : [data.brand])
+    .map(b => `<option${b === data.brand ? " selected" : ""}>${esc(b)}</option>`).join("");
+  $("subtitle").textContent = data.as_of
+    ? `FBA orders only · LTV is what customers paid (ex-GST, after promotions), before product cost · new = first order since ${data.history_start} · data to ${data.as_of}`
+    : "No customer history yet.";
+  // The one standing message is a real limit: prices not yet loaded for every month.
+  $("messages").innerHTML = data.as_of && data.priced_from !== data.history_start
+    ? `<div class="banner info">Order prices are ${data.priced_from ? "loaded from " + esc(data.priced_from) : "still loading"}:
+        LTV and the ₹ heat map cover customers from then on, and fill in as the backfill reaches older months.</div>` : "";
+  render();
+}
+$("brand").addEventListener("change", load);
+$("categories").addEventListener("click", e => {
+  const card = e.target.closest("[data-cat]");
+  if(!card) return;
+  category = category === card.dataset.cat ? "" : card.dataset.cat;
+  render();
+});
+$("grid-mode").addEventListener("click", e => {
+  const b = e.target.closest("[data-mode]");
+  if(!b) return;
+  gridMode = b.dataset.mode;
+  document.querySelectorAll("#grid-mode .seg-btn").forEach(x => x.classList.toggle("on", x === b));
+  renderGrid();
+});
+$("table").addEventListener("click", e => {
+  const header = e.target.closest("[data-sort]");
+  if(header) applySort(header.dataset.sort);
+});
+$("table").addEventListener("keydown", e => {
+  const header = e.target.closest("[data-sort]");
+  if(!header || (e.key !== "Enter" && e.key !== " ")) return;
+  e.preventDefault();
+  applySort(header.dataset.sort);
+});
+/* The download is the table on screen: these rows, in this order, with this total. */
+function exportPayload(format){
+  return {format, brand: data.brand, category, ids: sortedRows().map(r => r.parent_asin)};
+}
+async function downloadExport(format, btn){
+  const was = btn.innerHTML;
+  btn.disabled = true;
+  btn.textContent = "Preparing…";
+  try{
+    const r = await fetch("/portfolio/value/export", {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(exportPayload(format))});
+    if(!r.ok){
+      const body = await r.json().catch(() => ({}));
+      $("note").textContent = body.error || "Could not build the download.";
+      return;
+    }
+    const name = ((r.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/) || [])[1] || `value.${format}`;
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }catch(err){
+    $("note").textContent = "Could not reach the server.";
+  }finally{
+    btn.disabled = false;
+    btn.innerHTML = was;
+  }
+}
+document.querySelectorAll("[data-export]").forEach(b =>
+  b.addEventListener("click", () => downloadExport(b.dataset.export, b)));
+load();
+</script>
+</body>
+</html>

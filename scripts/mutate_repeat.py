@@ -19,6 +19,7 @@ L, P, K = "app/repeat/logic.py", "app/repeat/parse.py", "app/repeat/keys.py"
 R, F, S = "app/repeat/repository.py", "app/repeat/refresh.py", "app/repeat/service.py"
 T = "templates/portfolio_repeat.html"
 X = "app/repeat/export.py"
+V = "app/repeat/value.py"
 
 MUTATIONS: list[tuple[str, str, str, str]] = [
     (L, "after = [o for o in history if anchor < o.day <= anchor + span]",
@@ -96,12 +97,32 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
      "    totals_by = brand_of", "All brands has no overall total"),
     (T, "${ok ? pct(t.units_pct) : \"—\"}</div>", "${ok ? pct(t.repeat_pct) : \"—\"}</div>",
      "the card headline is the customer share"),
+    (V, "            out[str(n)] = sum(r for ev in eligible for d, r, _ in ev if d <= n) / len(eligible)",
+     "            out[str(n)] = sum(r for ev in eligible for d, r, _ in ev if 0 < d <= n) / len(eligible)",
+     "LTV leaves out the first order"),
+    (V, "                and priced_from is not None and start >= priced_from)", ")",
+     "LTV spans lines stored before their price was read"),
+    (V, "                share = min(1.0, fba_units.get((m, k), 0) / units_all) if units_all > 0 else 0.0",
+     "                share = 1.0", "CAC charges all ad spend to FBA customers"),
+    (V, "                   and month_end(m) <= as_of]", "                   or True]",
+     "CAC uses months with missing ad data"),
+    (V, "    return max(order.units, key=lambda p: (order.revenue.get(p, 0.0), order.units[p], p))",
+     "    return max(order.units, key=lambda p: (order.units[p], p))",
+     "the first product is chosen by units, not money"),
+    (V, "                if cohort_ok(m, d):\n                    total += arr[d]",
+     "                if True:\n                    total += arr[d]",
+     "payback averages in cohorts too young for that day"),
+    (V, "            if month_end(target) > as_of:\n                cells.append(None)\n                continue\n", "",
+     "the grid shows the incomplete current month"),
+    (V, "    days: dict[tuple[str, str], set] = defaultdict(set)", "    days: dict[tuple[str, str], list] = defaultdict(list)",
+     "reorder days count a same-day second order"),
 ]
 
 TESTS = [
     "tests/test_repeat_storage.py", "tests/test_repeat_keys.py", "tests/test_repeat_parse.py",
     "tests/test_repeat_fetch.py", "tests/test_repeat_logic.py", "tests/test_repeat_reference.py",
     "tests/test_repeat_api.py", "tests/test_repeat_refresh.py", "tests/test_repeat_page.py",
+    "tests/test_repeat_value.py", "tests/test_repeat_value_api.py",
 ]
 
 

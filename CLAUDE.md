@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2767 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2824 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3217,6 +3217,51 @@ and a customer share on the next cannot be compared or sorted. Gated on BUYERS (
 30 units from 3 people is noise. `test_repeat_reference.py`'s naive restatement computes it too, from
 random unit counts, and `mutate_repeat.py` is now 23/23 (dropping the first purchase, ungating it,
 one-unit-per-line, and the screen showing the customer share are all caught).
+
+## Portfolio → Customer value — LTV, CAC, payback, cohorts
+
+`/portfolio-page/value`, the third sub-tab, kept apart from Repeat customers on purpose: Repeat asks
+"who comes back" (counts of people, three windows), this asks "what is a customer worth and what did
+they cost" (rupees per customer, by first product). One table holding both would be 20+ columns of
+two kinds. Same controls on all three sub-tabs: brand (incl. All brands), category cards, frozen
+product column, sorting, Excel/PDF.
+
+### The owner's definitions (09 Oct 2026)
+- **LTV = what customers PAID**: `item-price + item-promotion-discount` from the shipments report,
+  per line (`customer_order_lines.revenue`, migration `d2f6b8a41c07`). Measured on 489 real rows:
+  `item-price` is ALREADY ex-GST (₹177.14 with `item-tax` ₹8.86 = a ₹186 shelf price), agreeing
+  with Amazon's own ex-GST sales to 0.3% per unit; promotions arrive negative; shipping excluded.
+  Revenue, not profit, until a purchase cost per kg is added (the Net ₹/kg column's purpose).
+- **New = never seen since 1 Jan 2026.** History is short, so Jan–Mar cohorts over-count "new";
+  the heat map flags them "early" rather than hiding them.
+- **CAC = ad spend (SP + attributed SB) × FBA unit share ÷ new FBA customers**, only months whose
+  every day of ad data is held (economics keeps 90 days, so roughly the last three months). The FBA
+  share stops Easy Ship customers we cannot see making CAC read ~1.4× too high.
+- **First product = the product that took the most MONEY in the first order**, so each customer is
+  new exactly once and product rows add up to the brand.
+
+### How the figures behave
+- **LTV(N) counts a cohort only once ALL its customers have had N days** and only where every line in
+  the span carries its price (`repository.priced_from`, tolerant of the odd blank-price line). So a
+  September cohort has no 30-day LTV until November: a dash, never a short figure.
+- **A product's LTV counts everything its customers went on to buy**: the gateway view. A product
+  that reads KILL on Profit can still bring in the best customers.
+- **Payback averages over every cohort old enough for that day**, so a young cohort that has not yet
+  reordered pulls the early days down until it ages out.
+- **LTV:CAC pairs the 90-day LTV of older cohorts with the CAC of recent months**: ad data is only
+  kept ~90 days, so no single cohort has both yet. The tile reads 3× and over as healthy.
+- Categories are computed as their own scope (each customer once), never averaged from rows.
+- `value.compute` is checked against a naive restatement on 25 random histories, and
+  `mutate_repeat.py` is 42/42.
+
+### "Reorder in" on Repeat customers
+Median days between a customer's orders of the same product (same-day orders are one trip), shown
+after FBA share; a dash below 20 reorders.
+
+### Prices for history: run once after deploy
+`venv/bin/python scripts/backfill_repeat.py --reprice` in a `screen`: re-reads every month since
+1 Jan whose lines still lack a price, newest first, skipping priced chunks, so it is resumable. Until
+it finishes the page says from which day prices are loaded, and LTV covers cohorts from then.
 
 ## Ads tab — campaign performance, and bulk bid edits
 

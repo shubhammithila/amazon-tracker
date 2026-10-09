@@ -8,6 +8,10 @@ Run on the server in `screen`:  cd /opt/amazon-tracker && venv/bin/python script
 Each 30-day chunk takes 15-40 min (Amazon's report queue is serial), so ~2-4 hours.
 Chunks go NEWEST FIRST, so the 30- and 60-day columns fill within the first few hours. Chunks
 already recorded as done are skipped, so re-running after an interruption simply continues.
+
+`--reprice` re-reads EVERY month since 1 Jan 2026 whose lines still lack their price (Customer
+value -> LTV needs what each customer paid, which lines stored before d2f6b8a41c07 do not carry).
+Resumable the same way: a chunk whose lines are all priced is skipped. ~10 chunks, ~3-6 hours.
 """
 import asyncio
 import sys
@@ -20,6 +24,17 @@ from app import ist  # noqa: E402
 from app.database import async_session  # noqa: E402
 from app.repeat import fetch, refresh, repository  # noqa: E402
 from app.repeat.logic import covered_from  # noqa: E402
+from app.repeat.value_service import HISTORY_START  # noqa: E402
+from app.models import CustomerOrderLine  # noqa: E402
+from sqlalchemy import func, select  # noqa: E402
+
+
+async def _unpriced(a, b) -> int:
+    async with async_session() as db:
+        return (await db.execute(
+            select(func.count()).select_from(CustomerOrderLine)
+            .where(CustomerOrderLine.purchase_day.between(a.isoformat(), b.isoformat()),
+                   CustomerOrderLine.revenue.is_(None)))).scalar() or 0
 
 
 def _covered(a, b, done) -> bool:
@@ -33,14 +48,16 @@ def _covered(a, b, done) -> bool:
 
 
 async def main() -> int:
+    reprice = "--reprice" in sys.argv
     end = ist.yesterday()
-    start = end - timedelta(days=refresh.HISTORY_DAYS - 1)
+    start = (date.fromisoformat(HISTORY_START) if reprice
+             else end - timedelta(days=refresh.HISTORY_DAYS - 1))
     async with async_session() as db:
         done = set(await repository.done_runs(db))
     for a, b in reversed(fetch.split_days(start, end)):
         # Skip a chunk whose every day is already inside some stored window, not only an exact
         # match: the chunk boundaries move with the date, so exact matching would refetch it all.
-        if _covered(a, b, done):
+        if _covered(a, b, done) and (not reprice or await _unpriced(a, b) == 0):
             print("skip", a, b)
             continue
         print("fetch", a, b, flush=True)

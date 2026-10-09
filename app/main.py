@@ -139,6 +139,7 @@ app.include_router(ws.router)
 app.include_router(invoice.router)
 app.include_router(portfolio.router)
 app.include_router(repeat.router)
+app.include_router(repeat.value_router)
 app.include_router(ads.router)
 app.include_router(projections.router)
 app.include_router(shipment.router)
@@ -231,6 +232,15 @@ async def portfolio_repeat_page(request: Request,
     return templates.TemplateResponse(
         request, "portfolio_repeat.html",
         {"active": "portfolio", "grant": grant, "pf_tab": "repeat"},
+    )
+
+
+@app.get("/portfolio-page/value", response_class=HTMLResponse)
+async def portfolio_value_page(request: Request,
+                               grant=Depends(require_area(permissions.PORTFOLIO))):
+    return templates.TemplateResponse(
+        request, "portfolio_value.html",
+        {"active": "portfolio", "grant": grant, "pf_tab": "value"},
     )
 
 

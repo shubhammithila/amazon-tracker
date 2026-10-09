@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import ist, permissions
 from app.database import get_db
 from app.portfolio import export as pf_export
-from app.repeat import export, refresh, service
+from app.repeat import export, refresh, service, value_service
 from app.routers.auth import require_area
 
 router = APIRouter(prefix="/portfolio/repeat", tags=["repeat"])
@@ -73,5 +73,44 @@ async def export_repeat(body: dict = Body(...), db: AsyncSession = Depends(get_d
                     f"history from {payload.get('history_from') or '—'} · {len(table.rows)} product(s)")
         data = export.build_pdf(table, title, subtitle,
                                 partial_below=payload.get("fba_partial_below") or 0.6)
+    return StreamingResponse(data, media_type=MEDIA[fmt], headers={
+        "Content-Disposition": f'attachment; filename="{stem}.{fmt}"'})
+
+
+value_router = APIRouter(prefix="/portfolio/value", tags=["repeat"])
+
+
+@value_router.get("")
+async def customer_value(brand: str | None = None, db: AsyncSession = Depends(get_db),
+                         grant=Depends(require_area(permissions.PORTFOLIO))):
+    return await value_service.build_payload(db, brand, ist.today())
+
+
+@value_router.post("/export")
+async def export_value(body: dict = Body(...), db: AsyncSession = Depends(get_db),
+                       grant=Depends(require_area(permissions.PORTFOLIO))):
+    """The Customer value rows on screen, in the screen's order, as Excel or PDF. Numbers are
+    rebuilt on the server; only the row order travels from the browser."""
+    fmt = body.get("format")
+    if fmt not in MEDIA:
+        return JSONResponse({"error": "format must be xlsx or pdf"}, status_code=400)
+    ids = body.get("ids")
+    if ids is not None and (not isinstance(ids, list) or len(ids) > MAX_EXPORT_IDS
+                            or not all(isinstance(i, str) for i in ids)):
+        return JSONResponse({"error": "ids must be a list of product ids"}, status_code=400)
+    category = body.get("category") or None
+    payload = await value_service.build_payload(db, body.get("brand"), ist.today())
+    table = value_service.build_table(payload, ids, category)
+    scope = category or payload.get("brand") or ""
+    stem = "customer-value-" + "-".join(x for x in (
+        re.sub(r"[^a-z0-9]+", "-", scope.lower()).strip("-"), payload.get("as_of") or "") if x)
+    if fmt == "xlsx":
+        data = pf_export.build_xlsx(table, "Customer value", freeze="B3", total_note=(
+            "The brand's (or category's) own total: every customer counted once, acquired by any of "
+            "its products. LTV is what customers paid, ex-GST, before product cost."))
+    else:
+        data = pf_export.build_pdf(table, f"Customer value · {scope} · data to "
+                                          f"{payload.get('as_of') or '—'} · LTV = what customers "
+                                          "paid (ex-GST), before product cost")
     return StreamingResponse(data, media_type=MEDIA[fmt], headers={
         "Content-Disposition": f'attachment; filename="{stem}.{fmt}"'})

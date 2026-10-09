@@ -366,8 +366,10 @@ def indexes(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "revenue" in cols("customer_order_lines"):
+    print("d2f6b8a41c07")                           # head: price paid per customer line (LTV)
 elif "customer_order_lines" in tables:
-    print("a4c7e2f19b30")                           # head: Repeat customers (FBA order lines)
+    print("a4c7e2f19b30")                           # Repeat customers (FBA order lines)
 elif "preferences_json" in cols("users"):
     print("c3d8e1f5a702")                           # per-login display preferences
 elif "sb_spend" in cols("economics_daily"):

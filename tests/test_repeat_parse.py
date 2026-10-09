@@ -62,3 +62,22 @@ def test_a_missing_shipment_item_id_falls_back_to_the_order_item_id():
     row.pop("shipment-item-id")
     row["amazon-order-item-id"] = "OI9"
     assert parse_rows([row], "s", MAP)[0][0]["shipment_item_id"] == "OI9"
+
+
+# ── revenue: what the customer paid for the line (Customer value -> LTV) ───────────────────────
+# Real row, 2 Oct 2026: item-price 177.14 with item-tax 8.86 — item-price is already ex-GST.
+
+def test_revenue_is_the_ex_gst_item_price_after_the_promotion():
+    row = _row(**{"item-price": "177.14", "item-tax": "8.86", "item-promotion-discount": "-17.71",
+                  "shipping-price": "38.10"})
+    assert parse_rows([row], "s", MAP)[0][0]["revenue"] == 159.43     # shipping is not revenue
+
+
+def test_a_positive_promotion_still_reduces_revenue():
+    row = _row(**{"item-price": "200.00", "item-promotion-discount": "20.00"})
+    assert parse_rows([row], "s", MAP)[0][0]["revenue"] == 180.0
+
+
+def test_a_blank_price_is_UNKNOWN_revenue_not_zero():
+    row = _row(**{"item-price": ""})
+    assert parse_rows([row], "s", MAP)[0][0]["revenue"] is None

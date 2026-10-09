@@ -1023,6 +1023,9 @@ class CustomerOrderLine(Base):
     child_asin = Column(String(10))
     parent_asin = Column(String(10))
     units = Column(Integer, nullable=False, default=0, server_default="0")
+    #: What the customer paid for the line, ex-GST, after promotions (Customer value -> LTV).
+    #: NULL = stored before the price was read; never 0, which would read as a free line.
+    revenue = Column(Numeric(12, 2), nullable=True)
     fetched_at = Column(DateTime, default=datetime.utcnow)
 
 

@@ -7,7 +7,7 @@ from tests.js_harness import run_template_js
 
 pytestmark = pytest.mark.regression
 T = Path(__file__).parent.parent / "templates" / "portfolio_repeat.html"
-FUNCS = ["esc", "num", "pct", "cellPct", "winCells", "rowHtml", "currentGroup", "totalRowHtml"]
+FUNCS = ["esc", "num", "pct", "cellPct", "winCells", "reorderIn", "rowHtml", "currentGroup", "totalRowHtml"]
 CONSTS = ["WINS"]
 DATA = """category = "";
 data = {min_cohort: 20, fba_partial_below: 0.6, brand: "Mithila Foods",
@@ -231,3 +231,11 @@ emit(box.innerHTML);""")
     fig = out.split('class="cat-fig">', 1)[1].split("<", 1)[0]
     assert fig == "36.7%"
     assert "customers 17.8%" in out
+
+
+def test_reorder_in_shows_median_days_and_a_dash_below_twenty_reorders():
+    got = _cells("rowHtml(Object.assign({}, ROW, {reorder_days: 33.5}))")
+    assert got["reorder"] == "34 d"
+    assert _cells("rowHtml(ROW)")["reorder"] == "—"
+    cols = list(got)
+    assert cols.index("fba") + 1 == cols.index("reorder") < cols.index("buyers-90")

@@ -1,6 +1,7 @@
 """FBA shipments report rows -> `customer_order_lines` rows. Pure: no I/O.
 
-Only five fields leave a row: the order and item ids, the purchase day, the SKU and the quantity.
+Six fields leave a row: the order and item ids, the purchase day, the SKU, the quantity and what
+the customer paid for the line (`revenue`, for Customer value -> LTV).
 The buyer email becomes a salted key here and goes no further; names, phones and addresses in the
 report are never read at all.
 """
@@ -26,6 +27,25 @@ def _is_free(price: str | None) -> bool:
         return (price or "").strip() != "" and float(price) == 0.0
     except ValueError:
         return False
+
+
+def _revenue(row) -> float | None:
+    """What the customer paid for the line, ex-GST, after the item promotion. Shipping excluded.
+
+    Measured on 489 real rows: `item-price` is ALREADY ex-GST (₹177.14 with `item-tax` ₹8.86 beside
+    it, a ₹186 shelf price) and agrees with Amazon's own ex-GST sales to 0.3% per unit. The
+    promotion arrives NEGATIVE (−₹681.88 over two days), so it is added; taken as −|x| in case a
+    report ever sends it positive. A blank price is unknown (None), never ₹0.
+    """
+    raw = (row.get("item-price") or "").strip()
+    if not raw:
+        return None
+    try:
+        price = float(raw)
+        promo = float((row.get("item-promotion-discount") or "0").strip() or 0)
+    except ValueError:
+        return None
+    return round(max(0.0, price - abs(promo)), 2)
 
 
 def parse_rows(rows, salt, mapping):
@@ -58,5 +78,6 @@ def parse_rows(rows, salt, mapping):
             "child_asin": child,
             "parent_asin": parent,
             "units": int(float(row.get("quantity-shipped") or 0)),
+            "revenue": _revenue(row),
         })
     return lines, counts

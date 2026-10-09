@@ -148,12 +148,15 @@ function winCells(w, n, cross){
     + cellPct(`units-${n}`, c.units_pct, why)
     + cellPct(`from-${n}`, cross ? c.came_from_pct : null, cross ? why : "a brand total has no cross flow");
 }
+/* Median days between a customer's orders of this product. A dash below 20 reorders. */
+function reorderIn(v){ return v == null ? "—" : Math.round(v) + " d"; }
 function rowHtml(r){
   const partial = r.fba_share != null && r.fba_share < data.fba_partial_below;
   return `<tr class="row" data-p="${esc(r.parent_asin)}"><td data-col="product">${esc(r.product)}</td>`
     + `<td class="num" data-col="fba">${pct(r.fba_share)}${partial
         ? ' <span class="partial" title="Many of its orders ship by Easy Ship, which carries no customer key, so its repeat reads low">partial</span>'
         : ""}</td>`
+    + `<td class="num" data-col="reorder">${reorderIn(r.reorder_days)}</td>`
     + WINS.map(n => winCells(r.w, n, true)).join("") + `</tr>`;
 }
 /* With a category picked, the top row is THAT category's total: unique customers across its
@@ -164,7 +167,7 @@ function currentGroup(){
 function totalRowHtml(){
   const g = currentGroup();
   const label = g ? g.category : (data.brand || "Brand");
-  return `<tr class="totals"><td data-col="product">${esc(label)} — all products</td><td class="num" data-col="fba"></td>`
+  return `<tr class="totals"><td data-col="product">${esc(label)} — all products</td><td class="num" data-col="fba"></td><td class="num" data-col="reorder"></td>`
     + WINS.map(n => winCells((g ? g.total : data.total) || {}, n, false)).join("") + `</tr>`;
 }
 function renderCategories(){
@@ -195,6 +198,7 @@ let sort = (() => {
 function sortValue(r, key){
   if(key === "product") return r.product;
   if(key === "fba") return r.fba_share;
+  if(key === "reorder") return r.reorder_days;
   const [what, n] = key.split("-");
   if(!(data.windows[n] || {}).available) return null;
   const c = (r.w || {})[n] || {};
@@ -233,9 +237,10 @@ function applySort(key){
   if(again) again.focus();
 }
 function render(){
-  const cols = 2 + WINS.length * 4;
+  const cols = 3 + WINS.length * 4;
   const head = `<tr>${th("product", "Product", "", "").replace("<th ", '<th rowspan="2" ')}`
     + th("fba", "FBA share", "num", "Share of its units shipped by FBA. Easy Ship orders carry no customer key.").replace("<th ", '<th rowspan="2" ')
+    + th("reorder", "Reorder in", "num", "Median days between a customer's orders of this product, all history held. A dash below 20 reorders.").replace("<th ", '<th rowspan="2" ')
     + WINS.map(n => `<th colspan="4" class="grp">${n}-day</th>`).join("") + `</tr><tr class="sub">`
     + WINS.map(n => th(`buyers-${n}`, "Buyers", "num", "Customers who bought it in the 30-day cohort period")
       + th(`same-${n}`, "Same repeat", "num", "Share of CUSTOMERS who bought the SAME product again on a later day")

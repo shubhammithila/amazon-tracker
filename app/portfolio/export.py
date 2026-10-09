@@ -55,6 +55,7 @@ EXCEL_FORMATS = {
     "acos": "0%",
     "rating": "0.0",
     "per_kg": '"₹"#,##0.00;-"₹"#,##0.00',  # a rate, so paise matter: ₹93.45/kg
+    "times": '0.0"×"',                      # LTV:CAC, a multiple
     "reviews": _indian_format(),
     "text": "General",
 }
@@ -382,6 +383,8 @@ def display(value, kind: str) -> str:
         return ("-" if value < 0 else "") + indian(whole) + (f".{int(round(frac * 10))}" if frac else "") + " kg"
     if kind == "rating":
         return f"{value:.1f}"
+    if kind == "times":
+        return f"{value:.1f}×"
     if kind == "per_kg":
         return ("-" if value < 0 else "") + "₹" + indian(int(abs(value))) + f"{abs(value) % 1:.2f}"[1:]
     return str(value)

@@ -22,7 +22,7 @@ TOTAL_NOTE = ("Calculated by the app from unique customers, like the screen's to
 
 def columns() -> list[Column]:
     cols = [Column("product", "Product", "text"), Column("category", "Category", "text"),
-            Column("fba", "FBA share", "pct")]
+            Column("fba", "FBA share", "pct"), Column("reorder", "Reorder in (days)", "int")]
     for n in WINDOWS:
         cols += [Column(f"{key}-{n}", f"{n}d {label}", kind) for key, label, kind in METRICS]
     return cols
@@ -50,7 +50,8 @@ def build_table(payload: Mapping, ids: Sequence[str] | None, category: str | Non
     rows = []
     for r in chosen:
         values = {"product": r.get("product"), "category": r.get("category"),
-                  "fba": r.get("fba_share")}
+                  "fba": r.get("fba_share"),
+                  "reorder": round(r["reorder_days"]) if r.get("reorder_days") is not None else None}
         for n in WINDOWS:
             values.update(_window_values(windows, r.get("w") or {}, n, cross=True))
         rows.append(Row("sku", 0, False, values))
@@ -98,9 +99,9 @@ def build_pdf(table: Table, title: str, subtitle: str, *, partial_below: float =
 
     cols = table.columns
     grid = [[Paragraph("Product", head_l), Paragraph("Category", head_l),
-             Paragraph("FBA share", head)]
+             Paragraph("FBA share", head), Paragraph("Reorder in", head)]
             + [x for n in WINDOWS for x in (Paragraph(f"{n}-day", head), "", "", "")],
-            ["", "", ""] + [Paragraph(lbl, head) for _ in WINDOWS
+            ["", "", "", ""] + [Paragraph(lbl, head) for _ in WINDOWS
                             for lbl in ("Buyers", "Same repeat", "Repeat units", "From other")]]
 
     def cells(values, *, total=False):
@@ -124,14 +125,15 @@ def build_pdf(table: Table, title: str, subtitle: str, *, partial_below: float =
         grid.append(cells(r.values))
 
     page_w = landscape(A4)[0] - 16 * mm
-    fixed = {"category": 58, "fba": 52}
+    fixed = {"category": 58, "fba": 52, "reorder": 44}
     metric_w = 41
-    product_w = page_w - sum(fixed.values()) - metric_w * (len(cols) - 3)
-    widths = [product_w, fixed["category"], fixed["fba"]] + [metric_w] * (len(cols) - 3)
+    product_w = page_w - sum(fixed.values()) - metric_w * (len(cols) - 4)
+    widths = [product_w, fixed["category"], fixed["fba"], fixed["reorder"]] + [metric_w] * (len(cols) - 4)
 
     t = PTable(grid, colWidths=widths, repeatRows=2)
     style = [
         ("SPAN", (0, 0), (0, 1)), ("SPAN", (1, 0), (1, 1)), ("SPAN", (2, 0), (2, 1)),
+        ("SPAN", (3, 0), (3, 1)),
         ("BACKGROUND", (0, 0), (-1, 1), head_bg),
         ("BACKGROUND", (0, 2), (-1, 2), total_bg),
         ("LINEBELOW", (0, 1), (-1, 1), 0.8, colors.HexColor("#9CA3AF")),
@@ -142,7 +144,7 @@ def build_pdf(table: Table, title: str, subtitle: str, *, partial_below: float =
         ("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3),
     ]
     for i, _ in enumerate(WINDOWS):
-        first = 3 + i * 4
+        first = 4 + i * 4
         style.append(("SPAN", (first, 0), (first + 3, 0)))
         # A rule between windows, so 90 / 60 / 30 read as three blocks as on screen.
         style.append(("LINEBEFORE", (first, 0), (first, -1), 0.8, colors.HexColor("#9CA3AF")))

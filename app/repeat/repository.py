@@ -1,9 +1,9 @@
 """The only reads and writes of `customer_order_lines` and `repeat_refresh`."""
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import CustomerOrderLine, EconomicsDaily, RepeatRefresh
@@ -39,11 +39,13 @@ async def load_lines(db: AsyncSession, since: str) -> list[dict]:
     rows = await db.execute(
         select(CustomerOrderLine.amazon_order_id, CustomerOrderLine.buyer_key,
                CustomerOrderLine.purchase_day, CustomerOrderLine.child_asin,
-               CustomerOrderLine.parent_asin, CustomerOrderLine.units)
+               CustomerOrderLine.parent_asin, CustomerOrderLine.units,
+               CustomerOrderLine.revenue)
         .where(CustomerOrderLine.purchase_day >= since,
                CustomerOrderLine.parent_asin.is_not(None)))
     return [{"amazon_order_id": r[0], "buyer_key": r[1], "day": date.fromisoformat(r[2]),
-             "child_asin": r[3], "parent_asin": r[4], "units": int(r[5] or 0)} for r in rows]
+             "child_asin": r[3], "parent_asin": r[4], "units": int(r[5] or 0),
+             "revenue": float(r[6]) if r[6] is not None else None} for r in rows]
 
 
 async def purge(db: AsyncSession, keep_from: str) -> int:
@@ -139,3 +141,51 @@ async def last_run(db: AsyncSession, ending_from: str | None = None) -> dict | N
     return {"window": [row.window_start, row.window_end], "status": row.status,
             "error": row.error, "lines_stored": row.lines_stored,
             "finished_at": row.finished_at.isoformat() if row.finished_at else None}
+
+
+
+async def econ_by_month(db: AsyncSession):
+    """Ad spend (SP + attributed SB) and ALL-channel units per (month, Amazon parent, child), and the
+    days held — for Customer value's CAC. ASIN grain only, so the MSKU split is never double-counted."""
+    parent = func.coalesce(EconomicsDaily.parent_asin, EconomicsDaily.child_asin)
+    month = func.substr(EconomicsDaily.day, 1, 7)
+    rows = await db.execute(
+        select(month, parent, EconomicsDaily.child_asin,
+               func.sum(EconomicsDaily.ad_spend), func.sum(EconomicsDaily.sb_spend),
+               func.sum(EconomicsDaily.units_ordered))
+        .where(EconomicsDaily.seller_sku == "")
+        .group_by(month, parent, EconomicsDaily.child_asin))
+    out = {(m, p, c): (float(a or 0) + float(sb or 0), int(u or 0)) for m, p, c, a, sb, u in rows}
+    days = {d for (d,) in await db.execute(
+        select(EconomicsDaily.day).where(EconomicsDaily.seller_sku == "").distinct())}
+    return out, days
+
+
+#: A day counts as priced when at most this share of its lines lacks a price. Not zero: a report
+#: row can arrive with a blank price (unknown, stored NULL), and one such line must not hold every
+#: LTV back for ever. Lines stored before the price was read are ~100% of their days.
+UNPRICED_TOLERANCE = 0.02
+
+
+async def priced_from(db: AsyncSession, since: str) -> str | None:
+    """The first day after the last UNPRICED day, or None when no day is priced yet.
+
+    Lines stored before the price was read have `revenue` NULL until the backfill re-reads them; an
+    LTV over a span containing them would read short with nothing on screen saying so."""
+    rows = (await db.execute(
+        select(CustomerOrderLine.purchase_day, func.count(),
+               func.sum(case((CustomerOrderLine.revenue.is_(None), 1), else_=0)))
+        .where(CustomerOrderLine.purchase_day >= since, CustomerOrderLine.parent_asin.is_not(None))
+        .group_by(CustomerOrderLine.purchase_day))).all()
+    if not rows:
+        return None
+    unpriced = [d for d, n, missing in rows if (missing or 0) > UNPRICED_TOLERANCE * n]
+    if not unpriced:
+        # Every day that HAS lines is priced, so the whole span is: a day without orders has
+        # nothing unpriced in it. Returning the first day with lines instead would push a cohort
+        # whose month began before it out of every LTV.
+        return since
+    last = max(unpriced)
+    if last >= max(d for d, _, _ in rows):
+        return None
+    return (date.fromisoformat(last) + timedelta(days=1)).isoformat()
