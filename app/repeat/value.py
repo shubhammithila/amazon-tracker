@@ -225,7 +225,8 @@ def grid(customers, as_of: date, priced_from: date | None) -> list[dict]:
         cells = []
         for k in range(GRID_MONTHS):
             target = add_months(m, k)
-            if month_end(target) > as_of:
+            # Month 0 is every customer by definition, so even the month still running shows it.
+            if k > 0 and month_end(target) > as_of:
                 cells.append(None)
                 continue
             start = date.fromisoformat(target + "-01")

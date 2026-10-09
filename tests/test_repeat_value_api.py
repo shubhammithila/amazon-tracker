@@ -75,3 +75,24 @@ async def test_the_downloads_hold_the_rows_as_numbers(auth_client, db, catalogue
     pdf = await auth_client.post("/portfolio/value/export", json={"format": "pdf", "ids": ["B0PARENT01"]})
     assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF")
     assert (await auth_client.post("/portfolio/value/export", json={"format": "csv"})).status_code == 400
+
+
+
+async def test_the_payload_is_cached_until_the_data_moves(auth_client, db, catalogue):
+    from app.repeat import value_service
+    await _seed(db)
+    first = (await auth_client.get("/portfolio/value")).json()
+    calls = []
+    real = value_service._build
+
+    async def counting(*a, **k):
+        calls.append(1)
+        return await real(*a, **k)
+    value_service._build = counting
+    try:
+        assert (await auth_client.get("/portfolio/value")).json() == first and calls == []
+        await repository.record_run(db, window_start="2026-10-01", window_end="2026-10-02", status="done")
+        await auth_client.get("/portfolio/value")
+        assert calls == [1], "new data must rebuild the payload"
+    finally:
+        value_service._build = real

@@ -147,6 +147,8 @@ def test_the_grid_shows_who_ordered_again_in_each_later_complete_month():
     assert row["cells"][1]["active_pct"] == 0.5 and row["cells"][2]["active_pct"] == 0.0
     assert row["cells"][1]["revenue_per_customer"] == 150.0                 # (20x100 + 10x100)/20
     assert row["cells"][7] is None                                         # Oct is not complete
+    october = [line(f"o{i}", date(2026, 10, 2), "CS", 100) for i in range(5)]
+    assert next(r for r in run(october)["grid"] if r["month"] == "2026-10")["cells"][0]["active_pct"] == 1.0
 
 
 def test_reorder_days_is_the_median_gap_between_a_customers_orders_of_a_product():

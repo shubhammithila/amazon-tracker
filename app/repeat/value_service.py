@@ -21,8 +21,34 @@ def _empty(brand):
             "priced_from": None, "min_customers": value.MIN_CUSTOMERS}
 
 
+#: The payload is ~10 s of work on the t2.micro (every category is its own scope) and changes only
+#: when new lines, prices or ad figures land, so it is kept until one of those moves.
+_CACHE: dict = {}
+
+
+async def _data_version(db) -> tuple:
+    from sqlalchemy import func, select
+    from app.models import CustomerOrderLine, EconomicsDaily, RepeatRefresh
+    q = lambda col: select(func.max(col))  # noqa: E731
+    return ((await db.execute(q(RepeatRefresh.id))).scalar(),
+            (await db.execute(q(CustomerOrderLine.fetched_at))).scalar(),
+            (await db.execute(select(func.count()).select_from(CustomerOrderLine)
+                              .where(CustomerOrderLine.revenue.is_(None)))).scalar(),
+            (await db.execute(q(EconomicsDaily.fetched_at))).scalar())
+
+
 async def build_payload(db, brand: str | None, today: date) -> dict:
     brand = brand or service.DEFAULT_BRAND
+    key = (brand, today, await _data_version(db))
+    if key in _CACHE:
+        return _CACHE[key]
+    payload = await _build(db, brand, today)
+    _CACHE.clear()                       # one version at a time: older keys can never match again
+    _CACHE[key] = payload
+    return payload
+
+
+async def _build(db, brand: str, today: date) -> dict:
     runs = await repository.done_runs(db)
     if not runs:
         return _empty(brand)
