@@ -25,13 +25,29 @@ def _orders_by_day(lines):
     return out
 
 
+def _units(lines):
+    """(buyer, day, product) -> units, summed over every line of that day."""
+    out = {}
+    for l in lines:
+        k = (l["buyer_key"], l["day"], l["parent_asin"])
+        out[k] = out.get(k, 0) + l["units"]
+    return out
+
+
+def _span_units(units, buyer, anchor, n, products):
+    """Units of `products` from the anchor day through anchor + n, day by day."""
+    return sum(units.get((buyer, anchor + timedelta(days=k), q), 0)
+               for k in range(0, n + 1) for q in products)
+
+
 def naive(lines, n):
     start, end = AS_OF - timedelta(days=n + 29), AS_OF - timedelta(days=n)
     bought = _orders_by_day(lines)
     buyers = {l["buyer_key"] for l in lines}
+    units = _units(lines)
     res = {}
     for p in PRODUCTS:
-        b = s = c = w = 0
+        b = s = c = w = u = ru = 0
         for buyer in buyers:
             d, anchor = start, None
             while d <= end and anchor is None:
@@ -45,11 +61,16 @@ def naive(lines, n):
                      for ps in bought.get((buyer, anchor + timedelta(days=k)), {}).values()]
             earlier = [ps for k in range(1, n + 1)
                        for ps in bought.get((buyer, anchor - timedelta(days=k)), {}).values()]
-            s += any(p in ps for ps in later)
+            got = _span_units(units, buyer, anchor, n, [p])
+            u += got
+            if any(p in ps for ps in later):
+                s += 1
+                ru += got
             w += any(ps - {p} for ps in later)
             c += any(ps - {p} for ps in earlier)
         if b:
-            res[p] = {"buyers": b, "same": s, "came_from": c, "went_on": w}
+            res[p] = {"buyers": b, "same": s, "came_from": c, "went_on": w,
+                      "units": u, "repeat_units": ru}
     return res
 
 
@@ -58,7 +79,8 @@ def naive_brand(lines, n, brand):
     bought = _orders_by_day(lines)
     buyers = {l["buyer_key"] for l in lines}
     mine = {p for p, b in BRAND.items() if b == brand}
-    total = rep = 0
+    units = _units(lines)
+    total = rep = u = ru = 0
     for buyer in buyers:
         d, anchor = start, None
         while d <= end and anchor is None:
@@ -68,9 +90,13 @@ def naive_brand(lines, n, brand):
         if anchor is None:
             continue
         total += 1
-        rep += any(ps & mine for k in range(1, n + 1)
-                   for ps in bought.get((buyer, anchor + timedelta(days=k)), {}).values())
-    return {"buyers": total, "repeat": rep} if total else None
+        got = _span_units(units, buyer, anchor, n, mine)
+        u += got
+        if any(ps & mine for k in range(1, n + 1)
+               for ps in bought.get((buyer, anchor + timedelta(days=k)), {}).values()):
+            rep += 1
+            ru += got
+    return {"buyers": total, "repeat": rep, "units": u, "repeat_units": ru} if total else None
 
 
 def _random_lines(seed):
@@ -81,7 +107,7 @@ def _random_lines(seed):
         day = AS_OF - timedelta(days=rnd.randint(0, 260))
         for p in rnd.sample(PRODUCTS, rnd.choice([1, 1, 1, 2])):
             lines.append({"amazon_order_id": f"o{i}", "buyer_key": buyer, "day": day,
-                          "parent_asin": p})
+                          "parent_asin": p, "units": rnd.choice([1, 1, 2, 3])})
     return lines
 
 

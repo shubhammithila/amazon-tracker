@@ -33,7 +33,8 @@ def test_the_cohort_period_is_the_30_days_ending_N_days_before_as_of():
 
 def test_a_reorder_on_day_20_is_a_30_day_repeat():
     m = run(("a", 0, "CS"), ("a", 20, "CS"))
-    assert m["parents"]["CS"][30] == {"buyers": 1, "same": 1, "came_from": 0, "went_on": 0}
+    got = m["parents"]["CS"][30]
+    assert {k: got[k] for k in ("buyers", "same", "came_from", "went_on")} ==         {"buyers": 1, "same": 1, "came_from": 0, "went_on": 0}
 
 
 def test_a_reorder_on_day_31_is_NOT_a_30_day_repeat_but_is_a_60_day_one():
@@ -140,3 +141,42 @@ def test_the_history_check_is_exact_at_the_boundary():
     need = logic.period(90, AS_OF)[0] - timedelta(days=90)
     assert logic.window_status(90, AS_OF, need) == (True, None)
     assert logic.window_status(90, AS_OF, need + timedelta(days=1))[0] is False
+
+
+
+# ── repeat units: Brand Analytics' share-of-units measure ──────────────────────────────────────
+
+def _unit_orders(*specs):
+    """spec = (buyer, day offset, product, units)."""
+    return logic.build_orders([
+        {"amazon_order_id": f"u{i}", "buyer_key": b, "day": P30 + timedelta(days=off),
+         "parent_asin": p, "units": u} for i, (b, off, p, u) in enumerate(specs)])
+
+
+def test_repeat_units_count_the_repeat_customers_FIRST_purchase_too():
+    """a: 2 units, then 3 more on day 20 (repeat). b: 1 unit, never back. -> 5 of 6 units."""
+    m = logic.metrics(_unit_orders(("a", 0, "CS", 2), ("a", 20, "CS", 3), ("b", 0, "CS", 1)),
+                      BRAND, AS_OF, HIST)
+    c = m["parents"]["CS"][30]
+    assert (c["units"], c["repeat_units"]) == (6, 5)
+    assert c["same"] == 1 and c["buyers"] == 2      # the customer share is 1 of 2
+
+
+def test_units_after_the_window_are_not_counted():
+    """Day 40 is outside the 30-day window and inside the 60-day one."""
+    specs = (("a", 0, "CS", 2), ("a", 40, "CS", 7))
+    m30 = logic.metrics(_unit_orders(*specs), BRAND, AS_OF, HIST)["parents"]["CS"][30]
+    assert (m30["units"], m30["repeat_units"]) == (2, 0)
+
+
+def test_another_products_units_are_not_this_products_units():
+    m = logic.metrics(_unit_orders(("a", 0, "CS", 2), ("a", 10, "JS", 9), ("a", 20, "CS", 1)),
+                      BRAND, AS_OF, HIST)
+    assert (m["parents"]["CS"][30]["units"], m["parents"]["CS"][30]["repeat_units"]) == (3, 3)
+    assert m["brands"]["Mithila Foods"][30]["units"] == 12   # the brand counts every product
+
+
+def test_units_pct_is_a_share_and_a_dash_below_the_cohort_floor():
+    assert logic.units_pct(5, 20, logic.MIN_COHORT) == 0.25
+    assert logic.units_pct(5, 20, logic.MIN_COHORT - 1) is None
+    assert logic.units_pct(0, 0, 50) is None

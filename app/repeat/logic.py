@@ -13,6 +13,11 @@ cross flow. For a brand, the anchor is the first purchase of ANY of its products
 **repeat** is any later-day order of one of its products within N days — counted per UNIQUE
 customer, so the brand total is not the sum of its rows.
 
+**Repeat units** is Brand Analytics' measure, asked for so the tab can be read against it: of the
+units of X the cohort bought from its anchor through anchor + N days, the share bought by customers
+who repeated X. It counts the repeat customers' FIRST purchase too, which is why it reads higher
+than the customer share. The brand version does the same over all of a brand's products.
+
 A window is unavailable when stored history does not reach `period_start - N`, because came_from
 looks back N days. Percentages come from counts (`pct`), and are None below MIN_COHORT buyers.
 """
@@ -39,6 +44,11 @@ class Order:
     buyer: str
     day: date
     parents: frozenset
+    #: (parent, units) pairs. A tuple so the dataclass stays frozen and hashable.
+    units: tuple = ()
+
+    def units_of(self, parent: str) -> int:
+        return sum(u for p, u in self.units if p == parent)
 
 
 def build_orders(lines) -> list[Order]:
@@ -46,10 +56,13 @@ def build_orders(lines) -> list[Order]:
     for line in lines:
         if not line.get("parent_asin"):
             continue
-        o = acc.setdefault(line["amazon_order_id"], [line["buyer_key"], line["day"], set()])
+        o = acc.setdefault(line["amazon_order_id"],
+                           [line["buyer_key"], line["day"], set(), defaultdict(int)])
         o[2].add(line["parent_asin"])
+        o[3][line["parent_asin"]] += int(line.get("units") or 0)
         o[1] = min(o[1], line["day"])
-    return [Order(k, b, d, frozenset(p)) for k, (b, d, p) in acc.items()]
+    return [Order(k, b, d, frozenset(p), tuple(sorted(u.items())))
+            for k, (b, d, p, u) in acc.items()]
 
 
 def period(n: int, as_of: date) -> tuple[date, date]:
@@ -68,6 +81,13 @@ def pct(part: int, whole: int) -> float | None:
     if whole < MIN_COHORT:
         return None
     return part / whole
+
+
+def units_pct(repeat_units: int, units: int, buyers: int) -> float | None:
+    """Repeat units over all units, gated on BUYERS like `pct`: 30 units from 3 people is noise."""
+    if buyers < MIN_COHORT or units <= 0:
+        return None
+    return repeat_units / units
 
 
 def _top(counter: Counter) -> list[tuple[str, int]]:
@@ -90,9 +110,11 @@ def metrics(orders: Sequence[Order], brand_of: Mapping[str, str], as_of: date,
         if not ok:
             continue
         span = timedelta(days=n)
-        counts = defaultdict(lambda: {"buyers": 0, "same": 0, "came_from": 0, "went_on": 0})
+        counts = defaultdict(lambda: {"buyers": 0, "same": 0, "came_from": 0, "went_on": 0,
+                                      "units": 0, "repeat_units": 0})
         came, went = defaultdict(Counter), defaultdict(Counter)
-        brand_counts = defaultdict(lambda: {"buyers": 0, "repeat": 0})
+        brand_counts = defaultdict(lambda: {"buyers": 0, "repeat": 0, "units": 0,
+                                            "repeat_units": 0})
         for history in by_buyer.values():
             in_period = [o for o in history if start <= o.day <= end]
             if not in_period:
@@ -106,8 +128,12 @@ def metrics(orders: Sequence[Order], brand_of: Mapping[str, str], as_of: date,
                 c["buyers"] += 1
                 after = [o for o in history if anchor < o.day <= anchor + span]
                 before = [o for o in history if anchor - span <= o.day < anchor]
+                bought = sum(o.units_of(p) for o in history
+                             if anchor <= o.day <= anchor + span)
+                c["units"] += bought
                 if any(p in o.parents for o in after):
                     c["same"] += 1
+                    c["repeat_units"] += bought
                 dest = {q for o in after for q in o.parents if q != p}
                 src = {q for o in before for q in o.parents if q != p}
                 if dest:
@@ -124,9 +150,13 @@ def metrics(orders: Sequence[Order], brand_of: Mapping[str, str], as_of: date,
             for b, anchor in brand_anchor.items():
                 bc = brand_counts[b]
                 bc["buyers"] += 1
+                bought = sum(u for o in history if anchor <= o.day <= anchor + span
+                             for q, u in o.units if brand_of.get(q) == b)
+                bc["units"] += bought
                 if any(anchor < o.day <= anchor + span
                        and any(brand_of.get(q) == b for q in o.parents) for o in history):
                     bc["repeat"] += 1
+                    bc["repeat_units"] += bought
         for p, c in counts.items():
             out["parents"][p][n] = dict(c)
             out["flows"][p][n] = {"came_from": _top(came[p]), "went_on": _top(went[p])}

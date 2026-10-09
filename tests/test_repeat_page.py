@@ -12,10 +12,10 @@ CONSTS = ["WINS"]
 DATA = """data = {min_cohort: 20, fba_partial_below: 0.6, brand: "Mithila Foods",
  windows: {"30": {available: true}, "60": {available: true},
            "90": {available: false, reason: "needs order history from 2026-03-06"}},
- total: {"30": {buyers: 1200, repeat_pct: 0.086, came_from_pct: 0.5},
+ total: {"30": {buyers: 1200, repeat_pct: 0.086, units_pct: 0.214, came_from_pct: 0.5},
          "60": {buyers: 1100, repeat_pct: 0.127}}};
 const ROW = {parent_asin: "P1", product: "Jau Sattu", fba_share: 0.92,
- w: {"30": {buyers: 1404, same_pct: 0.077, came_from_pct: 0.071, went_on_pct: 0.05},
+ w: {"30": {buyers: 1404, same_pct: 0.077, units_pct: 0.183, came_from_pct: 0.071, went_on_pct: 0.05},
      "60": {buyers: 1300, same_pct: 0.143, came_from_pct: 0.091, went_on_pct: 0.06},
      "90": {buyers: 999, same_pct: 0.55, came_from_pct: 0.44}},
  flows: {"60": {came_from: [{product: "Chana Sattu", customers: 73}],
@@ -110,11 +110,11 @@ def test_the_page_sizes_its_icons():
 SORT_DATA = DATA + """
 data.rows = [
  {parent_asin: "A", product: "Jau Sattu", fba_share: 0.9,
-  w: {"30": {buyers: 50, same_pct: 0.10, came_from_pct: 0.02}, "60": {buyers: 80, same_pct: 0.20}}},
+  w: {"30": {buyers: 50, same_pct: 0.10, units_pct: 0.15, came_from_pct: 0.02}, "60": {buyers: 80, same_pct: 0.20}}},
  {parent_asin: "B", product: "Chana Sattu", fba_share: 0.5,
-  w: {"30": {buyers: 900, same_pct: null, came_from_pct: 0.09}, "60": {buyers: 70, same_pct: 0.05}}},
+  w: {"30": {buyers: 900, same_pct: null, units_pct: 0.31, came_from_pct: 0.09}, "60": {buyers: 70, same_pct: 0.05}}},
  {parent_asin: "C", product: "Ragi Atta", fba_share: null,
-  w: {"30": {buyers: 300, same_pct: 0.30, came_from_pct: 0.01}, "60": {buyers: 90, same_pct: 0.12}}}];"""
+  w: {"30": {buyers: 300, same_pct: 0.30, units_pct: 0.22, came_from_pct: 0.01}, "60": {buyers: 90, same_pct: 0.12}}}];"""
 
 
 def _order(key, direction):
@@ -125,7 +125,7 @@ emit(sortedRows().map(r => r.parent_asin));""")
 
 @pytest.mark.parametrize("key, desc", [
     ("buyers-30", ["B", "C", "A"]), ("buyers-60", ["C", "A", "B"]),
-    ("from-30", ["B", "A", "C"]), ("same-60", ["A", "C", "B"])])
+    ("from-30", ["B", "A", "C"]), ("same-60", ["A", "C", "B"]), ("units-30", ["B", "C", "A"])])
 def test_every_window_column_sorts_both_ways(key, desc):
     assert _order(key, -1) == desc
     assert _order(key, 1) == desc[::-1]
@@ -150,8 +150,21 @@ def test_an_unavailable_window_sorts_as_all_dashes_not_by_hidden_numbers():
 def test_every_column_header_is_a_sort_control():
     src = T.read_text(encoding="utf-8")
     body = src[src.index("function render(){"):src.index("async function load(")]
-    for key in ('"product"', '"fba"', "`buyers-${n}`", "`same-${n}`", "`from-${n}`"):
+    for key in ('"product"', '"fba"', "`buyers-${n}`", "`same-${n}`", "`units-${n}`", "`from-${n}`"):
         assert f"th({key}" in body, f"{key} has no sort control"
     assert 'tabindex="0" role="button" aria-sort' in src
     assert "sortedRows().map(" in body, "the body must render in the sorted order"
     assert 'addEventListener("keydown"' in src
+
+
+
+def test_repeat_units_sit_beside_the_customer_share_for_rows_and_the_brand():
+    """Brand Analytics' share-of-units measure, shown BESIDE the customer % rather than instead."""
+    row = _cells("rowHtml(ROW)")
+    assert row["same-30"] == "7.7%" and row["units-30"] == "18.3%"
+    total = _cells("totalRowHtml()")
+    assert total["same-30"] == "8.6%" and total["units-30"] == "21.4%"
+    cols = list(row)
+    assert cols.index("same-30") + 1 == cols.index("units-30") < cols.index("from-30")
+    src = T.read_text(encoding="utf-8")
+    assert '<th colspan="4" class="grp">' in src and "WINS.length * 4" in src

@@ -47,7 +47,10 @@ async def test_the_route_returns_the_30_day_same_repeat_from_counts(auth_client,
     row = next(r for r in data["rows"] if r["parent_asin"] == "B0PARENT01")
     assert row["product"] == "Chana Sattu" and row["w"]["30"]["buyers"] == 25
     assert row["w"]["30"]["same_pct"] == pytest.approx(5 / 25)
-    assert data["total"]["30"] == {"buyers": 25, "repeat_pct": pytest.approx(5 / 25)}
+    # 25 first orders + 5 returns, one unit each: the 5 repeaters bought 10 of the 30 units.
+    assert row["w"]["30"]["units_pct"] == pytest.approx(10 / 30)
+    assert data["total"]["30"] == {"buyers": 25, "repeat_pct": pytest.approx(5 / 25),
+                                   "units_pct": pytest.approx(10 / 30)}
     assert data["brand"] == "Mithila Foods"
 
 

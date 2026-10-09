@@ -46,7 +46,7 @@ select{padding:7px 10px;border:1px solid var(--border-strong);border-radius:8px;
    height-capped to scroll at all: an uncapped wrapper never scrolls, so a sticky header inside it
    has no travel (the Profit tab's recorded non-fix). Three stacked layers: the group row at 0, the
    column row below it, the total below both. Offsets are the MEASURED row heights (sizeTable). */
-table{width:100%;min-width:980px;border-collapse:separate;border-spacing:0}
+table{width:100%;min-width:1180px;border-collapse:separate;border-spacing:0}
 thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;font-size:10.5px;
   font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:left;white-space:nowrap;
   border-bottom:2px solid var(--border-strong);position:sticky;top:0;z-index:2}
@@ -118,6 +118,7 @@ function winCells(w, n, cross){
     : (c.buyers != null && c.buyers < data.min_cohort ? `only ${c.buyers} buyers — too few for a percentage` : "");
   return `<td class="num" data-col="buyers-${n}">${win.available ? num(c.buyers) : "—"}</td>`
     + cellPct(`same-${n}`, c.same_pct ?? c.repeat_pct, why)
+    + cellPct(`units-${n}`, c.units_pct, why)
     + cellPct(`from-${n}`, cross ? c.came_from_pct : null, cross ? why : "a brand total has no cross flow");
 }
 function rowHtml(r){
@@ -149,7 +150,7 @@ function sortValue(r, key){
   const [what, n] = key.split("-");
   if(!(data.windows[n] || {}).available) return null;
   const c = (r.w || {})[n] || {};
-  return {buyers: c.buyers, same: c.same_pct, from: c.came_from_pct}[what] ?? null;
+  return {buyers: c.buyers, same: c.same_pct, units: c.units_pct, from: c.came_from_pct}[what] ?? null;
 }
 function sortedRows(){
   if(!sort.key) return data.rows;     // the server's order: most buyers first
@@ -181,12 +182,13 @@ function applySort(key){
   if(again) again.focus();
 }
 function render(){
-  const cols = 2 + WINS.length * 3;
+  const cols = 2 + WINS.length * 4;
   const head = `<tr>${th("product", "Product", "", "").replace("<th ", '<th rowspan="2" ')}`
     + th("fba", "FBA share", "num", "Share of its units shipped by FBA. Easy Ship orders carry no customer key.").replace("<th ", '<th rowspan="2" ')
-    + WINS.map(n => `<th colspan="3" class="grp">${n}-day</th>`).join("") + `</tr><tr class="sub">`
+    + WINS.map(n => `<th colspan="4" class="grp">${n}-day</th>`).join("") + `</tr><tr class="sub">`
     + WINS.map(n => th(`buyers-${n}`, "Buyers", "num", "Customers who bought it in the 30-day cohort period")
-      + th(`same-${n}`, "Same repeat", "num", "Bought the SAME product again on a later day")
+      + th(`same-${n}`, "Same repeat", "num", "Share of CUSTOMERS who bought the SAME product again on a later day")
+      + th(`units-${n}`, "Repeat units", "num", "Share of UNITS bought by those repeat customers, their first order included. Brand Analytics' measure, so it reads higher than the customer share")
       + th(`from-${n}`, "From other", "num", "Had bought a DIFFERENT product of ours in the days before")).join("")
     + `</tr>`;
   const body = data.rows.length ? sortedRows().map(rowHtml).join("")

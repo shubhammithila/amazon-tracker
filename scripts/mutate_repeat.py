@@ -61,6 +61,20 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
      "const partial = false;", "Easy-Ship-heavy rows are not flagged"),
     (T, "const c = win.available ? (w[n] || {}) : {};", "const c = w[n] || {};",
      "an unavailable window's figures leak onto the screen"),
+    (L, """                bought = sum(o.units_of(p) for o in history
+                             if anchor <= o.day <= anchor + span)""",
+     """                bought = sum(o.units_of(p) for o in history
+                             if anchor < o.day <= anchor + span)""",
+     "repeat units leave out the first purchase (not Brand Analytics' measure)"),
+    (L, "                    c[\"repeat_units\"] += bought\n", "",
+     "repeat units are never counted"),
+    (L, "    if buyers < MIN_COHORT or units <= 0:", "    if units <= 0:",
+     "a repeat-units share is shown for a 3-customer cohort"),
+    (L, "        o[3][line[\"parent_asin\"]] += int(line.get(\"units\") or 0)",
+     "        o[3][line[\"parent_asin\"]] = 1",
+     "units are counted as one per line"),
+    (T, "    + cellPct(`units-${n}`, c.units_pct, why)", "    + cellPct(`units-${n}`, c.same_pct, why)",
+     "the Repeat units column shows the customer share"),
 ]
 
 TESTS = [

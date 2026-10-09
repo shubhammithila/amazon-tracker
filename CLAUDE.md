@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2733 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2739 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3140,6 +3140,21 @@ unavailable window sorts as all dashes rather than by the figures it hides. Test
 measured offsets inside a height-capped wrapper), and **there is no expand panel** — asked for as
 *"I dont want this"*. The came-from / went-on / basket data still travels in the payload; nothing
 renders it.
+
+### "Repeat units" — Brand Analytics' measure, beside ours
+Asked why Brand Analytics showed **25–26%** repeat while the app topped out at **23.1%**. Different
+questions: ours is the share of CUSTOMERS who came back; Brand Analytics' "% share of total units"
+is the share of UNITS bought by repeat customers, **their first order included**. Repeaters buy
+more often and in bigger quantities, so the unit share always reads higher. It is also per pack size
+and all-channel, where we are per parent and FBA-only.
+
+So each window gained a **Repeat units** column (`logic.units_pct`): of the units of X the cohort
+bought from its anchor through anchor + N days, the share bought by customers who repeated X. Shown
+BESIDE the customer %, never as "the higher of the two" — a column that is a unit share on one row
+and a customer share on the next cannot be compared or sorted. Gated on BUYERS (`MIN_COHORT`), since
+30 units from 3 people is noise. `test_repeat_reference.py`'s naive restatement computes it too, from
+random unit counts, and `mutate_repeat.py` is now 23/23 (dropping the first purchase, ungating it,
+one-unit-per-line, and the screen showing the customer share are all caught).
 
 ## Ads tab — campaign performance, and bulk bid edits
 

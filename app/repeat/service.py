@@ -63,6 +63,7 @@ async def build_payload(db, brand: str | None, today: date) -> dict:
         if brand_of.get(p) != brand:
             continue
         w = {str(n): {"buyers": c["buyers"], "same_pct": logic.pct(c["same"], c["buyers"]),
+                      "units_pct": logic.units_pct(c["repeat_units"], c["units"], c["buyers"]),
                       "came_from_pct": logic.pct(c["came_from"], c["buyers"]),
                       "went_on_pct": logic.pct(c["went_on"], c["buyers"])}
              for n, c in per.items()}
@@ -79,7 +80,8 @@ async def build_payload(db, brand: str | None, today: date) -> dict:
         })
     rows.sort(key=lambda r: (-max((v["buyers"] for v in r["w"].values()), default=0),
                              r["product"].casefold()))
-    total = {str(n): {"buyers": c["buyers"], "repeat_pct": logic.pct(c["repeat"], c["buyers"])}
+    total = {str(n): {"buyers": c["buyers"], "repeat_pct": logic.pct(c["repeat"], c["buyers"]),
+                      "units_pct": logic.units_pct(c["repeat_units"], c["units"], c["buyers"])}
              for n, c in m["brands"].get(brand, {}).items()}
     windows = {str(n): {"period": [w["period"][0].isoformat(), w["period"][1].isoformat()],
                         "available": w["available"], "reason": w["reason"]}
