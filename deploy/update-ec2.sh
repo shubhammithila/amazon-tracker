@@ -366,8 +366,10 @@ def indexes(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "assistant_log" in tables:
+    print("e5a9c3f17d42")                           # head: Portfolio "Ask" assistant log
 elif "revenue" in cols("customer_order_lines"):
-    print("d2f6b8a41c07")                           # head: price paid per customer line (LTV)
+    print("d2f6b8a41c07")                           # price paid per customer line (LTV)
 elif "customer_order_lines" in tables:
     print("a4c7e2f19b30")                           # Repeat customers (FBA order lines)
 elif "preferences_json" in cols("users"):
@@ -481,6 +483,8 @@ need = {"shipment_plans", "shipment_plan_items", "shipment_packing_days",
         "economics_refresh",
         # Portfolio -> Repeat customers (a4c7e2f19b30).
         "customer_order_lines", "repeat_refresh",
+        # The Portfolio "Ask" assistant's question log (e5a9c3f17d42).
+        "assistant_log",
         # The Ads tab. `ads_mutation` is the one that matters most here: it is the audit trail and
         # the undo for live bid changes, so a deploy that left it missing would make the tab
         # unsafe rather than merely broken.

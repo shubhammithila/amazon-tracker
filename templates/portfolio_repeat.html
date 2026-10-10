@@ -345,6 +345,9 @@ $("refresh-btn").addEventListener("click", async () => {
     : (await r.json()).error;
 });
 load();
+/* What the "Ask" panel sends as the screen's context: the brand and category on screen. */
+function askContext(){ return {tab: "repeat", brand: data.brand, category}; }
 </script>
+{% include "_ask_panel.html" %}
 </body>
 </html>

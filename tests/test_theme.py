@@ -37,7 +37,7 @@ THEME = REPO_ROOT / "static" / "theme.css"
 #: fragments are still held to both. That is the right boundary: the icon sprite is
 #: precisely the kind of file where a `stroke="#555"` would be easy to write, and
 #: `currentColor` is what keeps theme.css the only place colour lives.
-FRAGMENTS = {"nav.html", "_icons.html", "_icon_sprite.html", "_portfolio_tabs.html"}
+FRAGMENTS = {"nav.html", "_icons.html", "_icon_sprite.html", "_portfolio_tabs.html", "_ask_panel.html"}
 PAGES = [p for p in TEMPLATES if p.name not in FRAGMENTS]
 
 pytestmark = pytest.mark.regression

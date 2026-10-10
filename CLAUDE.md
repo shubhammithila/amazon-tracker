@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2824 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2871 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -171,6 +171,7 @@ app/
 │   ├── repository.py    # PER-DAY economics/ads cache, range_completeness, purge_daily,
 │   │                    # one-query ratings, owner decisions
 │   └── refresh.py       # run_incremental (nightly, yesterday only) + run (manual, a window)
+├── assistant/           # Portfolio -> "Ask": Bedrock client, read-only tools, the tool loop
 ├── repeat/              # Portfolio -> Repeat customers (FBA order lines keyed to a hashed buyer)
 │   ├── keys.py          # salted HMAC of the masked buyer email; the email is never stored
 │   ├── fetch.py         # GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL, <=30-day chunks
@@ -3274,6 +3275,38 @@ after FBA share; a dash below 20 reorders.
 `venv/bin/python scripts/backfill_repeat.py --reprice` in a `screen`: re-reads every month since
 1 Jan whose lines still lack a price, newest first, skipping priced chunks, so it is resumable. Until
 it finishes the page says from which day prices are loaded, and LTV covers cohorts from then.
+
+## Portfolio → "Ask": a read-only assistant over the three sub-tabs
+
+An **Ask** button (bottom right) on Profit, Repeat customers and Customer value opens a side panel.
+Asked for as *"ai chat bot… simple not using much tokens… basis the questions asked and the data
+stored in the profit/repeat/customer value tab"*. Claude **Sonnet 5.5 on Amazon Bedrock**
+(`us.anthropic.claude-sonnet-5-5`), `POST /portfolio/ask`, `app/assistant/`.
+
+**The server computes every number; the model only picks a slice and phrases it.** Seven tools
+(`app/assistant/tools.py`) slice the SAME payloads the tabs render (`_dashboard`,
+`repeat.service.build_payload`, `value_service.build_payload`), so an answer cannot disagree with
+the screen. A filtered total recomputes its percentages from rupee sums, a missing figure stays
+null and sorts last, an unavailable window returns no figures, "no attributed sales" is said in
+words. No tool writes; a test pins the seven names and forbids imports of anything that refreshes,
+fetches, applies or saves.
+
+- **Cheap by construction.** System prompt (with every definition) and tool list sit before a
+  `cachePoint`; slices are capped at 40 rows and ~14k characters; only the last 3 exchanges travel.
+  Measured on production: 2–7k input + 600–1,000 output tokens per question, 4–11k read from cache,
+  9–22 s.
+- **The screen is the context.** Each page defines `askContext()` (tab, brand, Profit window,
+  category); a tool call that names none gets the screen's. A product the owner names but the MRP
+  sheet marks inactive is looked up again with inactive products included (Raw Flaxseed is one).
+- **Bedrock API key as `Authorization: Bearer`** (`AWS_BEARER_TOKEN_BEDROCK`, `AWS_REGION`), plain
+  httpx, no boto3. `thinking: disabled` is REFUSED by this model; it asks for `between_tools`.
+- **`assistant_log`** (`e5a9c3f17d42`) keeps every question with tokens, tool calls, latency and any
+  error. `ASSISTANT_DAILY_LIMIT` (200) caps questions per IST day across all logins.
+- **The panel escapes everything, then formats** a tiny markdown subset (paragraphs, bullets, tables,
+  bold); the answer text is never trusted as markup. Each answer shows its source ("Profit · 10 Sep →
+  9 Oct") so it can be checked against the tab. Portfolio area only.
+- **No test calls Bedrock**: `conftest.no_live_bedrock` replaces the client for every test, because
+  the developer `.env` holds a real key. `scripts/mutate_assistant.py`: 25/25 caught.
 
 ## Ads tab — campaign performance, and bulk bid edits
 

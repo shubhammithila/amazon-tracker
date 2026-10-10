@@ -386,6 +386,9 @@ async function downloadExport(format, btn){
 document.querySelectorAll("[data-export]").forEach(b =>
   b.addEventListener("click", () => downloadExport(b.dataset.export, b)));
 load();
+/* What the "Ask" panel sends as the screen's context: the brand and category on screen. */
+function askContext(){ return {tab: "value", brand: data.brand, category}; }
 </script>
+{% include "_ask_panel.html" %}
 </body>
 </html>

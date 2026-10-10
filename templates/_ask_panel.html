@@ -1,0 +1,205 @@
+{#
+  Portfolio -> "Ask": a side panel over the three sub-tabs, answered by POST /portfolio/ask.
+
+  The page that includes this defines `askContext()` returning what is on screen ({tab, brand,
+  start, end, category}), so "why is this one low?" needs no retyping. The server computes every
+  figure (app/assistant/tools.py); this panel only sends the question and renders the answer.
+
+  Answers are rendered from a tiny markdown subset AFTER escaping everything, so nothing the model
+  writes can become markup.
+#}
+<style>
+.ask-fab{position:fixed;right:20px;bottom:20px;z-index:1000;display:flex;align-items:center;gap:6px;
+  padding:10px 16px;border-radius:999px;border:none;background:var(--accent);color:var(--on-accent);
+  font-size:14px;font-weight:600;cursor:pointer;box-shadow:var(--shadow-lg)}
+.ask-fab:hover{background:var(--accent-hover)}
+.ask-fab .ico{width:18px;height:18px}
+.ask-panel{position:fixed;top:0;right:0;bottom:0;z-index:1001;width:420px;max-width:100vw;
+  display:none;flex-direction:column;background:var(--surface);border-left:1px solid var(--border);
+  box-shadow:var(--shadow-lg)}
+.ask-panel.open{display:flex}
+.ask-head{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--border)}
+.ask-head h3{margin:0;font-size:15px;flex:1}
+.ask-head button{background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:12px;padding:4px 6px}
+.ask-head button:hover{color:var(--text)}
+.ask-head .ico{width:16px;height:16px}
+.ask-log{flex:1;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:12px}
+.ask-q{align-self:flex-end;max-width:85%;background:var(--accent-soft);color:var(--text);
+  padding:8px 11px;border-radius:12px 12px 2px 12px;font-size:13px;white-space:pre-wrap}
+.ask-a{align-self:stretch;font-size:13px;line-height:1.5;color:var(--text)}
+.ask-a p{margin:0 0 6px}
+.ask-a ul{margin:4px 0 6px;padding-left:18px}
+.ask-a table{border-collapse:collapse;margin:6px 0;font-size:12px;width:100%}
+.ask-a th,.ask-a td{border:1px solid var(--border);padding:3px 6px;text-align:left;white-space:nowrap}
+.ask-a th{background:var(--surface2)}
+.ask-tablewrap{overflow-x:auto}
+.ask-meta{margin-top:4px;font-size:11px;color:var(--text-dim);display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.ask-src{background:var(--surface2);border:1px solid var(--border);border-radius:999px;padding:1px 8px}
+.ask-meta button{background:none;border:none;color:var(--accent);cursor:pointer;font-size:11px;padding:0}
+.ask-err{color:var(--danger);font-size:13px}
+.ask-wait{color:var(--text-muted);font-size:13px;font-style:italic}
+.ask-sugg{display:flex;flex-direction:column;gap:6px}
+.ask-sugg .dim{font-size:12px;color:var(--text-muted)}
+.ask-sugg button{text-align:left;background:var(--surface2);border:1px solid var(--border);border-radius:8px;
+  padding:7px 10px;font-size:13px;color:var(--text);cursor:pointer}
+.ask-sugg button:hover{border-color:var(--accent)}
+.ask-form{border-top:1px solid var(--border);padding:10px 14px;display:flex;gap:8px;align-items:flex-end}
+.ask-form textarea{flex:1;resize:none;min-height:38px;max-height:120px;padding:8px 10px;font:inherit;font-size:13px;
+  border:1px solid var(--border-strong);border-radius:8px;background:var(--surface);color:var(--text)}
+.ask-form button{padding:9px 14px;border:none;border-radius:8px;background:var(--accent);color:var(--on-accent);
+  font-weight:600;cursor:pointer}
+.ask-form button:disabled{opacity:.5;cursor:default}
+.ask-foot{padding:0 14px 10px;font-size:11px;color:var(--text-dim)}
+@media (max-width:600px){.ask-panel{width:100vw}}
+@media print{.ask-fab,.ask-panel{display:none !important}}
+</style>
+
+<button class="ask-fab" id="ask-open" type="button" aria-controls="ask-panel" aria-expanded="false"
+        title="Ask a question about this data">
+  <svg class="ico" aria-hidden="true" focusable="false"><use href="#i-message"/></svg> Ask
+</button>
+<aside class="ask-panel" id="ask-panel" aria-label="Ask about the portfolio data">
+  <div class="ask-head">
+    <h3>Ask about this data</h3>
+    <button type="button" id="ask-clear" title="Start a new conversation">Clear</button>
+    <button type="button" id="ask-close" aria-label="Close">
+      <svg class="ico" aria-hidden="true" focusable="false"><use href="#i-x"/></svg>
+    </button>
+  </div>
+  <div class="ask-log" id="ask-log" aria-live="polite"></div>
+  <form class="ask-form" id="ask-form">
+    <textarea id="ask-input" rows="1" maxlength="1000" placeholder="e.g. Which sattu products lose money?"
+              aria-label="Your question"></textarea>
+    <button type="submit" id="ask-send">Ask</button>
+  </form>
+  <div class="ask-foot">Read-only. Answers use only figures from these tabs; check the source shown under each answer.</div>
+</aside>
+
+<script>
+(() => {
+  const el = id => document.getElementById(id);
+  const KEY = "ask.history";
+  const SUGGEST = {
+    profit: ["Which products lose money in this window?", "Which category has the highest TACOS?",
+             "Top 5 products by Net ₹/kg"],
+    repeat: ["Which products have the highest 90-day repeat?", "What else do Chana Sattu customers buy?",
+             "Which products are partial because of Easy Ship?"],
+    value: ["Which products have LTV:CAC under 1?", "Which product brings in the most valuable customers?",
+            "How has CAC moved month by month?"],
+  };
+  let history = [];
+  try { history = JSON.parse(sessionStorage.getItem(KEY)) || []; } catch { history = []; }
+  let busy = false;
+
+  const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
+    ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+  function inline(s){
+    return esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>");
+  }
+  /* A tiny markdown subset: paragraphs, "- " bullets, "|" tables, **bold**. Escaped first. */
+  function md(text){
+    const lines = String(text || "").split("\n");
+    let out = "", i = 0;
+    while(i < lines.length){
+      const line = lines[i].trim();
+      if(!line){ i++; continue; }
+      if(line.startsWith("|")){
+        const rows = [];
+        while(i < lines.length && lines[i].trim().startsWith("|")) rows.push(lines[i++].trim());
+        const cells = r => r.replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+        const body = rows.filter(r => !/^\|[\s:|-]+\|$/.test(r));
+        const [head, ...rest] = body;
+        out += `<div class="ask-tablewrap"><table><thead><tr>${cells(head).map(c => `<th>${inline(c)}</th>`).join("")}</tr></thead>`
+          + `<tbody>${rest.map(r => `<tr>${cells(r).map(c => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+        continue;
+      }
+      if(/^[-*] /.test(line)){
+        const items = [];
+        while(i < lines.length && /^[-*] /.test(lines[i].trim())) items.push(lines[i++].trim().slice(2));
+        out += `<ul>${items.map(x => `<li>${inline(x)}</li>`).join("")}</ul>`;
+        continue;
+      }
+      out += `<p>${inline(line.replace(/^#+\s*/, ""))}</p>`;
+      i++;
+    }
+    return out;
+  }
+  function context(){
+    try { return typeof askContext === "function" ? (askContext() || {}) : {}; }
+    catch { return {}; }
+  }
+  function render(extra){
+    const tab = context().tab || "profit";
+    let html = "";
+    if(!history.length && !extra){
+      html = `<div class="ask-sugg"><div class="dim">Ask in English or Hinglish. Some ideas:</div>`
+        + (SUGGEST[tab] || SUGGEST.profit).map(q => `<button type="button" data-q="${esc(q)}">${esc(q)}</button>`).join("")
+        + `</div>`;
+    }
+    html += history.map((t, k) => `<div class="ask-q">${esc(t.q)}</div><div class="ask-a">${md(t.a)}`
+      + `<div class="ask-meta">${(t.sources || []).map(s => `<span class="ask-src">${esc(s)}</span>`).join("")}`
+      + `<button type="button" data-copy="${k}">Copy</button></div></div>`).join("");
+    if(extra) html += extra;
+    el("ask-log").innerHTML = html;
+    el("ask-log").scrollTop = el("ask-log").scrollHeight;
+  }
+  function save(){
+    history = history.slice(-10);
+    sessionStorage.setItem(KEY, JSON.stringify(history));
+  }
+  async function send(question){
+    question = (question || "").trim();
+    if(!question || busy) return;
+    busy = true;
+    el("ask-send").disabled = true;
+    el("ask-input").value = "";
+    render(`<div class="ask-q">${esc(question)}</div><div class="ask-wait">Looking it up… this takes 10–20 seconds.</div>`);
+    try{
+      const r = await fetch("/portfolio/ask", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({question, context: context(),
+                              history: history.slice(-3).map(t => ({q: t.q, a: t.a}))})});
+      const body = await r.json().catch(() => ({}));
+      if(!r.ok){
+        render(`<div class="ask-q">${esc(question)}</div><div class="ask-err">${esc(body.error || "Could not get an answer.")}</div>`);
+        el("ask-input").value = question;
+        return;
+      }
+      history.push({q: question, a: body.answer, sources: body.sources || []});
+      save();
+      render();
+    }catch(err){
+      render(`<div class="ask-q">${esc(question)}</div><div class="ask-err">Could not reach the server.</div>`);
+      el("ask-input").value = question;
+    }finally{
+      busy = false;
+      el("ask-send").disabled = false;
+      el("ask-input").focus();
+    }
+  }
+  function setOpen(on){
+    el("ask-panel").classList.toggle("open", on);
+    el("ask-open").style.display = on ? "none" : "";
+    el("ask-open").setAttribute("aria-expanded", String(on));
+    if(on){ render(); el("ask-input").focus(); }
+  }
+  el("ask-open").addEventListener("click", () => setOpen(true));
+  el("ask-close").addEventListener("click", () => setOpen(false));
+  el("ask-clear").addEventListener("click", () => { history = []; save(); render(); });
+  el("ask-form").addEventListener("submit", e => { e.preventDefault(); send(el("ask-input").value); });
+  el("ask-input").addEventListener("keydown", e => {
+    if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); send(el("ask-input").value); }
+  });
+  el("ask-log").addEventListener("click", e => {
+    const q = e.target.closest("[data-q]");
+    if(q) return send(q.dataset.q);
+    const c = e.target.closest("[data-copy]");
+    if(c){
+      const t = history[Number(c.dataset.copy)];
+      if(t && navigator.clipboard) navigator.clipboard.writeText(t.a).then(() => { c.textContent = "Copied"; });
+    }
+  });
+  document.addEventListener("keydown", e => {
+    if(e.key === "Escape" && el("ask-panel").classList.contains("open")) setOpen(false);
+  });
+})();
+</script>

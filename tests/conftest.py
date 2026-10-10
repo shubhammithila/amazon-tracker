@@ -354,3 +354,12 @@ def no_spapi_credentials(monkeypatch):
         yield
     finally:
         config.get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def no_live_bedrock(monkeypatch):
+    """**No test may call Amazon Bedrock.** The developer's .env holds a real key, so without this a
+    test reaching `/portfolio/ask` would make a live, billed call and pass or fail on the network."""
+    async def refuse(**kwargs):
+        raise AssertionError("a test tried to call Bedrock for real; pass a fake `converse`")
+    monkeypatch.setattr("app.assistant.bedrock.converse", refuse)

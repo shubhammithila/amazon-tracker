@@ -2395,7 +2395,13 @@ function renderRefresh(st){
 }
 
 load();
+/* What the "Ask" panel sends as the screen's context: the window and category on screen. */
+function askContext(){
+  const w = (data && data.window) || [];
+  return {tab: "profit", start: w[0], end: w[1], category};
+}
 </script>
 </main>
+{% include "_ask_panel.html" %}
 </body>
 </html>

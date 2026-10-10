@@ -1508,3 +1508,30 @@ class AdsRefresh(Base):
     sb_error = Column(Text)
     started_at = Column(DateTime, default=datetime.utcnow)
     finished_at = Column(DateTime)
+
+
+class AssistantLog(Base):
+    """One question asked of the Portfolio "Ask" assistant, with what it cost.
+
+    The assistant only READS (its tools slice the same payloads the three sub-tabs render), so this
+    is not an audit trail of changes. It exists so cost is visible rather than discovered on an AWS
+    bill, so the daily cap has something to count, and so a wrong answer can be traced to the exact
+    tool calls and figures behind it.
+    """
+    __tablename__ = "assistant_log"
+    __table_args__ = (Index("idx_assistant_log_created", "created_at"),)
+
+    id = Column(Integer, primary_key=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    username = Column(String(80))
+    #: The sub-tab the question was asked from: profit · repeat · value.
+    tab = Column(String(12))
+    question = Column(Text, nullable=False)
+    answer = Column(Text)
+    #: JSON list of {"name", "input"}: what the model asked the server for.
+    tools_json = Column(Text)
+    input_tokens = Column(Integer, default=0)
+    output_tokens = Column(Integer, default=0)
+    cache_read_tokens = Column(Integer, default=0)
+    latency_ms = Column(Integer, default=0)
+    error = Column(Text)

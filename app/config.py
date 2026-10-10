@@ -142,6 +142,20 @@ class Settings(BaseSettings):
     ads_endpoint: str = "https://advertising-api-eu.amazon.com"
     ads_timeout: int = 60
 
+    # ── The Portfolio "Ask" assistant: Claude on Amazon Bedrock ──
+    #: A Bedrock API key, sent as `Authorization: Bearer`. No SigV4 and therefore no boto3: pip on
+    #: the t2.micro is the thing that once OOM-killed a deploy, and httpx is already here.
+    bedrock_api_key: str = Field("", validation_alias="AWS_BEARER_TOKEN_BEDROCK")
+    bedrock_region: str = Field("us-east-1", validation_alias="AWS_REGION")
+    #: A cross-region inference profile id; Bedrock serves Claude only through profiles.
+    assistant_model: str = Field("us.anthropic.claude-sonnet-5-5", validation_alias="ASSISTANT_MODEL")
+    #: Questions per IST day across every login, so a loop or a stuck key cannot run up a bill.
+    assistant_daily_limit: int = Field(200, validation_alias="ASSISTANT_DAILY_LIMIT")
+
+    @property
+    def assistant_configured(self) -> bool:
+        return bool(self.bedrock_api_key)
+
     @property
     def ads_configured(self) -> bool:
         """All four present. **The profile id counts**, unlike SP-API's marketplace default.
