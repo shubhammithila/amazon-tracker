@@ -559,172 +559,48 @@ def test_a_real_problem_still_raises_its_own_banner(expression, why):
     )
 
 
-def test_a_STALE_ratings_date_warns_while_a_FRESH_one_is_just_a_date_on_the_line():
-    """The one item that is sometimes a fact and sometimes a problem, which is the whole split.
-
-    Rule 6 splits BEST BET from SCALE on rating >= 4.0, so a stale rating silently shapes a
-    verdict — and a stale rating is what revealed the product scrape had never run on
-    production. **Never both**, or the quietening achieves nothing on the render that counts.
-    """
-    source = _source()
-    assert "!data.ratings_stale" in _note_region(source), (
-        "the collapsed line does not exclude the stale case, so a stale date would appear twice"
-    )
-    alerts = _alert_region(source)
+def test_a_STALE_ratings_date_still_raises_a_warn_banner():
+    """Rule 6 splits BEST BET from SCALE on rating >= 4.0, so a stale rating silently shapes a
+    verdict. The fresh date left the screen with the rest of the standing commentary; the stale
+    case is a problem, so it keeps its banner."""
+    alerts = _alert_region(_source())
     assert "data.ratings_stale" in alerts, "a stale ratings date no longer warns at all"
     stale = alerts[alerts.index("data.ratings_stale"):]
-    assert 'out.push(`<div class="banner warn"' in stale[:400], (
-        "a stale ratings date no longer raises a WARN banner"
-    )
+    assert 'out.push(`<div class="banner warn"' in stale[:400]
 
 
-#: Standing facts — true on every visit, so each is a line in the collapsed note and NOT a banner.
-#: Every entry names an expression that must still be INTERPOLATED, so deleting the information
-#: fails here rather than passing as "successfully quietened".
-COLLAPSED_FACTS = [
-    ("data.inactive_hidden_skus", "how many sizes the Active flag excluded"),
-    ("data.inactive_sales_units", "the excluded UNITS — the gap against a Business Report"),
-    ("data.inactive_sales", "the excluded RUPEES; the KPI tiles are money, so this reconciles"),
-    ("x.product", "the products are NAMED, because a wrong flag is a question only he can answer"),
-    ("x.sizes", "a shown product that lost a pack size"),
-    ("data.decided_but_inactive.join", "kept despite being inactive because a decision exists"),
-]
-
-
-@pytest.mark.parametrize("expression,why", COLLAPSED_FACTS, ids=lambda v: v.split(".")[-1][:24])
-def test_a_standing_fact_is_COLLAPSED_and_not_DELETED(expression, why):
-    """Both halves, and the second is what seven surviving mutations taught me to assert.
-
-    "No longer a banner" is satisfied by deleting the information outright, which would trade
-    five true-but-noisy blocks for a screen that quietly under-reports. So: it must still be
-    rendered, and it must be rendered into the collapsed note rather than a banner of its own.
-    """
-    source = _source()
-    assert _in_note(_note_region(source), expression), (
-        f"{expression} is not rendered into the collapsed note — {why}. It was DELETED rather "
-        "than collapsed, which under-reports instead of quietening."
-    )
-    # Scoped to the WHOLE function, not just the alert region. An earlier version checked only
-    # the region after the collapsed line, so re-adding a standing banner ABOVE it — which is
-    # exactly what a revert of this change looks like — walked straight through.
-    assert not _rendered(_banners(source), expression), (
-        f"{expression} still raises a standing banner — {why}. It is true on every render, so it "
-        "belongs on the collapsed line."
-    )
-
-
-def test_renderBanners_can_push_ONLY_these_banners():
-    """The set is the contract, and it is what a revert of this change would break.
-
-    Every assertion above is about one datum. This one is about the SHAPE: five standing blocks
-    became one collapsed line plus four conditions that mean something is wrong. A sixth banner
-    appearing — for any reason, including a well-meant new caveat — is the drift this pins, and
-    the per-datum tests cannot see it because they only ask about the data they name.
-
-    The empty-grid pair is included because it genuinely IS a problem: no figures at all.
-    """
+def test_renderBanners_pushes_ONLY_problems_and_no_standing_caveat_line():
+    """Asked for as *"need to remove these commentary so the dashboard looks cleaner"*: the collapsed
+    pre-COGS / ex-GST / ratings / inactive line is gone. What remains is a problem each time: an
+    empty grid (two causes) and four failures (stale ratings, catalogue, unmatched, refresh)."""
     pushed = _pushed_banners(_banners(_source()))
     classes = re.findall(r'<div class="banner ([^"$]*)', pushed)
     kinds = {value.strip() for value in classes if value.strip()}
-    assert kinds == {"warn", "info", "error", "info caveats"}, (
-        f"the banner kinds changed: {sorted(kinds)}. A new standing banner is the drift that made "
-        "the owner ask for this — five blocks of correct behaviour above the data."
-    )
-    # One collapsed line, and exactly one.
-    assert classes.count("info caveats") == 1, (
-        f"{classes.count('info caveats')} collapsed caveat lines — there must be exactly one, or "
-        "the standing facts are back to competing for the top of the screen"
-    )
-    assert len(classes) <= 7, (
-        f"renderBanners pushes {len(classes)} banners. Expected at most 7: the collapsed line, "
-        "two empty-grid cases, and four problems (stale ratings, catalogue, unmatched, refresh)."
-    )
+    assert kinds <= {"warn", "info", "error"}, sorted(kinds)
+    assert "caveats" not in pushed and len(classes) <= 6
 
 
-def test_the_pre_COGS_caveat_survives_the_collapse():
-    """The one fact here that stops a money-losing SKU reading as a keeper.
-
-    Amazon's `netProceeds` is sales minus Amazon's fees minus ads and excludes what the product
-    costs to make, so a size showing +8.8% may still lose money. That is why the caveat is also
-    written into row 1 of the workbook — and why quietening the screen must not drop it.
-
-    Asserted separately from the `COLLAPSED_FACTS` table because it is a literal string rather than
-    an interpolated value, so `_in_note`'s `${...}` test cannot see it — which is exactly how
-    deleting it survived nineteen mutations' worth of everything else.
-    """
-    note = _note_region(_source())
-    assert "notes.push" in note[note.index("data.pre_cogs"):][:200], (
-        "the pre-COGS caveat no longer reaches the collapsed note — a margin read as profit is how "
-        "a money-losing SKU looks like a keeper"
-    )
-    assert "pre-COGS" in note, "the caveat's own text is gone"
+REMOVED_COMMENTARY = [
+    ("Margins are pre-COGS · all figures ex-GST", "the collapsed caveat line"),
+    ("any range inside them is instant", "the coverage note in the window bar"),
+    ("${n(lr.rows_stored)} rows", "the row count after 'last refreshed'"),
+    ("have no category yet", "the unclassified-products note under the category cards"),
+    ("Amazon's own economics and advertising figures", "the subtitle line"),
+]
 
 
-def test_each_named_product_carries_its_OWN_units_and_rupees():
-    """"White Sesame Seeds" alone is not actionable; "316u ₹50,027" is.
-
-    The owner is being asked whether each Active flag is right, and the answer depends entirely on
-    the SIZE of what it excluded — 316 units is probably a mis-set flag, 3 units is probably a
-    deliberate run-down. A bare list of names, or a bare total, cannot support that judgement.
-
-    Asserted on the PER-PRODUCT fields rather than the portfolio total, because two mutations
-    survived a version that checked only `money(data.inactive_sales)`: that expression appears
-    TWICE in the note — once on the collapsed line and once in the full text — so deleting either
-    occurrence left the other satisfying the check. Same for `esc(x.product)`, which also appears
-    in the sizes-of-shown line. The per-row figures appear exactly once each.
-    """
-    note = _note_region(_source())
-    assert "${n(x.units)}u" in note, (
-        "a named product no longer shows its own UNITS, so the owner cannot tell a mis-set flag "
-        "from a deliberate run-down"
-    )
-    assert "${money(x.sales)}" in note, "a named product no longer shows its own sales"
+@pytest.mark.parametrize("text,what", REMOVED_COMMENTARY, ids=lambda v: v[:24])
+def test_the_standing_commentary_stays_off_the_profit_tab(text, what):
+    assert text not in _source(), f"{what} is back on the Profit tab"
 
 
-def test_the_named_list_is_capped_while_its_COUNT_stays_exact():
-    """"5 products" when 9 sold is a sentence the owner cannot act on.
-
-    Naming all 56 inactive products would bury the 8 that matter among dead stock, so the list is
-    capped — and the overflow then has to be stated, which is the same discipline the catalogue
-    notes and the Projections `needs_review` list already follow.
-
-    Scoped to the NOTE region deliberately: `more` is a generic local name and the empty-grid
-    banner has its own `${n(more)}` for missing days, so a whole-function check confuses the two.
-    That collision failed an earlier version of this test — a real finding about the assertion,
-    not about the code.
-    """
-    note = _note_region(_source())
-    assert "inactive_with_sales_count" in note, "the exact count is not read, so it cannot be stated"
-    assert "${n(more)}" in note, (
-        "the collapsed note does not state 'and N more', so a capped list reads as the whole list"
-    )
-
-
-def test_the_collapsed_line_states_the_hidden_SIZES_and_their_RUPEES_without_expanding():
-    """The visible half has to carry enough that the  is a choice, not a requirement.
-
-    A collapsed line reading only "3 notes" would make the exclusion invisible until clicked,
-    which is how a 1.5% gap against a Business Report goes unnoticed — the "3,337 units against
-    3,259" report. So the SIZE COUNT and the MONEY are on the line itself.
-    """
-    region = _note_region(_source())
-    short = region[region.index("short: `${n(data.inactive_hidden_skus)}"):]
-    short = short[: short.index("full:")]
-    assert "hidden as inactive" in short
-    assert "money(data.inactive_sales)" in short, (
-        "the collapsed line does not state the excluded rupees, so the totals cannot be reconciled "
-        "without expanding it"
-    )
-    # **And the EXPANDED text has to state the total too, independently.** Asserting only the
-    # collapsed line let a mutation that stripped the total from the full text survive: the same
-    # expression appears in both places, so one check covered whichever happened to remain. The
-    # expanded text is where the owner reconciles against a Business Report, so the total belongs
-    # there whatever the line says.
-    expanded = region[: region.index("short: `${n(data.inactive_hidden_skus)}")]
-    assert "money(data.inactive_sales)" in expanded, (
-        "the EXPANDED note does not total the excluded rupees — the collapsed line alone leaves "
-        "the named products with no sum to reconcile against"
-    )
+def test_what_the_commentary_said_is_still_ON_SCREEN_elsewhere():
+    """Removing a sentence must not remove the fact: pre-COGS and ex-GST are in the KPI tile and the
+    Sales heading, and the hidden inactive products are one button away."""
+    text = _source()
+    assert '<div class="k">Net (pre-COGS)</div>' in text
+    assert '<div class="k">Sales (ex-GST)</div>' in text
+    assert 'id="inactive-btn"' in text
 
 
 def test_the_totals_cells_have_the_SAME_padding_as_the_body_cells_so_figures_line_up():

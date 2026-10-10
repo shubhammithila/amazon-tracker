@@ -576,19 +576,6 @@ def test_the_empty_table_note_names_the_ACTIVE_FLAG_as_a_fifth_cause():
     assert "Show inactive" in body, "the note does not name the control that undoes it"
 
 
-def test_the_banner_states_the_excluded_money_AND_units_and_names_the_products():
-    """The four KPI tiles are MONEY, so hiding Rs 67,193 leaves a 1.5% gap with no account of itself.
-
-    That gap, reported as 3,337 units against 3,259, is why the Shipment tab's version of this banner
-    exists. This one states rupees as well as units because of what sits above it.
-    """
-    body = _function(_template(), "renderBanners")
-    assert "inactive_with_sales" in body, "the excluded products are not named"
-    assert "inactive_sales_units" in body, "the excluded units are not stated"
-    assert "money(data.inactive_sales)" in body, "the excluded rupees are not stated"
-    # And it must not fire when nothing was excluded.
-    assert "!data.include_inactive && n(data.inactive_hidden_skus)" in body
-
 
 def test_a_shown_but_inactive_row_SAYS_it_is_inactive():
     """Rendered identically to a live product, the flag is silently not mattering.

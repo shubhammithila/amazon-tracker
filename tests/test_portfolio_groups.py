@@ -413,25 +413,6 @@ def test_the_table_filters_on_the_group_not_the_verdict():
     )
 
 
-def test_the_unclassified_note_explains_the_row_and_name_counts():
-    """The card counts rows, the note counts names, and the screen must say so when they differ.
-
-    Stated only when there IS a difference: "51 names across 51 rows" is noise, and a caveat that
-    fires on every render is the kind that trains the reader to skip the one that matters.
-    """
-    body = _template_function(_portfolio_template(), "renderCategories")
-    assert "ct.unclassified_rows" in body, (
-        "the note does not read the row count, so 55 on the card beside 51 in the note is "
-        "unexplained"
-    )
-    # The whole condition, anchored to its assignment. A substring check on `rowCount > nameCount`
-    # alone survived `false && rowCount > nameCount` — the deploy-detector trap (an id that also
-    # appears in the comment explaining the bug), and the FIFTH instance of it in this codebase.
-    assert "const dupes = rowCount > nameCount" in body, (
-        "the explanation is not gated on the two counts actually differing, so it either fires "
-        "when they agree or has been disabled"
-    )
-
 
 def test_the_screen_reads_the_grouping_from_the_server_not_a_second_copy():
     """A mapping duplicated here is how a tab count comes to disagree with its own rows."""

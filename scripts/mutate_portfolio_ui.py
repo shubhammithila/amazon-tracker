@@ -222,7 +222,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         TESTS_FILE,
-        'FRAGMENTS = {"nav.html", "_icons.html", "_icon_sprite.html", "_portfolio_tabs.html"}',
+        'FRAGMENTS = {"nav.html", "_icons.html", "_icon_sprite.html", "_portfolio_tabs.html", "_ask_panel.html"}',
         'FRAGMENTS = {"nav.html"}',
         "proves the exemption is load-bearing rather than cargo-culted: the two partials have no "
         "<head>, so the suite must FAIL when they are held to the stylesheet-link rule",

@@ -417,7 +417,10 @@ def _upgrade_to(sync_url: str, revision: str) -> None:
 
 #: How many revisions back from head to check. Production sits one or two revisions behind head
 #: between a merge and its deploy, so those are the schemas the detector must name correctly.
-RECENT_REVISIONS = 3
+#: TEN, not three: at three, every new migration pushed an older branch out of the test, and
+#: deleting the `preferences_json` and `sb_spend` branches then survived both mutation harnesses
+#: that guard them. Ten migrates in ~6 s.
+RECENT_REVISIONS = 10
 
 
 def _recent_revisions() -> list[str]:

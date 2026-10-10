@@ -808,22 +808,10 @@ function render(){
 }
 
 function renderSubtitle(){
-  const w = data.window;
-  const parts = [];
-  // Set via textContent below, so these dates need no escaping — but they ARE stored values,
-  // so the assignment target matters and must stay textContent.
-  if(w) parts.push(`${w[0]} to ${w[1]}`);
-  // **"35 active products · 55 hidden as inactive", not "35 products".** The owner knows there are
-  // 90, so a bare count reads as missing data — and this line is also what makes the toggle
-  // discoverable, since nothing else on screen says the grid is a subset.
-  const hidden = n(data.inactive_hidden_parents);
-  const shown = `${n(data.totals.parents)} ${hidden && !data.include_inactive ? "active " : ""}products`;
-  parts.push(`${shown}, ${n(data.totals.skus)} pack sizes`);
-  if(hidden && !data.include_inactive){
-    parts.push(`${n(hidden)} hidden as inactive`);
-  }
-  parts.push("Amazon's own economics and advertising figures");
-  $("subtitle").textContent = parts.join(" · ");
+  /* Removed on request ("need to remove these commentary so the dashboard looks cleaner"): the
+     window is in the date boxes, the counts in the totals row and the "Show N inactive" button. */
+  $("subtitle").textContent = "";
+  $("subtitle").hidden = true;
 }
 
 /* ── The window bar ─────────────────────────────────────────────────────────────
@@ -873,9 +861,6 @@ function renderWindowBar(){
   // **The SERVER's answer for the range actually on screen**, never a second computation of it.
   const done = data.completeness || {};
   const needsFetch = !!(w[0] && done.complete === false);
-  const held = cov.days
-    ? `holding ${n(cov.days)} day(s), ${esc(cov.first)} to ${esc(cov.last)}`
-    : "nothing stored yet";
   $("window-bar").innerHTML = `
     <span class="win-label">Window</span>
     ${buttons}
@@ -885,8 +870,7 @@ function renderWindowBar(){
     <input class="win-date" type="date" id="win-to" value="${esc(w[1])}" max="${esc(maxDate())}"
       aria-label="Window end date, no later than yesterday"/>
     <button class="btn-outline" id="win-apply">Show</button>
-    ${needsFetch ? `<button class="btn" id="win-fetch">Fetch the missing days (~15 min)</button>` : ""}
-    <span class="dim" style="font-size:11.5px">${held} — any range inside them is instant</span>`;
+    ${needsFetch ? `<button class="btn" id="win-fetch">Fetch the missing days (~15 min)</button>` : ""}`;
 }
 
 /* Yesterday, because today's figures are still settling: an ad charge lands hours after the
@@ -936,111 +920,10 @@ function renderBanners(){
     }
   }
 
-  /* ── STANDING FACTS collapse to ONE line; only a PROBLEM gets a banner ──────────
-     Reported as *"too many messages at the top. dont want them if the logics are working fine"*,
-     against a screenshot showing FIVE stacked blocks — and every one of them was reporting correct
-     behaviour. That is the failure this codebase already records three times over: *"a caveat that
-     fires on every render is the kind that trains its reader to skip the one that matters"*, and
-     the one that matters here is a failed refresh sitting underneath four paragraphs of routine.
-
-     So the test is now **"is something wrong?"**, not "is something true?":
-
-       collapsed onto one line   pre-COGS margins · the ratings date · what Active = N excluded
-       a real banner             a failed refresh · an unsummable range · a STALE ratings date ·
-                                 ASINs missing from the sheet · the catalogue on its cached copy
-
-     **Nothing is dropped and no figure is rounded away.** The exclusion still states units AND
-     rupees, still names the products biggest-sales-first, and still says which shown products lost
-     a size — one click away instead of ~150px of standing yellow. Two things make that safe:
-
-       - the SUBTITLE independently carries "35 active products · 56 hidden as inactive", so the
-         grid can never silently look like the whole account;
-       - **`build_portfolio_xlsx` writes the same exclusion into row 1 of the workbook**, which is
-         the path that actually needs it — a file leaves the app with no screen beside it, and
-         `test_the_WORKBOOK_follows_the_toggle_and_names_what_it_excluded` pins it there.
-
-     **A stale ratings date is promoted OUT of the line into its own warn banner**, because it is
-     the one item here that is sometimes a problem rather than always a fact — rule 6 splits
-     BEST BET from SCALE on rating >= 4.0, so a stale figure silently shapes a verdict, and it is
-     what revealed the product scrape had never run on production. Fresh, it is a date on the line;
-     stale, it interrupts. That is exactly the distinction the rest of this block is built on. */
-  const notes = [];
-  if(data.pre_cogs){
-    notes.push({
-      short: "Margins are pre-COGS · all figures ex-GST",
-      full: `<strong>Every margin here is pre-COGS.</strong> It is Amazon's net proceeds — sales
-        minus Amazon's fees minus ads — and does <strong>not</strong> include what it costs to make
-        the product. A size showing a small profit may still lose money. Enter your cost per unit in
-        Seller Central (SKU Central / Revenue Calculator) and Amazon returns it here, making these
-        true margins. <strong>Every figure is ex-GST</strong>: sales exclude the GST on the order,
-        Amazon's fees exclude their 18% GST (claimed back as input tax credit), and ad spend carries
-        no GST in Amazon's figures.`,
-    });
-  }
-  /* Fresh: a date on the collapsed line. Stale: its own banner below, not both. */
-  if(data.ratings_as_of && !data.ratings_stale){
-    const when = String(data.ratings_as_of).slice(0, 10);
-    notes.push({
-      short: `ratings from ${esc(when)}`,
-      full: `<strong>Ratings are from ${esc(when)}.</strong> Star ratings come from our own scraper,
-        not Amazon's API, so a stale figure would quietly shape a verdict. They refresh nightly;
-        you can also run a product scrape from the Dashboard.`,
-    });
-  }
-
-  /* What the Active flag excluded — the figures above drop by exactly this, and the four KPI tiles
-     are money, so an unexplained 1.5% gap against a Business Report is the "3,337 against 3,259"
-     report all over again. Hence units AND rupees, and hence the products NAMED: an inactive
-     product that is still selling is a QUESTION only the owner can answer — a mis-set flag and a
-     deliberate run-down look identical. It does not put the rows back, deliberately.
-
-     Only the products that SOLD are named, biggest first and capped, with the COUNT left exact:
-     naming all 56 would bury the 8 that matter among dead stock. */
-  if(!data.include_inactive && n(data.inactive_hidden_skus)){
-    const named = (data.inactive_with_sales || []);
-    const more = n(data.inactive_with_sales_count) - named.length;
-    const list = named.map(x =>
-      `${esc(x.product)} <span class="dim">${n(x.units)}u ${money(x.sales)}</span>`
-    ).join(" · ");
-    const parts = [`<strong>${n(data.inactive_hidden_skus)} pack size(s) across
-      ${n(data.inactive_hidden_parents)} product(s) are marked Active = N in the MRP sheet</strong>
-      and are excluded from every figure above.`];
-    parts.push(named.length
-      ? `Still selling, so worth checking the flag is right: ${list}${
-          more > 0 ? ` <span class="dim">and ${n(more)} more</span>` : ""} —
-         <strong>${n(data.inactive_sales_units)} units, ${money(data.inactive_sales)}</strong>
-         in total.`
-      : `None of them sold in this window.`);
-    /* A size dropped from a product that is STILL SHOWN is a different question — "is this pack
-       size really retired", asked while the parent row beside it looks entirely normal, which is
-       what makes it the easier one to miss. It rides in the same note rather than its own line. */
-    if((data.inactive_sizes_of_shown || []).length){
-      parts.push(`Products shown here that lost a pack size from their totals:
-        ${data.inactive_sizes_of_shown.map(x =>
-          `${esc(x.product)} <span class="dim">${n(x.sizes)}</span>`).join(" · ")}.`);
-    }
-    /* Shown DESPITE being inactive, because a decision is recorded against them — `ProductDecision`
-       answers "I marked this KILL at -56.8% net; what is it now?", which needs the row present. */
-    if((data.decided_but_inactive || []).length){
-      parts.push(`${esc(data.decided_but_inactive.join(", "))} — inactive in the sheet, but kept
-        here because you recorded a decision on
-        ${data.decided_but_inactive.length === 1 ? "it" : "them"}.`);
-    }
-    notes.push({
-      short: `${n(data.inactive_hidden_skus)} size(s) hidden as inactive${
-        n(data.inactive_sales) ? `, ${money(data.inactive_sales)} of sales` : ""}`,
-      full: parts.join("<br>"),
-    });
-  }
-
-  if(notes.length){
-    out.push(`<div class="banner info caveats">
-      <span class="caveat-line">${notes.map(x => x.short).join(" · ")}</span>
-      <button class="caveat-more" type="button" data-caveats="1"
-        aria-expanded="false" title="what these mean">${ico("info")}</button>
-      <div class="caveat-full" hidden>${notes.map(x => `<p>${x.full}</p>`).join("")}</div>
-    </div>`);
-  }
+  /* Standing facts (pre-COGS, ex-GST, the ratings date, what Active = N excluded) used to sit on
+     one collapsed line here. Removed on request for a cleaner dashboard: the KPI tile reads
+     "NET (PRE-COGS)", Sales reads "(ex-GST)", and the "Show N inactive" button brings the hidden
+     products back. Only a PROBLEM gets a banner. */
 
   /* ── Actual problems, each needing something done ── */
   if(data.ratings_stale || (data.ratings_as_of == null && data.totals && n(data.totals.parents))){
@@ -1116,31 +999,7 @@ function renderCategories(){
     </button>`;
   });
 
-  /* The unclassified products are NAMED, not merely counted. 51 of 90 parents had no stored
-     category when this shipped, and a bare number gives the owner nothing to act on — a name is
-     one click from being classified on the Shipment tab. Same reasoning as the catalogue notes
-     naming the products that appeared or vanished. */
-  const shown = (ct.unclassified_names || []).map(esc).join(", ");
-  const more = Number(ct.unclassified_total || 0) > (ct.unclassified_names || []).length;
-  /* **The card counts ROWS and this note counts NAMES, so it says which.** Found on live
-     production: the Unclassified card read 55 while the note read "51 product(s)" — both correct,
-     because `Singhara Atta` appears 4 times in the catalogue and `Arwa Katarni Rice` twice. Two
-     numbers for one thing, with nothing on screen explaining the gap, is the "86 orders beside 87
-     lines" defect. The difference is stated only when there IS one, because "51 names across 51
-     rows" is noise. */
-  const rowCount = Number(ct.unclassified_rows || 0);
-  const nameCount = Number(ct.unclassified_total || 0);
-  const dupes = rowCount > nameCount
-    ? ` <span class="dim">(${n(rowCount)} rows — some names repeat in the catalogue, and
-        classifying a name covers all of its rows)</span>`
-    : "";
-  const note = nameCount > 0
-    ? `<div class="cat-note">${n(nameCount)} product(s) have no category yet:
-         ${shown}${more ? " …" : ""} — classify them on the Shipment tab and this strip picks
-         them up.${dupes}</div>`
-    : "";
-
-  $("categories").innerHTML = `<div class="cat-strip">${cards.join("")}</div>${note}`;
+  $("categories").innerHTML = `<div class="cat-strip">${cards.join("")}</div>`;
 }
 
 /* THREE tabs, not seven chips. Asked for as *"lesser tabs — I want only Scale (top performers),
@@ -2384,7 +2243,6 @@ function renderRefresh(st){
   const bits = [];
   if(lr && lr.finished_at){
     bits.push(`last refreshed ${String(lr.finished_at).slice(0,16).replace("T"," ")}`);
-    bits.push(`${n(lr.rows_stored)} rows`);
   } else {
     bits.push("never refreshed");
   }

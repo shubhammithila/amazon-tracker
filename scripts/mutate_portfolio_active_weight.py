@@ -140,8 +140,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     # ── The route ──
     (
         ROUTER,
-        "        include_inactive=include_inactive,\n    )",
-        "    )",
+        "        include_inactive=include_inactive,\n        flavour_keys=",
+        "        flavour_keys=",
         "the toggle is INERT: the screen asks and the server ignores it, so pressing it changes "
         "nothing and the button then disagrees with the grid "
         "— test_the_route_hides_inactive_products_and_include_inactive_restores_them",
@@ -278,21 +278,6 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "the choice is not remembered, so every render silently reverts to hiding — the toggle "
         "appears to do nothing on the next window change "
         "— test_the_inactive_toggle_RELOADS_rather_than_re_rendering",
-    ),
-    (
-        TEMPLATE,
-        'if(!data.include_inactive && n(data.inactive_hidden_skus)){',
-        "if(false){",
-        "the banner never renders, so the Sales KPI drops Rs 45,042 with nothing on screen "
-        "explaining it — test_the_banner_states_the_excluded_money_AND_units_and_names_the_products",
-    ),
-    (
-        TEMPLATE,
-        "        <strong>${n(data.inactive_sales_units)} units, ${money(data.inactive_sales)}</strong>",
-        "        <strong>${n(data.inactive_sales_units)} units</strong>",
-        "the excluded RUPEES are not stated, so a 1.5% gap against the Business Report has nothing "
-        "to reconcile against — the exact shape of the 3,337-vs-3,259 report "
-        "— test_the_banner_states_the_excluded_money_AND_units_and_names_the_products",
     ),
     (
         TEMPLATE,

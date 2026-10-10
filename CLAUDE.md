@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2877 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2878 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -291,6 +291,17 @@ from Lucide (ISC, which permits copying individual paths; the notice is in the s
 > nothing), the mutation is deleted, and no test was written — a test asserting it would pin an
 > incidental detail rather than a behaviour, which is the trap this file records four times. The other
 > survivor was a genuine gap: a leftover emoji star passed every other icon test.
+
+### The standing commentary is gone from the Profit tab (10 Oct 2026)
+Asked for as *"need to remove these commentary so the dashboard looks cleaner"*, marking five lines:
+the subtitle (window · active products · hidden count), the collapsed ⓘ line (pre-COGS · ex-GST ·
+ratings date · what Active = N excluded), "holding N day(s)… any range inside them is instant", the
+row count after "last refreshed", and "N product(s) have no category yet". **All five are removed**,
+and the section below describes how they used to be collapsed. The facts survive where they belong:
+the KPI tiles read "Net (pre-COGS)" and "Sales (ex-GST)", the "Show N inactive" button brings hidden
+products back, and the Unclassified card stays. **Problems still get banners**: a failed refresh, a
+range missing days, a stale ratings date, the catalogue on its cache, ASINs missing from the sheet.
+`test_the_standing_commentary_stays_off_the_profit_tab` pins each removal.
 
 ### Five standing messages became one line — only a PROBLEM gets a banner
 Reported as *"too many messages at the top. dont want them if the logics are working fine"*, against
