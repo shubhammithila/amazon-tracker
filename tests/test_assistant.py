@@ -451,3 +451,9 @@ def test_the_prompt_says_to_give_both_weights_and_to_quote_totals():
 def test_a_set_whose_pack_weights_are_all_unknown_totals_to_a_dash_not_zero_kg():
     t = tools.profit_products(profit_data([SATTU[-1]]), CATS, {})["total_of_matching"]
     assert t["net_weight_kg"] is None and t["weight_ordered_kg"] is None and t["net_per_kg"] is None
+
+
+async def test_on_profit_the_model_is_told_not_to_invent_a_brand_filter():
+    conv = fake_converse([text_turn("ok")])
+    await service.ask("weight?", [], {"tab": "profit"}, sources_for(profit_data([])), converse=conv)
+    assert "filter by brand only if the user names one" in conv.calls[0]["messages"][-1]["content"][0]["text"]

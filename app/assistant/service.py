@@ -68,6 +68,10 @@ def _context_note(context: dict) -> str:
         bits.append(f"The user is on the {tab} tab.")
     if context.get("brand"):
         bits.append(f"Brand on screen: {context['brand']}.")
+    elif context.get("tab") == "profit":
+        # The Profit tab has no brand picker: it shows every brand together, so a brand filter the
+        # user did not ask for makes the rows disagree with the screen's own totals.
+        bits.append("The Profit tab shows every brand together; filter by brand only if the user names one.")
     if context.get("start") and context.get("end"):
         bits.append(f"Profit window on screen: {context['start']} to {context['end']}.")
     if context.get("category"):
