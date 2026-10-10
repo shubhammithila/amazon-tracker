@@ -22,8 +22,8 @@ DEFAULT_LIMIT = 15
 MAX_LIMIT = 40
 
 PROFIT_SORT = ["sales", "ad_spend", "net", "net_pct", "tacos", "acos", "refunds_pct", "fees_pct",
-               "units_ordered", "net_units", "weight_kg", "net_per_kg", "returns_pct", "rating",
-               "product"]
+               "units_ordered", "net_units", "weight_ordered_kg", "net_weight_kg", "net_per_kg",
+               "returns_pct", "rating", "product"]
 REPEAT_SORT = ["buyers", "same_pct", "units_pct", "came_from_pct", "went_on_pct", "fba_share",
                "reorder_days", "product"]
 VALUE_SORT = ["new_customers", "ltv_30", "ltv_60", "ltv_90", "ltv_180", "cac", "ltv_cac",
@@ -101,22 +101,38 @@ def _profit_row(p: dict, categories: dict) -> dict:
         "fees_pct": _pct(p.get("fees_pct")), "tacos": _pct(p.get("tacos")),
         "acos": "no attributed sales" if p.get("acos_infinite") else _pct(p.get("acos")),
         "units_ordered": p.get("units_ordered"), "net_units": p.get("units"),
-        "weight_kg": _num(p.get("weight_kg"), 1), "net_per_kg": _num(p.get("net_per_kg")),
+        "weight_ordered_kg": _num(p.get("weight_ordered_kg"), 1),
+        "net_weight_kg": _num(p.get("weight_kg"), 1), "net_per_kg": _num(p.get("net_per_kg")),
         "returns_pct": _pct(p.get("returns_pct")),
         "rating": p.get("rating"), "rating_count": p.get("rating_count"),
     }
 
 
+def _known_sum(parents: list[dict], key: str):
+    """Sum of a weight over the rows that HAVE one; None when none do, never 0 kg (the totals row's
+    rule: a product with no known pack weight leaves the weight, not the sum, blank)."""
+    vals = [float(p[key]) for p in parents if p.get(key) is not None]
+    return sum(vals) if vals else None
+
+
 def _sum_profit(parents: list[dict]) -> dict:
-    """The total of a filtered set, percentages recomputed from the rupee sums."""
+    """The total of a filtered set, exactly as the Profit tab's totals row computes it: money and units
+    summed, every percentage recomputed from the rupee sums, Net ₹/kg = net of the weighed sizes over
+    their net weight. Given so the model never adds rows up itself."""
     s = {k: sum(float(p.get(k) or 0) for p in parents)
          for k in ("sales", "ad_spend", "net", "refunded", "fees_total")}
-    units = sum(int(p.get("units_ordered") or 0) for p in parents)
+    s["net_weighed"] = sum(float(p.get("net_weighed") or 0) for p in parents if p.get("weight_kg") is not None)
     ratio = (lambda a: a / s["sales"]) if s["sales"] else (lambda a: None)
+    net_kg = _known_sum(parents, "weight_kg")
     return {"products": len(parents), "sales": _money(s["sales"]), "ad_spend": _money(s["ad_spend"]),
             "net": _money(s["net"]), "net_pct": _pct(ratio(s["net"])),
             "tacos": _pct(ratio(s["ad_spend"])), "refunds_pct": _pct(ratio(s["refunded"])),
-            "fees_pct": _pct(ratio(s["fees_total"])), "units_ordered": units}
+            "fees_pct": _pct(ratio(s["fees_total"])),
+            "units_ordered": sum(int(p.get("units_ordered") or 0) for p in parents),
+            "net_units": sum(int(p.get("units") or 0) for p in parents),
+            "weight_ordered_kg": _num(_known_sum(parents, "weight_ordered_kg"), 1),
+            "net_weight_kg": _num(net_kg, 1),
+            "net_per_kg": _num(s["net_weighed"] / net_kg) if net_kg else None}
 
 
 def _profit_header(data: dict) -> dict:
@@ -188,12 +204,13 @@ def profit_product(data: dict, categories: dict, inp: dict) -> dict:
 
 def profit_categories(data: dict, categories: dict, inp: dict) -> dict:
     cats = (data.get("category_totals") or {}).get("categories") or []
+    by_cat: dict[str, list] = {}
+    for p in data.get("parents") or []:
+        by_cat.setdefault(profit_category(p, categories), []).append(p)
     return {**_profit_header(data), "account_total": _sum_profit(data.get("parents") or []),
             "categories": [{
+                **_sum_profit(by_cat.get(c["category"], [])),
                 "category": c["category"], "products": c.get("products"),
-                "sales": _money(c.get("sales")), "ad_spend": _money(c.get("ad_spend")),
-                "net": _money(c.get("net")), "net_pct": _pct(c.get("margin")),
-                "tacos": _pct(c.get("tacos")), "units": c.get("units"),
                 "products_named": (c.get("products_named") or [])[:20],
             } for c in cats]}
 

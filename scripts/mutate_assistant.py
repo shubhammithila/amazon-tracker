@@ -19,6 +19,13 @@ R, P = "app/routers/assistant.py", "templates/_ask_panel.html"
 MUTATIONS: list[tuple[str, str, str, str]] = [
     (T, '"net_pct": _pct(ratio(s["net"]))', '"net_pct": _pct(sum(float(p.get("net_pct") or 0) for p in parents) / max(1, len(parents)))',
      "a filtered total averages the rows' Net %"),
+    (T, '            "weight_ordered_kg": _num(_known_sum(parents, "weight_ordered_kg"), 1),', '', "a total drops weight ordered"),
+    (T, '    vals = [float(p[key]) for p in parents if p.get(key) is not None]', '    vals = [float(p.get(key) or 0) for p in parents]',
+     "an unknown weight counts as 0 kg"),
+    (T, '        **_sum_profit(by_cat.get(c["category"], [])),', '        **_sum_profit(data.get("parents") or []),',
+     "a category carries the account's weight"),
+    (T, '"net_per_kg": _num(s["net_weighed"] / net_kg) if net_kg else None}', '"net_per_kg": _num(s["net"] / net_kg) if net_kg else None}',
+     "Net per kg divides by unweighed rows' net"),
     (T, "    return have + none", "    return none + have", "a missing figure sorts first"),
     (T, "    return max(1, min(MAX_LIMIT, n))", "    return max(1, n)", "the row limit is uncapped"),
     (T, '        if inp.get("category") and r["category"].casefold() != str(inp["category"]).casefold():\n            continue\n', "",

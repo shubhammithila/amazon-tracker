@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2871 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2877 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3295,6 +3295,12 @@ fetches, applies or saves.
   `cachePoint`; slices are capped at 40 rows and ~14k characters; only the last 3 exchanges travel.
   Measured on production: 2–7k input + 600–1,000 output tokens per question, 4–11k read from cache,
   9–22 s.
+- **Every tool returns its totals, so the model quotes rather than adds.** Reported as *"the results of
+  the ai chat are off"* for "total weight of all the sattus": the figure (4,052 kg) was right, but
+  it was the NET weight only, summed by the model ("about") because the total carried no weight, and
+  it claimed the tab had no total. Totals now carry both unit bases and both weights (Weight ordered
+  4,317 kg / Net weight 4,052 kg), equal to the page's own `computeTotals` (a test runs it), and the
+  prompt asks for both whenever "sold" is ambiguous.
 - **The screen is the context.** Each page defines `askContext()` (tab, brand, Profit window,
   category); a tool call that names none gets the screen's. A product the owner names but the MRP
   sheet marks inactive is looked up again with inactive products included (Raw Flaxseed is one).
@@ -3306,7 +3312,7 @@ fetches, applies or saves.
   bold); the answer text is never trusted as markup. Each answer shows its source ("Profit · 10 Sep →
   9 Oct") so it can be checked against the tab. Portfolio area only.
 - **No test calls Bedrock**: `conftest.no_live_bedrock` replaces the client for every test, because
-  the developer `.env` holds a real key. `scripts/mutate_assistant.py`: 25/25 caught.
+  the developer `.env` holds a real key. `scripts/mutate_assistant.py`: 29/29 caught.
 
 ## Ads tab — campaign performance, and bulk bid edits
 

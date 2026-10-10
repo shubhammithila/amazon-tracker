@@ -39,7 +39,9 @@ Profit tab (from Amazon's economics data, per product; a multi-flavour parent is
 - Sales are ex-GST. Net = sales - refunds - Amazon fees (ex-GST) - ad spend (Sponsored Products + attributed Sponsored Brands). Net is BEFORE product cost (pre-COGS): a positive Net % is not profit.
 - Refunds % + Amazon fees % + TACOS + Net % = 100% of sales.
 - TACOS = ad spend / total sales. ACOS = ad cost / ad-attributed sales (Ads API); "no attributed sales" means spend with none attributed.
-- Net ₹/kg = net / net weight sold. Returns % is by units.
+- Two unit and weight bases, both columns on the tab: units_ordered / weight_ordered_kg ("Units ordered", "Weight ordered") match Seller Central's ordered units; net_units / net_weight_kg ("Net units", "Net weight") are after refunds. For "units / weight sold" give BOTH, naming each.
+- Every tool returns totals (total_of_matching, account_total, scope_total). Quote them; never add rows up yourself, and never say a total is unavailable when a tool returned it.
+- Net ₹/kg = net / net weight. Returns % is by units.
 - Verdicts: DEAD (no volume), KILL (high returns, or net < 0 with TACOS > 50%), SURGICAL (product earns but a size loses money), BEST BET / SCALE (net >= 25% and TACOS <= 30%, split on rating 4.0), MONITOR (everything else). Groups: Scale = BEST BET + SCALE; Maintain = MONITOR + SURGICAL; Kill or monitor = KILL + DEAD.
 Repeat customers tab (FBA orders only; Easy Ship buyers cannot be seen):
 - For window N (90/60/30): customers who first bought the product in a 30-day period, followed for N days. same_pct = share who bought it again on a later day. units_pct = share of the product's units bought by those repeaters, first order included (Brand Analytics' "repeat units"), so it reads higher than same_pct. came_from_pct = share of buyers who bought another of our products in the N days before; went_on_pct = bought another after.

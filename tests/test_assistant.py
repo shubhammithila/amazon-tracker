@@ -398,3 +398,56 @@ async def test_ask_uses_the_live_client_when_none_is_injected(monkeypatch):
     monkeypatch.setattr("app.assistant.bedrock.converse", conv)
     out = await service.ask("q", [], {}, sources_for(profit_data([])))
     assert out["answer"] == "from the module client" and len(conv.calls) == 1
+
+
+# ── totals the model quotes rather than adds up (reported: "the results of the ai chat are off") ──
+
+def weighed(name, sales, net, wo, wn, units_ordered, units, **kw):
+    p = parent(name, sales, sales * 0.3, net, units=units, units_ordered=units_ordered, **kw)
+    p.update(weight_ordered_kg=wo, weight_kg=wn, net_weighed=net if wn is not None else 0.0)
+    return p
+
+
+SATTU = [weighed("Chana Sattu", 428447, 140830, 1486.5, 1402.5, 1364, 1302),
+         weighed("Jau Sattu", 226728, 63940, 844.5, 790.5, 1036, 968),
+         weighed("Kulthi Sattu", 78181, -22885, 182.0, 173.0, 268, 255),
+         weighed("Bengali Chana Sattu", 1200, 100, None, None, 4, 4)]
+
+
+def test_a_filtered_total_carries_BOTH_weights_and_both_unit_bases():
+    t = tools.profit_products(profit_data(SATTU), CATS, {})["total_of_matching"]
+    assert t["weight_ordered_kg"] == 2513.0 and t["net_weight_kg"] == 2366.0
+    assert t["units_ordered"] == 2672 and t["net_units"] == 2529
+
+
+def test_a_row_carries_weight_ordered_beside_net_weight():
+    row = tools.profit_products(profit_data(SATTU), CATS, {"search": "Jau"})["rows"][0]
+    assert (row["weight_ordered_kg"], row["net_weight_kg"]) == (844.5, 790.5)
+
+
+def test_the_total_is_the_PAGES_OWN_totals_row_on_the_same_rows():
+    """The Profit tab's `computeTotals`, executed, is the reference: same weights, same Net ₹/kg."""
+    from tests.js_harness import run_portfolio_js
+    js = run_portfolio_js(f"const t = computeTotals({json.dumps(SATTU)}); "
+                          "emit([t.weight, t.weightOrdered, t.netWeighed / t.weight]);")
+    t = tools.profit_products(profit_data(SATTU), CATS, {})["total_of_matching"]
+    assert [t["net_weight_kg"], t["weight_ordered_kg"], t["net_per_kg"]] == [
+        round(js[0], 1), round(js[1], 1), round(js[2], 2)]
+
+
+def test_categories_carry_their_weights_too():
+    data = profit_data(SATTU + [weighed("Usna Chawal", 179601, 88800, 350.0, 334.0, 334, 330)])
+    data["category_totals"] = {"categories": [{"category": "Sattu", "products": 4},
+                                              {"category": "Rice", "products": 1}]}
+    owner = {**CATS, "kulthi sattu": 1, "bengali chana sattu": 1}
+    cats = {c["category"]: c for c in tools.profit_categories(data, owner, {})["categories"]}
+    assert cats["Sattu"]["net_weight_kg"] == 2366.0 and cats["Rice"]["weight_ordered_kg"] == 350.0
+
+
+def test_the_prompt_says_to_give_both_weights_and_to_quote_totals():
+    assert "weight_ordered_kg" in service.SYSTEM and "never add rows up yourself" in service.SYSTEM
+
+
+def test_a_set_whose_pack_weights_are_all_unknown_totals_to_a_dash_not_zero_kg():
+    t = tools.profit_products(profit_data([SATTU[-1]]), CATS, {})["total_of_matching"]
+    assert t["net_weight_kg"] is None and t["weight_ordered_kg"] is None and t["net_per_kg"] is None
