@@ -245,10 +245,12 @@ const COLS = [
   ["product", "Product", ""], ["category", "Category", ""],
   ["kg_30d", "30-day sales", "num"], ["kg_7d", "7-day sales", "num"],
   ["daily_rate", "Daily", "num"], ["projection_30d", "Projection 30d", "num"],
+  // The answers sit before the inputs, so the figure the purchase team needs is on screen
+  // without scrolling sideways.
+  ["total_stock", "Total stock to hold", "num"], ["ideal_fba", "Ideal FBA", "num"],
   ["seasonal_impact", "Seasonal", "num edit"],
   ...LEGS.map(([k, l]) => [k, l + " (d)", "num edit"]),
-  ["lead_total", "Lead total", "num"], ["ideal_fba", "Ideal FBA", "num"],
-  ["total_stock", "Total stock to hold", "num"],
+  ["lead_total", "Lead total", "num"],
 ];
 function shownRows(){
   const q = $("search").value.trim().toLowerCase();
@@ -308,9 +310,9 @@ function rowHtml(r){
     + `<td class="num">${kg(r.kg_30d)}</td><td class="num">${kg(r.kg_7d)}</td>`
     + `<td class="num">${r.daily_rate == null ? '<span class="dim">—</span>' : num(r.daily_rate, 1) + " kg/d"}</td>`
     + `<td class="num">${kg(r.projection_30d)}</td>`
+    + `<td class="num stock" title="${esc(stockTitle)}">${kg(r.total_stock)}</td><td class="num">${kg(r.ideal_fba)}</td>`
     + EDITABLE.map(f => editCell(r, f)).join("")
-    + `<td class="num">${days(r.lead_total)}</td><td class="num">${kg(r.ideal_fba)}</td>`
-    + `<td class="num stock" title="${esc(stockTitle)}">${kg(r.total_stock)}</td></tr>`;
+    + `<td class="num">${days(r.lead_total)}</td></tr>`;
 }
 function sum(rows, key){
   const vals = rows.map(r => r[key]).filter(v => v != null);
@@ -319,8 +321,9 @@ function sum(rows, key){
 function totalsHtml(rows){
   return `<tr class="totals"><td data-col="product">${rows.length} product(s)</td><td></td>`
     + `<td class="num">${kg(sum(rows, "kg_30d"))}</td><td class="num">${kg(sum(rows, "kg_7d"))}</td><td></td>`
-    + `<td class="num">${kg(sum(rows, "projection_30d"))}</td>` + "<td></td>".repeat(EDITABLE.length + 1)
-    + `<td class="num">${kg(sum(rows, "ideal_fba"))}</td><td class="num">${kg(sum(rows, "total_stock"))}</td></tr>`;
+    + `<td class="num">${kg(sum(rows, "projection_30d"))}</td>`
+    + `<td class="num">${kg(sum(rows, "total_stock"))}</td><td class="num">${kg(sum(rows, "ideal_fba"))}</td>`
+    + "<td></td>".repeat(EDITABLE.length + 1) + `</tr>`;
 }
 function renderTable(){
   const rows = sortedRows();
