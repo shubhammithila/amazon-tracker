@@ -4350,8 +4350,8 @@ seller first; the category cards sum their rows and filter the table.
 
 ### Layout, after "looking too haphazard" (12 Oct 2026)
 Whole numbers everywhere on screen (kg, kg/day, days, and the Profit tab's percentages, kg and
-₹/kg too; rating keeps its one decimal, Excel keeps exact figures). **Total stock to hold sits beside
-the product name**, then Ideal FBA. Seasonal and the four lead times are one group folded behind
+₹/kg too; rating keeps its one decimal, Excel keeps exact figures). Columns run **Product, Category,
+Total stock to hold, Ideal FBA**, then sales. Seasonal and the four lead times are one group folded behind
 "+ Lead times", and the settings behind "+ Settings" (both remembered per browser); the formula
 line is gone. Boxes are the Profit tab's KPI and category sizes. **Every inactive product is hidden
 until "Show N inactive"**, including the ones the Profit tab keeps for a recorded decision (Bengali

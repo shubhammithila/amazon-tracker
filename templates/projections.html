@@ -242,11 +242,11 @@ let sort = (() => {
   try { return JSON.parse(sessionStorage.getItem("projections.sort")) || {key: null, dir: -1}; }
   catch { return {key: null, dir: -1}; }
 })();
-/* Total stock to hold sits beside the product name: it is the figure the purchase team works
+/* Category beside the product name, then Total stock to hold: the figure the purchase team works
    from. Seasonal and the lead times are ONE group (class "lead"), folded away until "+ Lead times". */
 const COLS = [
-  ["product", "Product", ""], ["total_stock", "Total stock to hold", "num"],
-  ["ideal_fba", "Ideal FBA", "num"], ["category", "Category", ""],
+  ["product", "Product", ""], ["category", "Category", ""],
+  ["total_stock", "Total stock to hold", "num"], ["ideal_fba", "Ideal FBA", "num"],
   ["kg_30d", "30-day sales", "num"], ["kg_7d", "7-day sales", "num"],
   ["daily_rate", "Daily", "num"], ["projection_30d", "Projection 30d", "num"],
   ["seasonal_impact", "Seasonal", "num edit lead"],
@@ -309,9 +309,8 @@ function rowHtml(r){
     + (r.config_source !== "saved" ? '<span class="tag defaults" title="Lead times are defaults; nothing saved for this product yet">default lead times</span>' : "");
   const stockTitle = r.total_stock == null ? "" :
     `Ideal FBA ${whole(r.ideal_fba)} kg + Ideal WH ${whole(r.ideal_wh)} kg (WH buffer ${whole(r.buffer_days)} days)`;
-  return `<tr class="row"><td data-col="product">${esc(r.product)}${tags}</td>`
+  return `<tr class="row"><td data-col="product">${esc(r.product)}${tags}</td><td>${esc(r.category)}</td>`
     + `<td class="num stock" title="${esc(stockTitle)}">${kg(r.total_stock)}</td><td class="num">${kg(r.ideal_fba)}</td>`
-    + `<td>${esc(r.category)}</td>`
     + `<td class="num">${kg(r.kg_30d)}</td><td class="num">${kg(r.kg_7d)}</td>`
     + `<td class="num">${r.daily_rate == null ? '<span class="dim">—</span>' : whole(r.daily_rate) + " kg/d"}</td>`
     + `<td class="num">${kg(r.projection_30d)}</td>`
@@ -323,8 +322,8 @@ function sum(rows, key){
   return vals.length ? vals.reduce((a, v) => a + v, 0) : null;
 }
 function totalsHtml(rows){
-  return `<tr class="totals"><td data-col="product">${rows.length} product(s)</td>`
-    + `<td class="num">${kg(sum(rows, "total_stock"))}</td><td class="num">${kg(sum(rows, "ideal_fba"))}</td><td></td>`
+  return `<tr class="totals"><td data-col="product">${rows.length} product(s)</td><td></td>`
+    + `<td class="num">${kg(sum(rows, "total_stock"))}</td><td class="num">${kg(sum(rows, "ideal_fba"))}</td>`
     + `<td class="num">${kg(sum(rows, "kg_30d"))}</td><td class="num">${kg(sum(rows, "kg_7d"))}</td><td></td>`
     + `<td class="num">${kg(sum(rows, "projection_30d"))}</td>`
     + '<td class="lead"></td>'.repeat(EDITABLE.length + 1) + `</tr>`;

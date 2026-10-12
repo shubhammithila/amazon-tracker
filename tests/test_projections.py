@@ -335,11 +335,11 @@ async def test_an_inactive_product_never_shows_until_asked_even_with_a_decision(
 
 # ── the layout asked for on 12 Oct: "looking too haphazard" ─────────────────────────────────────
 
-def test_total_stock_sits_right_after_the_product_name():
+def test_category_then_total_stock_follow_the_product_name():
     from tests.js_harness import run_template_js
     order = run_template_js(ROOT / "templates" / "projections.html", [], ["LEGS", "COLS"],
-                            "emit(COLS.map(c => c[0]).slice(0, 3));")
-    assert order == ["product", "total_stock", "ideal_fba"]
+                            "emit(COLS.map(c => c[0]).slice(0, 4));")
+    assert order == ["product", "category", "total_stock", "ideal_fba"]
 
 
 def test_the_lead_times_and_the_settings_start_FOLDED():
