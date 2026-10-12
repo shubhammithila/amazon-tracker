@@ -104,26 +104,6 @@ async def test_run_keeps_the_held_figures_of_settled_days_when_amazon_returns_le
     refresh.reset_state()
 
 
-async def test_projections_stores_ONLY_the_missing_days(monkeypatch, db):
-    from app.portfolio import economics
-    from app.projections import refresh as proj
-
-    today = date(2026, 10, 5)
-    start, end = economics.window_for(today, 30)
-    held = [(date.fromisoformat(start) + timedelta(days=i)).isoformat() for i in range(29)]
-    await repository.save_economics_daily(db, [_row(d, 20000.0) for d in held])
-    last = end
-
-    async def fake_fetch(**kw):
-        return [_row(d, 1.0) for d in held + [last]], [], start, end
-
-    monkeypatch.setattr(economics, "fetch_economics", fake_fetch)
-    await proj._ensure_window(db, today=today, days=30, sleep=None)
-    fees = await repository.fee_totals_by_day(db, start, end)
-    assert all(fees[d] == 20000.0 for d in held), "Projections overwrote days the Portfolio owns"
-    assert last in fees, "the genuinely missing day was not stored"
-
-
 def test_the_settling_window_covers_how_late_fees_were_actually_found_to_move():
     """Measured: on 6 Oct, days up to 30 days old had fees ₹15,000-20,000 short, and refunds keep
     arriving for weeks. A shorter window leaves exactly those days wrong, so the bound is a

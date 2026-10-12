@@ -337,7 +337,7 @@ def _landing(grant: str | None, is_admin: bool) -> str:
         (permissions.SHIPMENT, "/shipment-page"),
         (permissions.INVOICE, "/invoice-page"),
         (permissions.PORTFOLIO, "/portfolio-page"),
-        (permissions.PROJECTIONS, "/projections-page"),
+        (permissions.PROJECTIONS, "/portfolio-page/projections"),
         (permissions.ORDERS, "/orders-page"),
         (permissions.ADS, "/ads-page"),
         (permissions.PACKING, "/ops-page"),

@@ -154,6 +154,23 @@ async def _dashboard(
     return result
 
 
+async def _attach_stock(db: AsyncSession, data: dict) -> None:
+    """Put the Projections tab's "Total stock to hold" on each product row, by the same row id.
+
+    Kept OUT of `_dashboard`, which the Projections tab itself builds on. A failure here must not
+    take the Profit tab down with it, so the column reads as dashes instead.
+    """
+    from app.projections import service as projections
+
+    try:
+        stock = await projections.stock_by_key(db)
+    except Exception:  # noqa: BLE001
+        logger.exception("stock to hold could not be computed for the Profit tab")
+        stock = {}
+    for parent in data.get("parents") or []:
+        parent["total_stock"] = stock.get(parent.get("parent_asin"))
+
+
 def _rating_freshness(ratings: dict) -> tuple[str | None, bool]:
     """The newest rating timestamp, and whether it is too old to trust silently.
 
@@ -244,6 +261,7 @@ async def get_portfolio(
         return JSONResponse({"error": error}, status_code=400)
 
     data = await _dashboard(db, window, include_inactive=include_inactive)
+    await _attach_stock(db, data)
     return JSONResponse({
         **data,
         **(await _column_payload(request, db)),
@@ -587,6 +605,7 @@ async def export_portfolio(
     if error:
         return JSONResponse({"error": error}, status_code=400)
     data = await _dashboard(db, window, include_inactive=bool(body.get("include_inactive")))
+    await _attach_stock(db, data)
     table = export.build_table(data, view=view, ids=ids, open_ids=opened, columns=columns)
 
     label = str(body.get("label") or "")[:120]

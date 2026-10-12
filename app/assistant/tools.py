@@ -77,14 +77,8 @@ def _sorted(rows: list[dict], key: str, ascending: bool) -> list[dict]:
 # ── Profit ──────────────────────────────────────────────────────────────────────────────────────
 
 def profit_category(parent: dict, categories: dict) -> str:
-    """The owner's stored category for a parent, matched on its own or any size's name, exactly as
-    the Profit tab's category strip does."""
-    from app.shipment.logic import CATEGORY_LABELS
-    names = [parent.get("product")] + [s.get("product") for s in parent.get("sizes") or []]
-    priority = pf_logic._first_category(names, categories)
-    if priority is None:
-        return pf_logic.CATEGORY_UNCLASSIFIED
-    return CATEGORY_LABELS.get(priority, CATEGORY_LABELS[6])
+    """The owner's stored category for a parent, exactly as the Profit tab's category strip does."""
+    return pf_logic.category_of(parent, categories)
 
 
 def _profit_row(p: dict, categories: dict) -> dict:

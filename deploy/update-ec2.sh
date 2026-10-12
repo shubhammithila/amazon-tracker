@@ -366,8 +366,10 @@ def indexes(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "product_key" in cols("projection_row"):
+    print("f3b8d2a64c19")                           # head: projections keyed like Profit rows
 elif "assistant_log" in tables:
-    print("e5a9c3f17d42")                           # head: Portfolio "Ask" assistant log
+    print("e5a9c3f17d42")                           # Portfolio "Ask" assistant log
 elif "revenue" in cols("customer_order_lines"):
     print("d2f6b8a41c07")                           # price paid per customer line (LTV)
 elif "customer_order_lines" in tables:

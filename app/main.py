@@ -257,13 +257,23 @@ async def ads_page(request: Request, grant=Depends(require_area(permissions.ADS)
     })
 
 
+@app.get("/portfolio-page/projections", response_class=HTMLResponse)
+async def portfolio_projections_page(
+    request: Request, grant=Depends(require_area(permissions.PROJECTIONS))
+):
+    """Projections, a Portfolio sub-tab since 12 Oct 2026. Its own area, so the purchase team can be
+    granted stock levels without the Profit tab's margins."""
+    return templates.TemplateResponse(
+        request, "projections.html", {"active": "portfolio", "grant": grant, "pf_tab": "projections"}
+    )
+
+
 @app.get("/projections-page", response_class=HTMLResponse)
 async def projections_page(
     request: Request, grant=Depends(require_area(permissions.PROJECTIONS))
 ):
-    return templates.TemplateResponse(
-        request, "projections.html", {"active": "projections", "grant": grant}
-    )
+    """The old address, kept so a bookmark still opens the page."""
+    return await portfolio_projections_page(request, grant)
 
 
 @app.get("/shipment-page", response_class=HTMLResponse)

@@ -1,7 +1,16 @@
-{# Profit | Repeat customers | Customer value: the Portfolio sub-tabs. A fragment (no <head>), so it is exempt
-   from the stylesheet-link rule in tests/test_theme.py; each page styles .seg itself. #}
+{# Profit | Repeat customers | Customer value | Projections: the Portfolio sub-tabs. A fragment (no
+   <head>), so it is exempt from the stylesheet-link rule in tests/test_theme.py; each page styles .seg
+   itself. Each tab shows only to a login that can open it: the first three need Portfolio,
+   Projections needs Projections. With no `grant` (an admin, or a test) every tab shows. #}
+{% set can_pf = grant is not defined or grant is none or 'portfolio' in grant %}
+{% set can_pj = grant is not defined or grant is none or 'projections' in grant %}
 <div class="seg pf-tabs">
+  {% if can_pf %}
   <a class="seg-btn{% if pf_tab == 'profit' %} on{% endif %}" href="/portfolio-page">Profit</a>
   <a class="seg-btn{% if pf_tab == 'repeat' %} on{% endif %}" href="/portfolio-page/repeat">Repeat customers</a>
   <a class="seg-btn{% if pf_tab == 'value' %} on{% endif %}" href="/portfolio-page/value">Customer value</a>
+  {% endif %}
+  {% if can_pj %}
+  <a class="seg-btn{% if pf_tab == 'projections' %} on{% endif %}" href="/portfolio-page/projections">Projections</a>
+  {% endif %}
 </div>

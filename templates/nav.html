@@ -38,14 +38,15 @@
   {% if can is none or 'invoice' in can %}
   <a href="/invoice-page" class="{{ 'active' if active == 'invoice' else '' }}">Invoice</a>
   {% endif %}
+  {# Projections lives under Portfolio (a sub-tab since 12 Oct 2026), so a login holding only
+     Projections still gets the Portfolio link, pointed straight at that sub-tab. #}
   {% if can is none or 'portfolio' in can %}
   <a href="/portfolio-page" class="{{ 'active' if active == 'portfolio' else '' }}">Portfolio</a>
+  {% elif 'projections' in can %}
+  <a href="/portfolio-page/projections" class="{{ 'active' if active == 'portfolio' else '' }}">Portfolio</a>
   {% endif %}
   {% if can is none or 'ads' in can %}
   <a href="/ads-page" class="{{ 'active' if active == 'ads' else '' }}">Ads</a>
-  {% endif %}
-  {% if can is none or 'projections' in can %}
-  <a href="/projections-page" class="{{ 'active' if active == 'projections' else '' }}">Projections</a>
   {% endif %}
   {% if can is none or 'shipment' in can %}
   <a href="/shipment-page" class="{{ 'active' if active == 'shipment' else '' }}">Shipment</a>

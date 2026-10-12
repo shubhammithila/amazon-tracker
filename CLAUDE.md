@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2878 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2835 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -4298,186 +4298,68 @@ broad match or an auto campaign.
 The only area that can spend money has to be granted knowingly, per person, rather than arriving
 with a job title. Deny-by-default already makes it invisible until granted.
 
-## Projections tab — live parents, live sales, a 7d/30d weighted blend
+## Portfolio → Projections — how much stock to hold, live
 
-`/projections-page`. Forecasts next month's kg demand per parent product and flags reorder/
-shipment alerts, the same purchasing-planning screen it always was — what changed is where every
-number comes from.
+`/portfolio-page/projections`, the fourth Portfolio sub-tab since 12 Oct 2026 (`/projections-page`
+still opens it; the top-menu item is gone). Rebuilt on the owner's notes: no upload, no manual
+sales, no weekly job; sales are read **live** from the Profit tab's stored days on every load.
 
-### Parents come from the MRP sheet, not a static file — the Triphala Sattu bug, again
-The tab used to build every row from `app/invoice/projection_defaults.json`, 81 hand-maintained
-parents, filtered by nothing. **Measured before changing it**: only 37 of those 81 have any active
-ASIN reachable through `app/invoice/product_families.json`, and Triphala Sattu — active in the
-sheet, two pack sizes — was not in that file at all, so no amount of filtering the existing 81
-would have shown it. This is the identical defect the Shipment tab already fixed for the same
-reason (see "The product list comes from the MRP sheet, live", above), and it needed the same fix
-here: `app.shipment.catalogue.load_catalogue()`, the same source and fallback chain, decides which
-parents exist. A parent inactive in the sheet is hidden and NAMED (capped at 8) in
-`GET /projections/last`'s `catalogue.hidden_names` — never a bare count.
+### The formula (the owner's, 12 Oct 2026)
+```
+daily          = 60% x (7-day kg / 7) + 40% x (30-day kg / 30)        weight ORDERED, editable split
+projection 30d = daily x 30 x seasonal x (1 + company growth)          growth 30%, editable
+lead total     = supplier->WH + packing + WH->IXD + IXD->FBA
+WH buffer      = S->WH x 40% + packing x 30% + WH->IXD x 50% + IXD->FBA x 30%   slips ADDED, editable
+Ideal FBA      = projection / 30 x lead total x markup                 markup 1.5, editable
+Ideal WH       = projection / 30 x WH buffer  x markup
+Total to hold  = Ideal FBA + Ideal WH
+```
+- **Ideal FBA covers the WHOLE lead time**: shipping daily, all stock should sit at Amazon; the
+  warehouse holds only a safety buffer, the days each leg can slip, added up (worst case). The four
+  slip percentages are one account-wide set; each product's own lead times make its buffer its own.
+- **`/ 30`, not `/ 31`**: the projection is a 30-day figure.
+- **A missing 7-day window is not a zero week.** Window incomplete: the 30-day rate alone, with a
+  banner. Window complete and the product absent: it sold nothing, a real 0 that IS blended.
+- **Unknown pack weight is a dash**, never 0 kg, and the product is named in a banner.
+- Example, Chana Sattu: 48.8 kg/day x 1.3 = 63.4; FBA 63.4 x 22 x 1.5 = 2,092 kg; buffer 9.1 days;
+  WH 63.4 x 9.1 x 1.5 = 865 kg; total 2,957 kg, about 47 days.
 
-**The parent-grouping unit is the sheet's own product NAME, unmerged — deliberately different
-from Portfolio's `family_label()`.** That function merges flavour variants (Cheese & Cream Chana,
-Nimbu Pudina Chana, Peri Peri Chana...) into one shared display name for a rollup; `product_
-families.json` itself keeps them as separate parents, because different flavours are different
-recipes and different purchase decisions. Reusing `family_label()` here would have been the wrong
-tool for a purchasing grouping.
+### One product list, the Profit tab's
+`service.build` calls the Profit tab's `_dashboard` for the last 30 and last 7 days (both ending
+yesterday), so products, the flavour split, the MRP Active flag and "Show N inactive" behave
+identically, and a row id is the Profit row's `parent_asin`. Categories come from
+`portfolio.logic.category_of` (moved there from the assistant, now its one copy). Rows sort in the
+Shipment tab's packing order (Sattu, Chana, Flours, Rice, Seeds, Rest, Unclassified), biggest 30-day
+seller first; the category cards sum their rows and filter the table.
 
-**A parent with no matching entry in `projection_defaults.json` gets Global Defaults and is
-flagged `needs_review`, never hidden.** Hiding it would repeat the exact mistake this change
-exists to fix, with a different static file. Measured: 14 of 38 currently-active parent names had
-no match under any spelling, including Triphala Sattu, Makkai Sattu, Raw Flaxseed, and "Bengali
-Gobindobhog Rice" — almost certainly the existing "Govind Bhog Rice" under a spelling variant, left
-for the owner to merge by hand rather than fuzzy-matched automatically.
+- **`projection_row.product_key`** (`f3b8d2a64c19`) keys the owner's inputs like a Profit row. The
+  name index stopped being unique (the catalogue repeats names). Rows saved before carry over by
+  name and are ADOPTED (key stamped) on their next save rather than duplicated. A product with
+  nothing saved shows `projection_defaults.json`'s values by name, else the global defaults, tagged
+  "default lead times".
+- **A GET never writes.** Saving one field of a never-saved product stores the values it was SHOWN
+  for the other fields, so editing one lead time cannot reset three others to defaults.
+- **Editable: seasonal and the four lead times only** (whole days, 0-365; seasonal 0-10), plus the
+  settings bar. Every change is validated before any is written. **Save & recalculate is disabled
+  until a cell really changes** (typing the old value back un-dirties it), and a bad cell disables it.
+- The old columns (`last_month_sale`, `daily_rate`, `wh_buffer_days`, `sales_source`, ...) stay in
+  the table unread; nothing typed before was dropped. The old "remove" mark no longer hides a row:
+  the Active flag decides, as on the Profit tab.
+- Downloads: **Stock to hold** (product, brand, category, Ideal FBA, Total) and the full table, Excel
+  and PDF, filtered by the category on screen.
 
-### Sales come from `economics_daily` — no new Amazon integration
-The nightly Portfolio refresh already stores `units_ordered`/`units_refunded`/`net_units` per
-child ASIN. The weekly Projections recompute (`app.projections.refresh.run`) reuses
-`app.portfolio.economics.fetch_economics` and `app.portfolio.repository.save_economics_daily`/
-`load_snapshot`/`range_completeness` directly — the two features share one cache, so a 30-day
-window the Portfolio tab's nightly job already fetched costs nothing extra here.
+### The Profit tab's "Total stock to hold" column
+Product rows only (a pack size shows a dash), kg, always the last 30 + 7 days whatever window the
+Profit tab shows. Attached by `portfolio._attach_stock` **outside** `_dashboard` (which Projections
+builds on), from `service.stock_by_key`, so the two tabs cannot disagree; a failure there leaves the
+column as dashes and never takes the Profit tab down. The payload is cached per data version
+(economics fetched_at, saved rows, settings) for 5 minutes, both toggles under one version.
 
-> **Sharing the cache got strictly better when it went per-day.** `_ensure_window` used to ask
-> `windows_available` whether that EXACT window had been fetched, so the 7-day and 30-day windows
-> Projections needs were two separate ~12-minute fetches unless the Portfolio tab happened to have
-> viewed the same two ranges. It now asks `range_completeness`, so both windows are free the moment
-> the nightly job has the days.
-
-**`units_ordered`, never `net_units`.** Measured: 2 ASINs in a real 7-day window had
-`net_units < 0` (a refund-heavy week), and a negative daily rate would produce a negative
-purchase quantity. Refunds are a returns problem, not lower demand.
-
-The pre-existing manual Business Report CSV upload stays, as an explicit override: any row edited
-through `/calculate` or `/upload-csv` is marked `sales_source="manual"` in `projection_row`, and
-the weekly job skips a manual row entirely until the owner resets it (`POST /reset-row`) — the
-same reasoning `ProductDecision` follows for never being touched by an automated pass.
-
-### The forecast blends the last 7 days against the last 30, and a missing window is not a zero
-Asked for as *"basis last 7 days sale I want to update the data weekly on some kind of weighted
-average of last month and last 7 days... to account for [products that] spike or suddenly drop."*
-
-Measured on the real account: the two windows broadly agree in aggregate (461.1 kg/day 30-day vs
-421.1 kg/day 7-day, a 0.91x ratio) while individual parents diverge sharply — Bangla Moori 1.74x,
-Flax Seed 1.58x on the way up; Miniket Rice 0.37x, Bangla Roasted Chana 0.43x on the way down. The
-blend (`app.projections.logic.blended_daily_rate`, default weight 0.4 toward the 7-day rate) is
-exactly what surfaces that.
-
-> **A missing 7-day window and a genuine zero-sales week are different facts, and conflating them
-> would have cut real forecasts on no evidence.** Measured: 4 of 47 currently-selling parents had
-> 30-day sales but no economics row at all in the 7-day window when this was checked — slow
-> movers, not dead ones. `blended_daily_rate` takes `kg_7d: float | None`: `None` (no snapshot row
-> exists yet for this parent in that window) falls back to the 30-day rate entirely; `0.0` (the
-> window exists and genuinely recorded no sales) IS blended at the normal weight. Collapsing the
-> two would cut a slow mover's forecast by the blend weight on every refresh where the 7-day fetch
-> simply had not landed for it yet.
-
-**Divergence is flagged, not hidden.** When `|7d rate / 30d rate - 1|` exceeds a saved threshold
-(default 30%), the row's `diverged` flag is set and both rates are shown — a forecast number that
-moved with no visible cause is what erodes trust in the whole screen, the same principle behind
-showing the true bid on the Ads tab rather than silently correcting a stale one.
-
-The blend weight and divergence threshold are saved settings (`portfolio_settings`, name
-`projection_blend` — that table is shared and name-keyed across features, not owned by Portfolio
-or Ads specifically), **range-checked on read AND write**: the `good_rating: 99` lesson from the
-Portfolio tab, where an unvalidated stored threshold silently broke every verdict on the account.
-
-### The weekly refresh runs at 09:30 IST, AFTER Portfolio and Ads (it was 07:00, which overwrote fees)
-Registered through `app.ist.utc_hhmm`, the same way the Ads and Portfolio jobs are — no bare hour
-reaches `CronTrigger`, which is the mistake that put those two jobs at 08:50/09:20 IST for months
-before it was found. `day_of_week=6` (Sunday) is arbitrary but fixed; weekly, not nightly, because
-a 30-day rolling average moves little day to day and the owner asked for weekly specifically.
-
-**A failed or partial fetch never overwrites a parent's existing good rate.** The same discipline
-`ads_refresh` enforces: the failure is recorded (`projection_refresh`, mirroring
-`economics_refresh`'s shape) so the screen can say the last attempt failed and when, but nothing
-already stored is silently replaced with a wrong number.
-
-### `ProjectionRow` is keyed on the parent NAME, like `ProductRawStock`
-Not an ASIN, and not a database id the owner would have to look up: the MRP sheet's own product
-name is the one identifier a genuinely new parent (Triphala Sattu) carries from day one, and it is
-already how `ProductRawStock` — the Orders tab's raw-material table — is keyed, for the identical
-reason (bulk purchasing has no per-pack-size distinction; there is no such thing as 500g-flavoured
-raw sattu).
-
-### `Ideal WH` is a genuine reorder point, not a buffer alone — and growth is one number, not 81
-Reported directly: *"I want this sheet to mostly work for me to give me a level of stock of each
-item which when goes below a level at my warehouse i should buy."* Two real bugs sat under the old
-formula, both found by reading the code against that goal rather than by a test failing.
-
-**Seasonality and growth were applied only to a row that had NEVER been through the weekly
-blend.** A `sheet` row with a real blended `daily_rate` (the normal case after the weekly refresh)
-skipped both factors entirely — whether they took effect depended on an accident of which code
-path a row happened to hit, not a decision anyone made. Now `calculate_projections` computes the
-raw demand rate first (the blend, or `last_month_sale / 30`) and applies `seasonal_impact` and the
-new `global_growth_rate` unconditionally, every time.
-
-**`ideal_wh_stock` never used the supplier lead time.** It was `daily_rate * wh_buffer_days`
-alone — `supplier_to_wh` fed only `Lead Total`/`Ideal FBA`, the downstream pipeline. A product
-with a real 25-day supplier lead and a hand-set 10-day buffer showed a WH reorder trigger blind to
-25 of the 35 days it actually takes to have more stock in hand. It is now
-`demand_rate × (supplier_to_wh + effective_wh_buffer) × seasonal × (1 + growth)` — the reorder
-point covers the FULL wait, ordering time plus a safety margin, not the margin alone.
-
-**A diverged row's buffer widens automatically**, by a saved `divergence_buffer_multiplier`
-(default 1.5x) — a product already flagged as having moved sharply from its own 30-day baseline
-gets more warehouse safety stock the week it is detected, without the owner needing to notice the
-⚠ and hand-edit `wh_buffer_days` first. Never applied to `ideal_fba_stock`: that lead time is the
-internal pipeline (packing → WH→IXD → IXD→FBA), which does not change length because demand moved.
-
-**`growth_rate` stopped being a per-parent column.** Measured against
-`app/invoice/projection_defaults.json`: 79 of its 81 static entries already used the same `0.3` —
-a company-wide assumption typed once per product by accident of the static file's structure, not a
-genuine per-product signal like `seasonal_impact` (which genuinely spans 1.0/1.5/2.0). It is now
-`projection_blend.global_growth_rate`, one saved, range-checked setting
-(`app.projections.logic.DEFAULT_BLEND`/`BLEND_RANGES`, the same pattern the blend weight and
-divergence threshold already use), applied to every product. The `ProjectionRow.growth_rate`
-column was dropped via migration — genuinely dead once growth moved, following this codebase's own
-precedent (`0f85fa400957`, `shipment_packing_entries.cartons`) for removing a column rather than
-leaving it stored and silently ignored.
-
-**Eight columns tied to automation that does not exist yet were removed from the screen**:
-`Current FBA`, `Ship Alert`, `Current WH`, `Reorder Alert`, `Rate`, `Stock Value`, `Inv Days` (all
-depend on live Amazon/warehouse stock counts this tab does not fetch), plus `Growth` (now global).
-`purchase_rate`, `current_fba_stock`, `current_wh_stock` stay as stored, editable `ProjectionRow`
-columns even though the UI stops reading three of them today — real hand-typed data that would
-otherwise be silently discarded, kept for when stock-count automation lands.
-
-**`divergence_buffer_multiplier`'s range floor is `1.0`, not `0.0`.** A value below 1 would SHRINK
-a volatile product's buffer — the exact inversion `good_rating: 99` already taught this codebase
-to range-check for, applied here to a new setting before it ever shipped with the bug.
-
-`Ideal WH` moved to sit immediately after `Daily (kg/d)` in the table, and the table now
-default-sorts by it descending — it is the number the owner actually watches, and burying it after
-four lead-time input columns meant reading past them on every visit. The KPI strip's headline
-number is now `Total Ideal WH (kg)` across the portfolio, replacing four stats
-(`total_ideal_value`, `total_current_value`, `shipment_alerts`, `reorder_alerts`) that no longer
-have data behind them once the alert columns were removed; a `Diverged` count replaces
-`critical_alerts` as the other headline figure.
-
-### A product can be removed from the table, and the export only lists what needs reordering
-Reported directly: *"give a button to download reorder level... just the product, brand and the
-reorder level"*, *"also highlight it in the live table"*, and *"give option here to remove a
-product from the list by selecting and removing it."*
-
-**Removing a row is `excluded_at`, exactly `ShipmentPlanItem`'s own mechanism** — a nullable
-timestamp, never a `DELETE`, reversible in one click. This is not a way to permanently retire a
-product still active in the MRP sheet: `build_current_rows` recreates a bare row for any
-currently-active parent missing one, and exclusion does not stop that. It IS effectively
-permanent for a parent no longer active in the sheet, because nothing recreates that one. Both
-the confirm dialog and the hidden-rows note say so, rather than letting the owner discover the
-limit the first time a "removed" product reappears after a weekly refresh.
-
-**The reorder-level export gets the same treatment as the Shipment tab's "To buy" list**:
-filtered to `ideal_wh_stock > 0`, never a row reading "Product … 0" — the same reasoning
-`build_tobuy_xlsx`'s own docstring states, because a document like this gets forwarded to a
-supplier and a zero invites ordering zero of it. `build_reorder_xlsx`/`build_reorder_pdf` are new
-sibling functions in `app/shipment/documents.py`, not parameters on `build_simple_xlsx`/
-`build_simple_pdf` — those two are hardwired to the 8-column shipment identity shape via
-`IDENTITY_HEADERS`, the same reason `build_portfolio_xlsx` had to be its own function rather
-than widening `build_simple_xlsx`.
-
-The `Ideal WH` cell carries a background tint (`.ideal-wh-cell`) distinguishing it from the
-other bold calculated columns (Forecast, Ideal FBA) — bold alone did not single it out as the
-number actually being watched.
+- **Projections cannot call Amazon or write sales**, asserted on the source: the old Sunday job is
+  what overwrote a month of fees on 4 Oct. `scripts/mutate_projections.py`: 17/17 caught.
+- Purchase-team follow-up, not built yet: current FBA + inbound + WH stock from the API, then
+  *to buy = Total − stock held* and *to send = Ideal FBA − FBA stock*. Lead-time slips could later be
+  MEASURED from packed dates and Amazon's receipt dates instead of set by hand.
 
 ## The stack stays Python. A React/Node/Postgres/Redis rewrite was built and abandoned.
 

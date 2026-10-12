@@ -43,6 +43,9 @@ COLUMNS: list[dict] = [
     {"id": "units",       "label": "Net units", "locked": True},
     {"id": "weight_ordered_kg", "label": "Weight ordered", "locked": True},
     {"id": "weight_kg",   "label": "Net weight", "locked": True},
+    # From the Projections tab: Ideal FBA + Ideal WH, on the last 30 and 7 days whatever window is
+    # on screen. Product rows only; a pack size has no stock target of its own.
+    {"id": "total_stock", "label": "Total stock to hold", "locked": False},
     {"id": "returns_pct", "label": "Returns",  "locked": False},
     {"id": "rating",      "label": "Rating",   "locked": False},
     {"id": "decision",    "label": "Decision", "locked": False},

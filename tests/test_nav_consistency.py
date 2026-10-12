@@ -23,12 +23,11 @@ CANONICAL_NAV = {
     "invoice": "/invoice-page",
     "portfolio": "/portfolio-page",
     "ads": "/ads-page",
-    "projections": "/projections-page",
     "shipment": "/shipment-page",
     "orders": "/orders-page",
 }
 
-ADMIN_PAGES = ["/", "/invoice-page", "/portfolio-page", "/ads-page", "/projections-page",
+ADMIN_PAGES = ["/", "/invoice-page", "/portfolio-page", "/ads-page", "/portfolio-page/projections",
                "/shipment-page", "/orders-page", "/pricing-page"]
 
 # Removed on request ("its of no use").
@@ -62,6 +61,15 @@ async def test_page_highlights_its_own_tab(auth_client, page):
         f"{page} renders no active nav link — the route probably did not pass "
         'an `active` value to TemplateResponse.'
     )
+
+
+async def test_projections_is_a_PORTFOLIO_sub_tab_not_a_top_level_tab(auth_client):
+    """Moved under Portfolio on 12 Oct 2026: it reads the Profit tab's own sales. The old address
+    still opens the page, so a bookmark keeps working."""
+    r = await auth_client.get("/portfolio-page")
+    assert 'href="/projections-page"' not in r.text
+    assert 'href="/portfolio-page/projections"' in r.text
+    assert (await auth_client.get("/projections-page")).status_code == 200
 
 
 @pytest.mark.parametrize("page", REMOVED_PAGES)

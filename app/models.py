@@ -1069,10 +1069,15 @@ class ProjectionRow(Base):
     """
     __tablename__ = "projection_row"
     __table_args__ = (
-        Index("idx_projection_row_parent", "parent_product", unique=True),
+        Index("idx_projection_row_parent", "parent_product"),
+        Index("idx_projection_row_key", "product_key", unique=True),
     )
 
     id = Column(Integer, primary_key=True)
+    #: The Profit tab's product row id (Amazon's parent ASIN, or the flavour id for a split
+    #: multi-flavour parent), so Projections and Profit name the same product the same way. NULL on
+    #: rows saved before 12 Oct 2026, which are matched by name until next saved.
+    product_key = Column(String(20))
     #: The MRP sheet's own product name, unmerged — see the class docstring.
     parent_product = Column(String(120), nullable=False)
     brand = Column(String(60))

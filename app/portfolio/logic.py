@@ -962,6 +962,21 @@ def _first_category(names: Sequence[str], categories: Mapping[str, int]) -> int 
     return None
 
 
+def category_of(parent: Mapping, categories: Mapping[str, int]) -> str:
+    """The owner's stored category label for one parent row, matched on its own name or any of its
+    sizes' names, exactly as `category_totals` buckets it. One copy, used by the Ask assistant and
+    the Projections tab, so a product cannot sit in Sattu on one screen and Unclassified on another.
+    """
+    from app.shipment.logic import CATEGORY_LABELS
+
+    names = [parent.get("product") or parent.get("parent_product")] + [
+        s.get("product") for s in parent.get("sizes") or []]
+    priority = _first_category(names, categories)
+    if priority is None:
+        return CATEGORY_UNCLASSIFIED
+    return CATEGORY_LABELS.get(priority, CATEGORY_LABELS[6])
+
+
 def category_totals(
     parents: Sequence[Mapping],
     categories: Mapping[str, int] | None = None,

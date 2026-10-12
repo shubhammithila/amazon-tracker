@@ -518,6 +518,7 @@ const FIELDS = {
   // free, and both for the same reason: "the sheet has no weight" is not a small weight.
   weight_ordered_kg: {label: "Weight ordered (kg)", get: r => r.weight_ordered_kg, kind: "num"},
   weight_kg:    {label: "Net weight (kg)", get: r => r.weight_kg,  kind: "num"},
+  total_stock:  {label: "Total stock to hold (kg)", get: r => r.total_stock, kind: "num"},
   returns_pct:  {label: "Returns %",    get: r => r.returns_pct,  kind: "pct"},
   rating:       {label: "Rating",       get: r => r.rating,       kind: "num"},
 };
@@ -1343,6 +1344,12 @@ const COLUMN_DEFS = {
                 total: t => (t.weighed ? kg(t.weight) : '<span class="dim">—</span>') + (t.weightUnknown
                   ? `<span class="tnote">${n(t.weightUnknown)} row(s) have no pack weight in the
                      sheet and are excluded</span>` : "")},
+  // The Projections tab's figure for this product. Always the last 30 + 7 days, whatever window
+  // is on screen; a pack-size row has no stock target of its own, so it shows a dash.
+  total_stock: {num: true, sortKey: "total_stock", width: 110,
+                tip: "Ideal FBA + Ideal WH from the Projections tab, on the last 30 and 7 days of sales whatever window is shown",
+                row: r => kg(r.total_stock), detail: r => '<span class="dim">—</span>',
+                total: t => t.stocked ? kg(t.stock) : '<span class="dim">—</span>'},
   returns_pct: {num: true, sortKey: "returns_pct", width: 80,
                 row: r => r.returns_pct ? pct(r.returns_pct) : '<span class="dim">—</span>',
                 detail: r => r.returns_pct ? pct(r.returns_pct) : '<span class="dim">—</span>',
@@ -1366,7 +1373,7 @@ const COLUMN_DEFS = {
 
 // Used only when `data.columns` has not arrived (and by the render tests' smoke check).
 const FALLBACK_ORDER = ["verdict", "sales", "ad_spend", "refunds_pct", "fees_pct", "tacos", "net_pct", "net_per_kg", "acos", "units_ordered", "units",
-                        "weight_ordered_kg", "weight_kg", "returns_pct", "rating", "decision"];
+                        "weight_ordered_kg", "weight_kg", "total_stock", "returns_pct", "rating", "decision"];
 
 /* The client twin of `app/portfolio/columns.normalise_column_layout`, rule for rule. It exists for
    the browser-scope layout (shared-password sessions) and to re-render instantly before a save
@@ -1546,6 +1553,10 @@ function computeTotals(list){
   const weighedOrdered = weighedOrderedRows.length;
   // Net ₹/kg divides the net of the rows that HAVE a weight by that weight: like by like.
   const netWeighed = weighed.reduce((a, r) => a + n(r.net_weighed), 0);
+  // Stock to hold: only rows that HAVE a figure (a product with no known pack weight has none).
+  const stockedRows = list.filter(r => r.total_stock !== null && r.total_stock !== undefined);
+  const stock = stockedRows.reduce((a, r) => a + r.total_stock, 0);
+  const stocked = stockedRows.length;
 
   // A ratio with no denominator is a dash, never 0% — `_ratio`'s rule on the server, and for the
   // same reason: 0% TACOS would read as the most ad-efficient set of products on the account.
@@ -1584,6 +1595,7 @@ function computeTotals(list){
 
   return {sales, spend, net, fees, refundedSales, adsCost, attributed, units, ordered, refunded,
           weighed: weighed.length, weight, weightUnknown, weighedOrdered, weightOrdered, ratio, netWeighed,
+          stock, stocked,
           rating, reviews, decided, infinite};
 }
 

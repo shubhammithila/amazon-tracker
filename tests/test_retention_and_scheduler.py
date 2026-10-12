@@ -248,7 +248,7 @@ def test_all_scheduled_jobs_are_registered(monkeypatch):
     assert set(jobs) == {
         "daily_product_scrape", "daily_keyword_track", "daily_history_purge",
         "order_refresh", "portfolio_refresh", "ads_refresh", "ads_refresh_retry",
-        "projections_refresh", "repeat_refresh",
+        "repeat_refresh",
     }
 
 
@@ -288,28 +288,14 @@ def test_the_nightly_jobs_fire_at_the_IST_time_they_claim(monkeypatch):
     assert f"minute='{portfolio_minute}'" in jobs["portfolio_refresh"]
 
 
-def test_the_projections_job_fires_at_09_30_IST_AFTER_portfolio_and_ads(monkeypatch):
-    """Same lesson, same test shape as the ads/portfolio pair: assert the IST constant, never
-    a hardcoded UTC hour — a literal `hour='1'` here would pin the arithmetic instead of the
-    intent, exactly the mistake that shipped the original 09:20 IST bug."""
-    from app import ist as ist_module
+def test_there_is_no_projections_job_because_that_tab_reads_sales_live(monkeypatch):
+    """Since 12 Oct 2026 Projections reads the Profit tab's stored days on every page load; a weekly
+    job would only be a second writer of the economics cache, which is what overwrote a month of
+    fees on 4 Oct."""
     from app import scheduler as sched
 
-    jobs = _registered_jobs(monkeypatch, hour=6)
-
-    assert sched.PROJECTIONS_REFRESH_IST == (9, 30)
-    proj_hour, proj_minute = ist_module.utc_hhmm(*sched.PROJECTIONS_REFRESH_IST)
-    assert f"hour='{proj_hour}'" in jobs["projections_refresh"]
-    assert f"minute='{proj_minute}'" in jobs["projections_refresh"]
-    assert f"day_of_week='{sched.PROJECTIONS_REFRESH_DAY}'" in jobs["projections_refresh"]
-
-    # **This assertion FLIPPED.** It said "before the portfolio pull, or the two Amazon reports
-    # overlap" — and running before it is what made the window look incomplete every Sunday, so the
-    # job re-fetched and overwrote 30 days (on 4 Oct with two fee types missing). After both jobs the
-    # window is complete and this one makes no Amazon call, so there is nothing to overlap.
-    assert sched.PROJECTIONS_REFRESH_IST > sched.PORTFOLIO_REFRESH_IST
-    assert sched.PROJECTIONS_REFRESH_IST > sched.ADS_REFRESH_IST
-
+    assert "projections_refresh" not in _registered_jobs(monkeypatch, hour=6)
+    assert not hasattr(sched, "PROJECTIONS_REFRESH_IST")
 
 
 def test_the_repeat_job_fires_at_10_IST_after_every_other_reporting_job(monkeypatch):
@@ -325,7 +311,6 @@ def test_the_repeat_job_fires_at_10_IST_after_every_other_reporting_job(monkeypa
     assert f"minute='{minute}'" in jobs["repeat_refresh"]
     assert sched.REPEAT_REFRESH_IST > sched.PORTFOLIO_REFRESH_IST
     assert sched.REPEAT_REFRESH_IST > sched.ADS_REFRESH_IST
-    assert sched.REPEAT_REFRESH_IST > sched.PROJECTIONS_REFRESH_IST
 
 def test_the_startup_log_states_the_IST_time_and_the_UTC_one(monkeypatch, caplog):
     """`journalctl` stamps UTC while the intent is IST, so a line naming one leaves the next reader

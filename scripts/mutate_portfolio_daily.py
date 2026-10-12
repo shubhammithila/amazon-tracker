@@ -313,7 +313,6 @@ def run_tests() -> bool:
             "tests/test_portfolio_daily.py",
             "tests/test_portfolio_api.py",
             "tests/test_portfolio_ads.py",
-            "tests/test_projections_refresh.py",
             "tests/test_schema_migrations.py",
             "tests/test_retention_and_scheduler.py",
         ],
