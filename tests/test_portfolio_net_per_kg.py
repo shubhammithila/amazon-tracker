@@ -81,4 +81,4 @@ def test_the_totals_CELL_on_screen_shows_the_like_for_like_rate():
                             _row("B0NOWT0001", 50, 9000, 5000)], CAT, {}, {})["skus"]
     cell = run_portfolio_js(
         f"emit(COLUMN_DEFS.net_per_kg.total(computeTotals({json.dumps(rows)})));")
-    assert "₹25.80" in cell
+    assert "₹26<" in cell          # whole rupees on screen; the mean of 25 and 90 would be ₹58

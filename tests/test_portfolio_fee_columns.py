@@ -57,7 +57,7 @@ def test_the_parent_percentages_are_recomputed_from_sums_never_averaged():
     assert parent["refunds_pct"] == pytest.approx(0.14)          # 1,400 of 10,000 — not the 30% average
 
 
-@pytest.mark.parametrize("col, expected", [("refunds_pct", "5.3%"), ("fees_pct", "33.5%")])
+@pytest.mark.parametrize("col, expected", [("refunds_pct", "5%"), ("fees_pct", "34%")])
 def test_each_percentage_column_shows_its_own_figure(col, expected):
     """Values DIFFERENT from every neighbour, so a renderer reading the wrong field cannot pass."""
     out = run_portfolio_js(VOCAB + """
@@ -79,7 +79,7 @@ const cellOf = id => { const p = html.split('data-col="' + id + '"')[1] || "";
   return p.slice(p.indexOf(">") + 1, p.indexOf("</td>")).replace(/<[^>]+>/g, "").trim(); };
 emit([cellOf("refunds_pct"), cellOf("fees_pct")]);
 """)
-    assert out == ["14.0%", "30.0%"]
+    assert out == ["14%", "30%"]
 
 
 def test_the_columns_read_in_the_order_of_the_sum_and_no_rupee_column_was_added():

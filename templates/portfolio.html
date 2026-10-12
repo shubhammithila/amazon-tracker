@@ -562,7 +562,7 @@ function message(text, cls){
 /* ₹ per kg, to the paisa: a rate, unlike the whole-rupee money columns. A dash with no weight. */
 function perKg(v){
   if(v === null || v === undefined) return '<span class="dim">—</span>';
-  const s = Math.abs(v).toLocaleString("en-IN", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const s = Math.round(Math.abs(v)).toLocaleString("en-IN");
   return `<span class="${v < 0 ? "neg" : ""}">${v < 0 ? "−" : ""}₹${s}</span>`;
 }
 function money(v){
@@ -573,7 +573,8 @@ function money(v){
    would place it among the most ad-efficient products in the portfolio. */
 function pct(v, opts){
   if(v === null || v === undefined) return '<span class="dim">—</span>';
-  const s = (v * 100).toFixed(1) + "%";
+  // Whole percentages on screen ("remove the decimals"); the Excel keeps the exact figure.
+  const s = (v * 100).toFixed(0) + "%";
   if(!opts || !opts.sign) return s;
   return `<span class="${v < 0 ? "neg" : "pos"}">${v > 0 ? "+" : ""}${s}</span>`;
 }
@@ -605,7 +606,7 @@ function verdictClass(v){
    `null` reaches here from the server precisely so this distinction survives to the screen. */
 function kg(value){
   if(value === null || value === undefined) return '<span class="dim">—</span>';
-  return value.toLocaleString("en-IN", {maximumFractionDigits: 1}) + " kg";
+  return Math.round(value).toLocaleString("en-IN") + " kg";
 }
 
 /* **ONE querystring, used by the payload fetch AND the Excel link**, so the file cannot hold
@@ -965,7 +966,7 @@ function renderKpis(){
     <div class="kpi warn"><div class="v">${money(t.ad_spend)}</div><div class="k">Ad spend</div></div>
     <div class="kpi ${netCls}"><div class="v">${money(t.net)}</div><div class="k">Net (pre-COGS)</div></div>
     <div class="kpi ${netCls}"><div class="v">${
-      t.net_pct === null ? "—" : (t.net_pct*100).toFixed(1)+"%"}</div>
+      t.net_pct === null ? "—" : (t.net_pct*100).toFixed(0)+"%"}</div>
       <div class="k">Net margin</div></div>`;
 }
 
@@ -985,7 +986,7 @@ function renderCategories(){
   const rows = ct.categories || [];
   if(!rows.length){ $("categories").innerHTML = ""; return; }
 
-  const pct = v => (v === null || v === undefined) ? "—" : (v*100).toFixed(1) + "%";
+  const pct = v => (v === null || v === undefined) ? "—" : (v*100).toFixed(0) + "%";
   const cards = rows.map(c => {
     // Tinted when the margin is thin, because that is the whole reason to look at this strip:
     // measured on the real account, Seeds runs 51.4% TACOS for 2.8% margin while Rice earns

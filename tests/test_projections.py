@@ -319,3 +319,44 @@ emit([editBad("packing", "2.5"), editBad("packing", "-1"), editBad("packing", ""
       editBad("seasonal_impact", "1.25")]);
 """)
     assert out == [True, True, True, False, False]
+
+
+async def test_an_inactive_product_never_shows_until_asked_even_with_a_decision(profit, db):
+    """The Profit tab keeps an inactive product that carries a decision (Bengali Chana Sattu); stock
+    is never planned for one, so Projections hides every inactive row behind the toggle."""
+    profit["30"].append(parent("B0OLD", "Bengali Chana Sattu", 0.0, inactive=True))
+    service._CACHE.clear()
+    data = await service.build(db)
+    assert "Bengali Chana Sattu" not in [r["product"] for r in data["rows"]]
+    assert data["inactive_hidden"] == 3 + 1
+    service._CACHE.clear()
+    assert "Bengali Chana Sattu" in [r["product"] for r in (await service.build(db, include_inactive=True))["rows"]]
+
+
+# ── the layout asked for on 12 Oct: "looking too haphazard" ─────────────────────────────────────
+
+def test_total_stock_sits_right_after_the_product_name():
+    from tests.js_harness import run_template_js
+    order = run_template_js(ROOT / "templates" / "projections.html", [], ["LEGS", "COLS"],
+                            "emit(COLS.map(c => c[0]).slice(0, 3));")
+    assert order == ["product", "total_stock", "ideal_fba"]
+
+
+def test_the_lead_times_and_the_settings_start_FOLDED():
+    assert 'let leadOpen = localStorage.getItem("projections.leadOpen") === "1";' in PAGE
+    assert '<div id="settings-card" hidden' in PAGE
+    assert "table.collapsed .lead{display:none}" in PAGE
+    # Seasonal and the four legs in COLS, plus the cell markup itself: every editable cell folds.
+    assert PAGE.count('"num edit lead"') == 3 and 'class="num edit lead"' in PAGE and '"num lead"' in PAGE
+
+
+def test_the_formula_commentary_is_gone_and_numbers_are_whole():
+    assert "Ideal FBA = projection" not in PAGE
+    assert 'function whole(v){ return Math.round(Number(v)).toLocaleString("en-IN"); }' in PAGE
+    assert "maximumFractionDigits: 1" not in PAGE
+
+
+def test_the_profit_tab_shows_whole_percentages_and_kilograms():
+    from tests.js_harness import run_portfolio_js
+    assert run_portfolio_js('emit([pct(0.3249), kg(1486.5), perKg(100.41)]);') == [
+        "32%", "1,487 kg", '<span class="">₹100</span>']

@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2835 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2841 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -4347,6 +4347,15 @@ seller first; the category cards sum their rows and filter the table.
   the Active flag decides, as on the Profit tab.
 - Downloads: **Stock to hold** (product, brand, category, Ideal FBA, Total) and the full table, Excel
   and PDF, filtered by the category on screen.
+
+### Layout, after "looking too haphazard" (12 Oct 2026)
+Whole numbers everywhere on screen (kg, kg/day, days, and the Profit tab's percentages, kg and
+₹/kg too; rating keeps its one decimal, Excel keeps exact figures). **Total stock to hold sits beside
+the product name**, then Ideal FBA. Seasonal and the four lead times are one group folded behind
+"+ Lead times", and the settings behind "+ Settings" (both remembered per browser); the formula
+line is gone. Boxes are the Profit tab's KPI and category sizes. **Every inactive product is hidden
+until "Show N inactive"**, including the ones the Profit tab keeps for a recorded decision (Bengali
+Chana Sattu): stock is never planned for an inactive product.
 
 ### The Profit tab's "Total stock to hold" column
 Product rows only (a pack size shows a dash), kg, always the last 30 + 7 days whatever window the

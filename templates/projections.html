@@ -43,16 +43,15 @@ h2{font-size:19px;font-weight:600;margin-bottom:6px}
 .set{display:flex;flex-direction:column;gap:3px;font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em}
 .set input{width:84px;padding:6px 8px;border:1px solid var(--border-strong);border-radius:7px;background:var(--surface);color:var(--text);font-size:13px;text-align:right}
 .set.sep{border-left:1px solid var(--border);padding-left:14px}
-.set-help{font-size:11.5px;color:var(--text-muted);line-height:1.5;margin-top:8px}
 input.changed{background:var(--yellow-soft);border-color:var(--yellow)}
 input.bad{background:var(--red-soft);border-color:var(--red)}
-.tiles{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
-.tile{flex:1 1 200px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 13px}
-.tile-fig{font-size:22px;font-weight:700;line-height:1.2}
-.tile-name{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted)}
-.tile-meta{font-size:11.5px;color:var(--text-muted);margin-top:2px;line-height:1.45}
-.cat-strip{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
-.cat{flex:1 1 140px;text-align:left;background:var(--surface);border:1px solid var(--border);
+/* The Profit tab's KPI and category boxes, same sizes, so the sub-tabs read as one screen. */
+.kpis{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.kpi{flex:1 1 130px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+.kpi .v{font-size:21px;font-weight:700;line-height:1.15}
+.kpi .k{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+.cat-strip{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.cat{flex:1 1 150px;text-align:left;background:var(--surface);border:1px solid var(--border);
   border-radius:10px;padding:8px 11px;cursor:pointer;font:inherit;color:inherit}
 .cat:hover{border-color:var(--accent)}
 .cat.on{border-color:var(--accent);background:var(--accent-soft)}
@@ -62,7 +61,10 @@ input.bad{background:var(--red-soft);border-color:var(--red)}
 .cat-meta{font-size:11.5px;color:var(--text-muted)}
 .table-wrap{overflow:auto;border-radius:10px;border:1px solid var(--border);
   max-height:var(--pj-cap, calc(100vh - 60px));min-height:200px;overscroll-behavior:contain}
-table{width:100%;min-width:1320px;border-collapse:separate;border-spacing:0}
+table{width:auto;border-collapse:separate;border-spacing:0}
+/* Every figure column the same width, so the table reads as a grid rather than ragged text. */
+thead th.num{min-width:96px}
+table.collapsed .lead{display:none}
 thead th{background:var(--surface2);color:var(--text-muted);padding:7px 8px;font-size:10.5px;
   font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:left;white-space:nowrap;
   border-bottom:2px solid var(--border-strong);position:sticky;top:0;z-index:2}
@@ -72,8 +74,14 @@ thead tr.totals td{background:var(--surface2);font-weight:700;font-size:13px;pad
 tbody td{padding:5px 8px;font-size:13px;border-bottom:1px solid var(--border);white-space:nowrap}
 th.num,td.num{text-align:right}
 tbody tr.row:hover td{background:var(--accent-soft)}
-td.edit input{width:58px;padding:4px 6px;border:1px solid var(--border-strong);border-radius:6px;background:var(--surface);color:var(--text);font-size:13px;text-align:right}
+td.edit input{width:52px;-moz-appearance:textfield;padding:4px 6px;border:1px solid var(--border-strong);border-radius:6px;background:var(--surface);color:var(--text);font-size:13px;text-align:right}
+td.edit input::-webkit-outer-spin-button,td.edit input::-webkit-inner-spin-button,
+.set input::-webkit-outer-spin-button,.set input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.set input{-moz-appearance:textfield}
 td.stock{font-weight:700;background:var(--green-soft)}
+.toggle{background:transparent;border:1px solid var(--border-strong);border-radius:8px;padding:6px 11px;
+  font-size:12.5px;font-weight:600;color:var(--text);cursor:pointer}
+.toggle .sign{display:inline-block;width:12px;font-weight:700}
 .dim{color:var(--text-dim)}
 .tag{font-size:10px;font-weight:700;border-radius:4px;padding:1px 5px;margin-left:5px;vertical-align:1px}
 .tag.inactive{background:var(--surface2);color:var(--text-muted)}
@@ -107,21 +115,15 @@ th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 <div class="subtitle" id="subtitle">Loading…</div>
 <div id="messages"></div>
 
-<div class="card">
-  <div class="settings" id="settings"></div>
-  <div class="set-help">Ideal FBA = projection ÷ 30 × lead total × markup ·
-    WH buffer = the days each lead time can slip, added up ·
-    Ideal WH = projection ÷ 30 × WH buffer × markup ·
-    <strong>Total stock to hold = Ideal FBA + Ideal WH</strong></div>
-</div>
-
-<div class="tiles" id="tiles"></div>
+<div class="kpis" id="tiles"></div>
 <div id="categories"></div>
 
 <div class="card">
   <div class="controls">
     <input class="search" id="search" type="search" placeholder="Search product…" aria-label="Search product"/>
     <button class="btn-outline" id="inactive-btn" type="button"></button>
+    <button class="toggle" id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings-card"><span class="sign">+</span> Settings</button>
+    <button class="toggle" id="lead-toggle" type="button" aria-expanded="false"><span class="sign">+</span> Lead times</button>
     <span style="margin-left:auto"></span>
     <button class="btn-outline" data-dl="reorder.xlsx" title="Product, brand, Ideal FBA and Total stock to hold, for the purchase team">{{ icons.icon("download") }} Stock to hold (Excel)</button>
     <button class="btn-outline" data-dl="reorder.pdf">{{ icons.icon("download") }} Stock to hold (PDF)</button>
@@ -130,6 +132,9 @@ th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
     <button class="btn" id="save-btn" type="button" disabled>Save &amp; recalculate</button>
   </div>
   <div id="note" class="dim" style="font-size:12px;margin-top:6px"></div>
+  <div id="settings-card" hidden style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+    <div class="settings" id="settings"></div>
+  </div>
 </div>
 
 <div class="table-wrap" id="table"></div>
@@ -150,9 +155,11 @@ const EDITABLE = ["seasonal_impact"].concat(LEGS.map(l => l[0]));
 function esc(s){
   return String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 }
-function kg(v){ return v == null ? '<span class="dim">—</span>' : Number(v).toLocaleString("en-IN", {maximumFractionDigits: 1}) + " kg"; }
-function num(v, d){ return v == null ? '<span class="dim">—</span>' : Number(v).toLocaleString("en-IN", {maximumFractionDigits: d}); }
-function days(v){ return v == null ? "—" : Number(v).toLocaleString("en-IN", {maximumFractionDigits: 1}) + " d"; }
+/* Whole numbers on screen, as asked ("remove the decimals, round it off to the nearest 1"); the
+   server keeps the exact figures, so totals are summed before rounding, never from rounded rows. */
+function whole(v){ return Math.round(Number(v)).toLocaleString("en-IN"); }
+function kg(v){ return v == null ? '<span class="dim">—</span>' : whole(v) + " kg"; }
+function days(v){ return v == null ? "—" : whole(v) + " d"; }
 const ico = (name, extra) =>
   `<svg class="ico${extra ? " " + extra : ""}" aria-hidden="true" focusable="false"><use href="#i-${name}"/></svg>`;
 
@@ -171,7 +178,7 @@ function renderSettings(){
   const s = data.settings || {};
   $("settings").innerHTML = SETTINGS.map(([key, label, show, , step], i) =>
     `<label class="set${i === 3 ? " sep" : ""}">${esc(label)}
-       <input type="number" step="${step}" data-set="${key}" value="${round(show(s[key] ?? 0))}"/></label>`).join("")
+       <input type="number" step="${step}" data-set="${key}" value="${Math.round(show(s[key] ?? 0) * 100) / 100}"/></label>`).join("")
     + `<button class="btn-outline" id="settings-save" type="button" disabled>Save settings</button>
        <button class="btn-outline" id="settings-reset" type="button">Reset to defaults</button>`;
 }
@@ -215,16 +222,10 @@ function scopeTotal(){
 function renderTiles(){
   const t = scopeTotal();
   $("tiles").innerHTML = `
-    <div class="tile"><div class="tile-name">Total stock to hold</div><div class="tile-fig">${kg(t.total_stock)}</div>
-      <div class="tile-meta">Ideal FBA + Ideal WH${category ? " · " + esc(category) : ""}</div></div>
-    <div class="tile"><div class="tile-name">Ideal FBA</div><div class="tile-fig">${kg(t.ideal_fba)}</div>
-      <div class="tile-meta">to sit at Amazon: the full lead time × markup</div></div>
-    <div class="tile"><div class="tile-name">Projection, next 30 days</div><div class="tile-fig">${kg(t.projection_30d)}</div>
-      <div class="tile-meta">60/40 blend of 7 and 30 days × seasonal × growth</div></div>
-    <div class="tile"><div class="tile-name">Sales, last 30 days</div><div class="tile-fig">${kg(t.kg_30d)}</div>
-      <div class="tile-meta">weight ordered · last 7 days ${kg(t.kg_7d)}</div></div>`;
-  const w = Math.round((data.settings || {}).seven_day_weight * 100);
-  $("tiles").querySelectorAll(".tile-meta")[2].textContent = `${w}/${100 - w} blend of 7 and 30 days × seasonal × growth`;
+    <div class="kpi"><div class="v">${kg(t.total_stock)}</div><div class="k">Total stock to hold${category ? " · " + esc(category) : ""}</div></div>
+    <div class="kpi"><div class="v">${kg(t.ideal_fba)}</div><div class="k">Ideal FBA</div></div>
+    <div class="kpi"><div class="v">${kg(t.projection_30d)}</div><div class="k">Projection, next 30 days</div></div>
+    <div class="kpi"><div class="v">${kg(t.kg_30d)}</div><div class="k">Sales, last 30 days</div></div>`;
 }
 function renderCategories(){
   const cats = data.categories || [];
@@ -232,7 +233,7 @@ function renderCategories(){
     `<button class="cat${category === c.category ? " on" : ""}" data-cat="${esc(c.category)}" type="button">
       <div class="cat-name">${esc(c.category)} <span class="cat-n">${c.products}</span></div>
       <div class="cat-fig">${kg(c.total_stock)}</div>
-      <div class="cat-meta">to hold · FBA ${kg(c.ideal_fba)} · sold ${kg(c.kg_30d)}</div>
+      <div class="cat-meta">to hold · FBA ${kg(c.ideal_fba)}</div>
     </button>`).join("") + `</div>` : "";
 }
 
@@ -241,17 +242,19 @@ let sort = (() => {
   try { return JSON.parse(sessionStorage.getItem("projections.sort")) || {key: null, dir: -1}; }
   catch { return {key: null, dir: -1}; }
 })();
+/* Total stock to hold sits beside the product name: it is the figure the purchase team works
+   from. Seasonal and the lead times are ONE group (class "lead"), folded away until "+ Lead times". */
 const COLS = [
-  ["product", "Product", ""], ["category", "Category", ""],
+  ["product", "Product", ""], ["total_stock", "Total stock to hold", "num"],
+  ["ideal_fba", "Ideal FBA", "num"], ["category", "Category", ""],
   ["kg_30d", "30-day sales", "num"], ["kg_7d", "7-day sales", "num"],
   ["daily_rate", "Daily", "num"], ["projection_30d", "Projection 30d", "num"],
-  // The answers sit before the inputs, so the figure the purchase team needs is on screen
-  // without scrolling sideways.
-  ["total_stock", "Total stock to hold", "num"], ["ideal_fba", "Ideal FBA", "num"],
-  ["seasonal_impact", "Seasonal", "num edit"],
-  ...LEGS.map(([k, l]) => [k, l + " (d)", "num edit"]),
-  ["lead_total", "Lead total", "num"],
+  ["seasonal_impact", "Seasonal", "num edit lead"],
+  ...LEGS.map(([k, l]) => [k, l + " (d)", "num edit lead"]),
+  ["lead_total", "Lead total", "num lead"],
 ];
+let leadOpen = localStorage.getItem("projections.leadOpen") === "1";
+let settingsOpen = localStorage.getItem("projections.settingsOpen") === "1";
 function shownRows(){
   const q = $("search").value.trim().toLowerCase();
   return (data.rows || []).filter(r => (!category || r.category === category)
@@ -297,7 +300,7 @@ function editValue(r, field){
 function editCell(r, field){
   const pending = (edits[r.key] || {})[field];
   const step = field === "seasonal_impact" ? "0.05" : "1";
-  return `<td class="num edit"><input type="number" step="${step}" min="0" data-key="${esc(r.key)}"
+  return `<td class="num edit lead"><input type="number" step="${step}" min="0" data-key="${esc(r.key)}"
     data-field="${field}" value="${esc(editValue(r, field))}"${pending !== undefined ? ' class="changed"' : ""}
     aria-label="${esc(field)} for ${esc(r.product)}"/></td>`;
 }
@@ -305,31 +308,32 @@ function rowHtml(r){
   const tags = (r.inactive ? '<span class="tag inactive">inactive</span>' : "")
     + (r.config_source !== "saved" ? '<span class="tag defaults" title="Lead times are defaults; nothing saved for this product yet">default lead times</span>' : "");
   const stockTitle = r.total_stock == null ? "" :
-    `Ideal FBA ${r.ideal_fba} kg + Ideal WH ${r.ideal_wh} kg (WH buffer ${r.buffer_days} days)`;
-  return `<tr class="row"><td data-col="product">${esc(r.product)}${tags}</td><td>${esc(r.category)}</td>`
-    + `<td class="num">${kg(r.kg_30d)}</td><td class="num">${kg(r.kg_7d)}</td>`
-    + `<td class="num">${r.daily_rate == null ? '<span class="dim">—</span>' : num(r.daily_rate, 1) + " kg/d"}</td>`
-    + `<td class="num">${kg(r.projection_30d)}</td>`
+    `Ideal FBA ${whole(r.ideal_fba)} kg + Ideal WH ${whole(r.ideal_wh)} kg (WH buffer ${whole(r.buffer_days)} days)`;
+  return `<tr class="row"><td data-col="product">${esc(r.product)}${tags}</td>`
     + `<td class="num stock" title="${esc(stockTitle)}">${kg(r.total_stock)}</td><td class="num">${kg(r.ideal_fba)}</td>`
+    + `<td>${esc(r.category)}</td>`
+    + `<td class="num">${kg(r.kg_30d)}</td><td class="num">${kg(r.kg_7d)}</td>`
+    + `<td class="num">${r.daily_rate == null ? '<span class="dim">—</span>' : whole(r.daily_rate) + " kg/d"}</td>`
+    + `<td class="num">${kg(r.projection_30d)}</td>`
     + EDITABLE.map(f => editCell(r, f)).join("")
-    + `<td class="num">${days(r.lead_total)}</td></tr>`;
+    + `<td class="num lead">${days(r.lead_total)}</td></tr>`;
 }
 function sum(rows, key){
   const vals = rows.map(r => r[key]).filter(v => v != null);
   return vals.length ? vals.reduce((a, v) => a + v, 0) : null;
 }
 function totalsHtml(rows){
-  return `<tr class="totals"><td data-col="product">${rows.length} product(s)</td><td></td>`
+  return `<tr class="totals"><td data-col="product">${rows.length} product(s)</td>`
+    + `<td class="num">${kg(sum(rows, "total_stock"))}</td><td class="num">${kg(sum(rows, "ideal_fba"))}</td><td></td>`
     + `<td class="num">${kg(sum(rows, "kg_30d"))}</td><td class="num">${kg(sum(rows, "kg_7d"))}</td><td></td>`
     + `<td class="num">${kg(sum(rows, "projection_30d"))}</td>`
-    + `<td class="num">${kg(sum(rows, "total_stock"))}</td><td class="num">${kg(sum(rows, "ideal_fba"))}</td>`
-    + "<td></td>".repeat(EDITABLE.length + 1) + `</tr>`;
+    + '<td class="lead"></td>'.repeat(EDITABLE.length + 1) + `</tr>`;
 }
 function renderTable(){
   const rows = sortedRows();
   const body = rows.length ? rows.map(rowHtml).join("")
     : `<tr><td colspan="${COLS.length}" class="dim">${data.complete_30 ? "No products match." : "No figures: the last 30 days are not all stored yet."}</td></tr>`;
-  $("table").innerHTML = `<table><thead><tr>${COLS.map(th).join("")}</tr>${totalsHtml(rows)}</thead><tbody>${body}</tbody></table>`;
+  $("table").innerHTML = `<table class="${leadOpen ? "" : "collapsed"}"><thead><tr>${COLS.map(th).join("")}</tr>${totalsHtml(rows)}</thead><tbody>${body}</tbody></table>`;
   sizeTable();
 }
 function sizeTable(){
@@ -412,6 +416,26 @@ $("categories").addEventListener("click", e => {
   renderTiles(); renderCategories(); renderTable();
 });
 $("search").addEventListener("input", renderTable);
+function renderToggles(){
+  for(const [id, open, target] of [["settings-toggle", settingsOpen], ["lead-toggle", leadOpen]]){
+    $(id).setAttribute("aria-expanded", String(open));
+    $(id).querySelector(".sign").textContent = open ? "−" : "+";
+  }
+  $("settings-card").hidden = !settingsOpen;
+}
+$("settings-toggle").addEventListener("click", () => {
+  settingsOpen = !settingsOpen;
+  localStorage.setItem("projections.settingsOpen", settingsOpen ? "1" : "0");
+  renderToggles();
+});
+$("lead-toggle").addEventListener("click", () => {
+  leadOpen = !leadOpen;
+  localStorage.setItem("projections.leadOpen", leadOpen ? "1" : "0");
+  renderToggles();
+  const table = $("table").querySelector("table");
+  if(table) table.classList.toggle("collapsed", !leadOpen);
+  sizeTable();
+});
 $("inactive-btn").addEventListener("click", () => {
   if(Object.keys(edits).length && !confirm("Discard your unsaved changes?")) return;
   edits = {};
@@ -445,7 +469,8 @@ function render(){
   $("inactive-btn").textContent = data.include_inactive ? "Hide inactive" : `Show ${data.inactive_hidden || 0} inactive`;
   $("inactive-btn").disabled = !data.include_inactive && !data.inactive_hidden;
   if(category && !(data.categories || []).some(c => c.category === category)) category = "";
-  renderMessages(); renderSettings(); renderTiles(); renderCategories(); renderTable(); refreshSaveButtons();
+  renderMessages(); renderSettings(); renderToggles(); renderTiles(); renderCategories(); renderTable();
+  refreshSaveButtons();
 }
 async function load(){
   const r = await fetch("/projections/last" + (includeInactive ? "?include_inactive=true" : ""));

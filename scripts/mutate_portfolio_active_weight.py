@@ -227,8 +227,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         TEMPLATE,
         "  if(value === null || value === undefined) return '<span class=\"dim\">—</span>';\n"
-        "  return value.toLocaleString(\"en-IN\", {maximumFractionDigits: 1}) + \" kg\";",
-        "  return n(value).toLocaleString(\"en-IN\", {maximumFractionDigits: 1}) + \" kg\";",
+        "  return Math.round(value).toLocaleString(\"en-IN\") + \" kg\";",
+        "  return Math.round(n(value)).toLocaleString(\"en-IN\") + \" kg\";",
         "`kg()` renders 0.0 kg where the sheet has no weight, so an absence reads as a measurement "
         "— test_the_kg_formatter_shows_a_DASH_and_never_zero_kg",
     ),

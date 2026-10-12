@@ -132,7 +132,7 @@ def test_an_unknown_pack_weight_is_a_dash_not_zero_for_weight_ordered_too():
 
 @pytest.mark.parametrize("col", ["weight_ordered_kg", "weight_kg"])
 def test_each_weight_column_shows_its_own_figure(col):
-    expected = {"weight_ordered_kg": "22.6 kg", "weight_kg": "21.2 kg"}[col]
+    expected = {"weight_ordered_kg": "23 kg", "weight_kg": "21 kg"}[col]
     out = run_portfolio_js(VOCAB + """
 const R = Object.assign({}, ROW, {weight_ordered_kg: 22.6, weight_kg: 21.2});
 layout = normaliseLayout(null, data.columns);

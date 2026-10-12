@@ -138,6 +138,12 @@ async def build(db, *, include_inactive: bool = False, today: date | None = None
     stored = await repository.load_rows(db)
 
     rows = _rows(d30, d7 if complete_7 else None, stored, categories, settings) if complete_30 else []
+    # The Profit tab keeps an inactive product on screen when a decision is recorded against it;
+    # stock is never planned for one, so here every inactive row waits behind the toggle.
+    kept_inactive = 0
+    if not include_inactive:
+        kept_inactive = sum(1 for r in rows if r["inactive"])
+        rows = [r for r in rows if not r["inactive"]]
     payload = {
         "rows": rows,
         "categories": _cards(rows),
@@ -150,7 +156,7 @@ async def build(db, *, include_inactive: bool = False, today: date | None = None
         "complete_7": complete_7,
         "missing_30": (d30.get("completeness") or {}).get("missing_count") or 0,
         "include_inactive": include_inactive,
-        "inactive_hidden": d30.get("inactive_hidden_parents") or 0,
+        "inactive_hidden": (d30.get("inactive_hidden_parents") or 0) + kept_inactive,
         "unknown_weight": [r["product"] for r in rows if r["kg_30d"] is None],
     }
     _CACHE[include_inactive] = (time.monotonic(), payload)
