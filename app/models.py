@@ -1540,3 +1540,47 @@ class AssistantLog(Base):
     cache_read_tokens = Column(Integer, default=0)
     latency_ms = Column(Integer, default=0)
     error = Column(Text)
+
+
+class FbaInventoryRefresh(Base):
+    """One read of Amazon's FBA Inventory API (`app.inventory`).
+
+    **Only a `done` run is ever read as current stock.** A failed run, or one refused because dozens
+    of SKUs all came back at zero, is kept so the screen can say what happened while yesterday's
+    figures stand. A screen reading the newest run regardless would show an empty warehouse the
+    morning Amazon has a bad minute, and "To purchase" would then read "buy everything".
+    """
+    __tablename__ = "fba_inventory_refresh"
+
+    id = Column(Integer, primary_key=True)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    finished_at = Column(DateTime)
+    status = Column(String(12), nullable=False, default="running")   # running|done|failed|refused
+    source = Column(String(12), nullable=False, default="nightly")   # nightly|button|shipment
+    sku_count = Column(Integer, nullable=False, default=0)
+    units = Column(Integer, nullable=False, default=0)
+    error = Column(Text)
+
+
+class FbaInventoryRow(Base):
+    """One FBA SKU in one run. Every quantity is kept apart, so a figure can always be explained
+    (13 Oct 2026: the gap against the CSV was entirely in `inbound_shipped`)."""
+    __tablename__ = "fba_inventory_row"
+    __table_args__ = (
+        Index("idx_fba_inventory_row_run_sku", "refresh_id", "seller_sku", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    refresh_id = Column(Integer, ForeignKey("fba_inventory_refresh.id", ondelete="CASCADE"), nullable=False)
+    seller_sku = Column(String(80), nullable=False)
+    asin = Column(String(10), nullable=False)
+    fnsku = Column(String(20))
+    fulfillable = Column(Integer, nullable=False, default=0)
+    inbound_working = Column(Integer, nullable=False, default=0)
+    inbound_shipped = Column(Integer, nullable=False, default=0)
+    inbound_receiving = Column(Integer, nullable=False, default=0)
+    reserved = Column(Integer, nullable=False, default=0)
+    researching = Column(Integer, nullable=False, default=0)
+    future_supply = Column(Integer, nullable=False, default=0)
+    unfulfillable = Column(Integer, nullable=False, default=0)
+    amazon_updated_at = Column(String(30))
