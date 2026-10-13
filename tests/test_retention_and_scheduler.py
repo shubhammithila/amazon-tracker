@@ -248,7 +248,7 @@ def test_all_scheduled_jobs_are_registered(monkeypatch):
     assert set(jobs) == {
         "daily_product_scrape", "daily_keyword_track", "daily_history_purge",
         "order_refresh", "portfolio_refresh", "ads_refresh", "ads_refresh_retry",
-        "repeat_refresh",
+        "repeat_refresh", "fba_inventory_refresh",
     }
 
 
@@ -311,6 +311,20 @@ def test_the_repeat_job_fires_at_10_IST_after_every_other_reporting_job(monkeypa
     assert f"minute='{minute}'" in jobs["repeat_refresh"]
     assert sched.REPEAT_REFRESH_IST > sched.PORTFOLIO_REFRESH_IST
     assert sched.REPEAT_REFRESH_IST > sched.ADS_REFRESH_IST
+
+def test_fba_stock_is_read_at_0745_IST_after_the_sales_pull(monkeypatch):
+    """A few seconds of read-only API, after the 07:30 sales pull so the morning's Projections has
+    both halves of "To purchase". Asserted on the IST constant, never a UTC hour."""
+    from app import ist as ist_module
+    from app import scheduler as sched
+
+    jobs = _registered_jobs(monkeypatch, hour=6)
+    assert sched.FBA_INVENTORY_IST == (7, 45)
+    assert sched.FBA_INVENTORY_IST > sched.PORTFOLIO_REFRESH_IST
+    hour, minute = ist_module.utc_hhmm(*sched.FBA_INVENTORY_IST)
+    assert f"hour='{hour}'" in jobs["fba_inventory_refresh"]
+    assert f"minute='{minute}'" in jobs["fba_inventory_refresh"]
+
 
 def test_the_startup_log_states_the_IST_time_and_the_UTC_one(monkeypatch, caplog):
     """`journalctl` stamps UTC while the intent is IST, so a line naming one leaves the next reader

@@ -254,6 +254,9 @@ async def scheduled_purge_old_history():
 #: settled) and still clear of the 06:00 *server-time* product scrape. Minute 30 rather than 0 for
 #: the same reason the orders job starts 4 minutes in: nothing else should begin in the same second.
 PORTFOLIO_REFRESH_IST = (7, 30)
+#: FBA stock (on hand + every inbound state) from the Inventory API, for Projections' "To purchase"
+#: and the Shipment tab. Seconds of read-only calls, after the sales pull so both halves are fresh.
+FBA_INVENTORY_IST = (7, 45)
 
 
 async def scheduled_portfolio_refresh():
@@ -399,6 +402,18 @@ async def scheduled_repeat_refresh():
         logger.warning("Repeat refresh failed: %s", result["error"])
     else:
         logger.info("Repeat refresh: %d line(s)", result.get("lines_stored", 0))
+
+async def scheduled_fba_inventory():
+    """Read FBA stock from Amazon's FBA Inventory API. Read-only; a failed read leaves the previous
+    one current and is shown on the Projections tab."""
+    if not get_settings().spapi_configured:
+        logger.debug("FBA inventory skipped: SP-API is not configured")
+        return
+    from app.inventory import refresh as inventory_refresh
+
+    result = await inventory_refresh.run("nightly")
+    logger.info("FBA inventory: %s", result)
+
 
 async def scheduled_order_refresh():
     """Pull Amazon Easy Ship orders into the local tables, every 30 minutes.
@@ -569,6 +584,18 @@ def setup_scheduler():
         coalesce=True,
     )
     parts.append(f"portfolio at {ist.label(*PORTFOLIO_REFRESH_IST)}")
+
+    # Same flag pair: a read-only call that never writes to Amazon.
+    inventory_utc = ist.utc_hhmm(*FBA_INVENTORY_IST)
+    scheduler.add_job(
+        scheduled_fba_inventory,
+        CronTrigger(hour=inventory_utc[0], minute=inventory_utc[1]),
+        id="fba_inventory_refresh",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    parts.append(f"FBA stock at {ist.label(*FBA_INVENTORY_IST)}")
 
     # Same flag pair again. The Ads tab needs current figures for its rules; it refreshes DATA
     # only and never edits a bid, so running it unattended is as safe as the portfolio pull.
