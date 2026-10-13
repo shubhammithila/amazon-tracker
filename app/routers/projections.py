@@ -96,6 +96,20 @@ async def set_settings(request: Request, body: dict = Body(...), db: AsyncSessio
     return {"settings": saved}
 
 
+@router.post("/refresh-stock")
+async def refresh_stock(include_inactive: bool = False, db: AsyncSession = Depends(get_db),
+                        grant=Depends(require_area(permissions.PROJECTIONS))):
+    """Read FBA stock from Amazon now (a few seconds) and return the recalculated table. A failed
+    read is recorded and shown; the previous reading stays current."""
+    from app.inventory import refresh as inventory_refresh
+
+    result = await inventory_refresh.run("button")
+    if result.get("refused"):
+        return JSONResponse({"error": "A stock refresh is already running."}, status_code=409)
+    service._CACHE.clear()
+    return await service.build(db, include_inactive=include_inactive)
+
+
 def _table(data: dict, category: str | None, *, full: bool):
     from app.portfolio.export import Column, Row, Table
     rows = [r for r in data["rows"] if not category or r["category"] == category]
@@ -109,7 +123,8 @@ def _table(data: dict, category: str | None, *, full: bool):
                  Column("wh_to_ixd", "WH→IXD (d)", "int"), Column("ixd_to_fba", "IXD→FBA (d)", "int"),
                  Column("lead_total", "Lead total (d)", "days"), Column("buffer_days", "WH buffer (d)", "days"),
                  Column("ideal_wh", "Ideal WH", "kg")]
-    cols += [Column("ideal_fba", "Ideal FBA", "kg"), Column("total_stock", "Total stock to hold", "kg")]
+    cols += [Column("total_stock", "Total stock to hold", "kg"), Column("fba_kg", "In FBA / transit", "kg"),
+             Column("to_purchase", "To purchase", "kg"), Column("ideal_fba", "Ideal FBA", "kg")]
     pick = lambda r: {c.id: r.get(c.id) for c in cols}  # noqa: E731
     total = logic.sum_rows(rows)
     label = f"{category or 'All products'} — total"

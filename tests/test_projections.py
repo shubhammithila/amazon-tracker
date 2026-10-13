@@ -230,6 +230,7 @@ async def test_the_downloads_carry_total_stock_to_hold(profit, auth_client, path
         ws = load_workbook(io.BytesIO(r.content)).active
         headers = [c.value for c in ws[2]]
         assert "Total stock to hold" in headers and "Ideal FBA" in headers
+        assert "In FBA / transit" in headers and "To purchase" in headers
 
 
 async def test_a_login_without_projections_cannot_reach_it(ops_client):
@@ -335,11 +336,11 @@ async def test_an_inactive_product_never_shows_until_asked_even_with_a_decision(
 
 # ── the layout asked for on 12 Oct: "looking too haphazard" ─────────────────────────────────────
 
-def test_category_then_total_stock_follow_the_product_name():
+def test_category_then_total_stock_then_fba_and_to_purchase_follow_the_product_name():
     from tests.js_harness import run_template_js
     order = run_template_js(ROOT / "templates" / "projections.html", [], ["LEGS", "COLS"],
-                            "emit(COLS.map(c => c[0]).slice(0, 4));")
-    assert order == ["product", "category", "total_stock", "ideal_fba"]
+                            "emit(COLS.map(c => c[0]).slice(0, 6));")
+    assert order == ["product", "category", "total_stock", "fba_kg", "to_purchase", "ideal_fba"]
 
 
 def test_the_lead_times_and_the_settings_start_FOLDED():
@@ -458,3 +459,50 @@ async def test_a_real_stock_run_feeds_the_table(profit, db, monkeypatch):
     monkeypatch.setattr("app.portfolio.repository.flavour_keys", lambda db, c: _value({}))
     chana = next(r for r in (await service.build(db))["rows"] if r["product"] == "Chana Sattu")
     assert chana["fba_kg"] == 40.0
+
+
+async def test_refresh_stock_reads_amazon_and_returns_the_new_table(profit, auth_client, monkeypatch):
+    calls = []
+
+    async def fake_run(source, **kw):
+        calls.append(source)
+        return {"id": 1, "status": "done", "sku_count": 1, "units": 5, "error": None}
+    monkeypatch.setattr("app.inventory.refresh.run", fake_run)
+    r = await auth_client.post("/projections/refresh-stock")
+    assert r.status_code == 200 and calls == ["button"] and "rows" in r.json()
+
+
+async def test_refresh_stock_while_one_runs_is_409(profit, auth_client, monkeypatch):
+    async def busy(source, **kw):
+        return {"refused": True}
+    monkeypatch.setattr("app.inventory.refresh.run", busy)
+    assert (await auth_client.post("/projections/refresh-stock")).status_code == 409
+
+
+async def test_refresh_stock_needs_the_projections_area(ops_client):
+    assert (await ops_client.post("/projections/refresh-stock")).status_code in (303, 403)
+
+
+def test_a_missing_or_failed_stock_read_gets_a_banner_and_a_good_one_does_not():
+    from tests.js_harness import run_template_js
+    out = run_template_js(ROOT / "templates" / "projections.html", ["renderMessages", "stockTime", "esc", "kg", "whole"], [], """
+const box = {innerHTML: ""};
+$ = () => box;
+const states = [{}, {as_of: "2026-10-13T02:15:00", status: "failed", error: "Amazon 503"},
+                {as_of: "2026-10-13T02:15:00", status: "done", stale: false},
+                {as_of: "2026-10-13T02:15:00", status: "done", stale: false, unmapped: [{product: "Old Thing", kg: 30}]}];
+emit(states.map(fs => { data = {complete_30: true, complete_7: true, fba_stock: fs}; renderMessages(); return box.innerHTML; }));
+""")
+    assert "not been read" in out[0] and "Amazon 503" in out[1] and out[2] == "" and "Old Thing 30 kg" in out[3]
+
+
+async def test_no_stock_is_named_as_unmapped_while_the_table_itself_is_missing(profit, stock, db, monkeypatch):
+    from app.routers import portfolio as pf
+    inner = pf._dashboard
+
+    async def incomplete(db, window, *, include_inactive=False):
+        out = await inner(db, window, include_inactive=include_inactive)
+        return {**out, "completeness": {"complete": False, "missing_count": 30}}
+    monkeypatch.setattr("app.routers.portfolio._dashboard", incomplete)
+    data = await service.build(db)
+    assert data["rows"] == [] and data["fba_stock"]["unmapped"] == []

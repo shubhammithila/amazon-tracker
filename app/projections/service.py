@@ -207,8 +207,10 @@ async def build(db, *, include_inactive: bool = False, today: date | None = None
         r["fba_kg"] = None if units is None else fba_kg.get(r["key"], 0.0)
         r["to_purchase"] = logic.to_purchase(r["total_stock"], r["fba_kg"])
     # Stock held for a product with no row (no sales in 30 days) is NAMED, never silently dropped.
+    # Only once the table exists: with the 30 days not all stored there are no rows, and naming
+    # every product held would bury the banner that actually explains the empty table.
     unmapped_kg: dict[str, float] = {}
-    for child, key in keys.items():
+    for child, key in (keys.items() if complete_30 else ()):
         weight = (products.get(child) or {}).get("weight")
         if key in shown_all or not units[child] or not weight:
             continue
