@@ -32,6 +32,8 @@ CATEGORY_ORDER = [CATEGORY_LABELS[k] for k in sorted(CATEGORY_LABELS)] + [pf_log
 CACHE_SECONDS = 300
 #: An FBA stock reading older than this gets a banner (the nightly job runs every 24 hours).
 STALE_HOURS = 36
+#: Stock held for a product with no row is named only from this many kg.
+UNMAPPED_MIN_KG = 5
 
 _CACHE: dict = {}
 
@@ -216,7 +218,9 @@ async def build(db, *, include_inactive: bool = False, today: date | None = None
             continue
         name = (products.get(child) or {}).get("name") or child
         unmapped_kg[name] = round(unmapped_kg.get(name, 0.0) + units[child] * float(weight), 1)
-    unmapped = [{"product": n, "kg": k} for n, k in sorted(unmapped_kg.items(), key=lambda x: -x[1])]
+    # A few hundred grams of a retired pack is not worth a banner; a real holding is.
+    unmapped = [{"product": n, "kg": k} for n, k in sorted(unmapped_kg.items(), key=lambda x: -x[1])
+                if k >= UNMAPPED_MIN_KG]
     # The Profit tab keeps an inactive product on screen when a decision is recorded against it;
     # stock is never planned for one, so here every inactive row waits behind the toggle.
     kept_inactive = 0

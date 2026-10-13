@@ -422,6 +422,8 @@ async def test_fba_kg_weighs_each_child_and_to_purchase_follows(profit, stock, d
 
 
 async def test_stock_for_a_product_with_no_row_is_named_not_dropped(profit, stock, db):
+    stock["units"]["B0CRUMB"], stock["weights"]["B0CRUMB"] = 1, 0.2       # 0.2 kg: not worth a banner
+    stock["parents"]["B0CRUMB"] = "B0GONE2"
     data = await service.build(db)
     assert data["fba_stock"]["unmapped"] == [{"product": "Old Thing", "kg": 30.0}]
     assert data["fba_stock"]["as_of"] == "2026-10-13T02:15:00" and data["fba_stock"]["status"] == "done"
