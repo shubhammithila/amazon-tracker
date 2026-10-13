@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2881 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2883 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -4405,7 +4405,7 @@ production of boxes already on their way.
   now counts **N − L** (the nine-column sum only when N is absent); two tests that pinned the old rule
   were rewritten and say why. The file still supplies sales and merchant SKUs.
 - `conftest.no_live_inventory` stops every test reaching the API (the developer `.env` is live).
-  `scripts/mutate_inventory.py`: 15/15 caught.
+  `scripts/mutate_inventory.py`: 17/17 caught. **Pages are paced** (0.6 s apart) and a quota refusal waits 2/5/15 s and retries: the first production read sent 8 pages back to back and was refused on page 3 ("You exceeded your quota"); a laptop had got away with it only because its round trips were slower. That failed run showed exactly as designed: dashes, a banner, nothing read as an empty warehouse.
 
 ## The stack stays Python. A React/Node/Postgres/Redis rewrite was built and abandoned.
 

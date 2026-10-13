@@ -151,3 +151,35 @@ def test_inventory_never_writes_to_amazon(module):
 def test_the_zero_guard_is_the_shipment_tabs_own_threshold():
     from app.routers.shipment import ALL_ZERO_STOCK_THRESHOLD
     assert logic.ALL_ZERO_STOCK_THRESHOLD == ALL_ZERO_STOCK_THRESHOLD
+
+
+async def test_pages_are_spaced_and_a_quota_refusal_waits_and_retries():
+    """13 Oct, first production read: eight pages back to back were refused on page 3 with
+    "You exceeded your quota for the requested resource"."""
+    waits, state = [], {"calls": 0}
+
+    async def sleep(seconds):
+        waits.append(seconds)
+
+    async def get(path, params):
+        state["calls"] += 1
+        if state["calls"] == 2:
+            raise RuntimeError("Amazon said: You exceeded your quota for the requested resource.")
+        page = 0 if "nextToken" not in params else 1
+        body = {"payload": {"inventorySummaries": [summary(f"p{page} FBA")]}}
+        if page == 0:
+            body["pagination"] = {"nextToken": "t1"}
+        return body
+    out = await fetch.fetch_summaries(get=get, sleep=sleep)
+    assert [s["sellerSku"] for s in out] == ["p0 FBA", "p1 FBA"]
+    assert waits == [fetch.PAGE_INTERVAL, fetch.QUOTA_WAITS[0]]
+
+
+async def test_any_other_error_is_not_retried():
+    async def sleep(seconds):
+        raise AssertionError("must not wait on a non-quota error")
+
+    async def get(path, params):
+        raise RuntimeError("Amazon 403 Unauthorized")
+    with pytest.raises(RuntimeError, match="403"):
+        await fetch.fetch_summaries(get=get, sleep=sleep)
