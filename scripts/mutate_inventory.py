@@ -52,6 +52,15 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
      "the plan ignores the API stock"),
     (SH, "    has_total = \"afn-total-quantity\" in df.columns", "    has_total = False",
      "the file fallback goes back to the nine columns that missed shipped boxes"),
+    ("app/routers/portfolio.py", "        parent[\"to_purchase\"] = entry.get(\"to_purchase\")\n", "",
+     "the Profit tab's To purchase column never receives its figure"),
+    ("templates/portfolio.html",
+     "                row: r => kg(r.to_purchase), detail: r => '<span class=\"dim\">—</span>',",
+     "                row: r => kg(r.to_purchase), detail: r => kg(r.to_purchase),",
+     "a pack-size row shows a purchase figure of its own"),
+    ("templates/portfolio.html", "  const purchase = purchasedRows.reduce((a, r) => a + r.to_purchase, 0);",
+     "  const purchase = purchasedRows.reduce((a, r) => r.to_purchase, 0);",
+     "the Profit total shows one row instead of the sum"),
     (SC, "FBA_INVENTORY_IST = (7, 45)", "FBA_INVENTORY_IST = (7, 15)", "stock is read before the sales pull"),
 ]
 

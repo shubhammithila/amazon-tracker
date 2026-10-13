@@ -255,7 +255,7 @@ async def test_a_projections_failure_never_takes_the_profit_tab_down(monkeypatch
     from app.routers import portfolio as pf
     data = {"parents": [{"parent_asin": "B0CHANA"}]}
     await pf._attach_stock(db, data)
-    assert data["parents"][0]["total_stock"] is None
+    assert data["parents"][0]["total_stock"] is None and data["parents"][0]["to_purchase"] is None
 
 
 @pytest.mark.parametrize("module", ["app/projections/service.py", "app/projections/logic.py",
@@ -508,3 +508,31 @@ async def test_no_stock_is_named_as_unmapped_while_the_table_itself_is_missing(p
     monkeypatch.setattr("app.routers.portfolio._dashboard", incomplete)
     data = await service.build(db)
     assert data["rows"] == [] and data["fba_stock"]["unmapped"] == []
+
+
+# ── the Profit tab's "To purchase" column ───────────────────────────────────────────────────────
+
+async def test_the_profit_tab_shows_the_SAME_to_purchase(profit, stock, auth_client, db):
+    shown = (await auth_client.get("/projections/last?include_inactive=true")).json()["rows"]
+    buy = {r["key"]: r["to_purchase"] for r in shown}
+    from app.routers import portfolio as pf
+    data = {"parents": [{"parent_asin": "B0CHANA"}, {"parent_asin": "B0GONE"}]}
+    await pf._attach_stock(db, data)
+    assert data["parents"][0]["to_purchase"] == buy["B0CHANA"] is not None
+    assert data["parents"][1]["to_purchase"] is None
+
+
+def test_the_profit_to_purchase_column_is_product_rows_only_and_totals_its_rows():
+    from tests.js_harness import run_portfolio_js
+    out = run_portfolio_js("""
+const d = COLUMN_DEFS.to_purchase;
+const t = computeTotals([{to_purchase: 100, sizes: []}, {to_purchase: null, sizes: []}, {to_purchase: 50.4, sizes: []}]);
+emit([d.row({to_purchase: 1486.5}), d.detail({to_purchase: 9}), t.purchase, t.purchased, FIELDS.to_purchase.get({to_purchase: 7})]);""")
+    assert out == ["1,487 kg", '<span class="dim">—</span>', 150.4, 2, 7]
+
+
+def test_the_profit_export_carries_to_purchase_and_totals_it():
+    from app.portfolio import export
+    assert export.COLUMN_KINDS["to_purchase"] == "kg"
+    rows = [{"to_purchase": 100.0}, {"to_purchase": None}, {"to_purchase": 50.0}]
+    assert export.totals(rows)["to_purchase"] == 150.0

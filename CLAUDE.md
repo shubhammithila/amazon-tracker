@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2883 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2886 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -4365,6 +4365,10 @@ builds on), from `service.stock_by_key`, so the two tabs cannot disagree; a fail
 column as dashes and never takes the Profit tab down. The payload is cached per data version
 (economics fetched_at, saved rows, settings) for 5 minutes, both toggles under one version.
 
+- **"To purchase" sits beside it (13 Oct 2026)**, the same way: product rows only, kg, the
+  Projections figure for the same row id, attached in the same `_attach_stock` call so the two
+  columns can never come from different readings; the total sums the per-product figures. A
+  failure leaves both as dashes.
 - **Projections cannot call Amazon or write sales**, asserted on the source: the old Sunday job is
   what overwrote a month of fees on 4 Oct. `scripts/mutate_projections.py`: 17/17 caught.
 - Lead-time slips could later be MEASURED from packed dates and Amazon's receipt dates instead of
@@ -4405,7 +4409,7 @@ production of boxes already on their way.
   now counts **N − L** (the nine-column sum only when N is absent); two tests that pinned the old rule
   were rewritten and say why. The file still supplies sales and merchant SKUs.
 - `conftest.no_live_inventory` stops every test reaching the API (the developer `.env` is live).
-  `scripts/mutate_inventory.py`: 17/17 caught. **Pages are paced** (0.6 s apart) and a quota refusal waits 2/5/15 s and retries: the first production read sent 8 pages back to back and was refused on page 3 ("You exceeded your quota"); a laptop had got away with it only because its round trips were slower. That failed run showed exactly as designed: dashes, a banner, nothing read as an empty warehouse.
+  `scripts/mutate_inventory.py`: 20/20 caught. **Pages are paced** (0.6 s apart) and a quota refusal waits 2/5/15 s and retries: the first production read sent 8 pages back to back and was refused on page 3 ("You exceeded your quota"); a laptop had got away with it only because its round trips were slower. That failed run showed exactly as designed: dashes, a banner, nothing read as an empty warehouse.
 
 ## The stack stays Python. A React/Node/Postgres/Redis rewrite was built and abandoned.
 

@@ -32,7 +32,7 @@ COLUMN_KINDS: dict[str, str] = {
     "refunds_pct": "pct", "fees_pct": "pct", "tacos": "pct", "net_pct": "pct_signed",
     "net_per_kg": "per_kg",
     "acos": "acos", "units_ordered": "int", "units": "int",
-    "weight_ordered_kg": "kg", "weight_kg": "kg", "total_stock": "kg", "returns_pct": "pct",
+    "weight_ordered_kg": "kg", "weight_kg": "kg", "total_stock": "kg", "to_purchase": "kg", "returns_pct": "pct",
     "rating": "rating", "decision": "text",
 }
 LEAD = [("product", "Product", "text"), ("brand", "Brand", "text"),
@@ -165,6 +165,7 @@ def totals(rows: Sequence[Mapping]) -> dict:
     weight = sum(r["weight_kg"] for r in weighed) if weighed else None
     net_weighed = sum(_num(r.get("net_weighed")) for r in weighed)
     stocked = [r["total_stock"] for r in rows if r.get("total_stock") is not None]
+    purchased = [r["to_purchase"] for r in rows if r.get("to_purchase") is not None]
     seen, rated = set(), []
     for r in rows:
         if r.get("rating") is None:
@@ -189,6 +190,7 @@ def totals(rows: Sequence[Mapping]) -> dict:
                              if weighed_ordered else None,
         "weight_kg": weight,
         "total_stock": sum(stocked) if stocked else None,
+        "to_purchase": sum(purchased) if purchased else None,
         "net_per_kg": net_weighed / weight if weight and weight > 0 else None,
         "returns_pct": _ratio(refunded, ordered),
         "rating": rating, "reviews": int(reviews) if rating is not None else None,

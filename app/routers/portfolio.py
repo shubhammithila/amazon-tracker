@@ -170,6 +170,7 @@ async def _attach_stock(db: AsyncSession, data: dict) -> None:
     for parent in data.get("parents") or []:
         entry = stock.get(parent.get("parent_asin")) or {}
         parent["total_stock"] = entry.get("total_stock")
+        parent["to_purchase"] = entry.get("to_purchase")
 
 
 def _rating_freshness(ratings: dict) -> tuple[str | None, bool]:

@@ -11,7 +11,7 @@ pytestmark = pytest.mark.regression
 
 
 def test_the_harness_can_run_the_page_code():
-    assert run_portfolio_js("emit(normaliseLayout(null, data.columns).order.length)") == 17
+    assert run_portfolio_js("emit(normaliseLayout(null, data.columns).order.length)") == 18
 
 
 VOCAB = """
@@ -24,7 +24,7 @@ data.columns = [
   {id:"units_ordered",label:"Units ordered",locked:true},{id:"units",label:"Net units",locked:true},
   {id:"weight_ordered_kg",label:"Weight ordered",locked:true},
   {id:"weight_kg",label:"Weight",locked:true},
-  {id:"total_stock",label:"Total stock to hold",locked:false},{id:"returns_pct",label:"Returns",locked:false},
+  {id:"total_stock",label:"Total stock to hold",locked:false},{id:"to_purchase",label:"To purchase",locked:false},{id:"returns_pct",label:"Returns",locked:false},
   {id:"rating",label:"Rating",locked:false},{id:"decision",label:"Decision",locked:false}];
 data.group_flags = {};
 const ROW = {product:"Chana Sattu", verdict:"SCALE", sales:1000, ad_spend:200, tacos:0.2,
