@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2841 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2881 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -141,7 +141,7 @@ app/
 ├── database.py          # Async SQLAlchemy engine
 ├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry, AmazonOrder/AmazonOrderItem/OrderPackedEntry/OrderPackedState/ProductRawStock, EconomicsDaily/AdsDaily/EconomicsRefresh/ProductDecision/PortfolioSettings/AdsRefresh, CustomerOrderLine/RepeatRefresh)
 ├── scheduler.py         # APScheduler. Times STATED IN IST via app/ist.py (the box is UTC):
-│                        # portfolio 07:30 IST, ads 08:00 IST, orders every 30m,
+│                        # portfolio 07:30 IST, FBA stock 07:45 IST, ads 08:00 IST, orders every 30m,
 │                        # product scrape 05:00 IST under its OWN flag (SCRAPE_ENABLED)
 ├── ist.py               # THE offset and THE definition of "today". Six bugs came from not having this.
 ├── utils.py             # Date parsing helpers
@@ -172,6 +172,7 @@ app/
 │   │                    # one-query ratings, owner decisions
 │   └── refresh.py       # run_incremental (nightly, yesterday only) + run (manual, a window)
 ├── assistant/           # Portfolio -> "Ask": Bedrock client, read-only tools, the tool loop
+├── inventory/           # FBA stock from the FBA Inventory API: fetch, rule, runs (07:45 IST)
 ├── repeat/              # Portfolio -> Repeat customers (FBA order lines keyed to a hashed buyer)
 │   ├── keys.py          # salted HMAC of the masked buyer email; the email is never stored
 │   ├── fetch.py         # GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL, <=30-day chunks
@@ -4366,9 +4367,45 @@ column as dashes and never takes the Profit tab down. The payload is cached per 
 
 - **Projections cannot call Amazon or write sales**, asserted on the source: the old Sunday job is
   what overwrote a month of fees on 4 Oct. `scripts/mutate_projections.py`: 17/17 caught.
-- Purchase-team follow-up, not built yet: current FBA + inbound + WH stock from the API, then
-  *to buy = Total − stock held* and *to send = Ideal FBA − FBA stock*. Lead-time slips could later be
-  MEASURED from packed dates and Amazon's receipt dates instead of set by hand.
+- Lead-time slips could later be MEASURED from packed dates and Amazon's receipt dates instead of
+  set by hand. *To send = Ideal FBA − FBA stock* waits for warehouse inventory.
+
+### FBA stock and "To purchase" — from the Inventory API, every morning (13 Oct 2026)
+Asked for as *"the units to be considered as there in FBA if the shipment has been created or the
+shipment is inbound or receiving or anything… subtract it from the stock to hold to get the stock to
+purchase"*. Columns after Total stock to hold: **In FBA / transit (kg)** and **To purchase (kg)**,
+with tiles, category cards, both downloads, and a **Refresh stock** button.
+
+**The Manage FBA Inventory CSV under-counted, and that was measured first.** On the 13 Oct file the
+nine columns the Shipment tab summed (K, M, P-V) read **7,711 units**; Amazon's own total (N) less
+damaged (L) read **10,636**. The whole 2,925-unit gap sat on 17 SKUs as stock already SHIPPED to
+Amazon, which the file's `afn-inbound-shipped-quantity` did not carry and the API did
+(HF_gbrice_1kg_FBA: 0 in the columns, 340 inbound shipped). So the Shipment tab had been asking for
+production of boxes already on their way.
+
+- **`GET /fba/inventory/v1/summaries`** (`details=true`, India marketplace): 8 pages, 354 SKUs, a few
+  seconds, no report queue. `app/inventory/`: `fetch` pages it (a page cap that is hit is an error),
+  `logic.held_units` = fulfillable + inbound working/shipped/receiving + reserved (incl. FC transfers)
+  + researching + future supply; damaged excluded; **FBA SKUs only** (`_channel_of`; a flex SKU's 999
+  is a placeholder for our own shelf).
+- **Runs, not a single row.** `fba_inventory_refresh` + `fba_inventory_row` (`a7d3c9e15b20`), last 30
+  kept. **Only a `done` run is current**; a failed run, or dozens of SKUs all at zero (`refused`, the
+  CSV's own guard), is recorded and shown in a banner while the previous reading stands.
+- **Weight**: each child ASIN goes to its Profit row (flavour id, else Amazon's parent from
+  `economics_daily`, `portfolio.repository.parent_of_children`) and is weighed from the MRP sheet,
+  not the 30-day size rows, so a pack holding stock that did not sell this month still counts. An
+  unknown weight makes that row a dash; stock for a product with no row is NAMED in a banner.
+- **To purchase = max(0, Total − In FBA) per row, and the total sums the clamped rows** (the Orders
+  tab's `to_buy` rule). **Before warehouse stock**: the team subtracts that by hand until warehouse
+  inventory exists. No reading yet is a dash, never "buy everything".
+- **07:45 IST** (`fba_inventory_refresh`), on the same flags as the 07:30 sales pull. The cache
+  version includes the run id, so a refresh shows at once.
+- **The Shipment tab plans against the same stock**: `fba_stock_for_plan` reads the API at generate,
+  else a reading under 36 h old, else the uploaded file, and the plan names which. The file fallback
+  now counts **N − L** (the nine-column sum only when N is absent); two tests that pinned the old rule
+  were rewritten and say why. The file still supplies sales and merchant SKUs.
+- `conftest.no_live_inventory` stops every test reaching the API (the developer `.env` is live).
+  `scripts/mutate_inventory.py`: 15/15 caught.
 
 ## The stack stays Python. A React/Node/Postgres/Redis rewrite was built and abandoned.
 
