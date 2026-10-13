@@ -192,6 +192,15 @@ def parse_stock_csv(content: bytes) -> dict[str, int]:
         "afn-fc-transfer-quantity",
     ]
     existing_cols = [c for c in stock_cols if c in df.columns]
+    # **When Amazon's own total (N) is in the file, it is what counts, less damaged stock (L)** —
+    # and that reverses the rule above, measured on 13 Oct 2026: the nine columns summed to 7,711
+    # units against N - L of 10,636, because `afn-inbound-shipped-quantity` (Q) missed 2,925 units on
+    # 17 SKUs that the FBA Inventory API reported as inbound shipped (HF_gbrice_1kg_FBA: Q 0, N 340).
+    # The nine-column sum is kept for a file without N. This parse is now only the FALLBACK: a plan
+    # takes its FBA stock from the Inventory API (`fba_stock_for_plan`).
+    has_total = "afn-total-quantity" in df.columns
+    if has_total:
+        existing_cols = existing_cols or ["afn-total-quantity"]
 
     # **ANY one of the eight is enough, and that is deliberate.** The report varies by account and
     # region — several columns are routinely absent, and `test_shipment_catalogue.py`'s fixtures carry
@@ -238,7 +247,11 @@ def parse_stock_csv(content: bytes) -> dict[str, int]:
         if _channel_of(row.get("sku")) != CHANNEL_FBA:
             skipped_non_fba += 1
             continue
-        total = sum(int(_clean_number(row.get(c, 0))) for c in existing_cols)
+        if has_total:
+            total = max(0, int(_clean_number(row.get("afn-total-quantity", 0)))
+                        - int(_clean_number(row.get("afn-unsellable-quantity", 0))))
+        else:
+            total = sum(int(_clean_number(row.get(c, 0))) for c in existing_cols)
         asin_stock[asin] = asin_stock.get(asin, 0) + total
 
     if skipped_non_fba:
@@ -282,6 +295,39 @@ def parse_stock_csv(content: bytes) -> dict[str, int]:
         )
 
     return asin_stock
+
+
+#: A stock reading older than this is not used for a plan; the uploaded file is, with a banner.
+SNAPSHOT_MAX_HOURS = 36
+
+
+async def fba_stock_for_plan(stock_content: bytes) -> tuple[dict[str, int], dict]:
+    """FBA stock for a new plan: a fresh Inventory API read, else this morning's good reading, else
+    the uploaded file. Returns ({ASIN: units}, {"source", "as_of", "warning"}).
+
+    The file still supplies sales and merchant SKUs; only the stock figure moved, because on 13 Oct
+    2026 the file's inbound-shipped column missed 2,925 units already on their way to Amazon, and
+    `deficit = projection - fba_stock` then asked for stock that was already shipped."""
+    from datetime import datetime
+
+    from app.database import async_session
+    from app.inventory import refresh as inventory_refresh
+    from app.projections import service as projections
+
+    result = await inventory_refresh.run("shipment")
+    async with async_session() as db:
+        units, info = await projections._fba_units(db)
+    if units is not None and result.get("status") == "done":
+        return units, {"source": "api", "as_of": info["as_of"], "warning": None}
+    if units is not None and info["as_of"]:
+        age = (datetime.utcnow() - datetime.fromisoformat(info["as_of"])).total_seconds() / 3600
+        if age <= SNAPSHOT_MAX_HOURS:
+            return units, {"source": "snapshot", "as_of": info["as_of"], "warning": (
+                f"Amazon's FBA stock could not be read just now ({result.get('error') or 'a read was already running'}), "
+                f"so this plan uses the reading from {info['as_of'][:16].replace('T', ' ')} UTC.")}
+    return parse_stock_csv(stock_content), {"source": "csv", "as_of": None, "warning": (
+        "Amazon's FBA stock could not be read and there is no recent reading, so this plan's FBA stock "
+        "comes from the uploaded file (Amazon's total less damaged stock).")}
 
 
 def parse_sku_map(content: bytes) -> dict[str, str]:
@@ -487,9 +533,11 @@ async def generate_plan(
         return JSONResponse({"error": f"Sales CSV error: {e}"}, status_code=400)
 
     try:
-        stock = parse_stock_csv(stock_content)
+        # Still parsed first: a file this app cannot read is refused before anything else happens.
+        parse_stock_csv(stock_content)
     except Exception as e:
         return JSONResponse({"error": f"Stock CSV error: {e}"}, status_code=400)
+    stock, stock_info = await fba_stock_for_plan(stock_content)
 
     sku_map = parse_sku_map(stock_content)
 
@@ -715,6 +763,8 @@ async def generate_plan(
             for a, u in sorted(inactive_with_sales, key=lambda x: (-x[1], x[0]))
         ],
         "inactive_sales_units": sum(u for _, u in inactive_with_sales),
+        # Where this plan's FBA stock came from: "api" | "snapshot" | "csv".
+        "stock_source": stock_info,
     }
 
     warnings = []
@@ -722,6 +772,8 @@ async def generate_plan(
     # where he expected 205 and has no way to know why.
     if sheet_warning:
         warnings.append(sheet_warning)
+    if stock_info["warning"]:
+        warnings.append(stock_info["warning"])
     if missing_sku:
         warnings.append(
             f"{missing_sku} item(s) to ship have no merchant SKU. Amazon's upload "

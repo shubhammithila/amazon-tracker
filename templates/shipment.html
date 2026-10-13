@@ -689,6 +689,15 @@ function renderBanners(){
         copy, so the built-in product list was used and nothing was filtered.`);
     }
 
+    const ss = c.stock_source || {};
+    if(ss.source === "api"){
+      bits.push(`<br/>FBA stock read from Amazon just now, every inbound shipment included.`);
+    }else if(ss.source === "snapshot"){
+      bits.push(`<br/><strong>FBA stock is the morning's reading</strong>; Amazon could not be read just now.`);
+    }else if(ss.source === "csv"){
+      bits.push(`<br/><strong>FBA stock is from the uploaded file</strong>; Amazon could not be read.`);
+    }
+
     /* Named, not counted — "2 new products" sends the owner hunting through 108 rows.
        But capped: the first generate after this change reported 30+ appearances,
        because the previous plan predated the sheet taking over. A wall of names is

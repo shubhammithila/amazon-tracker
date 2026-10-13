@@ -363,3 +363,12 @@ def no_live_bedrock(monkeypatch):
     async def refuse(**kwargs):
         raise AssertionError("a test tried to call Bedrock for real; pass a fake `converse`")
     monkeypatch.setattr("app.assistant.bedrock.converse", refuse)
+
+
+@pytest.fixture(autouse=True)
+def no_live_inventory(monkeypatch):
+    """**No test may read Amazon's FBA Inventory API for real.** The developer .env holds live SP-API
+    credentials and generating a shipment plan reads stock first; a test passes a fake `get`."""
+    async def refuse(path, params):
+        raise RuntimeError("tests never call Amazon: pass a fake `get`")
+    monkeypatch.setattr("app.inventory.fetch._live_get", refuse)

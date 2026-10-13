@@ -323,45 +323,120 @@ REAL_HEADER_24 = (
 )
 
 
-def test_the_owners_real_column_layout_parses():
-    """Columns K, M and **P-V** of the real 22 Sep report, named by the owner as the ones to sum.
-
-    Nine columns now, not eight: `afn-fc-transfer-quantity` (V) is new and is stock in transit
-    between fulfilment centres — held, and it will become sellable, so it counts.
-
-    Checked against the whole real file before changing anything: the nine sum to 113,826 against
-    Amazon's own `afn-total-quantity` of 113,921, and the 95-unit gap is exactly
-    `afn-unsellable-quantity` (damaged stock, correctly excluded).
+def test_amazons_own_total_less_damaged_is_what_counts_when_the_file_has_it():
+    """**This assertion flipped on 13 Oct 2026.** It used to sum columns K, M and P-V and refuse
+    `afn-total-quantity` (N) as a double count. Measured on that day's file, the nine columns read
+    7,711 units against N less damaged (L) of 10,636: `afn-inbound-shipped-quantity` (Q) had missed
+    2,925 units on 17 SKUs that Amazon's FBA Inventory API reported as inbound shipped
+    (HF_gbrice_1kg_FBA: Q 0, N 340). So N - L is the figure, and this file is now only the fallback
+    behind the API.
     """
-    #                                             K=100 L=0 M=7  N=227      P=0 Q=170 R=0 S=0 T=0
-    #                                                                                 U=0 V=9 W=100
+    #                                             K=0 L=0 M=0  N=340      P=0 Q=0 R..V=0     W=0
     row = (
-        b"0.5kg cs 1 FBA,X002BZGZ,B0CWGXYLT6,MITHILA,New,179,No,0,Yes,57,"
-        b"100,0,7,227,1378.97,0,170,0,0,0,0,9,100,store\n"
+        b"HF_gbrice_1kg_FBA,X002HRMJHT,B0GCGGRTBK,HOWRAH,New,369,No,,Yes,0,"
+        b"0,0,0,340,3054.38,0,0,0,0,0,0,0,0,\n"
     )
-    # fulfillable(100) + reserved(7) + inbound-shipped(170) + fc-transfer(9) = 286.
-    assert parse_stock_csv(REAL_HEADER_24 + row) == {"B0CWGXYLT6": 286}
+    assert parse_stock_csv(REAL_HEADER_24 + row) == {"B0GCGGRTBK": 340}
 
 
-def test_the_three_double_counting_columns_are_never_summed():
-    """**Each of these would be wrong in its own way, and all three look plausible.**
-
-    * `afn-total-quantity` (N) is Amazon's own total — adding it double-counts everything.
-    * `afn-onhand-buyable-quantity` (W) duplicates `afn-fulfillable-quantity`. Measured on the real
-      file: equal on 237 of 246 rows (106,819 against 106,768), so including it nearly DOUBLES
-      reported stock — and a doubled stock figure makes every deficit too small, so the shipment
-      goes out short.
-    * `afn-unsellable-quantity` (L) is damaged stock. It cannot ship, so counting it as held would
-      under-state what must be made.
-    * `afn-warehouse-quantity` (J) is another Amazon rollup.
-    """
-    # Only the three excluded columns carry anything. A correct parser reports ZERO stock here.
+def test_damaged_stock_and_the_buyable_and_warehouse_rollups_are_never_added():
+    """N less L only. `afn-onhand-buyable-quantity` (W) duplicates fulfillable and
+    `afn-warehouse-quantity` (J) is another rollup, so neither is ever added on top; damaged stock
+    (L) cannot ship."""
     #                                        J=57 K=0 L=99 M=0 N=999  P..V=0        W=888
     row = (
         b"0.5kg cs 1 FBA,X002BZGZ,B0CWGXYLT6,MITHILA,New,179,No,0,Yes,57,"
         b"0,99,0,999,1378.97,0,0,0,0,0,0,0,888,store\n"
     )
-    assert parse_stock_csv(REAL_HEADER_24 + row) == {"B0CWGXYLT6": 0}, (
-        "a rollup or unsellable column is being summed, which over-states stock and makes every "
-        "deficit too small"
-    )
+    assert parse_stock_csv(REAL_HEADER_24 + row) == {"B0CWGXYLT6": 900}
+
+
+def test_without_amazons_total_the_nine_columns_are_still_summed():
+    """A file with no `afn-total-quantity` keeps the old rule: K, M and P-V."""
+    header = (b"sku,asin,afn-fulfillable-quantity,afn-reserved-quantity,afn-inbound-shipped-quantity,"
+              b"afn-fc-transfer-quantity,afn-unsellable-quantity\n")
+    row = b"0.5kg cs 1 FBA,B0CWGXYLT6,100,7,170,9,50\n"
+    assert parse_stock_csv(header + row) == {"B0CWGXYLT6": 286}
+
+
+
+# ── a plan's FBA stock comes from the Inventory API (13 Oct 2026) ───────────────────────────────
+
+async def test_generate_uses_a_fresh_api_read_and_names_it(monkeypatch, db_schema):
+    from app.routers import shipment as sh
+
+    async def fake_run(source, **kw):
+        assert source == "shipment"
+        return {"id": 7, "status": "done", "sku_count": 1, "units": 340, "error": None}
+
+    async def fake_units(db):
+        return {"B0GCGGRTBK": 340}, {"as_of": "2026-10-13T09:12:00", "status": "done", "error": None}
+    monkeypatch.setattr("app.inventory.refresh.run", fake_run)
+    monkeypatch.setattr("app.projections.service._fba_units", fake_units)
+    units, info = await sh.fba_stock_for_plan(REAL_HEADER_24)
+    assert units == {"B0GCGGRTBK": 340} and info["source"] == "api" and info["warning"] is None
+
+
+async def test_amazon_down_falls_back_to_a_recent_reading_then_to_the_file(monkeypatch, db_schema):
+    from datetime import datetime, timedelta
+
+    from app.routers import shipment as sh
+
+    async def failed(source, **kw):
+        return {"id": 8, "status": "failed", "sku_count": 0, "units": 0, "error": "Amazon 503"}
+    state = {"as_of": (datetime.utcnow() - timedelta(hours=3)).isoformat()}
+
+    async def snap(db):
+        return {"B0X0000001": 5}, {"as_of": state["as_of"], "status": "failed", "error": "Amazon 503"}
+    monkeypatch.setattr("app.inventory.refresh.run", failed)
+    monkeypatch.setattr("app.projections.service._fba_units", snap)
+    units, info = await sh.fba_stock_for_plan(REAL_HEADER_24)
+    assert info["source"] == "snapshot" and units == {"B0X0000001": 5} and "Amazon 503" in info["warning"]
+
+    state["as_of"] = (datetime.utcnow() - timedelta(hours=40)).isoformat()
+    row = b"0.5kg cs 1 FBA,X0,B0CWGXYLT6,M,New,179,No,0,Yes,57,100,5,7,282,1,0,170,0,0,0,0,0,100,store\n"
+    units, info = await sh.fba_stock_for_plan(REAL_HEADER_24 + row)
+    assert info["source"] == "csv" and units == {"B0CWGXYLT6": 277}      # N 282 less damaged 5
+    assert "uploaded file" in info["warning"]
+
+
+async def test_with_no_reading_at_all_the_plan_uses_the_file(db_schema):
+    """No run has ever succeeded (every test: `conftest.no_live_inventory` refuses the API)."""
+    from app.routers import shipment as sh
+    row = b"0.5kg cs 1 FBA,X0,B0CWGXYLT6,M,New,179,No,0,Yes,57,100,0,7,120,1,0,13,0,0,0,0,0,100,store\n"
+    units, info = await sh.fba_stock_for_plan(REAL_HEADER_24 + row)
+    assert info["source"] == "csv" and units == {"B0CWGXYLT6": 120}
+
+
+def test_the_shipment_screen_names_where_the_stock_came_from():
+    from pathlib import Path
+    page = (Path(__file__).resolve().parent.parent / "templates" / "shipment.html").read_text(encoding="utf-8")
+    for source in ('ss.source === "api"', 'ss.source === "snapshot"', 'ss.source === "csv"'):
+        assert source in page
+
+
+async def test_a_generated_plan_carries_the_API_stock_and_says_so(auth_client, db, monkeypatch):
+    """Through the real route: the deficit is computed from the API figure, not the file's."""
+    from app.shipment import catalogue
+
+    async def fake_catalogue():
+        return ({"B0H55V3FJ3": {"asin": "B0H55V3FJ3", "name": "ABC Sattu", "weight": 0.5,
+                                "brand": "MF", "active": True}}, None, "test")
+
+    async def fake_run(source, **kw):
+        return {"id": 1, "status": "done", "sku_count": 1, "units": 300, "error": None}
+
+    async def fake_units(db):
+        return {"B0H55V3FJ3": 300}, {"as_of": "2026-10-13T09:12:00", "status": "done", "error": None}
+    monkeypatch.setattr(catalogue, "load_catalogue", fake_catalogue)
+    monkeypatch.setattr("app.inventory.refresh.run", fake_run)
+    monkeypatch.setattr("app.projections.service._fba_units", fake_units)
+    response = await auth_client.post("/shipment/generate", files={
+        "sales_csv": ("s.csv", b"(Child) ASIN,Units Ordered\nB0H55V3FJ3,87\n", "text/csv"),
+        "stock_csv": ("k.csv", b"sku,asin,afn-fulfillable-quantity\nabc_sattu500g FBA,B0H55V3FJ3,12\n", "text/csv"),
+    })
+    assert response.status_code == 200, response.text
+    body = response.json()
+    item = next(i for i in body["items"] if i["asin"] == "B0H55V3FJ3")
+    assert item["fba_stock"] == 300
+    assert body["catalogue"]["stock_source"]["source"] == "api"

@@ -14,9 +14,15 @@ class InventoryFetchError(RuntimeError):
     pass
 
 
+async def _live_get(path: str, params: dict) -> dict:
+    from app.shipment.spapi import _get
+    return await _get(path, params)
+
+
 async def fetch_summaries(get=None) -> list[dict]:
-    if get is None:
-        from app.shipment.spapi import _get as get
+    # Looked up at call time, so `tests/conftest.no_live_inventory` can stop every test reaching
+    # Amazon for real (the developer .env holds live SP-API credentials).
+    get = get or _live_get
     market = get_settings().sp_api_marketplace_id
     out, token = [], None
     for _ in range(MAX_PAGES):
