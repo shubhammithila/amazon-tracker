@@ -172,6 +172,14 @@ def compute(row: Mapping, settings: Mapping) -> dict:
     return out
 
 
+def to_purchase(total_stock, fba_kg):
+    """What to buy before warehouse stock: Total stock to hold less what is at FBA or on its way.
+    Never negative (a surplus is not a purchase), and a dash when either side is unknown."""
+    if total_stock is None or fba_kg is None:
+        return None
+    return round(max(0.0, total_stock - fba_kg), 1)
+
+
 def sum_rows(rows: list[Mapping]) -> dict:
     """Totals of a set of rows: kilograms add; a row with no figure leaves it out (never 0 kg)."""
     def total(key):
@@ -179,4 +187,7 @@ def sum_rows(rows: list[Mapping]) -> dict:
         return round(sum(vals), 1) if vals else None
     return {"products": len(rows), "kg_30d": total("kg_30d"), "kg_7d": total("kg_7d"),
             "projection_30d": total("projection_30d"), "ideal_fba": total("ideal_fba"),
-            "ideal_wh": total("ideal_wh"), "total_stock": total("total_stock")}
+            "ideal_wh": total("ideal_wh"), "total_stock": total("total_stock"),
+            # Each row's To purchase is already clamped at 0, so this is the sum of clamped rows: a
+            # surplus of one product never cancels a shortfall of another (the Orders tab's to_buy).
+            "fba_kg": total("fba_kg"), "to_purchase": total("to_purchase")}

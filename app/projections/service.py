@@ -15,12 +15,12 @@ import json
 import time
 from functools import lru_cache
 from pathlib import Path
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import func, select
 
 from app import ist
-from app.models import EconomicsDaily, PortfolioSettings, ProjectionRow
+from app.models import EconomicsDaily, FbaInventoryRefresh, PortfolioSettings, ProjectionRow
 from app.portfolio import economics
 from app.portfolio import logic as pf_logic
 from app.projections import logic, repository
@@ -30,6 +30,8 @@ from app.shipment.logic import CATEGORY_LABELS
 #: Rest, then anything unclassified.
 CATEGORY_ORDER = [CATEGORY_LABELS[k] for k in sorted(CATEGORY_LABELS)] + [pf_logic.CATEGORY_UNCLASSIFIED]
 CACHE_SECONDS = 300
+#: An FBA stock reading older than this gets a banner (the nightly job runs every 24 hours).
+STALE_HOURS = 36
 
 _CACHE: dict = {}
 
@@ -56,7 +58,8 @@ async def _version(db) -> tuple:
     rows = (await db.execute(select(func.max(ProjectionRow.updated_at), func.count(ProjectionRow.id)))).one()
     stored = (await db.execute(select(PortfolioSettings.value_json)
                                .where(PortfolioSettings.name == repository.SETTING_NAME))).scalar()
-    return (str(econ), str(rows[0]), rows[1], stored)
+    stock_run = (await db.execute(select(func.max(FbaInventoryRefresh.id)))).scalar()
+    return (str(econ), str(rows[0]), rows[1], stored, stock_run)
 
 
 def _config_for(row: dict, stored_by_key: dict, stored_by_name: dict) -> tuple[dict, str, int | None]:
@@ -105,6 +108,62 @@ def _rows(d30: dict, d7: dict | None, stored: list[dict], categories: dict, sett
     return out
 
 
+async def _fba_units(db) -> tuple[dict[str, int] | None, dict]:
+    """(units per child ASIN from the latest GOOD stock run, or None when there is none yet; what
+    the newest run said, so a failure can be shown while the previous figures stand)."""
+    from app.inventory import logic as inv_logic, repository as inv_repo
+
+    good = await inv_repo.latest_good(db)
+    newest = await inv_repo.latest(db)
+    info = {"as_of": good.finished_at.isoformat() if good and good.finished_at else None,
+            "status": newest.status if newest else None,
+            "error": newest.error if newest and newest.status != "done" else None}
+    if good is None:
+        return None, info
+    return inv_logic.units_by_asin(await inv_repo.rows_for(db, good.id)), info
+
+
+async def _fba_by_key(db, units: dict[str, int] | None):
+    """({row key: kg, or None when a held pack has no weight}, unknown-weight child ASINs, the
+    catalogue, {child: row key}).
+
+    A child maps to its row the way the Profit tab maps it: its flavour id, else Amazon's parent,
+    else itself. Weighed from the MRP sheet, NOT from the 30-day size rows, so a pack size holding
+    stock that did not sell this month still counts."""
+    from app.portfolio import repository as pf_repo
+    from app.shipment import catalogue
+
+    if units is None:
+        return {}, [], {}, {}
+    products, _warning, _source = await catalogue.load_catalogue()
+    flavours = await pf_repo.flavour_keys(db, products)
+    parents = await pf_repo.parent_of_children(db)
+    kg: dict[str, float | None] = {}
+    unknown: list[str] = []
+    keys: dict[str, str] = {}
+    for child, n in units.items():
+        key = keys[child] = flavours.get(child) or parents.get(child) or child
+        weight = (products.get(child) or {}).get("weight")
+        if not n:
+            kg.setdefault(key, 0.0)
+            continue
+        if not weight:
+            # Unknown weight is a dash for the whole row, never a silently smaller figure.
+            unknown.append(child)
+            kg[key] = None
+            continue
+        if key in kg and kg[key] is None:
+            continue
+        kg[key] = round((kg.get(key) or 0.0) + n * float(weight), 3)
+    return kg, sorted(unknown), products, keys
+
+
+def _stale(as_of: str | None) -> bool:
+    if not as_of:
+        return True
+    return (datetime.utcnow() - datetime.fromisoformat(as_of)).total_seconds() > STALE_HOURS * 3600
+
+
 def _cards(rows: list[dict]) -> list[dict]:
     cards = []
     for cat in CATEGORY_ORDER:
@@ -138,6 +197,24 @@ async def build(db, *, include_inactive: bool = False, today: date | None = None
     stored = await repository.load_rows(db)
 
     rows = _rows(d30, d7 if complete_7 else None, stored, categories, settings) if complete_30 else []
+
+    # Stock at FBA or on its way, from the latest GOOD Inventory API run. No run yet = a dash on
+    # every row, never "buy everything".
+    units, run_info = await _fba_units(db)
+    fba_kg, unknown, products, keys = await _fba_by_key(db, units)
+    shown_all = {r["key"] for r in rows}
+    for r in rows:
+        r["fba_kg"] = None if units is None else fba_kg.get(r["key"], 0.0)
+        r["to_purchase"] = logic.to_purchase(r["total_stock"], r["fba_kg"])
+    # Stock held for a product with no row (no sales in 30 days) is NAMED, never silently dropped.
+    unmapped_kg: dict[str, float] = {}
+    for child, key in keys.items():
+        weight = (products.get(child) or {}).get("weight")
+        if key in shown_all or not units[child] or not weight:
+            continue
+        name = (products.get(child) or {}).get("name") or child
+        unmapped_kg[name] = round(unmapped_kg.get(name, 0.0) + units[child] * float(weight), 1)
+    unmapped = [{"product": n, "kg": k} for n, k in sorted(unmapped_kg.items(), key=lambda x: -x[1])]
     # The Profit tab keeps an inactive product on screen when a decision is recorded against it;
     # stock is never planned for one, so here every inactive row waits behind the toggle.
     kept_inactive = 0
@@ -158,14 +235,17 @@ async def build(db, *, include_inactive: bool = False, today: date | None = None
         "include_inactive": include_inactive,
         "inactive_hidden": (d30.get("inactive_hidden_parents") or 0) + kept_inactive,
         "unknown_weight": [r["product"] for r in rows if r["kg_30d"] is None],
+        "fba_stock": {**run_info, "stale": _stale(run_info["as_of"]), "unmapped": unmapped,
+                      "unknown_weight": unknown},
     }
     _CACHE[include_inactive] = (time.monotonic(), payload)
     return payload
 
 
-async def stock_by_key(db, *, today: date | None = None) -> dict[str, float | None]:
-    """{Profit-tab row id: total stock to hold, kg}, for the Profit tab's column. Inactive products
-    are included so every row the Profit tab may show has its figure."""
+async def stock_by_key(db, *, today: date | None = None) -> dict[str, dict]:
+    """{Profit-tab row id: {"total_stock", "to_purchase"}, kg}, for the Profit tab's columns.
+    Inactive products are included so every row the Profit tab may show has its figures."""
     data = await build(db, include_inactive=True, today=today)
-    return {r["key"]: r["total_stock"] for r in data["rows"]}
+    return {r["key"]: {"total_stock": r["total_stock"], "to_purchase": r["to_purchase"]}
+            for r in data["rows"]}
 

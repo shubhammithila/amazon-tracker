@@ -927,6 +927,18 @@ async def save_settings(db: AsyncSession, values: dict, *, updated_by: str = "")
 
 
 
+async def parent_of_children(db: AsyncSession) -> dict[str, str]:
+    """child ASIN -> Amazon's parent ASIN, from every child ever stored (ASIN grain). With
+    `flavour_keys` this names the Profit row a child belongs to, whether or not it sold this month."""
+    out: dict[str, str] = {}
+    for parent, child in await db.execute(
+            select(EconomicsDaily.parent_asin, EconomicsDaily.child_asin)
+            .where(EconomicsDaily.seller_sku == ASIN_GRAIN, EconomicsDaily.parent_asin.is_not(None))
+            .distinct()):
+        out.setdefault(child, parent)
+    return out
+
+
 async def flavour_keys(db: AsyncSession, catalogue: dict) -> dict[str, str]:
     """child ASIN -> the id of its FLAVOUR, for every child of a multi-flavour parent.
 

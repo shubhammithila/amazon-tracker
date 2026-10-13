@@ -360,3 +360,101 @@ def test_the_profit_tab_shows_whole_percentages_and_kilograms():
     from tests.js_harness import run_portfolio_js
     assert run_portfolio_js('emit([pct(0.3249), kg(1486.5), perKg(100.41)]);') == [
         "32%", "1,487 kg", '<span class="">₹100</span>']
+
+
+# ── FBA stock and To purchase (13 Oct) ──────────────────────────────────────────────────────────
+
+def test_to_purchase_is_clamped_and_a_dash_when_unknown():
+    assert logic.to_purchase(3205.0, 1426.0) == pytest.approx(1779.0)
+    assert logic.to_purchase(500.0, 900.0) == 0.0
+    assert logic.to_purchase(None, 900.0) is None and logic.to_purchase(500.0, None) is None
+
+
+def test_the_total_to_purchase_is_the_sum_of_CLAMPED_rows():
+    """One product in surplus must never cancel two short ones (the Orders tab's to_buy rule)."""
+    rows = [{"to_purchase": 0.0, "fba_kg": 900.0, "total_stock": 100.0},
+            {"to_purchase": 100.0, "fba_kg": 0.0, "total_stock": 100.0},
+            {"to_purchase": 50.0, "fba_kg": 10.0, "total_stock": 60.0}]
+    total = logic.sum_rows(rows)
+    assert total["to_purchase"] == 150.0
+    assert total["total_stock"] - total["fba_kg"] < 0          # the wrong formula would say "buy nothing"
+
+
+async def _value(v):
+    return v
+
+
+@pytest.fixture
+def stock(monkeypatch):
+    """FBA units per child ASIN, the MRP weights, and the child -> row mapping."""
+    state = {"units": {"B0CHANA1": 1000, "B0CHANA2": 200, "B0RICE1": 50, "B0ORPHAN": 30, "B0JAU1": 0},
+             "weights": {"B0CHANA1": 0.5, "B0CHANA2": 2.0, "B0RICE1": 1.0, "B0ORPHAN": 1.0, "B0JAU1": 1.0},
+             "names": {"B0ORPHAN": "Old Thing"},
+             "parents": {"B0CHANA1": "B0CHANA", "B0CHANA2": "B0CHANA", "B0RICE1": "B0RICE",
+                         "B0ORPHAN": "B0GONE", "B0JAU1": "B0JAU"},
+             "run": {"as_of": "2026-10-13T02:15:00", "status": "done", "error": None}}
+
+    async def fake_stock(db):
+        return state["units"], state["run"]
+
+    async def fake_catalogue():
+        return ({a: {"weight": w, "name": state["names"].get(a, a)} for a, w in state["weights"].items()},
+                None, "sheet")
+
+    async def fake_parents(db):
+        return state["parents"]
+
+    monkeypatch.setattr(service, "_fba_units", fake_stock)
+    monkeypatch.setattr("app.shipment.catalogue.load_catalogue", fake_catalogue)
+    monkeypatch.setattr("app.portfolio.repository.parent_of_children", fake_parents)
+    monkeypatch.setattr("app.portfolio.repository.flavour_keys", lambda db, cat: _value({}))
+    return state
+
+
+async def test_fba_kg_weighs_each_child_and_to_purchase_follows(profit, stock, db):
+    rows = {r["product"]: r for r in (await service.build(db))["rows"]}
+    chana = rows["Chana Sattu"]
+    assert chana["fba_kg"] == pytest.approx(1000 * 0.5 + 200 * 2.0)            # 900 kg
+    assert chana["to_purchase"] == pytest.approx(max(0.0, chana["total_stock"] - 900.0), abs=0.1)
+    assert rows["Jau Sattu"]["fba_kg"] == 0.0           # holds nothing: a real zero once a run exists
+    assert rows["Brand New Thing"]["fba_kg"] == 0.0      # not in the run at all: also nothing held
+
+
+async def test_stock_for_a_product_with_no_row_is_named_not_dropped(profit, stock, db):
+    data = await service.build(db)
+    assert data["fba_stock"]["unmapped"] == [{"product": "Old Thing", "kg": 30.0}]
+    assert data["fba_stock"]["as_of"] == "2026-10-13T02:15:00" and data["fba_stock"]["status"] == "done"
+
+
+async def test_no_good_run_is_a_dash_never_buy_everything(profit, stock, db):
+    stock["units"], stock["run"] = None, {"as_of": None, "status": None, "error": None}
+    rows = (await service.build(db))["rows"]
+    assert rows and all(r["fba_kg"] is None and r["to_purchase"] is None for r in rows)
+
+
+async def test_an_unknown_pack_weight_makes_that_rows_fba_kg_a_dash(profit, stock, db):
+    stock["weights"]["B0CHANA2"] = None
+    data = await service.build(db)
+    chana = next(r for r in data["rows"] if r["product"] == "Chana Sattu")
+    assert chana["fba_kg"] is None and chana["to_purchase"] is None
+    assert data["fba_stock"]["unknown_weight"] == ["B0CHANA2"]
+
+
+async def test_a_real_stock_run_feeds_the_table(profit, db, monkeypatch):
+    """End to end through the stored run, not a stand-in for `_fba_units`."""
+    from app.inventory import refresh
+
+    async def get(path, params):
+        return {"payload": {"inventorySummaries": [
+            {"sellerSku": "1kg cs FBA", "asin": "B0CHANA1",
+             "inventoryDetails": {"fulfillableQuantity": 10, "inboundShippedQuantity": 30}},
+            {"sellerSku": "1kg cs flex", "asin": "B0CHANA1", "inventoryDetails": {"fulfillableQuantity": 999}}]}}
+    await refresh.run("button", get=get)
+
+    async def cat():
+        return {"B0CHANA1": {"weight": 1.0, "name": "Chana Sattu"}}, None, "sheet"
+    monkeypatch.setattr("app.shipment.catalogue.load_catalogue", cat)
+    monkeypatch.setattr("app.portfolio.repository.parent_of_children", lambda db: _value({"B0CHANA1": "B0CHANA"}))
+    monkeypatch.setattr("app.portfolio.repository.flavour_keys", lambda db, c: _value({}))
+    chana = next(r for r in (await service.build(db))["rows"] if r["product"] == "Chana Sattu")
+    assert chana["fba_kg"] == 40.0

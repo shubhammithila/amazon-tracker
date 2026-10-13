@@ -168,7 +168,8 @@ async def _attach_stock(db: AsyncSession, data: dict) -> None:
         logger.exception("stock to hold could not be computed for the Profit tab")
         stock = {}
     for parent in data.get("parents") or []:
-        parent["total_stock"] = stock.get(parent.get("parent_asin"))
+        entry = stock.get(parent.get("parent_asin")) or {}
+        parent["total_stock"] = entry.get("total_stock")
 
 
 def _rating_freshness(ratings: dict) -> tuple[str | None, bool]:
