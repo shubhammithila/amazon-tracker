@@ -384,6 +384,19 @@ async def scheduled_ads_retry():
 #: economics SKU map the repeat refresh reads is already current. Seven days, because a shipment can
 #: land days after its purchase; the windows overlap and the upsert makes that safe.
 REPEAT_REFRESH_IST = (10, 0)
+#: Portfolio -> Analytics: the current and previous month, after the 07:30-08:00 reporting jobs.
+ANALYTICS_REFRESH_IST = (9, 0)
+
+
+async def scheduled_analytics_refresh():
+    """Re-read the current and previous month for Portfolio -> Analytics. Read-only; never edits Amazon."""
+    if not get_settings().spapi_configured:
+        logger.debug("Analytics refresh skipped: SP-API is not configured")
+        return
+    from app.analytics import refresh as analytics_refresh
+
+    result = await analytics_refresh.run_recent()
+    logger.info("Analytics refresh: %s", result)
 
 
 async def scheduled_repeat_refresh():
@@ -634,6 +647,17 @@ def setup_scheduler():
         coalesce=True,
     )
     parts.append(f"repeat customers at {ist.label(*REPEAT_REFRESH_IST)}")
+
+    analytics_utc = ist.utc_hhmm(*ANALYTICS_REFRESH_IST)
+    scheduler.add_job(
+        scheduled_analytics_refresh,
+        CronTrigger(hour=analytics_utc[0], minute=analytics_utc[1]),
+        id="analytics_refresh",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    parts.append(f"analytics at {ist.label(*ANALYTICS_REFRESH_IST)}")
 
     scheduler.start()
     # Built from `parts` rather than one f-string: `keyword_hour` and `purge_hour` only exist

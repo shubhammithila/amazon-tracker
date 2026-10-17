@@ -12,7 +12,7 @@ from app.config import get_settings
 from app.database import engine, Base, async_session
 from app import permissions
 from app.routers import (
-    admin_users, ads, assistant, auth, invoice, keywords, orders, portfolio, product_prices, products,
+    admin_users, ads, analytics, assistant, auth, invoice, keywords, orders, portfolio, product_prices, products,
     projections, repeat, scrape, shipment, ws,
 )
 from app.routers.auth import (
@@ -141,6 +141,7 @@ app.include_router(portfolio.router)
 app.include_router(repeat.router)
 app.include_router(repeat.value_router)
 app.include_router(assistant.router)
+app.include_router(analytics.router)
 app.include_router(ads.router)
 app.include_router(projections.router)
 app.include_router(shipment.router)
@@ -242,6 +243,15 @@ async def portfolio_value_page(request: Request,
     return templates.TemplateResponse(
         request, "portfolio_value.html",
         {"active": "portfolio", "grant": grant, "pf_tab": "value"},
+    )
+
+
+@app.get("/portfolio-page/analytics", response_class=HTMLResponse)
+async def portfolio_analytics_page(request: Request,
+                                   grant=Depends(require_area(permissions.PORTFOLIO))):
+    return templates.TemplateResponse(
+        request, "portfolio_analytics.html",
+        {"active": "portfolio", "grant": grant, "pf_tab": "analytics"},
     )
 
 

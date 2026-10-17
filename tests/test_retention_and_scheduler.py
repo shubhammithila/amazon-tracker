@@ -248,7 +248,7 @@ def test_all_scheduled_jobs_are_registered(monkeypatch):
     assert set(jobs) == {
         "daily_product_scrape", "daily_keyword_track", "daily_history_purge",
         "order_refresh", "portfolio_refresh", "ads_refresh", "ads_refresh_retry",
-        "repeat_refresh", "fba_inventory_refresh",
+        "repeat_refresh", "fba_inventory_refresh", "analytics_refresh",
     }
 
 
@@ -635,3 +635,15 @@ def test_the_order_refresh_flag_defaults_to_off():
     from app.config import Settings
 
     assert Settings().order_refresh_enabled is False
+
+
+def test_analytics_is_read_at_0900_IST_after_the_reporting_jobs(monkeypatch):
+    from app import ist as ist_module
+    from app import scheduler as sched
+
+    jobs = _registered_jobs(monkeypatch, hour=6)
+    assert sched.ANALYTICS_REFRESH_IST == (9, 0)
+    assert sched.ANALYTICS_REFRESH_IST > sched.ADS_REFRESH_IST > sched.PORTFOLIO_REFRESH_IST
+    hour, minute = ist_module.utc_hhmm(*sched.ANALYTICS_REFRESH_IST)
+    assert f"hour='{hour}'" in jobs["analytics_refresh"]
+    assert f"minute='{minute}'" in jobs["analytics_refresh"]

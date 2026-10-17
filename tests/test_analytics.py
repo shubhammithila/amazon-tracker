@@ -268,3 +268,78 @@ async def test_a_month_is_the_profit_tabs_portfolio_of_the_same_rows(stored):
     direct = pf_logic.portfolio(months["2026-09"], CATALOGUE, {}, {}, flavour_keys={})
     assert data["totals"]["2026-09"]["net"] == pytest.approx(direct["totals"]["net"])
     assert data["totals"]["2026-09"]["sales"] == pytest.approx(direct["totals"]["sales"])
+
+
+# ── routes, refresh and the page ────────────────────────────────────────────────────────────────
+
+async def test_the_route_returns_the_payload_and_needs_the_portfolio_area(stored, auth_client, ops_client):
+    r = await auth_client.get("/portfolio/analytics?category=Rice")
+    assert r.status_code == 200 and r.json()["category"] == "Rice"
+    assert (await ops_client.get("/portfolio/analytics")).status_code in (303, 403)
+
+
+async def test_a_refresh_while_one_runs_is_409(auth_client):
+    from app.analytics import refresh
+    refresh.STATE["running"] = True
+    try:
+        assert (await auth_client.post("/portfolio/analytics/refresh")).status_code == 409
+    finally:
+        refresh.STATE["running"] = False
+
+
+@pytest.mark.parametrize("fmt", ["xlsx", "pdf"])
+async def test_the_download_carries_the_products_table(stored, auth_client, fmt):
+    r = await auth_client.post("/portfolio/analytics/export", json={"format": fmt})
+    assert r.status_code == 200 and len(r.content) > 500
+    if fmt == "xlsx":
+        import io
+        from openpyxl import load_workbook
+        ws = load_workbook(io.BytesIO(r.content)).active
+        assert "Price now" in [c.value for c in ws[2]]
+
+
+async def test_a_refresh_stores_months_and_a_failure_stops_and_is_recorded(db_schema):
+    from app.analytics import refresh
+
+    async def run(query, label):
+        if "traffic" in label:
+            return [{"childAsin": "B0A", "parentAsin": "B0P", "sales": {"unitsOrdered": 1},
+                     "traffic": {"sessions": 10, "pageViews": 12, "buyBoxPercentage": 99.0}}]
+        return [raw("2026-08", "B0A", 100.0, 1), raw("2026-09", "B0A", 200.0, 2)]
+    out = await refresh.run(["2026-08", "2026-09"], today=TODAY, run_query=run)
+    assert out["status"] == "done"
+    async with async_session() as db:
+        held = await repository.months_held(db)
+        assert held == {"economics": {"2026-08", "2026-09"}, "traffic": {"2026-08", "2026-09"}}
+
+    async def boom(query, label):
+        raise RuntimeError("Amazon FATAL")
+    out = await refresh.run(["2026-10"], today=TODAY, run_query=boom)
+    assert out["status"] == "failed" and "FATAL" in out["error"] and not refresh.STATE["running"]
+    async with async_session() as db:
+        assert (await repository.last_run(db))["status"] == "failed"
+
+
+def test_the_nightly_months_are_this_month_and_last():
+    from app.analytics import refresh
+    assert refresh.recent_months(date(2026, 10, 17)) == ["2026-09", "2026-10"]
+    assert refresh.recent_months(date(2026, 11, 1)) == ["2026-10"]
+    assert refresh.recent_months(date(2027, 1, 5)) == ["2026-12", "2027-01"]
+
+
+PAGE = (ROOT / "templates" / "portfolio_analytics.html").read_text(encoding="utf-8")
+
+
+def test_it_is_a_portfolio_sub_tab():
+    tabs = (ROOT / "templates" / "_portfolio_tabs.html").read_text(encoding="utf-8")
+    assert 'href="/portfolio-page/analytics"' in tabs and '{% include "_portfolio_tabs.html" %}' in PAGE
+
+
+async def test_the_page_opens(auth_client):
+    r = await auth_client.get("/portfolio-page/analytics")
+    assert r.status_code == 200 and 'id="mom-chart"' in r.text
+
+
+def test_the_month_to_date_is_drawn_apart_and_charts_read_colour_from_the_theme():
+    assert '" (to date)"' in PAGE and "themeColour(" in PAGE
+    assert "getComputedStyle(document.documentElement)" in PAGE

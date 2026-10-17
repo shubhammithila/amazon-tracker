@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Analytics — Amazon Tracker</title>
+{% import "_icons.html" as icons %}
+{#
+  Portfolio -> Analytics: every month since Nov 2024 (all Amazon keeps) for today's active products.
+  Every figure comes from app/analytics/service.py through GET /portfolio/analytics; this page only
+  formats, sorts and draws. Each month is rolled up by the Profit tab's own logic, so Net is the
+  Profit tab's Net. The current month is month to date and never a growth figure.
+#}
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px}
+header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
+header h1{font-size:16px;font-weight:600}
+.nav-links{display:flex;gap:16px;margin-left:32px}
+.nav-links a{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
+.nav-links a:hover,.nav-links a.active{color:var(--text);border-color:var(--accent)}
+.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:13px;text-decoration:none}
+main{max-width:1280px;margin:0 auto;padding:16px 20px 80px}
+h2{font-size:19px;font-weight:600;margin-bottom:6px}
+h3{font-size:14px;font-weight:700;margin-bottom:6px}
+.subtitle{color:var(--text-muted);font-size:12.5px;margin:8px 0 12px;line-height:1.5}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;box-shadow:var(--shadow)}
+.banner{border-radius:8px;padding:10px 13px;font-size:12.5px;margin-bottom:10px;line-height:1.55}
+.banner.error{background:var(--red-soft);border:1px solid var(--red);color:var(--red)}
+.banner.info{background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue)}
+.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+.btn:disabled{opacity:.6;cursor:default}
+.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border-strong);border-radius:8px;padding:7px 13px;font-size:12.5px;cursor:pointer}
+select,input.search{padding:7px 10px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px}
+input.search{min-width:220px}
+.seg{display:inline-flex;border:1px solid var(--border-strong);border-radius:8px;overflow:hidden}
+.seg-btn{background:transparent;border:none;color:var(--text-muted);font-size:12.5px;font-weight:600;padding:7px 13px;cursor:pointer;text-decoration:none;display:inline-block}
+.seg-btn:hover{color:var(--text)}
+.seg-btn.on{background:var(--accent);color:var(--on-accent)}
+.ico{width:1em;height:1em;flex:none;vertical-align:-0.125em}
+.dim{color:var(--text-dim)}
+.pos{color:var(--green)} .neg{color:var(--red)}
+.note{color:var(--text-muted);font-size:12px;line-height:1.5;margin-top:6px}
+/* The Profit tab's KPI and category boxes, same sizes. */
+.kpis{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.kpi{flex:1 1 150px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+.kpi .v{font-size:21px;font-weight:700;line-height:1.15}
+.kpi .k{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+.kpi .s{font-size:11.5px;color:var(--text-muted);margin-top:2px}
+.cat-strip{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.cat{flex:1 1 140px;text-align:left;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:8px 11px;cursor:pointer;font:inherit;color:inherit}
+.cat:hover{border-color:var(--accent)}
+.cat.on{border-color:var(--accent);background:var(--accent-soft)}
+.cat-name{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted)}
+.cat-fig{font-size:17px;font-weight:700;line-height:1.2;margin-top:1px}
+.cat-meta{font-size:11.5px;color:var(--text-muted)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media (max-width:900px){.grid2{grid-template-columns:1fr}}
+.chart{position:relative;height:280px}
+.chart.tall{height:320px}
+.card-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.card-head h3{margin:0}
+.card-head .seg{margin-left:auto}
+.table-wrap{overflow:auto;border-radius:10px;border:1px solid var(--border);max-height:var(--an-cap, calc(100vh - 60px));overscroll-behavior:contain}
+table{width:100%;border-collapse:separate;border-spacing:0}
+thead th{background:var(--surface2);color:var(--text-muted);padding:7px 10px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;text-align:left;white-space:nowrap;border-bottom:2px solid var(--border-strong);position:sticky;top:0;z-index:2}
+tbody td{padding:7px 10px;font-size:13px;border-bottom:1px solid var(--border);white-space:nowrap}
+th.num,td.num{text-align:right}
+tbody tr.row{cursor:pointer}
+tbody tr.row:hover td,tbody tr.row.on td{background:var(--accent-soft)}
+tr.total td{font-weight:700;background:var(--surface2)}
+[data-col="product"]{position:sticky;left:0;z-index:1;background:var(--surface);box-shadow:inset -1px 0 0 var(--border-strong)}
+thead th[data-col="product"]{z-index:3;background:var(--surface2)}
+tr.total td[data-col="product"]{background:var(--surface2)}
+tbody tr.row:hover td[data-col="product"],tbody tr.row.on td[data-col="product"]{background:var(--accent-soft)}
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:var(--text)}
+th.sorted{color:var(--accent)}
+.tag{display:inline-block;font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:5px;margin-left:6px;background:var(--surface2);color:var(--text-muted)}
+.mtd{color:var(--text-dim);font-style:italic}
+</style>
+<link rel="stylesheet" href="/static/theme.css"/>
+<script src="/static/chart.min.js"></script>
+</head>
+<body>
+{% include "_icon_sprite.html" %}
+<header>
+<span>📊</span><h1>Amazon Tracker v2</h1>
+{% include "nav.html" %}
+<div class="header-right"><a href="/logout">Logout</a></div>
+</header>
+<main>
+
+<h2>Portfolio review</h2>
+{% include "_portfolio_tabs.html" %}
+<div class="subtitle" id="subtitle">Loading…</div>
+<div id="messages"></div>
+
+<div class="card">
+  <div class="controls">
+    <select id="brand" aria-label="Brand"></select>
+    <button class="btn-outline" id="inactive-btn" type="button">Show inactive</button>
+    <button class="btn-outline" id="refresh-btn" type="button" title="Re-read this month and last month from Amazon">{{ icons.icon("refresh") }} Refresh</button>
+    <span style="margin-left:auto"></span>
+    <button class="btn-outline" data-export="xlsx" title="The products table on screen">{{ icons.icon("download") }} Excel</button>
+    <button class="btn-outline" data-export="pdf" title="The products table on screen">{{ icons.icon("download") }} PDF</button>
+  </div>
+  <div id="note" class="note"></div>
+</div>
+
+<div class="kpis" id="tiles"></div>
+<div id="categories"></div>
+
+<div class="card">
+  <div class="card-head">
+    <h3>Month on month</h3>
+    <div class="seg" id="metric">
+      <button class="seg-btn on" data-metric="sales">Sales</button>
+      <button class="seg-btn" data-metric="units">Units</button>
+      <button class="seg-btn" data-metric="kg">Kg</button>
+      <button class="seg-btn" data-metric="net">Net</button>
+    </div>
+  </div>
+  <div class="chart tall"><canvas id="mom-chart" aria-label="Month on month"></canvas></div>
+  <div class="note" id="mom-note"></div>
+</div>
+
+<div class="card">
+  <h3>Why sales moved: volume, price and mix</h3>
+  <div class="table-wrap" id="growth"></div>
+  <div class="note">Volume = more or fewer kilograms at last month's price per kg. Price = a different
+    price on the same pack. Mix = a shift between pack sizes. The three add up to the change.</div>
+</div>
+
+<div class="card">
+  <h3>Categories by month</h3>
+  <div class="table-wrap" id="cat-grid"></div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h3>Cost trends</h3>
+    <div class="chart"><canvas id="cost-chart" aria-label="Cost trends"></canvas></div>
+    <div class="note" id="cost-note"></div>
+  </div>
+  <div class="card">
+    <h3>Traffic funnel</h3>
+    <div class="chart"><canvas id="funnel-chart" aria-label="Traffic funnel"></canvas></div>
+    <div class="note">Conversion = units ordered / sessions. Buy Box = share of page views that showed our offer.</div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Kilograms by category, and top-10 concentration</h3>
+  <div class="chart"><canvas id="kg-chart" aria-label="Kilograms by category"></canvas></div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h3 id="table-title">Products</h3>
+    <input class="search" id="search" type="search" placeholder="Search product…" aria-label="Search product"/>
+  </div>
+  <div class="table-wrap" id="table"></div>
+</div>
+
+<div class="card" id="detail" hidden>
+  <div class="card-head"><h3 id="detail-title"></h3><button class="btn-outline" id="detail-close" type="button" style="margin-left:auto">Close</button></div>
+  <div class="chart"><canvas id="detail-chart" aria-label="Product by month"></canvas></div>
+  <h3 style="margin-top:10px">Selling price per pack, by month</h3>
+  <div class="table-wrap" id="detail-prices"></div>
+</div>
+
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let data = null;
+let includeInactive = false;
+let category = "";
+let metric = "sales";
+let picked = null;
+let sort = {key: "sales", dir: -1};
+const charts = {};
+
+function esc(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function whole(v){ return Math.round(Number(v)).toLocaleString("en-IN"); }
+function money(v){ return v == null ? '<span class="dim">—</span>' : "₹" + whole(v); }
+function kg(v){ return v == null ? '<span class="dim">—</span>' : whole(v) + " kg"; }
+function num(v){ return v == null ? '<span class="dim">—</span>' : whole(v); }
+function pct(v){ return v == null ? '<span class="dim">—</span>' : Math.round(v * 100) + "%"; }
+function signed(v){
+  if(v == null) return '<span class="dim">—</span>';
+  const p = Math.round(v * 100);
+  return `<span class="${p > 0 ? "pos" : p < 0 ? "neg" : ""}">${p > 0 ? "+" : ""}${p}%</span>`;
+}
+function points(v){
+  if(v == null) return '<span class="dim">—</span>';
+  const p = Math.round(v * 100);
+  return `<span class="${p > 0 ? "pos" : p < 0 ? "neg" : ""}">${p > 0 ? "+" : ""}${p} pts</span>`;
+}
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function monthLabel(m){ return MONTHS[Number(m.slice(5, 7)) - 1] + " " + m.slice(2, 4); }
+/* Chart colours come from the theme, read at run time: theme.css stays the only home of colour. */
+function themeColour(name){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+const PALETTE = ["--accent", "--green", "--orange", "--yellow", "--red", "--text-muted", "--blue"];
+
+function query(){
+  const q = new URLSearchParams();
+  if($("brand").value) q.set("brand", $("brand").value);
+  if(category) q.set("category", category);
+  if(includeInactive) q.set("include_inactive", "true");
+  return q.toString();
+}
+
+/* ── tiles and categories ── */
+function renderTiles(){
+  const last = data.last_month;
+  const t = last ? data.totals[last] : {};
+  const mtd = data.mtd ? data.totals[data.mtd.month] : null;
+  $("tiles").innerHTML = last ? `
+    <div class="kpi"><div class="v">${money(t.sales)}</div><div class="k">Sales (ex-GST), ${esc(monthLabel(last))}</div>
+      <div class="s">${signed(t.mom)} on the month before</div></div>
+    <div class="kpi"><div class="v">${pct(t.net_pct)}</div><div class="k">Net % (pre-COGS)</div><div class="s">${money(t.net)}</div></div>
+    <div class="kpi"><div class="v">${pct(t.tacos)}</div><div class="k">TACOS</div><div class="s">ad spend ${money(t.ad_spend)}</div></div>
+    <div class="kpi"><div class="v">${kg(t.kg)}</div><div class="k">Kg sold</div><div class="s">${num(t.units)} units</div></div>
+    <div class="kpi"><div class="v">${mtd ? money(mtd.sales) : "—"}</div><div class="k">${data.mtd ? esc(monthLabel(data.mtd.month)) + " to date" : "This month"}</div>
+      <div class="s">${data.mtd ? data.mtd.days + " day(s), not compared" : ""}</div></div>` : "";
+}
+function renderCategories(){
+  const last = data.last_month;
+  const cats = data.categories || [];
+  const cards = cats.map(c => {
+    const t = (c.months || {})[last] || {};
+    return `<button class="cat${category === c.category ? " on" : ""}" data-cat="${esc(c.category)}" type="button">
+      <div class="cat-name">${esc(c.category)}</div><div class="cat-fig">${money(t.sales)}</div>
+      <div class="cat-meta">${signed(t.mom)} · ${pct(t.share)} of sales</div></button>`;
+  }).join("");
+  $("categories").innerHTML = cats.length || category
+    ? `<div class="cat-strip">${cards}${category ? `<button class="cat on" data-cat="${esc(category)}" type="button"><div class="cat-name">Showing ${esc(category)}</div><div class="cat-meta">click to show all</div></button>` : ""}</div>` : "";
+}
+
+/* ── charts ── */
+function draw(id, config){
+  if(charts[id]) charts[id].destroy();
+  if(typeof Chart === "undefined") return;
+  charts[id] = new Chart($(id), config);
+}
+function axisLabels(){ return data.months.map(m => monthLabel(m) + (data.mtd && m === data.mtd.month ? " (to date)" : "")); }
+function renderMomChart(){
+  const values = data.months.map(m => (data.totals[m] || {})[metric] ?? null);
+  const bar = themeColour("--accent");
+  draw("mom-chart", {
+    type: "bar",
+    data: {labels: axisLabels(), datasets: [{label: {sales: "Sales ₹", units: "Units", kg: "Kg", net: "Net ₹"}[metric], data: values,
+      backgroundColor: data.months.map(m => data.mtd && m === data.mtd.month ? themeColour("--border-strong") : bar)}]},
+    options: {maintainAspectRatio: false, plugins: {legend: {display: false},
+      tooltip: {callbacks: {afterLabel: ctx => {
+        const g = (data.totals[data.months[ctx.dataIndex]] || {}).mom;
+        return g == null ? "" : "Sales vs previous month: " + (g > 0 ? "+" : "") + Math.round(g * 100) + "%";
+      }}}}},
+  });
+  const best = data.complete_months.slice(-12).map(m => [m, data.totals[m].mom]).filter(x => x[1] != null);
+  $("mom-note").textContent = best.length
+    ? "Sales growth by month: " + best.map(([m, g]) => `${monthLabel(m)} ${g > 0 ? "+" : ""}${Math.round(g * 100)}%`).join(" · ")
+    : "";
+}
+function renderCostChart(){
+  const series = (key, colour) => ({label: {fees_pct: "Amazon fees %", refunds_pct: "Refunds %", tacos: "TACOS", net_pct: "Net %"}[key],
+    data: data.complete_months.map(m => data.totals[m][key] == null ? null : Math.round(data.totals[m][key] * 1000) / 10),
+    borderColor: themeColour(colour), backgroundColor: themeColour(colour), tension: .25, spanGaps: true});
+  draw("cost-chart", {type: "line",
+    data: {labels: data.complete_months.map(monthLabel), datasets: [series("fees_pct", "--orange"), series("refunds_pct", "--red"),
+      series("tacos", "--accent"), series("net_pct", "--green")]},
+    options: {maintainAspectRatio: false, scales: {y: {ticks: {callback: v => v + "%"}}}}});
+  const spOnly = data.complete_months.filter(m => data.totals[m].sb !== "full");
+  $("cost-note").textContent = spOnly.length
+    ? `Ad spend for ${monthLabel(spOnly[0])} to ${monthLabel(spOnly[spOnly.length - 1])} is Sponsored Products only (Amazon keeps Sponsored Brands figures for about 60 days), so TACOS reads low and Net % high for those months.`
+    : "";
+}
+function renderFunnelChart(){
+  const months = data.complete_months.filter(m => data.totals[m].sessions != null);
+  draw("funnel-chart", {type: "bar",
+    data: {labels: months.map(monthLabel), datasets: [
+      {type: "bar", label: "Sessions", data: months.map(m => data.totals[m].sessions), backgroundColor: themeColour("--accent-soft"),
+       borderColor: themeColour("--accent"), borderWidth: 1, yAxisID: "y"},
+      {type: "line", label: "Conversion %", data: months.map(m => data.totals[m].conversion == null ? null : Math.round(data.totals[m].conversion * 1000) / 10),
+       borderColor: themeColour("--green"), backgroundColor: themeColour("--green"), yAxisID: "y1", tension: .25},
+      {type: "line", label: "Buy Box %", data: months.map(m => data.totals[m].buy_box == null ? null : Math.round(data.totals[m].buy_box * 1000) / 10),
+       borderColor: themeColour("--orange"), backgroundColor: themeColour("--orange"), yAxisID: "y1", tension: .25}]},
+    options: {maintainAspectRatio: false, scales: {y: {position: "left"}, y1: {position: "right", min: 0, max: 100,
+      grid: {drawOnChartArea: false}, ticks: {callback: v => v + "%"}}}}});
+}
+function renderKgChart(){
+  const months = data.complete_months;
+  const datasets = (data.categories || []).map((c, i) => ({type: "bar", label: c.category, stack: "kg", yAxisID: "y",
+    data: months.map(m => ((c.months || {})[m] || {}).kg ?? null), backgroundColor: themeColour(PALETTE[i % PALETTE.length])}));
+  datasets.push({type: "line", label: "Top-10 share %", yAxisID: "y1", borderColor: themeColour("--text"), backgroundColor: themeColour("--text"),
+    data: months.map(m => data.totals[m].top10_share == null ? null : Math.round(data.totals[m].top10_share * 100)), tension: .25});
+  draw("kg-chart", {type: "bar", data: {labels: months.map(monthLabel), datasets},
+    options: {maintainAspectRatio: false, scales: {y: {stacked: true, ticks: {callback: v => v + " kg"}},
+      y1: {position: "right", min: 0, max: 100, grid: {drawOnChartArea: false}, ticks: {callback: v => v + "%"}}}}});
+}
+
+/* ── tables ── */
+function renderGrowth(){
+  const months = data.complete_months.filter(m => data.growth[m]).slice(-12);
+  const cell = v => `<td class="num">${v == null ? '<span class="dim">—</span>' : `<span class="${v > 0 ? "pos" : v < 0 ? "neg" : ""}">${v > 0 ? "+" : ""}₹${whole(v)}</span>`}</td>`;
+  const rows = [["Change in sales", "delta"], ["Volume", "volume"], ["Price", "price"], ["Mix", "mix"]];
+  $("growth").innerHTML = months.length ? `<table><thead><tr><th data-col="product"></th>${months.map(m => `<th class="num">${esc(monthLabel(m))}</th>`).join("")}</tr></thead>
+    <tbody>${rows.map(([label, key], i) => `<tr class="${i === 0 ? "total" : ""}"><td data-col="product">${label}</td>${months.map(m => cell(data.growth[m][key])).join("")}</tr>`).join("")}</tbody></table>`
+    : '<div class="note" style="padding:8px">Two complete months are needed.</div>';
+}
+function renderCatGrid(){
+  const months = data.months.slice(-13);
+  const head = `<tr><th data-col="product">Category</th>${months.map(m => `<th class="num">${esc(monthLabel(m))}${data.mtd && m === data.mtd.month ? " (to date)" : ""}</th>`).join("")}</tr>`;
+  const cell = (t, m) => {
+    if(!t || t.sales == null) return '<td class="num dim">—</td>';
+    const g = data.mtd && m === data.mtd.month ? "" : ` <span style="font-size:11px">${signed(t.mom)}</span>`;
+    return `<td class="num${data.mtd && m === data.mtd.month ? " mtd" : ""}" title="${pct(t.share).replace(/<[^>]+>/g, "")} of sales">₹${whole(t.sales)}${g}</td>`;
+  };
+  const body = (data.categories || []).map(c => `<tr><td data-col="product">${esc(c.category)}</td>${months.map(m => cell((c.months || {})[m], m)).join("")}</tr>`).join("")
+    + `<tr class="total"><td data-col="product">Total</td>${months.map(m => cell(data.totals[m], m)).join("")}</tr>`;
+  $("cat-grid").innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+}
+const COLS = [
+  ["product", "Product", ""], ["category", "Category", ""], ["sales", "Sales", "num"], ["mom", "MoM", "num"],
+  ["kg", "Kg", "num"], ["net_pct", "Net %", "num"], ["net_pct_change", "Net % change", "num"],
+  ["price_now", "Price now", "num"], ["price_6m", "6 months ago", "num"], ["price_low", "Lowest", "num"],
+  ["price_high", "Highest", "num"], ["sessions", "Sessions", "num"], ["conversion", "Conversion", "num"],
+  ["buy_box", "Buy Box", "num"],
+];
+function shownRows(){
+  const q = $("search").value.trim().toLowerCase();
+  return (data.products || []).filter(p => !q || p.product.toLowerCase().includes(q));
+}
+function sortedRows(){
+  const rows = shownRows().slice();
+  const k = sort.key;
+  rows.sort((a, b) => {
+    const x = a[k], y = b[k];
+    if(x == null && y == null) return 0;
+    if(x == null) return 1;
+    if(y == null) return -1;
+    return typeof x === "string" ? sort.dir * x.localeCompare(y) : sort.dir * (x - y);
+  });
+  return rows;
+}
+function rowHtml(p){
+  return `<tr class="row${picked === p.key ? " on" : ""}" data-key="${esc(p.key)}"><td data-col="product">${esc(p.product)}${p.inactive ? '<span class="tag">inactive</span>' : ""}</td>`
+    + `<td>${esc(p.category)}</td><td class="num">${money(p.sales)}</td><td class="num">${signed(p.mom)}</td>`
+    + `<td class="num">${kg(p.kg)}</td><td class="num">${pct(p.net_pct)}</td><td class="num">${points(p.net_pct_change)}</td>`
+    + `<td class="num" title="${esc(p.price_pack || "")}">${money(p.price_now)}${p.price_pack ? ` <span class="dim" style="font-size:11px">${esc(p.price_pack)}</span>` : ""}</td>`
+    + `<td class="num">${money(p.price_6m)}</td><td class="num">${money(p.price_low)}</td><td class="num">${money(p.price_high)}</td>`
+    + `<td class="num">${num(p.sessions)}</td><td class="num">${pct(p.conversion)}</td><td class="num">${pct(p.buy_box)}</td></tr>`;
+}
+function renderTable(){
+  const rows = sortedRows();
+  $("table-title").textContent = data.last_month ? `Products, ${monthLabel(data.last_month)} (${rows.length})` : "Products";
+  const th = ([k, label, cls]) => `<th class="${cls} sortable${sort.key === k ? " sorted" : ""}" data-sort="${k}"${k === "product" ? ' data-col="product"' : ""}
+    aria-sort="${sort.key === k ? (sort.dir > 0 ? "ascending" : "descending") : "none"}" tabindex="0">${label}${sort.key === k ? (sort.dir > 0 ? " ▲" : " ▼") : ""}</th>`;
+  $("table").innerHTML = `<table><thead><tr>${COLS.map(th).join("")}</tr></thead><tbody>${rows.map(rowHtml).join("")
+    || `<tr><td colspan="${COLS.length}" class="dim">No products match.</td></tr>`}</tbody></table>`;
+}
+function renderDetail(){
+  const p = (data.products || []).find(x => x.key === picked);
+  $("detail").hidden = !p;
+  if(!p) return;
+  $("detail-title").textContent = p.product;
+  const months = data.months.filter(m => p.series[m]);
+  draw("detail-chart", {type: "bar",
+    data: {labels: months.map(monthLabel), datasets: [
+      {type: "bar", label: "Sales ₹", data: months.map(m => p.series[m].sales), backgroundColor: themeColour("--accent-soft"), borderColor: themeColour("--accent"), borderWidth: 1, yAxisID: "y"},
+      {type: "line", label: "Net %", data: months.map(m => p.series[m].net_pct == null ? null : Math.round(p.series[m].net_pct * 100)), borderColor: themeColour("--green"), backgroundColor: themeColour("--green"), yAxisID: "y1", tension: .25},
+      {type: "line", label: "Conversion %", data: months.map(m => p.series[m].conversion == null ? null : Math.round(p.series[m].conversion * 1000) / 10), borderColor: themeColour("--orange"), backgroundColor: themeColour("--orange"), yAxisID: "y1", tension: .25, spanGaps: true}]},
+    options: {maintainAspectRatio: false, scales: {y: {position: "left"}, y1: {position: "right", grid: {drawOnChartArea: false}, ticks: {callback: v => v + "%"}}}}});
+  const priceMonths = months.slice(-13);
+  $("detail-prices").innerHTML = `<table><thead><tr><th data-col="product">Pack</th>${priceMonths.map(m => `<th class="num">${esc(monthLabel(m))}</th>`).join("")}</tr></thead><tbody>`
+    + p.sizes.map(s => `<tr><td data-col="product">${esc(s.label)}</td>${priceMonths.map(m => `<td class="num">${money((s.months[m] || {}).asp)}</td>`).join("")}</tr>`).join("")
+    + `</tbody></table>`;
+}
+
+function renderMessages(){
+  const out = [];
+  const run = data.last_run;
+  if(!data.months.length){
+    out.push(`<div class="banner info">No history stored yet. It is filled once by the backfill on the server, then every morning at 09:00 IST.</div>`);
+  }
+  if(run && run.status === "failed"){
+    out.push(`<div class="banner error">The last analytics refresh did not finish (${esc(run.error || "failed")}). Figures shown are from the run before.</div>`);
+  }
+  $("messages").innerHTML = out.join("");
+}
+function render(){
+  const months = data.months;
+  $("subtitle").textContent = months.length
+    ? `Every month from ${monthLabel(months[0])} · ${includeInactive ? "active and inactive products" : "today's active products"} · Net is the Profit tab's (pre-COGS, fees ex-GST)`
+    : "";
+  $("inactive-btn").textContent = includeInactive ? "Hide inactive" : "Show inactive";
+  renderMessages(); renderTiles(); renderCategories();
+  renderMomChart(); renderGrowth(); renderCatGrid(); renderCostChart(); renderFunnelChart(); renderKgChart();
+  renderTable(); renderDetail();
+  document.documentElement.style.setProperty("--an-cap", Math.max(320, window.innerHeight - 120) + "px");
+}
+async function load(){
+  const r = await fetch("/portfolio/analytics?" + query());
+  if(!r.ok){ $("subtitle").textContent = "Could not load analytics."; return; }
+  data = await r.json();
+  const chosen = $("brand").value || data.brand;
+  $("brand").innerHTML = data.brands.map(b => `<option${b === chosen ? " selected" : ""}>${esc(b)}</option>`).join("");
+  if(picked && !data.products.some(p => p.key === picked)) picked = null;
+  render();
+}
+
+$("brand").addEventListener("change", load);
+$("inactive-btn").addEventListener("click", () => { includeInactive = !includeInactive; load(); });
+$("categories").addEventListener("click", e => {
+  const card = e.target.closest("[data-cat]");
+  if(!card) return;
+  category = category === card.dataset.cat ? "" : card.dataset.cat;
+  load();
+});
+$("metric").addEventListener("click", e => {
+  const b = e.target.closest("[data-metric]");
+  if(!b) return;
+  metric = b.dataset.metric;
+  document.querySelectorAll("#metric .seg-btn").forEach(x => x.classList.toggle("on", x === b));
+  renderMomChart();
+});
+$("search").addEventListener("input", renderTable);
+function applySort(key){
+  sort = sort.key === key ? {key, dir: -sort.dir} : {key, dir: key === "product" || key === "category" ? 1 : -1};
+  renderTable();
+}
+$("table").addEventListener("click", e => {
+  const h = e.target.closest("[data-sort]");
+  if(h){ applySort(h.dataset.sort); return; }
+  const row = e.target.closest("tr.row");
+  if(!row) return;
+  picked = picked === row.dataset.key ? null : row.dataset.key;
+  renderTable(); renderDetail();
+  if(picked) $("detail").scrollIntoView({behavior: "smooth", block: "start"});
+});
+$("table").addEventListener("keydown", e => {
+  const h = e.target.closest("[data-sort]");
+  if(!h || (e.key !== "Enter" && e.key !== " ")) return;
+  e.preventDefault();
+  applySort(h.dataset.sort);
+});
+$("detail-close").addEventListener("click", () => { picked = null; renderTable(); renderDetail(); });
+$("refresh-btn").addEventListener("click", async () => {
+  $("refresh-btn").disabled = true;
+  const r = await fetch("/portfolio/analytics/refresh", {method: "POST"});
+  const out = await r.json().catch(() => ({}));
+  if(!r.ok){ $("note").textContent = out.error || "Could not start the refresh."; $("refresh-btn").disabled = false; return; }
+  $("note").textContent = "Reading this month and last month from Amazon (a few minutes)…";
+  const poll = setInterval(async () => {
+    const s = await (await fetch("/portfolio/analytics/refresh-status")).json().catch(() => ({}));
+    if(s.running){ $("note").textContent = "Reading from Amazon: " + (s.phase || "…"); return; }
+    clearInterval(poll);
+    $("refresh-btn").disabled = false;
+    $("note").textContent = s.error ? "Refresh failed: " + s.error : "";
+    load();
+  }, 5000);
+});
+async function downloadExport(fmt, btn){
+  btn.disabled = true;
+  try{
+    const r = await fetch("/portfolio/analytics/export", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({format: fmt, brand: $("brand").value, category, include_inactive: includeInactive})});
+    if(!r.ok){ $("note").textContent = "Could not build the download."; return; }
+    const url = URL.createObjectURL(await r.blob());
+    const a = Object.assign(document.createElement("a"), {href: url, download: `analytics.${fmt}`});
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }finally{ btn.disabled = false; }
+}
+document.querySelectorAll("[data-export]").forEach(b => b.addEventListener("click", () => downloadExport(b.dataset.export, b)));
+load();
+/* What the "Ask" panel sends as the screen's context. */
+function askContext(){ return {tab: "analytics", brand: data && data.brand, category}; }
+</script>
+{% include "_ask_panel.html" %}
+</body>
+</html>
