@@ -1584,3 +1584,59 @@ class FbaInventoryRow(Base):
     future_supply = Column(Integer, nullable=False, default=0)
     unfulfillable = Column(Integer, nullable=False, default=0)
     amazon_updated_at = Column(String(30))
+
+
+class AnalyticsMonthly(Base):
+    """One child ASIN in one calendar month, from Data Kiosk's `MONTH` aggregation (Portfolio ->
+    Analytics). Written through the Profit tab's own `logic.size_row`, so fees are ex-GST and Net is
+    the Profit tab's Net. Sponsored Brands is NOT here: it is added on read from `economics_daily`
+    for the months that table still holds, exactly as the Profit tab adds it."""
+    __tablename__ = "analytics_monthly"
+    __table_args__ = (Index("idx_analytics_monthly_month_asin", "month", "child_asin", unique=True),)
+
+    id = Column(Integer, primary_key=True)
+    month = Column(String(7), nullable=False)          # YYYY-MM
+    child_asin = Column(String(10), nullable=False)
+    parent_asin = Column(String(10))
+    ordered_sales = Column(Numeric(12, 2), default=0)
+    refunded_sales = Column(Numeric(12, 2), default=0)
+    ad_spend = Column(Numeric(12, 2), default=0)        # Amazon's SponsoredProductFee only
+    net_proceeds = Column(Numeric(12, 2), default=0)
+    units_ordered = Column(Integer, default=0)
+    units_refunded = Column(Integer, default=0)
+    net_units = Column(Integer, default=0)
+    fees_json = Column(Text)
+    ads_json = Column(Text)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AnalyticsTrafficMonthly(Base):
+    """Sales & Traffic for one child ASIN in one month: sessions, page views, Buy Box %. Conversion
+    is DERIVED (units / sessions) so a group's rate is computed from sums, never averaged."""
+    __tablename__ = "analytics_traffic_monthly"
+    __table_args__ = (Index("idx_analytics_traffic_month_asin", "month", "child_asin", unique=True),)
+
+    id = Column(Integer, primary_key=True)
+    month = Column(String(7), nullable=False)
+    child_asin = Column(String(10), nullable=False)
+    parent_asin = Column(String(10))
+    sessions = Column(Integer, default=0)
+    page_views = Column(Integer, default=0)
+    units_ordered = Column(Integer, default=0)
+    buy_box_pct = Column(Numeric(6, 2))
+    sales = Column(Numeric(12, 2), default=0)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AnalyticsRefresh(Base):
+    """One Analytics fetch (nightly, button or backfill), so the screen can say how old the figures
+    are and why a run failed."""
+    __tablename__ = "analytics_refresh"
+
+    id = Column(Integer, primary_key=True)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    finished_at = Column(DateTime)
+    status = Column(String(12), nullable=False, default="running")   # running|done|failed
+    source = Column(String(12), nullable=False, default="nightly")
+    months = Column(Text)
+    error = Column(Text)
