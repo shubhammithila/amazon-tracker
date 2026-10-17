@@ -148,3 +148,123 @@ def test_analytics_never_writes_to_amazon(module):
     names = ({n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
              | {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names})
     assert not names & {"_post", "save_economics_daily", "apply_changes", "create_inbound_plan"}
+
+
+# ── the payload ─────────────────────────────────────────────────────────────────────────────────
+
+from datetime import date
+from types import SimpleNamespace
+
+from app.analytics import service
+
+CATALOGUE = {
+    "B0CS500": {"name": "Chana Sattu", "weight": 0.5, "brand": "Mithila Foods", "active": True},
+    "B0CS1KG": {"name": "Chana Sattu", "weight": 1.0, "brand": "Mithila Foods", "active": True},
+    "B0RICE1": {"name": "Usna Chawal", "weight": 1.0, "brand": "Mithila Foods", "active": True},
+    "B0OLD01": {"name": "Old Thekua", "weight": 0.35, "brand": "Mithila Foods", "active": False},
+}
+
+
+@pytest.fixture
+async def stored(db_schema, monkeypatch):
+    service._CACHE.clear()
+
+    async def cat():
+        return CATALOGUE, None, "sheet"
+
+    async def cats(db):
+        return [SimpleNamespace(product_key="chana sattu", priority=1),
+                SimpleNamespace(product_key="usna chawal", priority=4)]
+    monkeypatch.setattr("app.shipment.catalogue.load_catalogue", cat)
+    monkeypatch.setattr("app.shipment.repository.load_categories", cats)
+    data = [
+        # Aug: chana 500g 10 x 100, rice 5 x 200; old thekua sells
+        raw("2026-08", "B0CS500", 1000.0, 10, parent="B0CSPAR", net=500.0, fee_tax=0),
+        raw("2026-08", "B0RICE1", 1000.0, 5, parent="B0RICE1", net=400.0, fee_tax=0),
+        raw("2026-08", "B0OLD01", 300.0, 3, parent="B0OLD01", net=50.0, fee_tax=0),
+        # Sep: chana 500g price up to 110, plus 1 kg packs; rice flat
+        raw("2026-09", "B0CS500", 1320.0, 12, parent="B0CSPAR", net=700.0, fee_tax=0),
+        raw("2026-09", "B0CS1KG", 400.0, 2, parent="B0CSPAR", net=200.0, fee_tax=0),
+        raw("2026-09", "B0RICE1", 1000.0, 5, parent="B0RICE1", net=400.0, fee_tax=0),
+        # Oct (month to date)
+        raw("2026-10", "B0CS500", 330.0, 3, parent="B0CSPAR", net=150.0, fee_tax=0),
+    ]
+    async with async_session() as db:
+        rows = repository.rows_from_economics(data)
+        await repository.save_economics(db, rows, ["2026-08", "2026-09", "2026-10"])
+        await repository.save_traffic(db, repository.rows_from_traffic([
+            {"childAsin": "B0CS500", "parentAsin": "B0CSPAR", "sales": {"unitsOrdered": 12},
+             "traffic": {"sessions": 100, "pageViews": 120, "buyBoxPercentage": 90.0}},
+            {"childAsin": "B0CS1KG", "parentAsin": "B0CSPAR", "sales": {"unitsOrdered": 2},
+             "traffic": {"sessions": 100, "pageViews": 80, "buyBoxPercentage": 100.0}}], "2026-09"), "2026-09")
+        await db.commit()
+    yield
+    service._CACHE.clear()
+
+
+TODAY = date(2026, 10, 17)
+
+
+async def test_inactive_products_are_hidden_until_asked(stored):
+    async with async_session() as db:
+        shown = await service.build(db, today=TODAY)
+        everything = await service.build(db, include_inactive=True, today=TODAY)
+    assert {p["product"] for p in shown["products"]} == {"Chana Sattu", "Usna Chawal"}
+    assert "Old Thekua" in {p["product"] for p in everything["products"]}
+    assert shown["totals"]["2026-08"]["sales"] == 2000.0
+    assert everything["totals"]["2026-08"]["sales"] == 2300.0
+
+
+async def test_the_current_month_is_month_to_date_and_never_a_growth_figure(stored):
+    async with async_session() as db:
+        data = await service.build(db, today=TODAY)
+    assert data["complete_months"] == ["2026-08", "2026-09"] and data["last_month"] == "2026-09"
+    assert data["mtd"] == {"month": "2026-10", "days": 16}
+    assert data["totals"]["2026-10"]["mom"] is None and "2026-10" not in data["growth"]
+    assert data["totals"]["2026-09"]["mom"] == pytest.approx(2720 / 2000 - 1)
+
+
+async def test_totals_are_the_sum_of_the_products_and_the_split_adds_up(stored):
+    async with async_session() as db:
+        data = await service.build(db, today=TODAY)
+    sep = data["totals"]["2026-09"]
+    assert sep["sales"] == pytest.approx(sum(p["series"]["2026-09"]["sales"] for p in data["products"]))
+    assert sep["net_pct"] == pytest.approx(1300 / 2720)
+    g = data["growth"]["2026-09"]
+    assert g["delta"] == pytest.approx(720.0)
+    assert g["volume"] + g["price"] + g["mix"] == pytest.approx(g["delta"], abs=0.02)
+    assert g["price"] == pytest.approx(120.0)                      # 100 -> 110 on 12 packs
+
+
+async def test_categories_are_the_shipment_tabs_and_sum_their_rows(stored):
+    async with async_session() as db:
+        data = await service.build(db, today=TODAY)
+    by = {c["category"]: c for c in data["categories"]}
+    assert by["Sattu"]["months"]["2026-09"]["sales"] == pytest.approx(1720.0)
+    assert by["Rice"]["months"]["2026-09"]["share"] == pytest.approx(1000 / 2720)
+    async with async_session() as db:
+        only = await service.build(db, category="Rice", today=TODAY)
+    assert [p["product"] for p in only["products"]] == ["Usna Chawal"]
+
+
+async def test_a_product_row_carries_price_traffic_and_net(stored):
+    async with async_session() as db:
+        data = await service.build(db, today=TODAY)
+    chana = next(p for p in data["products"] if p["product"] == "Chana Sattu")
+    assert chana["price_pack"] == "500g" and chana["price_now"] == pytest.approx(110.0)
+    assert chana["price_low"] == pytest.approx(100.0) and chana["price_high"] == pytest.approx(110.0)
+    assert chana["sessions"] == 200 and chana["conversion"] == pytest.approx(14 / 200)
+    assert chana["buy_box"] == pytest.approx((90 * 120 + 100 * 80) / 200 / 100)
+    assert chana["mom"] == pytest.approx(1720 / 1000 - 1)
+    rice = next(p for p in data["products"] if p["product"] == "Usna Chawal")
+    assert rice["sessions"] is None                                   # no traffic row: a dash
+
+
+async def test_a_month_is_the_profit_tabs_portfolio_of_the_same_rows(stored):
+    from app.portfolio import logic as pf_logic
+    async with async_session() as db:
+        months = await repository.load_months(db)
+        data = await service.build(db, today=TODAY)
+    direct = pf_logic.portfolio(months["2026-09"], CATALOGUE, {}, {}, flavour_keys={})
+    assert data["totals"]["2026-09"]["net"] == pytest.approx(direct["totals"]["net"])
+    assert data["totals"]["2026-09"]["sales"] == pytest.approx(direct["totals"]["sales"])
