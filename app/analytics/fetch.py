@@ -38,8 +38,25 @@ def month_bounds(month: str, today: date) -> tuple[str, str] | None:
     return first.isoformat(), last.isoformat()
 
 
-async def _default_run(query: str, label: str) -> list[dict]:
-    return await economics._run_query(query, label=label, sleep=asyncio.sleep)
+#: Waits after a quota refusal, in seconds. Data Kiosk lets a burst of queries through and then about
+#: one a minute: the first full backfill (17 Oct 2026) was refused after 29 queries in a row.
+QUOTA_WAITS = (60, 120, 300)
+
+
+def _is_quota(exc: Exception) -> bool:
+    return getattr(exc, "status", None) == 429 or "quota" in str(exc).lower()
+
+
+async def _default_run(query: str, label: str, sleep=asyncio.sleep) -> list[dict]:
+    """One Data Kiosk query, waiting and retrying when Amazon refuses on quota."""
+    for wait in QUOTA_WAITS:
+        try:
+            return await economics._run_query(query, label=label, sleep=sleep)
+        except Exception as exc:  # noqa: BLE001 - only a quota refusal is retried
+            if not _is_quota(exc):
+                raise
+            await sleep(wait)
+    return await economics._run_query(query, label=label, sleep=sleep)
 
 
 async def economics_months(start: str, end: str, run=None) -> list[dict]:

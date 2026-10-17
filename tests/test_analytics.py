@@ -343,3 +343,47 @@ async def test_the_page_opens(auth_client):
 def test_the_month_to_date_is_drawn_apart_and_charts_read_colour_from_the_theme():
     assert '" (to date)"' in PAGE and "themeColour(" in PAGE
     assert "getComputedStyle(document.documentElement)" in PAGE
+
+
+def test_a_month_holding_a_pack_with_no_known_weight_has_no_kg_total():
+    """A dash, never a short sum: 10 kg known plus an unknown pack is not "10 kg"."""
+    known = {"sales": 100.0, "units": 10, "kg": 10.0, "net": 1.0, "fees": 1.0, "refunded": 0, "ad_spend": 0}
+    unknown = {**known, "kg": None}
+    assert service._month_totals([known])["kg"] == 10.0
+    assert service._month_totals([known, unknown])["kg"] is None
+
+
+async def test_a_quota_refusal_waits_and_retries(monkeypatch):
+    waits, calls = [], {"n": 0}
+
+    async def sleep(s):
+        waits.append(s)
+
+    async def query(q, label, sleep):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise RuntimeError("Amazon said: You exceeded your quota for the requested resource.")
+        return [{"ok": 1}]
+    monkeypatch.setattr("app.portfolio.economics._run_query", query)
+    assert await fetch._default_run("q", "label", sleep=sleep) == [{"ok": 1}]
+    assert waits == list(fetch.QUOTA_WAITS[:2])
+
+
+async def test_any_other_failure_is_not_retried(monkeypatch):
+    async def query(q, label, sleep):
+        raise RuntimeError("Amazon FATAL")
+
+    async def sleep(s):
+        raise AssertionError("must not wait")
+    monkeypatch.setattr("app.portfolio.economics._run_query", query)
+    with pytest.raises(RuntimeError, match="FATAL"):
+        await fetch._default_run("q", "label", sleep=sleep)
+
+
+async def test_a_month_missing_its_traffic_is_still_to_do(db_schema):
+    from app.analytics import refresh
+    async with async_session() as db:
+        await repository.save_economics(db, repository.rows_from_economics([raw("2024-11", "B0A", 1.0, 1)]), ["2024-11"])
+        await db.commit()
+    missing = await refresh.missing_months(date(2025, 1, 10))
+    assert missing == ["2024-11", "2024-12"]

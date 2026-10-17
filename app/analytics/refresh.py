@@ -82,9 +82,10 @@ async def run_recent(source: str = "nightly", today: date | None = None, run_que
 
 
 async def missing_months(today: date | None = None) -> list[str]:
-    """Months from FIRST_MONTH to last month that hold no economics row yet, oldest first."""
+    """Months from FIRST_MONTH to last month missing their sales OR their traffic, oldest first."""
     today = today or ist.today()
     async with async_session() as db:
-        held = (await repository.months_held(db))["economics"]
+        held = await repository.months_held(db)
     last = recent_months(today)[0]
-    return [m for m in logic.month_range(FIRST_MONTH, last) if m not in held]
+    return [m for m in logic.month_range(FIRST_MONTH, last)
+            if m not in held["economics"] or m not in held["traffic"]]
