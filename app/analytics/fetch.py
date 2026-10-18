@@ -60,11 +60,26 @@ async def _default_run(query: str, label: str, sleep=asyncio.sleep) -> list[dict
 
 
 async def economics_months(start: str, end: str, run=None) -> list[dict]:
-    """Amazon's raw economics rows, one per child ASIN per month, for `start..end`."""
+    """Amazon's raw economics rows, one per child ASIN per month, for `start..end`.
+
+    **`MONTH` returns COMPLETE months only**: measured 18 Oct 2026, 1 Sep..17 Oct came back as
+    September alone. So a span ending part-way through a month asks for its complete months by `MONTH`
+    and for the partial month as one `RANGE` (whose `startDate` is the 1st, so it files under that
+    month)."""
     run = run or _default_run
-    query = economics.build_query(start, end, get_settings().sp_api_marketplace_id, by_day=False)
-    query = query.replace("date: RANGE", "date: MONTH")
-    return await run(query, f"analytics economics {start}..{end}")
+    market = get_settings().sp_api_marketplace_id
+    end_day = date.fromisoformat(end)
+    month_end = date(end_day.year, end_day.month, calendar.monthrange(end_day.year, end_day.month)[1])
+    rows: list[dict] = []
+    if end_day < month_end:
+        partial_start = max(date.fromisoformat(start), end_day.replace(day=1))
+        complete_end = partial_start - timedelta(days=1)
+        if complete_end >= date.fromisoformat(start):
+            rows += await economics_months(start, complete_end.isoformat(), run=run)
+        query = economics.build_query(partial_start.isoformat(), end, market, by_day=False)
+        return rows + await run(query, f"analytics economics {partial_start}..{end} (to date)")
+    query = economics.build_query(start, end, market, by_day=False).replace("date: RANGE", "date: MONTH")
+    return rows + await run(query, f"analytics economics {start}..{end}")
 
 
 async def traffic_month(month: str, today: date, run=None) -> list[dict]:

@@ -387,3 +387,21 @@ async def test_a_month_missing_its_traffic_is_still_to_do(db_schema):
         await db.commit()
     missing = await refresh.missing_months(date(2025, 1, 10))
     assert missing == ["2024-11", "2024-12"]
+
+
+async def test_a_part_month_is_asked_for_as_a_range_because_MONTH_drops_it():
+    """Measured 18 Oct 2026: MONTH over 1 Sep..17 Oct returned September alone."""
+    asked = []
+
+    async def run(query, label):
+        asked.append(("MONTH" if "date: MONTH" in query else "RANGE", label))
+        return []
+    await fetch.economics_months("2026-09-01", "2026-10-17", run=run)
+    assert [a[0] for a in asked] == ["MONTH", "RANGE"]
+    assert "2026-10-01..2026-10-17" in asked[1][1] and "2026-09-01..2026-09-30" in asked[0][1]
+    asked.clear()
+    await fetch.economics_months("2026-10-01", "2026-10-17", run=run)
+    assert [a[0] for a in asked] == ["RANGE"]
+    asked.clear()
+    await fetch.economics_months("2026-07-01", "2026-09-30", run=run)
+    assert [a[0] for a in asked] == ["MONTH"]

@@ -185,6 +185,16 @@ function esc(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","
 function whole(v){ return Math.round(Number(v)).toLocaleString("en-IN"); }
 function money(v){ return v == null ? '<span class="dim">—</span>' : "₹" + whole(v); }
 function kg(v){ return v == null ? '<span class="dim">—</span>' : whole(v) + " kg"; }
+/* Signed rupees: "+₹1,500" and "−₹4,09,554", never "₹-4,09,554". */
+function rupeesSigned(v){ return (v > 0 ? "+" : v < 0 ? "−" : "") + "₹" + whole(Math.abs(v)); }
+/* An axis label in lakh and crore, as the owner reads money. */
+function short(v){
+  const a = Math.abs(v), sign = v < 0 ? "−" : "";
+  if(a >= 1e7) return sign + (a / 1e7).toFixed(1).replace(/\.0$/, "") + " Cr";
+  if(a >= 1e5) return sign + (a / 1e5).toFixed(1).replace(/\.0$/, "") + " L";
+  if(a >= 1e3) return sign + Math.round(a / 1e3) + "k";
+  return sign + Math.round(a);
+}
 function num(v){ return v == null ? '<span class="dim">—</span>' : whole(v); }
 function pct(v){ return v == null ? '<span class="dim">—</span>' : Math.round(v * 100) + "%"; }
 function signed(v){
@@ -222,8 +232,8 @@ function renderTiles(){
     <div class="kpi"><div class="v">${pct(t.net_pct)}</div><div class="k">Net % (pre-COGS)</div><div class="s">${money(t.net)}</div></div>
     <div class="kpi"><div class="v">${pct(t.tacos)}</div><div class="k">TACOS</div><div class="s">ad spend ${money(t.ad_spend)}</div></div>
     <div class="kpi"><div class="v">${kg(t.kg)}</div><div class="k">Kg sold</div><div class="s">${num(t.units)} units</div></div>
-    <div class="kpi"><div class="v">${mtd ? money(mtd.sales) : "—"}</div><div class="k">${data.mtd ? esc(monthLabel(data.mtd.month)) + " to date" : "This month"}</div>
-      <div class="s">${data.mtd ? data.mtd.days + " day(s), not compared" : ""}</div></div>` : "";
+    ${mtd ? `<div class="kpi"><div class="v">${money(mtd.sales)}</div><div class="k">${esc(monthLabel(data.mtd.month))} to date</div>
+      <div class="s">${data.mtd.days} day(s), not compared</div></div>` : ""}` : "";
 }
 function renderCategories(){
   const last = data.last_month;
@@ -252,7 +262,8 @@ function renderMomChart(){
     type: "bar",
     data: {labels: axisLabels(), datasets: [{label: {sales: "Sales ₹", units: "Units", kg: "Kg", net: "Net ₹"}[metric], data: values,
       backgroundColor: data.months.map(m => data.mtd && m === data.mtd.month ? themeColour("--border-strong") : bar)}]},
-    options: {maintainAspectRatio: false, plugins: {legend: {display: false},
+    options: {maintainAspectRatio: false, scales: {y: {ticks: {callback: v => metric === "sales" || metric === "net" ? "₹" + short(v) : short(v)}}},
+      plugins: {legend: {display: false},
       tooltip: {callbacks: {afterLabel: ctx => {
         const g = (data.totals[data.months[ctx.dataIndex]] || {}).mom;
         return g == null ? "" : "Sales vs previous month: " + (g > 0 ? "+" : "") + Math.round(g * 100) + "%";
@@ -286,7 +297,7 @@ function renderFunnelChart(){
        borderColor: themeColour("--green"), backgroundColor: themeColour("--green"), yAxisID: "y1", tension: .25},
       {type: "line", label: "Buy Box %", data: months.map(m => data.totals[m].buy_box == null ? null : Math.round(data.totals[m].buy_box * 1000) / 10),
        borderColor: themeColour("--orange"), backgroundColor: themeColour("--orange"), yAxisID: "y1", tension: .25}]},
-    options: {maintainAspectRatio: false, scales: {y: {position: "left"}, y1: {position: "right", min: 0, max: 100,
+    options: {maintainAspectRatio: false, scales: {y: {position: "left", ticks: {callback: v => short(v)}}, y1: {position: "right", min: 0, max: 100,
       grid: {drawOnChartArea: false}, ticks: {callback: v => v + "%"}}}}});
 }
 function renderKgChart(){
@@ -296,14 +307,14 @@ function renderKgChart(){
   datasets.push({type: "line", label: "Top-10 share %", yAxisID: "y1", borderColor: themeColour("--text"), backgroundColor: themeColour("--text"),
     data: months.map(m => data.totals[m].top10_share == null ? null : Math.round(data.totals[m].top10_share * 100)), tension: .25});
   draw("kg-chart", {type: "bar", data: {labels: months.map(monthLabel), datasets},
-    options: {maintainAspectRatio: false, scales: {y: {stacked: true, ticks: {callback: v => v + " kg"}},
+    options: {maintainAspectRatio: false, scales: {x: {stacked: true}, y: {stacked: true, ticks: {callback: v => short(v) + " kg"}},
       y1: {position: "right", min: 0, max: 100, grid: {drawOnChartArea: false}, ticks: {callback: v => v + "%"}}}}});
 }
 
 /* ── tables ── */
 function renderGrowth(){
   const months = data.complete_months.filter(m => data.growth[m]).slice(-12);
-  const cell = v => `<td class="num">${v == null ? '<span class="dim">—</span>' : `<span class="${v > 0 ? "pos" : v < 0 ? "neg" : ""}">${v > 0 ? "+" : ""}₹${whole(v)}</span>`}</td>`;
+  const cell = v => `<td class="num">${v == null ? '<span class="dim">—</span>' : `<span class="${v > 0 ? "pos" : v < 0 ? "neg" : ""}">${rupeesSigned(v)}</span>`}</td>`;
   const rows = [["Change in sales", "delta"], ["Volume", "volume"], ["Price", "price"], ["Mix", "mix"]];
   $("growth").innerHTML = months.length ? `<table><thead><tr><th data-col="product"></th>${months.map(m => `<th class="num">${esc(monthLabel(m))}</th>`).join("")}</tr></thead>
     <tbody>${rows.map(([label, key], i) => `<tr class="${i === 0 ? "total" : ""}"><td data-col="product">${label}</td>${months.map(m => cell(data.growth[m][key])).join("")}</tr>`).join("")}</tbody></table>`
@@ -371,7 +382,7 @@ function renderDetail(){
       {type: "bar", label: "Sales ₹", data: months.map(m => p.series[m].sales), backgroundColor: themeColour("--accent-soft"), borderColor: themeColour("--accent"), borderWidth: 1, yAxisID: "y"},
       {type: "line", label: "Net %", data: months.map(m => p.series[m].net_pct == null ? null : Math.round(p.series[m].net_pct * 100)), borderColor: themeColour("--green"), backgroundColor: themeColour("--green"), yAxisID: "y1", tension: .25},
       {type: "line", label: "Conversion %", data: months.map(m => p.series[m].conversion == null ? null : Math.round(p.series[m].conversion * 1000) / 10), borderColor: themeColour("--orange"), backgroundColor: themeColour("--orange"), yAxisID: "y1", tension: .25, spanGaps: true}]},
-    options: {maintainAspectRatio: false, scales: {y: {position: "left"}, y1: {position: "right", grid: {drawOnChartArea: false}, ticks: {callback: v => v + "%"}}}}});
+    options: {maintainAspectRatio: false, scales: {y: {position: "left", ticks: {callback: v => "₹" + short(v)}}, y1: {position: "right", grid: {drawOnChartArea: false}, ticks: {callback: v => v + "%"}}}}});
   const priceMonths = months.slice(-13);
   $("detail-prices").innerHTML = `<table><thead><tr><th data-col="product">Pack</th>${priceMonths.map(m => `<th class="num">${esc(monthLabel(m))}</th>`).join("")}</tr></thead><tbody>`
     + p.sizes.map(s => `<tr><td data-col="product">${esc(s.label)}</td>${priceMonths.map(m => `<td class="num">${money((s.months[m] || {}).asp)}</td>`).join("")}</tr>`).join("")
