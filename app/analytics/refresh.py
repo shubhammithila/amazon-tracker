@@ -35,24 +35,16 @@ def recent_months(today: date) -> list[str]:
     return [prev, current] if today.day > 1 else [prev]
 
 
-#: A month's traffic sales (GST included) run ~105% of its economics sales (ex-GST) — measured on
-#: 23 of 24 months on 18 Oct 2026. The 24th, Aug 2026, came back at 50%: Amazon had returned a
-#: truncated answer (129 of 249 ASINs), and the same query a moment later was complete. So an answer
-#: covering less than this share of the month's sales is asked for again once, and the fuller kept.
+#: A month's traffic sales (GST included) run ~105% of its economics sales (ex-GST). Under this share
+#: something is missing, and the run says so in the log rather than storing it silently.
 TRAFFIC_MIN_COVER = 0.9
-
-
-def _cover(rows: list[dict], econ: float) -> float:
-    return (sum(r["sales"] for r in rows) / econ) if econ else 1.0
 
 
 async def _traffic_rows(month: str, today: date, run_query, econ: float) -> list[dict]:
     rows = repository.rows_from_traffic(await fetch.traffic_month(month, today, run=run_query), month)
-    if _cover(rows, econ) < TRAFFIC_MIN_COVER:
-        log.warning("analytics traffic %s covers %.0f%% of sales; asking again", month, _cover(rows, econ) * 100)
-        again = repository.rows_from_traffic(await fetch.traffic_month(month, today, run=run_query), month)
-        if _cover(again, econ) > _cover(rows, econ):
-            rows = again
+    cover = (sum(r["sales"] for r in rows) / econ) if econ else 1.0
+    if cover < TRAFFIC_MIN_COVER:
+        log.warning("analytics traffic %s covers only %.0f%% of the month's sales", month, cover * 100)
     return rows
 
 

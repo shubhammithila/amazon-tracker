@@ -36,6 +36,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (R, "        month = str(r.get(\"startDate\") or \"\")[:7]\n        if len(month) != 7:\n            continue",
      "        month = str(r.get(\"startDate\") or \"2025-01\")[:7]",
      "a dateless row filed under a guessed month"),
+    (R, "        row[\"sessions\"] += int(traffic.get(\"sessions\") or 0)", "        row[\"sessions\"] = int(traffic.get(\"sessions\") or 0)",
+     "a child split across two parents keeps one row's sessions (Aug 2026 halved)"),
     (R, "        await db.execute(delete(AnalyticsMonthly).where(AnalyticsMonthly.month.in_(months)))", "        pass",
      "a re-run doubles a month instead of replacing it"),
     (S, "        t[\"mom\"] = logic.growth(t[\"sales\"], totals[prev][\"sales\"]) if prev and m in complete else None",

@@ -3321,14 +3321,15 @@ month with sales) and refuses Oct 2024: Amazon keeps about two years. Both the e
 - Nightly `analytics_refresh` at **09:00 IST** re-reads the current and previous month; Refresh button
   on the tab does the same. One-off history: `venv/bin/python scripts/backfill_analytics.py` in a
   `screen` (resumable; months missing sales OR traffic are fetched).
-- **A truncated traffic answer is asked for again.** Traffic sales (GST included) run ~105% of the
-  month's ex-GST sales on 23 of 24 months; Aug 2026 came back at 50% (129 of 249 ASINs) and was
-  complete when asked again. Under 90% cover, `refresh._traffic_rows` re-asks once and keeps the
-  fuller answer.
+- **A child listed under two parents in one month is SUMMED.** Aug 2026 traffic came back as 249
+  rows for 129 ASINs (listings re-parented mid-month, e.g. Chana Sattu 500g under its old parent
+  and B0DR322QYG); keeping one row per ASIN halved the month's sessions. Found by checking that
+  traffic sales run ~105% of economics sales (GST) on every month: Aug read 50%. A month under
+  90% cover is now logged.
 - **Feb–May 2025 (and Nov 2024) carry NO ad charge in Amazon's economics feed**, while sales ran
   ₹6–12 lakh; ads resume in Jun 2025. Either ads were paused or paid outside the payout, so TACOS
   reads 0% for those months. Not corrected: the feed is what Amazon says.
-- `scripts/mutate_analytics.py`: 17/17 caught.
+- `scripts/mutate_analytics.py`: 18/18 caught.
 
 ## Portfolio → "Ask": a read-only assistant over the three sub-tabs
 

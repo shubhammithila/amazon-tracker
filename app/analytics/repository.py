@@ -44,24 +44,41 @@ def rows_from_economics(raw: list[dict]) -> list[dict]:
 
 
 def rows_from_traffic(raw: list[dict], month: str) -> list[dict]:
+    """One row per child ASIN, SUMMING the rows Amazon splits it into.
+
+    **A child moved to a new parent mid-month comes back as one row per parent.** Measured on Aug 2026:
+    249 rows for 129 ASINs (Chana Sattu 500g under its old parent and under B0DR322QYG). Keeping one
+    row per ASIN halved the month's sessions. Counts are summed and Buy Box % is weighted by page
+    views; the parent kept is the one with more page views (the current listing)."""
     now = datetime.utcnow()
     out: dict[str, dict] = {}
+    weight: dict[str, list[float]] = {}
     for r in raw:
         asin = str(r.get("childAsin") or "").strip().upper()
         if not asin:
             continue
         traffic = r.get("traffic") or {}
         sales = r.get("sales") or {}
+        views = int(traffic.get("pageViews") or 0)
+        row = out.setdefault(asin, {"month": month, "child_asin": asin, "parent_asin": None, "sessions": 0,
+                                    "page_views": 0, "units_ordered": 0, "buy_box_pct": None, "sales": 0.0,
+                                    "fetched_at": now, "_lead": -1})
+        if views > row["_lead"]:
+            row["parent_asin"] = str(r.get("parentAsin") or "").strip().upper() or None
+            row["_lead"] = views
+        row["sessions"] += int(traffic.get("sessions") or 0)
+        row["page_views"] += views
+        row["units_ordered"] += int(sales.get("unitsOrdered") or 0)
+        row["sales"] = round(row["sales"] + _float((sales.get("orderedProductSales") or {}).get("amount")), 2)
         bb = traffic.get("buyBoxPercentage")
-        out[asin] = {
-            "month": month, "child_asin": asin,
-            "parent_asin": str(r.get("parentAsin") or "").strip().upper() or None,
-            "sessions": int(traffic.get("sessions") or 0), "page_views": int(traffic.get("pageViews") or 0),
-            "units_ordered": int(sales.get("unitsOrdered") or 0),
-            "buy_box_pct": None if bb is None else float(bb),
-            "sales": _float((sales.get("orderedProductSales") or {}).get("amount")),
-            "fetched_at": now,
-        }
+        if bb is not None:
+            w = weight.setdefault(asin, [0.0, 0.0])
+            w[0] += float(bb) * max(views, 1)
+            w[1] += max(views, 1)
+    for asin, row in out.items():
+        row.pop("_lead")
+        if asin in weight and weight[asin][1]:
+            row["buy_box_pct"] = round(weight[asin][0] / weight[asin][1], 2)
     return list(out.values())
 
 

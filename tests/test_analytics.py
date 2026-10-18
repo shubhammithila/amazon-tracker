@@ -407,22 +407,15 @@ async def test_a_part_month_is_asked_for_as_a_range_because_MONTH_drops_it():
     assert [a[0] for a in asked] == ["MONTH"]
 
 
-async def test_a_traffic_answer_far_short_of_the_months_sales_is_asked_for_again(db_schema):
-    """Aug 2026 came back covering 50% of the month's sales (129 of 249 ASINs); asked again, complete."""
-    from app.analytics import refresh
-    calls = {"traffic": 0}
-
-    def t(asin, sales):
-        return {"childAsin": asin, "parentAsin": "B0P", "sales": {"unitsOrdered": 1, "orderedProductSales": {"amount": sales}},
-                "traffic": {"sessions": 10, "pageViews": 12, "buyBoxPercentage": 99.0}}
-
-    async def run(query, label):
-        if "traffic" in label:
-            calls["traffic"] += 1
-            return [t("B0A", 525.0)] if calls["traffic"] == 1 else [t("B0A", 525.0), t("B0B", 525.0)]
-        return [raw("2026-08", "B0A", 500.0, 1), raw("2026-08", "B0B", 500.0, 1)]
-    await refresh.run(["2026-08"], today=TODAY, run_query=run)
-    assert calls["traffic"] == 2
-    async with async_session() as db:
-        traffic = await repository.load_traffic(db)
-    assert set(traffic["2026-08"]) == {"B0A", "B0B"}
+def test_a_child_split_across_two_parents_is_summed_not_overwritten():
+    """Aug 2026: 249 traffic rows for 129 ASINs, a listing moved to a new parent mid-month."""
+    rows = repository.rows_from_traffic([
+        {"childAsin": "B0CWGXYLT6", "parentAsin": "B0CWGXYLT6", "sales": {"unitsOrdered": 213, "orderedProductSales": {"amount": 39406.44}},
+         "traffic": {"sessions": 1185, "pageViews": 1467, "buyBoxPercentage": 99.93}},
+        {"childAsin": "B0CWGXYLT6", "parentAsin": "B0DR322QYG", "sales": {"unitsOrdered": 161, "orderedProductSales": {"amount": 29240.04}},
+         "traffic": {"sessions": 731, "pageViews": 1032, "buyBoxPercentage": 99.89}}], "2026-08")
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["sessions"] == 1916 and r["page_views"] == 2499 and r["units_ordered"] == 374
+    assert r["sales"] == pytest.approx(68646.48) and r["parent_asin"] == "B0CWGXYLT6"
+    assert r["buy_box_pct"] == pytest.approx((99.93 * 1467 + 99.89 * 1032) / 2499, abs=0.01)
