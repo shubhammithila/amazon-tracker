@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2886 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2940 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -141,7 +141,8 @@ app/
 ├── database.py          # Async SQLAlchemy engine
 ├── models.py            # DB models (Products, PriceHistory, BSRHistory, RatingHistory, SellerOffers, Keywords, KeywordRankings, ScrapeJobs, Invoices, ShipmentPlan/PlanItem/PackingDay/PackingEntry, AmazonOrder/AmazonOrderItem/OrderPackedEntry/OrderPackedState/ProductRawStock, EconomicsDaily/AdsDaily/EconomicsRefresh/ProductDecision/PortfolioSettings/AdsRefresh, CustomerOrderLine/RepeatRefresh)
 ├── scheduler.py         # APScheduler. Times STATED IN IST via app/ist.py (the box is UTC):
-│                        # portfolio 07:30 IST, FBA stock 07:45 IST, ads 08:00 IST, orders every 30m,
+│                        # portfolio 07:30 IST, FBA stock 07:45 IST, ads 08:00 IST, analytics 09:00 IST,
+│                        # orders every 30m,
 │                        # product scrape 05:00 IST under its OWN flag (SCRAPE_ENABLED)
 ├── ist.py               # THE offset and THE definition of "today". Six bugs came from not having this.
 ├── utils.py             # Date parsing helpers
@@ -173,6 +174,7 @@ app/
 │   └── refresh.py       # run_incremental (nightly, yesterday only) + run (manual, a window)
 ├── assistant/           # Portfolio -> "Ask": Bedrock client, read-only tools, the tool loop
 ├── inventory/           # FBA stock from the FBA Inventory API: fetch, rule, runs (07:45 IST)
+├── analytics/           # Portfolio -> Analytics: monthly history since Nov 2024 (09:00 IST)
 ├── repeat/              # Portfolio -> Repeat customers (FBA order lines keyed to a hashed buyer)
 │   ├── keys.py          # salted HMAC of the masked buyer email; the email is never stored
 │   ├── fetch.py         # GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL, <=30-day chunks
@@ -3287,6 +3289,39 @@ after FBA share; a dash below 20 reorders.
 `venv/bin/python scripts/backfill_repeat.py --reprice` in a `screen`: re-reads every month since
 1 Jan whose lines still lack a price, newest first, skipping priced chunks, so it is resumable. Until
 it finishes the page says from which day prices are loaded, and LTV covers cohorts from then.
+
+## Portfolio → Analytics — every month since the account started
+
+`/portfolio-page/analytics`, a Portfolio sub-tab (17 Oct 2026). Asked for as *"all the data from the
+begining like 2 years back… only for the active products… month on month growth. selling price
+variations. profit variations. category wise insights"*. Spec:
+`docs/superpowers/specs/2026-10-17-portfolio-analytics-design.md`.
+
+**History was measured before designing.** Data Kiosk answers from **Nov 2024** (₹14,341, the first
+month with sales) and refuses Oct 2024: Amazon keeps about two years. Both the economics schema and
+`analytics_salesAndTraffic_2024_04_24` (sessions, page views, Buy Box %) go back that far.
+
+- **Own monthly store, Profit tab untouched**: `analytics_monthly` and `analytics_traffic_monthly`
+  (UNIQUE `(month, child_asin)`, `b8e4d1f27c60`) plus `analytics_refresh`. Economics rows are written
+  through `logic.size_row`, so fees are ex-GST exactly as on Profit.
+- **Each month is rolled up by the Profit tab's own `logic.portfolio`** (rows rebuilt with
+  `_summed_amazon_row`), so products, flavours, the Active flag and Net are the Profit tab's by
+  construction. Today's active products by default; "Show inactive" re-fetches.
+- **Sponsored Brands** is added (and taken off Net) from `economics_daily.sb_spend` for the months that
+  table still holds; older months are **SP only** and the cost chart says so.
+- **Net = the Profit tab's Net** (the owner's choice: not purchase-cost profit). Monthly grain
+  throughout, selling price included.
+- **The current month is month to date**, shown in its own tile and never given a growth figure.
+- **Growth split**: volume (Δkg at last month's ₹/kg, units when a weight is unknown) + price (same pack,
+  new price, this month's units) + mix (the rest) == Δ sales exactly. A launch is all volume.
+- Conversion = units / sessions and Buy Box is page-view-weighted: never a plain average of rates.
+- **`MONTH` drops a month that is not over**: 1 Sep..17 Oct came back as September alone, so the part
+  month is asked for as one `RANGE`. **Data Kiosk allows a burst then about one query a minute**: the
+  first backfill was refused after 29 in a row; `fetch._default_run` waits 1/2/5 minutes and retries.
+- Nightly `analytics_refresh` at **09:00 IST** re-reads the current and previous month; Refresh button
+  on the tab does the same. One-off history: `venv/bin/python scripts/backfill_analytics.py` in a
+  `screen` (resumable; months missing sales OR traffic are fetched).
+- `scripts/mutate_analytics.py`: 17/17 caught.
 
 ## Portfolio → "Ask": a read-only assistant over the three sub-tabs
 
