@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2940 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2941 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3321,6 +3321,13 @@ month with sales) and refuses Oct 2024: Amazon keeps about two years. Both the e
 - Nightly `analytics_refresh` at **09:00 IST** re-reads the current and previous month; Refresh button
   on the tab does the same. One-off history: `venv/bin/python scripts/backfill_analytics.py` in a
   `screen` (resumable; months missing sales OR traffic are fetched).
+- **A truncated traffic answer is asked for again.** Traffic sales (GST included) run ~105% of the
+  month's ex-GST sales on 23 of 24 months; Aug 2026 came back at 50% (129 of 249 ASINs) and was
+  complete when asked again. Under 90% cover, `refresh._traffic_rows` re-asks once and keeps the
+  fuller answer.
+- **Feb–May 2025 (and Nov 2024) carry NO ad charge in Amazon's economics feed**, while sales ran
+  ₹6–12 lakh; ads resume in Jun 2025. Either ads were paused or paid outside the payout, so TACOS
+  reads 0% for those months. Not corrected: the feed is what Amazon says.
 - `scripts/mutate_analytics.py`: 17/17 caught.
 
 ## Portfolio → "Ask": a read-only assistant over the three sub-tabs
