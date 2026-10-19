@@ -38,7 +38,7 @@ Everything below follows that pattern.
    - percentage columns carry the change in points; colour by direction of good (Net %, conversion,
      Buy Box up = green; TACOS up = red; ad spend has no colour, it is neither good nor bad by itself);
    - a missing figure is a dash, never 0.
-5. **Categories table** (hidden while a product is focused): one row per category, the months of the
+5. **Categories table** (shown only when all products are shown): one row per category, the months of the
    range as columns for the chart's current measure, a small inline SVG trend line, and the change on
    the month. Clicking a row focuses that category. A total row on top.
 6. **Products table** — unchanged columns. Clicking a row now FOCUSES the page on that product

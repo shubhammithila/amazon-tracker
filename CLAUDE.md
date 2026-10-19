@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2943 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2948 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3329,13 +3329,19 @@ month with sales) and refuses Oct 2024: Amazon keeps about two years. Both the e
 - **Feb–May 2025 (and Nov 2024) carry NO ad charge in Amazon's economics feed**, while sales ran
   ₹6–12 lakh; ads resume in Jun 2025. Either ads were paused or paid outside the payout, so TACOS
   reads 0% for those months. Not corrected: the feed is what Amazon says.
-- `scripts/mutate_analytics.py`: 18/18 caught.
-- **Screen layout (19 Oct 2026)**: the volume/price/mix table is OFF the screen (asked: *"remove this
-  why sales moved"*; `growth` still travels in the payload) and categories by month are a line chart.
-  One range switch (6 / 12 months / All) drives every trend chart; each has a view switch (Sales or
-  share · where ₹100 went or trend lines · sessions & conversion or Buy Box on its own scale · kg or
-  share of kg) and a readout line comparing the latest month with earlier ones. Hover shows the whole
-  month (`interaction: index`).
+- `scripts/mutate_analytics.py`: 21/21 caught.
+- **Screen layout (19 Oct 2026, second pass)**: asked *"apart from the month on month graph, rest of
+  the graphs I am not liking"*, then: too busy, focus on one category or product, exact numbers in
+  tables. So the page is ONE chart plus tables: a **Show** bar (category chips, a product picker, the
+  6 / 12 / All range), the month-on-month chart with a button per measure (sales, units, kg, Net ₹,
+  Net %, TACOS, ad spend, ₹/kg, sessions, conversion), a **month table** for what is shown (newest
+  first, each figure with its change on the month: % for amounts, points for rates; green better,
+  red worse, ad spend uncoloured), and a **categories table** (all products only) with a trend line.
+  Clicking a product focuses the page on it. The volume/price/mix split, cost, traffic and kg charts
+  are off the screen; `growth` still travels in the payload. **₹/kg = sales ÷ kg ordered** and,
+  like every rate here, is computed on the server from sums (`per_kg`, category traffic, product
+  `tacos`), with a dash when a pack weight is unknown. `category_names` lists every category of the
+  brand whatever is picked.
 
 ## Portfolio → "Ask": a read-only assistant over the three sub-tabs
 

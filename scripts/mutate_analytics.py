@@ -55,6 +55,12 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (RF, "    finally:\n        STATE[\"running\"] = False", "    finally:\n        pass",
      "a finished or failed refresh leaves every later one refused"),
     ("app/scheduler.py", "ANALYTICS_REFRESH_IST = (9, 0)", "ANALYTICS_REFRESH_IST = (7, 0)", "analytics read before the sales pull"),
+    (S, '    out["per_kg"] = logic.pct(sales, out["kg"])', '    out["per_kg"] = logic.pct(sales, out["units"])',
+     "per kg divides by units"),
+    (S, '            t.update(logic.weighted_rates(cat_traffic.get(name, {}).get(m, [])))', '            pass',
+     "a category carries no traffic"),
+    (S, '                      "per_kg": logic.pct(e["sales"], e.get("kg")),', '                      "per_kg": None,',
+     "a product series has no per kg"),
 ]
 
 TESTS = ["tests/test_analytics.py", "tests/test_retention_and_scheduler.py"]

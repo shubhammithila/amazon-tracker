@@ -421,22 +421,51 @@ def test_a_child_split_across_two_parents_is_summed_not_overwritten():
     assert r["buy_box_pct"] == pytest.approx((99.93 * 1467 + 99.89 * 1032) / 2499, abs=0.01)
 
 
-def test_the_growth_split_table_is_gone_and_categories_are_a_chart():
-    """Asked for: remove "Why sales moved", and categories by month as a graph, not a grid."""
-    assert "Why sales moved" not in PAGE and 'id="growth"' not in PAGE and "renderGrowth" not in PAGE
-    assert 'id="cat-grid"' not in PAGE and 'id="cat-chart"' in PAGE and "function renderCatChart(" in PAGE
+def test_only_the_month_on_month_chart_is_left_and_the_tables_replace_the_rest():
+    """Asked for: "apart from the month on month graph, rest of the graphs I am not liking"."""
+    for gone in ('id="cat-chart"', 'id="cost-chart"', 'id="funnel-chart"', 'id="kg-chart"',
+                 'id="detail-chart"', "Why sales moved", "renderGrowth"):
+        assert gone not in PAGE, gone
+    for present in ('id="mom-chart"', 'id="month-table"', 'id="cat-table"', 'id="show-bar"',
+                    'id="range"', 'id="product-pick"'):
+        assert present in PAGE, present
 
 
-def test_every_trend_chart_has_a_view_switch_a_readout_and_follows_the_range():
-    for seg, read in (("cat-view", "cat-read"), ("cost-view", "cost-read"),
-                      ("funnel-view", "funnel-read"), ("kg-view", "kg-read")):
-        assert f'id="{seg}"' in PAGE and f'id="{read}"' in PAGE
-    for fn in ("renderCatChart", "renderCostChart", "renderFunnelChart", "renderKgChart"):
-        body = PAGE[PAGE.index(f"function {fn}("):]
-        body = body[:body.index("\nfunction ")]
-        assert "chartMonths(" in body, fn
-    # hovering a month shows every series for that month
-    assert 'interaction = {mode: "index", intersect: false}' in PAGE
+FOCUS_FNS = ["esc", "whole", "chartMonths", "focusSeries", "tableMonths", "changeHtml"]
+
+
+def _page_js(body):
+    from tests.js_harness import run_template_js
+    return run_template_js(ROOT / "templates" / "portfolio_analytics.html", FOCUS_FNS, [],
+                           "let range = '12'; let picked = null; let category = ''; " + body)
+
+
+def test_the_focus_reads_the_totals_or_the_picked_products_series():
+    out = _page_js("""
+      data = {totals: {"2026-09": {sales: 10}}, products: [{key: "P", product: "Chana", series: {"2026-09": {sales: 4}}}],
+              complete_months: ["2026-09"], months: ["2026-09"], mtd: null};
+      const a = focusSeries(); picked = "P"; const b = focusSeries(); category = "Rice"; picked = null; const c = focusSeries();
+      emit([a.label, a.months["2026-09"].sales, b.label, b.months["2026-09"].sales, c.label]);""")
+    assert out == ["all products", 10, "Chana", 4, "Rice"]
+
+
+def test_the_month_table_is_newest_first_with_the_month_to_date_on_top():
+    out = _page_js("""
+      data = {complete_months: ["2026-07", "2026-08", "2026-09"], months: ["2026-07", "2026-08", "2026-09", "2026-10"],
+              mtd: {month: "2026-10", days: 16}};
+      range = "2"; emit(tableMonths());""")
+    assert out == ["2026-10", "2026-09", "2026-08"]
+
+
+def test_a_change_is_coloured_by_whether_up_is_good():
+    out = _page_js("""emit([changeHtml("money", 1, 110, 100), changeHtml("pct", -1, 0.30, 0.25),
+                             changeHtml("money", 0, 90, 100), changeHtml("money", 1, 5, null),
+                             changeHtml("rate", 1, 0.064, 0.069)]);""")
+    assert "chg pos" in out[0] and "+10%" in out[0]
+    assert "chg neg" in out[1] and "+5 pts" in out[1]
+    assert "−10%" in out[2] and "pos" not in out[2] and "neg" not in out[2]
+    assert out[3] == ""
+    assert "chg neg" in out[4] and "−0.5 pts" in out[4]
 
 
 async def test_per_kg_tacos_and_category_traffic_come_from_sums(stored):
