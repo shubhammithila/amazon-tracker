@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2941 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2943 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3330,6 +3330,12 @@ month with sales) and refuses Oct 2024: Amazon keeps about two years. Both the e
   ₹6–12 lakh; ads resume in Jun 2025. Either ads were paused or paid outside the payout, so TACOS
   reads 0% for those months. Not corrected: the feed is what Amazon says.
 - `scripts/mutate_analytics.py`: 18/18 caught.
+- **Screen layout (19 Oct 2026)**: the volume/price/mix table is OFF the screen (asked: *"remove this
+  why sales moved"*; `growth` still travels in the payload) and categories by month are a line chart.
+  One range switch (6 / 12 months / All) drives every trend chart; each has a view switch (Sales or
+  share · where ₹100 went or trend lines · sessions & conversion or Buy Box on its own scale · kg or
+  share of kg) and a readout line comparing the latest month with earlier ones. Hover shows the whole
+  month (`interaction: index`).
 
 ## Portfolio → "Ask": a read-only assistant over the three sub-tabs
 

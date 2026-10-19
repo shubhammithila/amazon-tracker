@@ -419,3 +419,21 @@ def test_a_child_split_across_two_parents_is_summed_not_overwritten():
     assert r["sessions"] == 1916 and r["page_views"] == 2499 and r["units_ordered"] == 374
     assert r["sales"] == pytest.approx(68646.48) and r["parent_asin"] == "B0CWGXYLT6"
     assert r["buy_box_pct"] == pytest.approx((99.93 * 1467 + 99.89 * 1032) / 2499, abs=0.01)
+
+
+def test_the_growth_split_table_is_gone_and_categories_are_a_chart():
+    """Asked for: remove "Why sales moved", and categories by month as a graph, not a grid."""
+    assert "Why sales moved" not in PAGE and 'id="growth"' not in PAGE and "renderGrowth" not in PAGE
+    assert 'id="cat-grid"' not in PAGE and 'id="cat-chart"' in PAGE and "function renderCatChart(" in PAGE
+
+
+def test_every_trend_chart_has_a_view_switch_a_readout_and_follows_the_range():
+    for seg, read in (("cat-view", "cat-read"), ("cost-view", "cost-read"),
+                      ("funnel-view", "funnel-read"), ("kg-view", "kg-read")):
+        assert f'id="{seg}"' in PAGE and f'id="{read}"' in PAGE
+    for fn in ("renderCatChart", "renderCostChart", "renderFunnelChart", "renderKgChart"):
+        body = PAGE[PAGE.index(f"function {fn}("):]
+        body = body[:body.index("\nfunction ")]
+        assert "chartMonths(" in body, fn
+    # hovering a month shows every series for that month
+    assert 'interaction = {mode: "index", intersect: false}' in PAGE

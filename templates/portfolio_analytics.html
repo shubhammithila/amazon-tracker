@@ -78,6 +78,10 @@ th.sortable:hover{color:var(--text)}
 th.sorted{color:var(--accent)}
 .tag{display:inline-block;font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:5px;margin-left:6px;background:var(--surface2);color:var(--text-muted)}
 .mtd{color:var(--text-dim);font-style:italic}
+.range-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:4px 0 10px;font-size:12.5px}
+/* One plain-English line under each chart: the latest month against earlier ones. */
+.readout{font-size:13px;line-height:1.6;margin-top:8px;padding:7px 10px;border-radius:8px;background:var(--surface2)}
+.readout b{font-weight:700}
 </style>
 <link rel="stylesheet" href="/static/theme.css"/>
 <script src="/static/chart.min.js"></script>
@@ -125,34 +129,65 @@ th.sorted{color:var(--accent)}
   <div class="note" id="mom-note"></div>
 </div>
 
-<div class="card">
-  <h3>Why sales moved: volume, price and mix</h3>
-  <div class="table-wrap" id="growth"></div>
-  <div class="note">Volume = more or fewer kilograms at last month's price per kg. Price = a different
-    price on the same pack. Mix = a shift between pack sizes. The three add up to the change.</div>
+<div class="range-bar">
+  <span class="dim">Charts show</span>
+  <div class="seg" id="range">
+    <button class="seg-btn" data-range="6">6 months</button>
+    <button class="seg-btn on" data-range="12">12 months</button>
+    <button class="seg-btn" data-range="all">All</button>
+  </div>
+  <span class="dim">· hover a month for every figure · click a legend item to hide it</span>
 </div>
 
 <div class="card">
-  <h3>Categories by month</h3>
-  <div class="table-wrap" id="cat-grid"></div>
+  <div class="card-head">
+    <h3>Categories by month</h3>
+    <div class="seg" id="cat-view">
+      <button class="seg-btn on" data-view="sales">Sales ₹</button>
+      <button class="seg-btn" data-view="share">Share of sales</button>
+    </div>
+  </div>
+  <div class="chart"><canvas id="cat-chart" aria-label="Categories by month"></canvas></div>
+  <div class="readout" id="cat-read"></div>
 </div>
 
 <div class="grid2">
   <div class="card">
-    <h3>Cost trends</h3>
+    <div class="card-head">
+      <h3>Cost trends</h3>
+      <div class="seg" id="cost-view">
+        <button class="seg-btn on" data-view="split">Where ₹100 went</button>
+        <button class="seg-btn" data-view="lines">Trend lines</button>
+      </div>
+    </div>
     <div class="chart"><canvas id="cost-chart" aria-label="Cost trends"></canvas></div>
+    <div class="readout" id="cost-read"></div>
     <div class="note" id="cost-note"></div>
   </div>
   <div class="card">
-    <h3>Traffic funnel</h3>
+    <div class="card-head">
+      <h3>Traffic funnel</h3>
+      <div class="seg" id="funnel-view">
+        <button class="seg-btn on" data-view="conv">Sessions &amp; conversion</button>
+        <button class="seg-btn" data-view="bb">Buy Box</button>
+      </div>
+    </div>
     <div class="chart"><canvas id="funnel-chart" aria-label="Traffic funnel"></canvas></div>
+    <div class="readout" id="funnel-read"></div>
     <div class="note">Conversion = units ordered / sessions. Buy Box = share of page views that showed our offer.</div>
   </div>
 </div>
 
 <div class="card">
-  <h3>Kilograms by category, and top-10 concentration</h3>
+  <div class="card-head">
+    <h3>Kilograms by category, and top-10 concentration</h3>
+    <div class="seg" id="kg-view">
+      <button class="seg-btn on" data-view="kg">Kg</button>
+      <button class="seg-btn" data-view="share">Share of kg</button>
+    </div>
+  </div>
   <div class="chart"><canvas id="kg-chart" aria-label="Kilograms by category"></canvas></div>
+  <div class="readout" id="kg-read"></div>
 </div>
 
 <div class="card">
@@ -179,6 +214,8 @@ let category = "";
 let metric = "sales";
 let picked = null;
 let sort = {key: "sales", dir: -1};
+let range = "12";
+const view = {cat: "sales", cost: "split", funnel: "conv", kg: "kg"};
 const charts = {};
 
 function esc(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
@@ -200,12 +237,12 @@ function pct(v){ return v == null ? '<span class="dim">—</span>' : Math.round(
 function signed(v){
   if(v == null) return '<span class="dim">—</span>';
   const p = Math.round(v * 100);
-  return `<span class="${p > 0 ? "pos" : p < 0 ? "neg" : ""}">${p > 0 ? "+" : ""}${p}%</span>`;
+  return `<span class="${p > 0 ? "pos" : p < 0 ? "neg" : ""}">${p > 0 ? "+" : p < 0 ? "−" : ""}${Math.abs(p)}%</span>`;
 }
 function points(v){
   if(v == null) return '<span class="dim">—</span>';
   const p = Math.round(v * 100);
-  return `<span class="${p > 0 ? "pos" : p < 0 ? "neg" : ""}">${p > 0 ? "+" : ""}${p} pts</span>`;
+  return `<span class="${p > 0 ? "pos" : p < 0 ? "neg" : ""}">${p > 0 ? "+" : p < 0 ? "−" : ""}${Math.abs(p)} pts</span>`;
 }
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 function monthLabel(m){ return MONTHS[Number(m.slice(5, 7)) - 1] + " " + m.slice(2, 4); }
@@ -252,86 +289,152 @@ function renderCategories(){
 function draw(id, config){
   if(charts[id]) charts[id].destroy();
   if(typeof Chart === "undefined") return;
+  /* Hovering anywhere over a month shows every series for that month, not only the point under the
+     cursor; legend items are point-style so they read as switches. */
+  const o = config.options = config.options || {};
+  o.maintainAspectRatio = false;
+  o.interaction = {mode: "index", intersect: false};
+  o.plugins = Object.assign({legend: {labels: {usePointStyle: true, boxWidth: 8}}}, o.plugins || {});
   charts[id] = new Chart($(id), config);
 }
 function axisLabels(){ return data.months.map(m => monthLabel(m) + (data.mtd && m === data.mtd.month ? " (to date)" : "")); }
+/* The months a trend chart draws: the range switch applied to the complete months. */
+function chartMonths(months){ return range === "all" ? months : months.slice(-Number(range)); }
+function pct1(v){ return v == null ? null : Math.round(v * 1000) / 10; }
+/* A change in percentage points, coloured by whether up is good (+1) or bad (-1). */
+function ptsChange(now, before, good, decimals = 0){
+  if(now == null || before == null) return "";
+  const f = 10 ** decimals, d = Math.round((now - before) * 100 * f) / f;
+  const cls = d === 0 ? "" : (d > 0) === (good > 0) ? "pos" : "neg";
+  return ` <span class="${cls}">(${d > 0 ? "+" : d < 0 ? "−" : "±"}${Math.abs(d)} pts)</span>`;
+}
+/* "+4%" and "−16%", with a real minus sign. */
+function growthText(g){ const p = Math.round(g * 100); return (p > 0 ? "+" : p < 0 ? "−" : "") + Math.abs(p) + "%"; }
+/* The month to compare the latest one with: `back` months earlier, or the first month shown. */
+function compareMonth(months, back){ return months.length > 1 ? months[Math.max(0, months.length - 1 - back)] : null; }
 function renderMomChart(){
   const values = data.months.map(m => (data.totals[m] || {})[metric] ?? null);
   const bar = themeColour("--accent");
+  const shown = range === "all" ? data.months : data.months.slice(-(Number(range) + (data.mtd ? 1 : 0)));
+  const at = data.months.length - shown.length;
   draw("mom-chart", {
     type: "bar",
-    data: {labels: axisLabels(), datasets: [{label: {sales: "Sales ₹", units: "Units", kg: "Kg", net: "Net ₹"}[metric], data: values,
-      backgroundColor: data.months.map(m => data.mtd && m === data.mtd.month ? themeColour("--border-strong") : bar)}]},
-    options: {maintainAspectRatio: false, scales: {y: {ticks: {callback: v => metric === "sales" || metric === "net" ? "₹" + short(v) : short(v)}}},
+    data: {labels: axisLabels().slice(at), datasets: [{label: {sales: "Sales ₹", units: "Units", kg: "Kg", net: "Net ₹"}[metric], data: values.slice(at),
+      backgroundColor: shown.map(m => data.mtd && m === data.mtd.month ? themeColour("--border-strong") : bar)}]},
+    options: {scales: {y: {ticks: {callback: v => metric === "sales" || metric === "net" ? "₹" + short(v) : short(v)}}},
       plugins: {legend: {display: false},
       tooltip: {callbacks: {afterLabel: ctx => {
-        const g = (data.totals[data.months[ctx.dataIndex]] || {}).mom;
+        const g = (data.totals[shown[ctx.dataIndex]] || {}).mom;
         return g == null ? "" : "Sales vs previous month: " + (g > 0 ? "+" : "") + Math.round(g * 100) + "%";
       }}}}},
   });
-  const best = data.complete_months.slice(-12).map(m => [m, data.totals[m].mom]).filter(x => x[1] != null);
+  const best = chartMonths(data.complete_months).map(m => [m, data.totals[m].mom]).filter(x => x[1] != null);
   $("mom-note").textContent = best.length
     ? "Sales growth by month: " + best.map(([m, g]) => `${monthLabel(m)} ${g > 0 ? "+" : ""}${Math.round(g * 100)}%`).join(" · ")
     : "";
 }
+function renderCatChart(){
+  const months = chartMonths(data.complete_months);
+  const cats = data.categories || [];
+  const value = (c, m) => {
+    const t = (c.months || {})[m] || {};
+    return view.cat === "share" ? pct1(t.share) : (t.sales ?? null);
+  };
+  draw("cat-chart", {type: "line",
+    data: {labels: months.map(monthLabel), datasets: cats.map((c, i) => ({label: c.category, data: months.map(m => value(c, m)),
+      borderColor: themeColour(PALETTE[i % PALETTE.length]), backgroundColor: themeColour(PALETTE[i % PALETTE.length]),
+      tension: .25, spanGaps: true, pointRadius: 3}))},
+    options: {scales: {y: {beginAtZero: true, ticks: {callback: v => view.cat === "share" ? v + "%" : "₹" + short(v)}}},
+      plugins: {tooltip: {itemSort: (a, b) => b.parsed.y - a.parsed.y,
+        callbacks: {label: ctx => {
+          const t = (cats[ctx.datasetIndex].months || {})[months[ctx.dataIndex]] || {};
+          const g = t.mom == null ? "" : `, ${growthText(t.mom)} on the month`;
+          return `${ctx.dataset.label}: ₹${whole(t.sales || 0)} (${Math.round((t.share || 0) * 100)}% of sales${g})`;
+        }}}}}});
+  const last = months[months.length - 1], prev = compareMonth(months, 1);
+  if(!last || !prev){ $("cat-read").innerHTML = ""; return; }
+  const moves = cats.map(c => {
+    const now = (c.months || {})[last] || {}, was = (c.months || {})[prev] || {};
+    return {c: c.category, d: (now.sales || 0) - (was.sales || 0), g: now.mom, share: now.share, was: was.share};
+  }).sort((x, y) => Math.abs(y.d) - Math.abs(x.d));
+  $("cat-read").innerHTML = `<b>${esc(monthLabel(last))} vs ${esc(monthLabel(prev))}:</b> `
+    + moves.map(x => `${esc(x.c)} <span class="${x.d > 0 ? "pos" : x.d < 0 ? "neg" : ""}">${rupeesSigned(x.d)}${x.g == null ? "" : ` (${growthText(x.g)})`}</span>`
+      + `, ${Math.round((x.share || 0) * 100)}% of sales${ptsChange(x.share, x.was, 1)}`).join(" · ");
+}
+const COST_SERIES = [["refunds_pct", "Refunds %", "--red", -1], ["fees_pct", "Amazon fees %", "--orange", -1],
+  ["tacos", "TACOS", "--accent", -1], ["net_pct", "Net %", "--green", 1]];
 function renderCostChart(){
-  const series = (key, colour) => ({label: {fees_pct: "Amazon fees %", refunds_pct: "Refunds %", tacos: "TACOS", net_pct: "Net %"}[key],
-    data: data.complete_months.map(m => data.totals[m][key] == null ? null : Math.round(data.totals[m][key] * 1000) / 10),
-    borderColor: themeColour(colour), backgroundColor: themeColour(colour), tension: .25, spanGaps: true});
-  draw("cost-chart", {type: "line",
-    data: {labels: data.complete_months.map(monthLabel), datasets: [series("fees_pct", "--orange"), series("refunds_pct", "--red"),
-      series("tacos", "--accent"), series("net_pct", "--green")]},
-    options: {maintainAspectRatio: false, scales: {y: {ticks: {callback: v => v + "%"}}}}});
-  const spOnly = data.complete_months.filter(m => data.totals[m].sb !== "full");
+  const months = chartMonths(data.complete_months);
+  const split = view.cost === "split";
+  draw("cost-chart", {type: split ? "bar" : "line",
+    data: {labels: months.map(monthLabel), datasets: COST_SERIES.map(([key, label, colour]) => ({label,
+      data: months.map(m => pct1(data.totals[m][key])), borderColor: themeColour(colour), backgroundColor: themeColour(colour),
+      tension: .25, spanGaps: true, stack: split ? "100" : undefined}))},
+    options: {scales: {x: {stacked: split}, y: {stacked: split, max: split ? 100 : undefined, ticks: {callback: v => v + "%"}}},
+      plugins: {tooltip: {callbacks: {label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y}%`,
+        footer: items => split ? "Of every ₹100 of sales: refunds + fees + ads + net = ₹100" : ""}}}}});
+  const last = months[months.length - 1], was = compareMonth(months, 6);
+  if(!last || !was){ $("cost-read").innerHTML = ""; }
+  else {
+    const t = data.totals[last], b = data.totals[was];
+    $("cost-read").innerHTML = `<b>${esc(monthLabel(last))} vs ${esc(monthLabel(was))}:</b> `
+      + COST_SERIES.map(([key, label, , good]) => `${label.replace(" %", "")} ${pct(t[key])}${ptsChange(t[key], b[key], good)}`).join(" · ");
+  }
+  const spOnly = months.filter(m => data.totals[m].sb !== "full");
   $("cost-note").textContent = spOnly.length
     ? `Ad spend for ${monthLabel(spOnly[0])} to ${monthLabel(spOnly[spOnly.length - 1])} is Sponsored Products only (Amazon keeps Sponsored Brands figures for about 60 days), so TACOS reads low and Net % high for those months.`
     : "";
 }
 function renderFunnelChart(){
-  const months = data.complete_months.filter(m => data.totals[m].sessions != null);
-  draw("funnel-chart", {type: "bar",
-    data: {labels: months.map(monthLabel), datasets: [
-      {type: "bar", label: "Sessions", data: months.map(m => data.totals[m].sessions), backgroundColor: themeColour("--accent-soft"),
-       borderColor: themeColour("--accent"), borderWidth: 1, yAxisID: "y"},
-      {type: "line", label: "Conversion %", data: months.map(m => data.totals[m].conversion == null ? null : Math.round(data.totals[m].conversion * 1000) / 10),
-       borderColor: themeColour("--green"), backgroundColor: themeColour("--green"), yAxisID: "y1", tension: .25},
-      {type: "line", label: "Buy Box %", data: months.map(m => data.totals[m].buy_box == null ? null : Math.round(data.totals[m].buy_box * 1000) / 10),
-       borderColor: themeColour("--orange"), backgroundColor: themeColour("--orange"), yAxisID: "y1", tension: .25}]},
-    options: {maintainAspectRatio: false, scales: {y: {position: "left", ticks: {callback: v => short(v)}}, y1: {position: "right", min: 0, max: 100,
-      grid: {drawOnChartArea: false}, ticks: {callback: v => v + "%"}}}}});
+  const months = chartMonths(data.complete_months.filter(m => data.totals[m].sessions != null));
+  const bb = view.funnel === "bb";
+  const datasets = bb
+    ? [{type: "line", label: "Buy Box %", data: months.map(m => pct1(data.totals[m].buy_box)), borderColor: themeColour("--orange"),
+        backgroundColor: themeColour("--orange"), yAxisID: "y1", tension: .25, spanGaps: true}]
+    : [{type: "bar", label: "Sessions", data: months.map(m => data.totals[m].sessions), backgroundColor: themeColour("--accent-soft"),
+        borderColor: themeColour("--accent"), borderWidth: 1, yAxisID: "y"},
+       {type: "line", label: "Conversion %", data: months.map(m => pct1(data.totals[m].conversion)),
+        borderColor: themeColour("--green"), backgroundColor: themeColour("--green"), yAxisID: "y1", tension: .25, spanGaps: true}];
+  /* Each view gets its own scale: Buy Box near 100% on a shared 0-100 axis flattened conversion to a
+     line along the floor. */
+  draw("funnel-chart", {type: "bar", data: {labels: months.map(monthLabel), datasets},
+    options: {scales: {y: {display: !bb, position: "left", beginAtZero: true, ticks: {callback: v => short(v)}},
+      y1: {position: bb ? "left" : "right", beginAtZero: !bb, suggestedMax: bb ? 100 : undefined,
+        grid: {drawOnChartArea: bb}, ticks: {callback: v => v + "%"}}}}});
+  const last = months[months.length - 1], prev = compareMonth(months, 1);
+  if(!last || !prev){ $("funnel-read").innerHTML = ""; return; }
+  const t = data.totals[last], b = data.totals[prev];
+  const sg = b.sessions ? t.sessions / b.sessions - 1 : null;
+  $("funnel-read").innerHTML = `<b>${esc(monthLabel(last))} vs ${esc(monthLabel(prev))}:</b> ${num(t.sessions)} sessions${sg == null ? "" : ` (${signed(sg)})`}`
+    + ` · conversion ${t.conversion == null ? "—" : (Math.round(t.conversion * 1000) / 10) + "%"}${ptsChange(t.conversion, b.conversion, 1, 1)}`
+    + ` · Buy Box ${pct(t.buy_box)}${ptsChange(t.buy_box, b.buy_box, 1)}`;
 }
 function renderKgChart(){
-  const months = data.complete_months;
-  const datasets = (data.categories || []).map((c, i) => ({type: "bar", label: c.category, stack: "kg", yAxisID: "y",
-    data: months.map(m => ((c.months || {})[m] || {}).kg ?? null), backgroundColor: themeColour(PALETTE[i % PALETTE.length])}));
-  datasets.push({type: "line", label: "Top-10 share %", yAxisID: "y1", borderColor: themeColour("--text"), backgroundColor: themeColour("--text"),
+  const months = chartMonths(data.complete_months);
+  const cats = data.categories || [];
+  const share = view.kg === "share";
+  const kgOf = (c, m) => ((c.months || {})[m] || {}).kg ?? null;
+  const known = m => cats.reduce((a, c) => a + (kgOf(c, m) || 0), 0);
+  const datasets = cats.map((c, i) => ({type: "bar", label: c.category, stack: "kg", yAxisID: "y",
+    data: months.map(m => { const v = kgOf(c, m); return v == null ? null : share ? (known(m) ? Math.round(v / known(m) * 1000) / 10 : null) : v; }),
+    backgroundColor: themeColour(PALETTE[i % PALETTE.length])}));
+  datasets.push({type: "line", label: "Top-10 products' share of sales %", yAxisID: "y1", borderColor: themeColour("--text"), backgroundColor: themeColour("--text"),
     data: months.map(m => data.totals[m].top10_share == null ? null : Math.round(data.totals[m].top10_share * 100)), tension: .25});
   draw("kg-chart", {type: "bar", data: {labels: months.map(monthLabel), datasets},
-    options: {maintainAspectRatio: false, scales: {x: {stacked: true}, y: {stacked: true, ticks: {callback: v => short(v) + " kg"}},
-      y1: {position: "right", min: 0, max: 100, grid: {drawOnChartArea: false}, ticks: {callback: v => v + "%"}}}}});
+    options: {scales: {x: {stacked: true}, y: {stacked: true, max: share ? 100 : undefined, ticks: {callback: v => share ? v + "%" : short(v) + " kg"}},
+      y1: {position: "right", min: 0, max: 100, grid: {drawOnChartArea: false}, ticks: {callback: v => v + "%"}}},
+      plugins: {tooltip: {callbacks: {label: ctx => ctx.dataset.yAxisID === "y1" ? `${ctx.dataset.label}: ${ctx.parsed.y}%`
+        : `${ctx.dataset.label}: ${share ? ctx.parsed.y + "%" : whole(ctx.parsed.y) + " kg"}`}}}}});
+  const last = months[months.length - 1], prev = compareMonth(months, 1), first = months[0];
+  if(!last || !prev){ $("kg-read").innerHTML = ""; return; }
+  const t = data.totals[last], b = data.totals[prev], f = data.totals[first];
+  const kgG = t.kg != null && b.kg ? t.kg / b.kg - 1 : null;
+  $("kg-read").innerHTML = `<b>${esc(monthLabel(last))}:</b> ${kg(t.kg)}${kgG == null ? "" : ` (${signed(kgG)} on ${esc(monthLabel(prev))})`}`
+    + ` · the top 10 products hold ${pct(t.top10_share)} of sales${first !== last ? `, against ${pct(f.top10_share)} in ${esc(monthLabel(first))}` : ""}`
+    + ` (lower means sales are spread over more products)`;
 }
 
 /* ── tables ── */
-function renderGrowth(){
-  const months = data.complete_months.filter(m => data.growth[m]).slice(-12);
-  const cell = v => `<td class="num">${v == null ? '<span class="dim">—</span>' : `<span class="${v > 0 ? "pos" : v < 0 ? "neg" : ""}">${rupeesSigned(v)}</span>`}</td>`;
-  const rows = [["Change in sales", "delta"], ["Volume", "volume"], ["Price", "price"], ["Mix", "mix"]];
-  $("growth").innerHTML = months.length ? `<table><thead><tr><th data-col="product"></th>${months.map(m => `<th class="num">${esc(monthLabel(m))}</th>`).join("")}</tr></thead>
-    <tbody>${rows.map(([label, key], i) => `<tr class="${i === 0 ? "total" : ""}"><td data-col="product">${label}</td>${months.map(m => cell(data.growth[m][key])).join("")}</tr>`).join("")}</tbody></table>`
-    : '<div class="note" style="padding:8px">Two complete months are needed.</div>';
-}
-function renderCatGrid(){
-  const months = data.months.slice(-13);
-  const head = `<tr><th data-col="product">Category</th>${months.map(m => `<th class="num">${esc(monthLabel(m))}${data.mtd && m === data.mtd.month ? " (to date)" : ""}</th>`).join("")}</tr>`;
-  const cell = (t, m) => {
-    if(!t || t.sales == null) return '<td class="num dim">—</td>';
-    const g = data.mtd && m === data.mtd.month ? "" : ` <span style="font-size:11px">${signed(t.mom)}</span>`;
-    return `<td class="num${data.mtd && m === data.mtd.month ? " mtd" : ""}" title="${pct(t.share).replace(/<[^>]+>/g, "")} of sales">₹${whole(t.sales)}${g}</td>`;
-  };
-  const body = (data.categories || []).map(c => `<tr><td data-col="product">${esc(c.category)}</td>${months.map(m => cell((c.months || {})[m], m)).join("")}</tr>`).join("")
-    + `<tr class="total"><td data-col="product">Total</td>${months.map(m => cell(data.totals[m], m)).join("")}</tr>`;
-  $("cat-grid").innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
-}
 const COLS = [
   ["product", "Product", ""], ["category", "Category", ""], ["sales", "Sales", "num"], ["mom", "MoM", "num"],
   ["kg", "Kg", "num"], ["net_pct", "Net %", "num"], ["net_pct_change", "Net % change", "num"],
@@ -400,6 +503,7 @@ function renderMessages(){
   }
   $("messages").innerHTML = out.join("");
 }
+function renderCharts(){ renderMomChart(); renderCatChart(); renderCostChart(); renderFunnelChart(); renderKgChart(); }
 function render(){
   const months = data.months;
   $("subtitle").textContent = months.length
@@ -407,7 +511,7 @@ function render(){
     : "";
   $("inactive-btn").textContent = includeInactive ? "Hide inactive" : "Show inactive";
   renderMessages(); renderTiles(); renderCategories();
-  renderMomChart(); renderGrowth(); renderCatGrid(); renderCostChart(); renderFunnelChart(); renderKgChart();
+  renderCharts();
   renderTable(); renderDetail();
   document.documentElement.style.setProperty("--an-cap", Math.max(320, window.innerHeight - 120) + "px");
 }
@@ -435,6 +539,24 @@ $("metric").addEventListener("click", e => {
   metric = b.dataset.metric;
   document.querySelectorAll("#metric .seg-btn").forEach(x => x.classList.toggle("on", x === b));
   renderMomChart();
+});
+$("range").addEventListener("click", e => {
+  const b = e.target.closest("[data-range]");
+  if(!b) return;
+  range = b.dataset.range;
+  document.querySelectorAll("#range .seg-btn").forEach(x => x.classList.toggle("on", x === b));
+  renderCharts();
+});
+/* Each chart's own view switch: [segment id, view key, renderer]. */
+[["cat-view", "cat", () => renderCatChart()], ["cost-view", "cost", () => renderCostChart()],
+ ["funnel-view", "funnel", () => renderFunnelChart()], ["kg-view", "kg", () => renderKgChart()]].forEach(([id, key, redraw]) => {
+  $(id).addEventListener("click", e => {
+    const b = e.target.closest("[data-view]");
+    if(!b) return;
+    view[key] = b.dataset.view;
+    document.querySelectorAll(`#${id} .seg-btn`).forEach(x => x.classList.toggle("on", x === b));
+    redraw();
+  });
 });
 $("search").addEventListener("input", renderTable);
 function applySort(key){
