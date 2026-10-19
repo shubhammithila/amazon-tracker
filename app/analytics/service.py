@@ -78,6 +78,8 @@ def _month_totals(entries: list[dict]) -> dict:
            "ad_spend": _sum(entries, "ad_spend")}
     out.update(net_pct=logic.pct(out["net"], sales), fees_pct=logic.pct(out["fees"], sales),
                refunds_pct=logic.pct(out["refunded"], sales), tacos=logic.pct(out["ad_spend"], sales))
+    # Selling price per kilogram: sales over kg ORDERED; a dash when any pack's weight is unknown.
+    out["per_kg"] = logic.pct(sales, out["kg"])
     return out
 
 
@@ -107,16 +109,18 @@ def _payload(base: dict, brand: str, category: str | None, sb_days: dict, today:
                 logic.growth_split((p["months"].get(prev) or {}).get("sizes", {}),
                                    (p["months"].get(m) or {}).get("sizes", {})) for p in rows)
 
-    cats = {}
+    cats, cat_traffic = {}, {}
     for p in rows:
         for m, e in p["months"].items():
-            c = cats.setdefault(p["category"], {})
-            c.setdefault(m, []).append(e)
+            cats.setdefault(p["category"], {}).setdefault(m, []).append(e)
+        for m, trs in (p.get("traffic") or {}).items():
+            cat_traffic.setdefault(p["category"], {}).setdefault(m, []).extend(trs)
     categories = []
     for name, by_month in cats.items():
         series = {}
         for i, m in enumerate(months):
             t = _month_totals(by_month.get(m, []))
+            t.update(logic.weighted_rates(cat_traffic.get(name, {}).get(m, [])))
             prev = months[i - 1] if i else None
             t["share"] = logic.pct(t["sales"], totals[m]["sales"])
             t["mom"] = (logic.growth(t["sales"], _month_totals(by_month.get(prev, []))["sales"])
@@ -135,6 +139,8 @@ def _payload(base: dict, brand: str, category: str | None, sb_days: dict, today:
         cur, before = p["months"].get(last) or {}, p["months"].get(prior) or {}
         series = {m: {**{k: v for k, v in e.items() if k != "sizes"},
                       "net_pct": logic.pct(e["net"], e["sales"]),
+                      "tacos": logic.pct(e["ad_spend"], e["sales"]),
+                      "per_kg": logic.pct(e["sales"], e.get("kg")),
                       **logic.weighted_rates((p.get("traffic") or {}).get(m, []))}
                   for m, e in p["months"].items()}
         sizes = {}
@@ -163,10 +169,17 @@ def _payload(base: dict, brand: str, category: str | None, sb_days: dict, today:
         })
     table.sort(key=lambda r: -(r["sales"] or 0))
 
+    # Every category of the brand, whatever is picked, so the screen can always offer them all.
+    cat_sales: dict[str, float] = {}
+    for p in base.values():
+        if brand == ALL_BRANDS or p["brand"] == brand:
+            cat_sales[p["category"]] = cat_sales.get(p["category"], 0.0) + ((p["months"].get(last) or {}).get("sales") or 0.0)
+
     return {
         "months": months, "complete_months": complete, "last_month": last,
         "mtd": {"month": mtd, "days": today.day - 1} if mtd else None,
         "totals": totals, "growth": splits, "categories": categories, "products": table,
+        "category_names": sorted(cat_sales, key=lambda c: -cat_sales[c]),
         "brand": brand, "category": category,
         "brands": [ALL_BRANDS] + sorted({p["brand"] for p in base.values() if p["brand"]}),
     }

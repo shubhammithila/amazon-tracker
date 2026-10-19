@@ -437,3 +437,29 @@ def test_every_trend_chart_has_a_view_switch_a_readout_and_follows_the_range():
         assert "chartMonths(" in body, fn
     # hovering a month shows every series for that month
     assert 'interaction = {mode: "index", intersect: false}' in PAGE
+
+
+async def test_per_kg_tacos_and_category_traffic_come_from_sums(stored):
+    async with async_session() as db:
+        data = await service.build(db, today=TODAY)
+    sep = data["totals"]["2026-09"]
+    assert sep["per_kg"] == pytest.approx(sep["sales"] / sep["kg"])
+    sattu = next(c for c in data["categories"] if c["category"] == "Sattu")["months"]["2026-09"]
+    assert sattu["per_kg"] == pytest.approx(sattu["sales"] / sattu["kg"])
+    assert sattu["sessions"] == 200 and sattu["conversion"] == pytest.approx(14 / 200)
+    assert sattu["buy_box"] == pytest.approx((90 * 120 + 100 * 80) / 200 / 100)
+    chana = next(p for p in data["products"] if p["product"] == "Chana Sattu")["series"]["2026-09"]
+    assert chana["per_kg"] == pytest.approx(chana["sales"] / chana["kg"])
+    assert chana["tacos"] == (chana["ad_spend"] / chana["sales"] if chana["ad_spend"] is not None else None)
+
+
+def test_per_kg_is_a_dash_when_a_pack_weight_is_unknown():
+    known = {"sales": 100.0, "units": 10, "kg": 10.0, "net": 1.0, "fees": 1.0, "refunded": 0, "ad_spend": 0}
+    assert service._month_totals([known])["per_kg"] == pytest.approx(10.0)
+    assert service._month_totals([known, {**known, "kg": None}])["per_kg"] is None
+
+
+async def test_every_category_is_named_even_when_one_is_picked(stored):
+    async with async_session() as db:
+        only = await service.build(db, category="Rice", today=TODAY)
+    assert set(only["category_names"]) == {"Sattu", "Rice"}
