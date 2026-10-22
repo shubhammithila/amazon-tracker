@@ -638,6 +638,19 @@ SKIP_BELOW_PAUSE_SPEND = (
 )
 
 
+def describe_change(entry: Mapping) -> str:
+    """One earlier change in words, for the note on a preview row: "bid ₹10.00 → ₹9.00", "turned OFF"."""
+    state = str(entry.get("state") or "").upper()
+    if state:
+        return "turned OFF" if state == STATE_PAUSED else "turned ON"
+    before, after = entry.get("bid_from"), entry.get("bid_to")
+    if after is None:
+        return "changed"
+    if before is None:
+        return f"bid set to ₹{_as_float(after):.2f}"
+    return f"bid ₹{_as_float(before):.2f} → ₹{_as_float(after):.2f}"
+
+
 def plan_run(
     rows: Sequence[Mapping],
     *,
@@ -649,6 +662,8 @@ def plan_run(
     scope_ad_group_ids: Sequence[str] | None = None,
     applied_today: Mapping | None = None,
     today: str | None = None,
+    rule: str | None = None,
+    today_changes: Mapping | None = None,
 ) -> dict:
     """Turn a rule plus a report into an auditable, un-sent PLAN.
 
@@ -675,6 +690,17 @@ def plan_run(
     > (13.86 x 1.10 = 15.25 both times). Correcting the displayed bid is what CREATES the compounding,
     > so a version of this function with the true bid and no guard is more dangerous than the bug it
     > fixes.
+
+    **The guard is per RULE when ``today_changes`` is given** (22 Oct 2026, asked for as *"multiple
+    rules can be applied to a keyword but the same rule cannot be applied more than once in a day"*).
+    ``today_changes`` is `repository.changes_today`: every APPLIED change today per entity, each with
+    the rule sentence it was made by. A row is held back only when ``rule`` (this run's sentence, from
+    `routers.ads._rule_summary`) is among them; every other rule's change is listed on the row as
+    ``other_today`` so the owner sees, before approving, that a second rule is about to act on a
+    keyword another rule already moved. The true current bid still comes from ``applied_today``,
+    whichever rule set it — so two different -10% rules compound to -19%, which is now a choice the
+    note makes visible rather than one the guard forbids. Without ``today_changes`` the old meaning
+    stands: any change today holds the row back.
 
     ``today`` is the IST day to compare against, defaulting to now. A parameter so a test can pin the
     boundary without freezing the clock.
@@ -740,6 +766,22 @@ def plan_run(
     this_day = today or ist_day(datetime.utcnow())
     ledger_bids = applied_today or {}
 
+    def guard(entity_id, ledger) -> tuple[bool, str, str, list]:
+        """(held back?, when, by which rule, other rules' changes today) for one row."""
+        if today_changes is None:
+            hit = bool(ledger) and ledger.get("day") == this_day
+            return hit, (ledger.get("at") or ""), (ledger.get("rule") or ""), []
+        same, others = None, []
+        for entry in today_changes.get(str(entity_id)) or ():
+            if rule is not None and entry.get("rule") == rule:
+                same = entry
+            else:
+                others.append({"rule": entry.get("rule") or "", "at": entry.get("at") or "",
+                               "what": describe_change(entry)})
+        if same:
+            return True, (same.get("at") or ""), (same.get("rule") or ""), others
+        return False, "", "", others
+
     for row in rows:
         m = row if "spend" in row and "roas" in row else metrics_for(row)
 
@@ -782,13 +824,15 @@ def plan_run(
                 skipped.append({**m, "reason": SKIP_BELOW_PAUSE_SPEND})
                 continue
             ledger = ledger_bids.get(str(m.get("entity_id"))) or {}
+            held, at, by, others = guard(m.get("entity_id"), ledger)
             changes.append({
                 **m,
                 "old_state": None,
                 "new_state": target_state,
-                "changed_today": bool(ledger) and ledger.get("day") == this_day,
-                "changed_at": ledger.get("at") or "",
-                "changed_rule": ledger.get("rule") or "",
+                "changed_today": held,
+                "changed_at": at,
+                "changed_rule": by,
+                "other_today": others,
             })
             continue
 
@@ -811,7 +855,7 @@ def plan_run(
         report_bid = round(_as_float(m["bid"]), 2)
         old_bid = (round(_as_float(ledger.get("bid")), 2)
                    if ledger.get("bid") is not None else report_bid)
-        changed_today = bool(ledger) and ledger.get("day") == this_day
+        changed_today, changed_at, changed_rule, others = guard(m.get("entity_id"), ledger)
 
         proposed = new_bid(old_bid, action, amount)
         if proposed is None:
@@ -835,8 +879,9 @@ def plan_run(
             # silently correcting it — the owner should be able to see why the number moved.
             "report_bid": report_bid,
             "changed_today": changed_today,
-            "changed_at": ledger.get("at") or "",
-            "changed_rule": ledger.get("rule") or "",
+            "changed_at": changed_at,
+            "changed_rule": changed_rule,
+            "other_today": others,
         })
 
     # **The default selection, computed HERE rather than in the template.**

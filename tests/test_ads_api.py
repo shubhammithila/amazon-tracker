@@ -1400,6 +1400,9 @@ async def test_apply_refuses_a_row_already_changed_today(auth_client, db):
 
     The screen is not a trust boundary and this is the only route in the app that spends money.
     Applying the same percentage to an already-moved bid compounds it: -10% twice is -19%.
+
+    **Per RULE since 22 Oct 2026**: the earlier change is by the SAME rule (same sentence). A
+    different rule's change today no longer blocks; `tests/test_ads_rule_guard.py` covers that half.
     """
     from datetime import datetime
 
@@ -1407,7 +1410,7 @@ async def test_apply_refuses_a_row_already_changed_today(auth_client, db):
 
     await _seed(db)
     db.add(AdsMutation(run_id="earlier", entity_id="111", entity_type="keyword", writer="keyword",
-                       old_bid=18.75, new_bid=16.88, status="applied", rule_summary="earlier rule",
+                       old_bid=18.75, new_bid=16.88, status="applied", rule_summary="spend > 100 -> bid -10%",
                        created_at=datetime.utcnow()))
     await db.commit()
 

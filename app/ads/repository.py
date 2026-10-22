@@ -978,6 +978,49 @@ async def last_applied_states(db: AsyncSession, entity_ids: Sequence[str]) -> di
     return out
 
 
+async def changes_today(db: AsyncSession, entity_ids: Sequence[str], day: str) -> dict[str, list[dict]]:
+    """`{entity_id: [{"rule", "at", "bid_from", "bid_to", "state"}]}` — every APPLIED change on `day`.
+
+    **The basis of the per-RULE once-a-day guard.** `last_applied_bids` gives only the newest row per
+    entity, which cannot say whether THIS rule ran today once a second rule has run after it. Oldest
+    first, so the note on a preview row reads in the order things happened.
+
+    **`day` is the IST calendar day.** The column stores UTC, so the query takes a window wide enough
+    to hold the IST day and the rows are then kept by `logic.ist_day` — one definition of "today",
+    never a hand-computed offset. Only `applied` rows: an undone (`reverted`) change put the keyword
+    back where it was, so it must not stop the rule running again.
+    """
+    wanted = [str(e) for e in entity_ids if e]
+    if not wanted:
+        return {}
+    start = datetime.fromisoformat(day) - timedelta(days=1)
+    end = datetime.fromisoformat(day) + timedelta(days=1)
+    out: dict[str, list[dict]] = {}
+    CHUNK = 500
+    for i in range(0, len(wanted), CHUNK):
+        rows = (await db.execute(
+            select(AdsMutation)
+            .where(
+                AdsMutation.entity_id.in_(wanted[i:i + CHUNK]),
+                AdsMutation.status == "applied",
+                AdsMutation.created_at >= start,
+                AdsMutation.created_at < end,
+            )
+            .order_by(AdsMutation.created_at, AdsMutation.id)
+        )).scalars().all()
+        for row in rows:
+            if logic.ist_day(row.created_at) != day:
+                continue
+            out.setdefault(row.entity_id, []).append({
+                "rule": row.rule_summary or "",
+                "at": row.created_at.isoformat() if row.created_at else "",
+                "bid_from": _f(row.old_bid),
+                "bid_to": _f(row.new_bid),
+                "state": row.new_state or "",
+            })
+    return out
+
+
 async def load_runs(db: AsyncSession, limit: int = 25) -> list[dict]:
     """Recent runs, newest first, each with its counts — the history panel and the undo list."""
     run_ids = (await db.execute(
@@ -1126,8 +1169,22 @@ async def mark_reverted(db: AsyncSession, run_id: str, entity_ids: list[str]) ->
 # ─── Saved rules ─────────────────────────────────────────────────────────────
 
 
+class RuleNameTaken(ValueError):
+    """The name belongs to another saved rule. A 409, so the screen can offer to replace it."""
+
+
+class RuleNotFound(ValueError):
+    """`id` names no saved rule. A 404."""
+
+
 async def save_rule(db: AsyncSession, name: str, rule: dict) -> dict:
-    """Create or replace a saved rule by name. Validates before storing.
+    """Create, update or replace a saved rule. Validates before storing.
+
+    * `rule["id"]` set: update THAT rule, rename allowed. Another rule already holding the new name is
+      refused (`RuleNameTaken`) rather than silently overwritten.
+    * no `id`, name free: create.
+    * no `id`, name taken: refused unless `rule["replace"]` — saving a new rule over an existing one is
+      a decision, not something a typo should do.
 
     Validated on the way IN as well as out, so a rule that could never match cannot be saved and
     then puzzled over — the `good_rating: 99` lesson from the Portfolio tab.
@@ -1157,9 +1214,20 @@ async def save_rule(db: AsyncSession, name: str, rule: dict) -> dict:
             raise ValueError(problem)
         amount, target_state = None, str(amount).strip().upper()
 
-    existing = (await db.execute(
+    named = (await db.execute(
         select(AdsRule).where(AdsRule.name == name)
     )).scalar_one_or_none()
+    if rule.get("id") is not None:
+        existing = await db.get(AdsRule, int(rule["id"]))
+        if existing is None:
+            raise RuleNotFound("That saved rule no longer exists.")
+        if named is not None and named.id != existing.id:
+            raise RuleNameTaken(f"Another rule is already called {name!r}.")
+        existing.name = name
+    else:
+        existing = named
+        if existing is not None and not rule.get("replace"):
+            raise RuleNameTaken(f"A rule called {name!r} already exists.")
 
     values = {
         "conditions_json": json.dumps(conditions),
@@ -1172,12 +1240,24 @@ async def save_rule(db: AsyncSession, name: str, rule: dict) -> dict:
         for field, value in values.items():
             setattr(existing, field, value)
     else:
-        db.add(AdsRule(name=name, created_at=datetime.utcnow(), **values))
+        existing = AdsRule(name=name, created_at=datetime.utcnow(), **values)
+        db.add(existing)
 
     await db.commit()
     # `amount` is echoed back as the caller SENT it — the state for a state rule, the number otherwise
     # — so the screen can re-render the saved rule without knowing which column it landed in.
-    return {"name": name, **values, "amount": target_state or amount, "conditions": conditions}
+    return {"id": existing.id, "name": name, **values, "amount": target_state or amount,
+            "conditions": conditions}
+
+
+async def mark_rules_run(db: AsyncSession, rule_ids: Sequence[int]) -> None:
+    """Stamp `last_run_at` on the saved rules a run was applied from, so the panel can say when."""
+    if not rule_ids:
+        return
+    now = datetime.utcnow()
+    for rule in (await db.execute(select(AdsRule).where(AdsRule.id.in_(list(rule_ids))))).scalars():
+        rule.last_run_at = now
+    await db.commit()
 
 
 async def load_rules(db: AsyncSession) -> list[dict]:

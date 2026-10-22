@@ -130,17 +130,29 @@ def _window(start: str | None, end: str | None, days: int | None,
     return refresh.default_window(requested, today=today)
 
 
+def _plain(value):
+    """10.0 -> "10", 2.5 -> "2.5", a word unchanged. The sentence is the rule's IDENTITY for the
+    once-a-day guard, so a saved amount read back as 10.0 must say the same as the 10 the screen sent."""
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return value
+
+
 def _rule_summary(conditions, action: str, amount) -> str:
-    """The rule in words, stored on every ledger row.
+    """The rule in words, stored on every ledger row — and, since 22 Oct 2026, the rule's identity.
 
     So the history reads without joining to a rule that may since have been edited or deleted —
-    "spend>100, 1<roas<3, decrease 10%" is what the owner recognises three weeks later.
+    "spend>100, 1<roas<3, decrease 10%" is what the owner recognises three weeks later. The
+    once-a-day guard compares these sentences, so numbers are written plainly (`_plain`): the same
+    rule must always produce the same sentence.
     """
+    amount = _plain(amount) if not logic.is_state_action(action) else amount
     parts = []
     for condition in conditions or ():
         field = logic.FIELDS.get(condition.get("field"), {}).get("label", condition.get("field"))
         operator = logic.OPERATORS.get(condition.get("op"), condition.get("op"))
-        parts.append(f"{field} {operator} {condition.get('value')}")
+        parts.append(f"{field} {operator} {_plain(condition.get('value'))}")
     # **A state rule does not read "-> bid ...".** It is stored on every ledger row and is what the
     # owner recognises three weeks later, so "spend > 1000, roas < 1 -> bid set_state" would describe
     # the wrong action entirely.
@@ -575,6 +587,12 @@ async def preview(
         else repository.last_applied_bids(db, entity_ids)
     )
 
+    # **The once-a-day guard is per RULE** (22 Oct 2026): the rule is identified by its sentence, the
+    # same text every ledger row stores, so a keyword another rule moved today stays appliable (with
+    # a note) while this rule's own repeat is held back. See `logic.plan_run`.
+    rule = _rule_summary(body.get("conditions"), body.get("action"), body.get("amount"))
+    today_changes = await repository.changes_today(db, entity_ids, logic.ist_day(datetime.utcnow()))
+
     plan = logic.plan_run(
         rows,
         conditions=body.get("conditions") or [],
@@ -584,11 +602,13 @@ async def preview(
         scope_campaign_ids=body.get("campaign_ids") or None,
         scope_ad_group_ids=body.get("ad_group_ids") or None,
         applied_today=applied_today,
+        rule=rule,
+        today_changes=today_changes,
     )
 
     return {
         "window": [window_start, window_end],
-        "rule": _rule_summary(body.get("conditions"), body.get("action"), body.get("amount")),
+        "rule": rule,
         **plan,
     }
 
@@ -764,26 +784,28 @@ async def apply(
     # reusing it here would leave this guard silently inert for the new action. What it prevents also
     # differs: a repeated pause is idempotent, but a pause/enable flip-flop inside one day ends
     # wherever the last run happened to land. See `repository.last_applied_states`.
+    #
+    # **Per RULE since 22 Oct 2026**: only a change made today by THIS rule (the same sentence the
+    # preview returned) holds a row back. Another rule's change today does not — that is what the
+    # owner asked for, and the preview has already shown it as a note on the row.
+    rule_summary = body.get("rule") or "manual bid edit"
     repeated = []
     if approved:
         entity_ids = [str(c.get("entity_id")) for c in approved]
-        ledger = await (
-            repository.last_applied_states(db, entity_ids) if target_state
-            else repository.last_applied_bids(db, entity_ids)
-        )
-        today_ist = logic.ist_day(datetime.utcnow())
+        today = await repository.changes_today(db, entity_ids, logic.ist_day(datetime.utcnow()))
         still = []
         for change in approved:
-            entry = ledger.get(str(change.get("entity_id"))) or {}
-            if entry.get("day") == today_ist:
+            same = [e for e in today.get(str(change.get("entity_id"))) or () if e["rule"] == rule_summary]
+            if same:
+                entry = same[-1]
                 repeated.append({
                     **change,
-                    "live_bid": entry.get("bid"),
+                    "live_bid": entry.get("bid_to"),
                     "live_state": entry.get("state"),
                     "reason": (
-                        f"it was already {'turned ' + str(entry.get('state', '')).lower() if target_state else 'changed'} "
-                        f"today at {str(entry.get('at') or '')[11:16]} "
-                        f"by: {entry.get('rule') or 'a rule'}"
+                        f"this rule already {'turned it ' + str(entry.get('state') or '').lower() if target_state else 'changed it'} "
+                        f"today at {str(entry.get('at') or '')[11:16]}, so it was already changed today "
+                        f"by: {rule_summary}"
                     ),
                 })
             else:
@@ -805,8 +827,6 @@ async def apply(
         return JSONResponse(
             {"error": "Advertising credentials are not configured."}, status_code=400
         )
-
-    rule_summary = body.get("rule") or "manual bid edit"
 
     try:
         async with httpx.AsyncClient(timeout=settings.ads_timeout) as client:
@@ -902,6 +922,14 @@ async def apply(
                     results.extend(await spapi_ads.apply_changes(client, rows, writer=writer))
 
         counts = await repository.record_results(db, run_id, results)
+        # Stamp the saved rules this run came from, matched by the same sentence, so the panel can
+        # say when each last ran. Never allowed to fail a run that has already reached Amazon.
+        try:
+            await repository.mark_rules_run(db, [
+                r["id"] for r in await repository.load_rules(db)
+                if _rule_summary(r["conditions"], r["action"], r["amount"]) == rule_summary])
+        except Exception:  # noqa: BLE001 - bookkeeping only
+            logger.warning("ads: could not stamp the saved rule's last run", exc_info=True)
 
     except AdsNotConfigured as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
@@ -1101,6 +1129,10 @@ async def save_rule(
         return JSONResponse({"error": "A rule needs a name."}, status_code=400)
     try:
         saved = await repository.save_rule(db, name, body)
+    except repository.RuleNameTaken as exc:
+        return JSONResponse({"error": str(exc), "taken": True}, status_code=409)
+    except repository.RuleNotFound as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     return {"saved": saved}
