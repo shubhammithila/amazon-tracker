@@ -130,6 +130,14 @@ def _window(start: str | None, end: str | None, days: int | None,
     return refresh.default_window(requested, today=today)
 
 
+def _ist_hhmm(iso) -> str:
+    """A ledger timestamp (stored UTC) as the IST time the owner reads, "10:42"."""
+    try:
+        return ist.to_ist(datetime.fromisoformat(str(iso))).strftime("%H:%M")
+    except (TypeError, ValueError):
+        return ""
+
+
 def _plain(value):
     """10.0 -> "10", 2.5 -> "2.5", a word unchanged. The sentence is the rule's IDENTITY for the
     once-a-day guard, so a saved amount read back as 10.0 must say the same as the 10 the screen sent."""
@@ -804,7 +812,7 @@ async def apply(
                     "live_state": entry.get("state"),
                     "reason": (
                         f"this rule already {'turned it ' + str(entry.get('state') or '').lower() if target_state else 'changed it'} "
-                        f"today at {str(entry.get('at') or '')[11:16]}, so it was already changed today "
+                        f"today at {_ist_hhmm(entry.get('at'))}, so it was already changed today "
                         f"by: {rule_summary}"
                     ),
                 })

@@ -1186,8 +1186,10 @@ def test_a_saved_rule_fills_the_bar_and_does_not_run_anything():
     assert "plan = null" in body
 
     assert "function renderSaved(" in source
-    assert 'id="save-rule-btn"' in source
-    assert "data-load-rule=" in source
+    # Since 22 Oct 2026 a list with Use / Edit / Copy / Delete and an inline save area, replacing a
+    # chip bar, a `window.prompt` and a lone x (`tests/test_ads_rule_guard.py`).
+    assert 'id="save-area"' in source
+    assert "data-use=" in source
 
 
 def test_the_table_scrolls_inside_a_wrapper_rather_than_moving_the_page():

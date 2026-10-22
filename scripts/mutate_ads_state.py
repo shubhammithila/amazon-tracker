@@ -146,6 +146,48 @@ MUTATIONS = [
         '"amount": _f(r.amount),',
         "test_a_pause_rule_can_be_saved_and_read_back",
     ),
+    (
+        "the per-rule guard holds a keyword back for ANY rule's change today",
+        LOGIC,
+        '            if rule is not None and entry.get("rule") == rule:',
+        '            if True:',
+        'test_a_different_rule_may_change_it_and_says_what_happened_earlier',
+    ),
+    (
+        'the per-rule guard never holds back the same rule',
+        LOGIC,
+        '        if same:\n            return True,',
+        '        if False:\n            return True,',
+        'test_the_same_rule_is_held_back_on_a_keyword_it_changed_today',
+    ),
+    (
+        'apply lets the same rule through twice in a day',
+        ROUTER,
+        'if e["rule"] == rule_summary]',
+        'if e["rule"] == rule_summary and False]',
+        'test_apply_refuses_the_same_rule_twice',
+    ),
+    (
+        'an undone change still blocks the rule',
+        REPO,
+        '                AdsMutation.status == "applied",\n                AdsMutation.created_at >= start,',
+        '                AdsMutation.status.in_(("applied", "reverted")),\n                AdsMutation.created_at >= start,',
+        'test_a_change_that_was_undone_does_not_block_the_rule or test_changes_today_is_the_ist_day',
+    ),
+    (
+        'the rule sentence keeps 10.0 apart from 10, so a saved rule escapes its own limit',
+        ROUTER,
+        '        return f"{float(value):g}"',
+        '        return str(value)',
+        'test_the_same_rule_always_writes_the_same_sentence',
+    ),
+    (
+        'a new rule silently overwrites one with the same name',
+        REPO,
+        '        if existing is not None and not rule.get("replace"):',
+        '        if False:',
+        'test_a_taken_name_is_refused_unless_replacing',
+    ),
 ]
 
 

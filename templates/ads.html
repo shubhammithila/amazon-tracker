@@ -80,6 +80,28 @@ h2{font-size:19px;font-weight:600;margin-bottom:2px}
 .win-btn{border:1px solid var(--border-strong);background:var(--surface);border-radius:8px;
   padding:6px 12px;font-size:12.5px;font-weight:600;cursor:pointer;color:var(--text-muted)}
 .win-btn:hover{border-color:var(--accent)}
+/* The saved-rules panel: one row per rule, with its sentence and its four actions. */
+.rules-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.rules-list{border:1px solid var(--border);border-radius:8px;margin-bottom:10px;max-height:280px;overflow:auto}
+.rule-row{display:flex;align-items:center;gap:10px;padding:7px 10px;border-bottom:1px solid var(--border)}
+.rule-row:last-child{border-bottom:none}
+.rule-row.on{background:var(--accent-soft)}
+.rule-main{flex:1;min-width:0}
+.rule-name{font-weight:700;font-size:13px}
+.rule-words{font-size:12px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rule-meta{font-size:11px;color:var(--text-dim);white-space:nowrap}
+.rule-acts{display:flex;gap:4px;flex:none}
+.rule-acts button{border:1px solid var(--border-strong);background:var(--surface);border-radius:6px;
+  padding:3px 9px;font-size:12px;cursor:pointer;color:var(--text)}
+.rule-acts button:hover{border-color:var(--accent)}
+.rule-acts button.danger{color:var(--red)}
+.rule-acts button.danger:hover{border-color:var(--red)}
+.save-area{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;padding-top:10px;
+  border-top:1px dashed var(--border)}
+.save-area input{padding:7px 10px;border:1px solid var(--border-strong);border-radius:8px;min-width:240px;
+  background:var(--surface);color:var(--text)}
+.editing-tag{font-size:12px;font-weight:700;color:var(--accent)}
+.other-today{display:block;font-size:11px;color:var(--text-muted);margin-top:2px;white-space:normal;max-width:260px}
 .win-btn.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .win-btn .dot{display:inline-block;width:5px;height:5px;border-radius:50%;
   background:var(--green);margin-left:5px;vertical-align:middle}
@@ -219,7 +241,7 @@ tr.child td:first-child{padding-left:30px}
   <!-- Saved rules: pick one, select campaigns, press Preview. Loading a rule REPLACES the
        conditions rather than merging, and it does not run anything on its own — the two-click
        Preview -> Apply path is the same for a saved rule as for a hand-built one. -->
-  <div class="controls" id="saved-bar" style="margin-bottom:8px"></div>
+  <div id="saved-bar"></div>
 
   <div id="conditions"></div>
   <div class="controls" style="margin-bottom:0">
@@ -246,8 +268,10 @@ tr.child td:first-child{padding-left:30px}
     </select>
     <span class="dim" id="amount-unit">%</span>
     <button class="btn" id="preview-btn">Preview changes</button>
-    <button class="btn-outline" id="save-rule-btn">💾 Save this rule</button>
   </div>
+  <!-- Saving: a name box and the buttons for the mode the builder is in (new rule, or editing one).
+       Replaced the window.prompt and the lone x that deleted "whichever rule was loaded". -->
+  <div class="save-area" id="save-area"></div>
 </div>
 
 <div id="preview-area"></div>
@@ -307,6 +331,10 @@ let showAutomated = remembered("showAutomated", false);
 let sort = remembered("sort", {key: "spend", dir: -1});
 //: The saved rule currently in the bar, so Save offers to replace it by name.
 let loadedRule = null;
+/* The saved rule being EDITED, or null for a new rule: {id, name, snapshot}. `snapshot` is the builder
+   as it was before Edit, so Cancel puts it back exactly. */
+let editing = null;
+let ruleSearch = "";
 
 function remembered(key, fallback){
   try {
@@ -694,15 +722,64 @@ function unitFor(field){
 function renderSaved(){
   const rules = data.rules || [];
   if(!rules.length){
-    $("saved-bar").innerHTML = `<span class="dim" style="font-size:12px">No saved rules yet —
-      build one below and press <strong>Save this rule</strong>.</span>`;
+    $("saved-bar").innerHTML = `<div class="dim" style="font-size:12px;margin-bottom:8px">No saved rules yet —
+      build one below, give it a name and press <strong>Save</strong>.</div>`;
+    renderSaveArea();
     return;
   }
-  $("saved-bar").innerHTML = `<span class="win-label">Saved</span>` + rules.map(r =>
-    `<button class="win-btn" data-load-rule="${esc(r.name)}"
-       title="${esc(ruleWords(r))}">${esc(r.name)}</button>`
-  ).join("") + `<button class="fdrop" id="delete-rule" title="delete the loaded rule">×</button>`;
+  const q = ruleSearch.trim().toLowerCase();
+  const shown = rules.filter(r => !q || r.name.toLowerCase().includes(q) || ruleWords(r).toLowerCase().includes(q));
+  const lastRun = r => {
+    if(!r.last_run_at) return "never run";
+    const d = new Date(r.last_run_at + "Z");
+    return "last run " + d.toLocaleString("en-IN", {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"});
+  };
+  $("saved-bar").innerHTML = `<div class="rules-head"><span class="win-label">Saved rules (${rules.length})</span>
+      ${rules.length > 8 ? `<input class="search-input" id="rule-search" placeholder="Search rules…" value="${esc(ruleSearch)}" style="margin-left:auto;max-width:220px"/>` : ""}</div>
+    <div class="rules-list">${shown.map(r => `<div class="rule-row${(editing && editing.id === r.id) || loadedRule === r.name ? " on" : ""}">
+        <div class="rule-main"><div class="rule-name">${esc(r.name)}</div>
+          <div class="rule-words" title="${esc(ruleWords(r))}">${esc(ruleWords(r))}</div></div>
+        <span class="rule-meta">${esc(lastRun(r))}</span>
+        <div class="rule-acts">
+          <button type="button" data-use="${r.id}" title="Load into the builder, then Preview">Use</button>
+          <button type="button" data-edit="${r.id}" title="Change this rule's conditions, action or name">Edit</button>
+          <button type="button" data-copy="${r.id}" title="Start a new rule from this one">Copy</button>
+          <button type="button" class="danger" data-delete="${r.id}" title="Delete this saved rule">Delete</button>
+        </div></div>`).join("") || `<div class="rule-row dim">No rule matches.</div>`}</div>`;
+  renderSaveArea();
 }
+
+/* The save area under the builder. New rule: a name and Save. Editing: the rule's name, Save changes
+   (renaming allowed), Save as new, Cancel. */
+function renderSaveArea(){
+  const typed = $("rule-name") ? $("rule-name").value : "";
+  if(editing){
+    $("save-area").innerHTML = `<span class="editing-tag">Editing: ${esc(editing.name)}</span>
+      <input id="rule-name" value="${esc(typed || editing.name)}" aria-label="Rule name"/>
+      <button class="btn" type="button" data-save="update">Save changes</button>
+      <button class="btn-outline" type="button" data-save="new">Save as new</button>
+      <button class="btn-outline" type="button" data-save="cancel">Cancel</button>`;
+  } else {
+    $("save-area").innerHTML = `<span class="win-label">Save as</span>
+      <input id="rule-name" value="${esc(typed)}" placeholder="Name this rule, e.g. cut losers 10%" aria-label="Rule name"/>
+      <button class="btn-outline" type="button" data-save="new">💾 Save</button>`;
+  }
+}
+
+function builderSnapshot(){
+  return {conditions: conditions.map(c => ({...c})), action: $("action").value,
+          amount: $("amount").value, state: $("state-amount").value};
+}
+function restoreBuilder(snap){
+  conditions = snap.conditions.map(c => ({...c}));
+  remember("conditions", conditions);
+  $("action").value = snap.action;
+  $("amount").value = snap.amount;
+  $("state-amount").value = snap.state;
+  $("action").dispatchEvent(new Event("change"));
+  renderConditions();
+}
+function ruleById(id){ return (data.rules || []).find(r => String(r.id) === String(id)); }
 
 /* The rule in words, for the button's tooltip — so picking a saved rule does not require
    remembering what the name meant. */
@@ -710,6 +787,9 @@ function ruleWords(rule){
   const fields = data.fields || {}, ops = data.operators || {};
   const parts = (rule.conditions || []).map(c =>
     `${(fields[c.field] || {}).label || c.field} ${ops[c.op] || c.op} ${c.value}`);
+  if(rule.action === "set_state"){
+    return `${parts.join(", ")} → turn ${String(rule.amount).toUpperCase() === "PAUSED" ? "OFF (pause)" : "ON (enable)"}`;
+  }
   const verb = {
     decrease_pct: `decrease ${rule.amount}%`, increase_pct: `increase ${rule.amount}%`,
     decrease_abs: `decrease by ₹${rule.amount}`, increase_abs: `increase by ₹${rule.amount}`,
@@ -761,22 +841,54 @@ function ruleAmount(){
   return isStateRun() ? $("state-amount").value : Number($("amount").value);
 }
 
-async function saveRule(){
-  const name = (window.prompt("Name this rule (saving again with the same name replaces it):",
-    loadedRule || "") || "").trim();
-  if(!name) return;
-  const response = await fetch("/ads/rules", {
+async function saveRule(mode){
+  if(mode === "cancel"){
+    restoreBuilder(editing.snapshot);
+    editing = null;
+    $("rule-name").value = "";
+    renderSaved();
+    return;
+  }
+  const name = ($("rule-name").value || "").trim();
+  if(!name){
+    $("rule-name").focus();
+    $("preview-area").innerHTML = `<div class="card"><div class="banner warn">Give the rule a name first.</div></div>`;
+    return;
+  }
+  const send = extra => fetch("/ads/rules", {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({name, conditions, action: $("action").value,
-                          amount: ruleAmount(), window_days: 7}),
+                          amount: ruleAmount(), window_days: 7, ...extra}),
   });
-  const body = await response.json();
+  let response = await send(mode === "update" ? {id: editing.id} : {});
+  let body = await response.json();
+  // A new rule with a name already in use: asked, never silently overwritten.
+  if(response.status === 409 && mode !== "update" && body.taken
+     && confirm(`A rule called "${name}" already exists. Replace it with this one?`)){
+    response = await send({replace: true});
+    body = await response.json();
+  }
   if(!response.ok){
     $("preview-area").innerHTML = `<div class="card"><div class="banner error">${
       esc(body.error || "Could not save the rule.")}</div></div>`;
     return;
   }
+  editing = null;
   loadedRule = name;
+  $("preview-area").innerHTML = `<div class="card"><div class="banner good">Saved <strong>${esc(name)}</strong>.</div></div>`;
+  await load();
+}
+
+async function deleteRule(id){
+  const rule = ruleById(id);
+  if(!rule || !confirm(`Delete the saved rule "${rule.name}"? This cannot be undone.`)) return;
+  const response = await fetch(`/ads/rules/${encodeURIComponent(rule.name)}`, {method: "DELETE"});
+  if(!response.ok){
+    $("preview-area").innerHTML = `<div class="card"><div class="banner error">Could not delete the rule.</div></div>`;
+    return;
+  }
+  if(editing && String(editing.id) === String(id)) editing = null;
+  if(loadedRule === rule.name) loadedRule = null;
   await load();
 }
 
@@ -1306,20 +1418,35 @@ function previewRowHtml(c){
            → <span class="bid-new">${esc(c.new_state)}</span>${
            c.changed_today
              ? `<br/><span class="tag changed" title="Already changed at ${
-                 esc((c.changed_at || '').slice(11, 16))} by: ${
+                 esc(istTime(c.changed_at))} by: ${
                  esc(c.changed_rule || 'a rule')}.">changed today</span>`
-             : ""}</td>
+             : ""}${otherToday(c)}</td>
          <td class="num dim" title="Amazon offers no suggested bid for a state change">—</td>`
       : `<td class="num"><span class="bid-old">₹${(c.old_bid || 0).toFixed(2)}</span>
            → <span class="bid-new">₹${(c.new_bid || 0).toFixed(2)}</span>${
            c.changed_today
              ? `<br/><span class="tag changed" title="Changed at ${
-                 esc((c.changed_at || '').slice(11, 16))} by: ${
+                 esc(istTime(c.changed_at))} by: ${
                  esc(c.changed_rule || 'a rule')}. The report still says ₹${
                  (c.report_bid || 0).toFixed(2)}.">changed today</span>`
-             : ""}</td>
+             : ""}${otherToday(c)}</td>
          <td class="num">${suggestedCell(c)}</td>`}
   </tr>`;
+}
+
+/* What OTHER rules did to this keyword today. The limit is per rule, so another rule's change does
+   not hold the row back; it is named here so the owner sees, before approving, that this keyword
+   already moved today (a second bid change compounds on the first). */
+/* A ledger timestamp is UTC; the owner reads IST. */
+function istTime(iso){
+  if(!iso) return "";
+  return new Date(String(iso).replace(/Z?$/, "Z")).toLocaleTimeString("en-IN", {hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata"});
+}
+function otherToday(c){
+  const notes = c.other_today || [];
+  if(!notes.length) return "";
+  return notes.map(o => `<span class="other-today">${esc(o.what)} today at ${
+    esc(istTime(o.at))} by: ${esc(o.rule || "a rule")}</span>`).join("");
 }
 
 /* The entity ids under one campaign or ad group, read from the SERVER's grouping so the screen and the
@@ -1951,21 +2078,42 @@ $("messages").addEventListener("click", e => {
 
 $("refresh-btn").addEventListener("click", startRefresh);
 $("search").addEventListener("input", renderTable);
-$("save-rule-btn").addEventListener("click", saveRule);
+$("save-area").addEventListener("click", e => {
+  const b = e.target.closest("[data-save]");
+  if(b) saveRule(b.dataset.save);
+});
+$("save-area").addEventListener("keydown", e => {
+  if(e.key === "Enter" && e.target.id === "rule-name") saveRule(editing ? "update" : "new");
+});
 
-$("saved-bar").addEventListener("click", async e => {
-  const load_ = e.target.closest("[data-load-rule]");
-  if(load_){ loadRule(load_.dataset.loadRule); return; }
-  if(e.target.closest("#delete-rule")){
-    if(!loadedRule){
-      $("preview-area").innerHTML = `<div class="card"><div class="banner warn">
-        Pick a saved rule first — the × deletes the one currently loaded.</div></div>`;
-      return;
-    }
-    await fetch(`/ads/rules/${encodeURIComponent(loadedRule)}`, {method: "DELETE"});
-    loadedRule = null;
-    load();
+$("saved-bar").addEventListener("click", e => {
+  const use = e.target.closest("[data-use]"), edit = e.target.closest("[data-edit]");
+  const copy = e.target.closest("[data-copy]"), del = e.target.closest("[data-delete]");
+  if(del){ deleteRule(del.dataset.delete); return; }
+  const btn = use || edit || copy;
+  if(!btn) return;
+  const rule = ruleById(btn.dataset.use || btn.dataset.edit || btn.dataset.copy);
+  if(!rule) return;
+  if(edit){
+    const snapshot = editing ? editing.snapshot : builderSnapshot();
+    loadRule(rule.name);
+    editing = {id: rule.id, name: rule.name, snapshot};
+    $("rule-name").value = rule.name;
+  } else {
+    editing = null;
+    loadRule(rule.name);
+    $("rule-name").value = copy ? `${rule.name} (copy)` : "";
+    if(copy) loadedRule = null;
   }
+  renderSaved();
+  $("rule-name").focus();
+});
+$("saved-bar").addEventListener("input", e => {
+  if(e.target.id !== "rule-search") return;
+  ruleSearch = e.target.value;
+  renderSaved();
+  const box = $("rule-search");
+  box.focus(); box.setSelectionRange(ruleSearch.length, ruleSearch.length);
 });
 
 /* The paused toggle re-FETCHES rather than filtering client-side: the server decides which rows

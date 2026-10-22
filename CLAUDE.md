@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2951 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2966 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3693,6 +3693,33 @@ the same reason `build_undo` excludes them: Amazon never held those values.
 ledger stores `datetime.utcnow()`; a change applied at 04:00 IST is 22:30 UTC the previous day, so a
 UTC-day guard would silently not hold for 5½ hours out of every 24. `logic.ist_day` is one named
 function with its own test, alongside `localDate` in the templates.
+
+### The once-a-day limit is per RULE (22 Oct 2026)
+Asked for as *"multiple rules can be applied to a keyword but the same rule cannot be applied to a
+keyword more than once in a day. Currently it is only one rule can be applied on a keyword once a
+day."* The guard above keyed on the KEYWORD; it now keys on the keyword AND the rule.
+
+- **A rule is identified by its sentence**, `routers.ads._rule_summary` — the text every
+  `ads_mutation` row already stores, so **no migration**. Two saved rules with the same contents are
+  one rule; changing a number makes another. Numbers are written plainly (`_plain`: 10.0 and 10 both
+  read "10"), because a saved amount reads back as 10.0 while the screen sends 10 — without that, a
+  saved rule would have escaped its own limit. A test and a mutation pin it.
+- `repository.changes_today(db, ids, ist_day)` returns every APPLIED change that IST day (an undone
+  `reverted` change does not count). `plan_run(rule=…, today_changes=…)` holds a row back only for the
+  SAME sentence; other rules' changes travel as `other_today` and render under the bid ("bid ₹10.00 →
+  ₹9.00 today at 10:42 by: …"), including a pause before an enable (allowed and flagged, the owner's
+  choice). Called without `today_changes` it keeps the old any-change-blocks meaning.
+- **The true current bid is unchanged** — the newest applied bid, whichever rule set it — so two
+  different −10% rules compound to −19%. That is now a decision the note makes visible.
+- `/ads/apply` re-checks with the sentence the preview returned and stamps `ads_rule.last_run_at` on
+  saved rules with the same sentence. Times on the notes and refusals are IST (they were sliced from
+  UTC strings, 5½ hours early).
+- **Saved rules are a panel**: one row per rule with its sentence and last run, **Use · Edit · Copy ·
+  Delete** (delete asks first), a search box above 8 rules, and a save area with a name box —
+  `Save` for a new rule, `Save changes` / `Save as new` / `Cancel` while editing (Cancel restores
+  the builder as it was). `POST /ads/rules` takes `id` (update, rename allowed) and `replace`; a
+  taken name is a **409**, never a silent overwrite. The `window.prompt` and the lone × are gone.
+  `tests/test_ads_rule_guard.py`; `scripts/mutate_ads_state.py` 23/23.
 
 ### 1,700 rows open as 7 lines: campaign → ad group → rows
 Asked for as *"when there are so many matches 1700. better to sort it campaign wise and ad group
