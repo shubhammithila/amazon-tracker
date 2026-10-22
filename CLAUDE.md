@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2948 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (2951 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3329,19 +3329,21 @@ month with sales) and refuses Oct 2024: Amazon keeps about two years. Both the e
 - **Feb–May 2025 (and Nov 2024) carry NO ad charge in Amazon's economics feed**, while sales ran
   ₹6–12 lakh; ads resume in Jun 2025. Either ads were paused or paid outside the payout, so TACOS
   reads 0% for those months. Not corrected: the feed is what Amazon says.
-- `scripts/mutate_analytics.py`: 21/21 caught.
-- **Screen layout (19 Oct 2026, second pass)**: asked *"apart from the month on month graph, rest of
-  the graphs I am not liking"*, then: too busy, focus on one category or product, exact numbers in
-  tables. So the page is ONE chart plus tables: a **Show** bar (category chips, a product picker, the
-  6 / 12 / All range), the month-on-month chart with a button per measure (sales, units, kg, Net ₹,
-  Net %, TACOS, ad spend, ₹/kg, sessions, conversion), a **month table** for what is shown (newest
-  first, each figure with its change on the month: % for amounts, points for rates; green better,
-  red worse, ad spend uncoloured), and a **categories table** (all products only) with a trend line.
-  Clicking a product focuses the page on it. The volume/price/mix split, cost, traffic and kg charts
-  are off the screen; `growth` still travels in the payload. **₹/kg = sales ÷ kg ordered** and,
-  like every rate here, is computed on the server from sums (`per_kg`, category traffic, product
-  `tacos`), with a dash when a pack weight is unknown. `category_names` lists every category of the
-  brand whatever is picked.
+- `scripts/mutate_analytics.py`: 23/23 caught.
+- **Charts only, in five sections (22 Oct 2026)**, after *"I still do not like this… I want only
+  graphs and charts"*: no tables at all (figures on hover). A show bar holds category chips and a
+  **period picker** (a month, or 1 / 3 / 6 / 12 months ending there); a section switch (remembered
+  per browser) shows Overview (month on month, category donut, profit waterfall, top movers),
+  Categories (share over time, Net % small multiples, growth heat map), Products (treemap, Pareto,
+  bubble map), Price & ads (₹/kg, TACOS × growth map, year on year), Traffic (sessions and orders,
+  Buy Box watch). With a category picked, the split-by-category charts split by its products.
+  Clicking a product opens its own sales, ₹/kg and Buy Box charts. **`service._period` sums the
+  period and the SAME-LENGTH period before** (`prior_months` empty when history is short, and then
+  no growth is given, so a short comparison never reads as growth). Only the visible section is
+  drawn: a hidden canvas has no size. The treemap and heat map are HTML shaded with `color-mix()` of
+  theme colours. **`${{` inside a JS template literal is a Jinja tag** and broke the page render;
+  keep object literals out of `${…}` (`DONUT_WORDS`). `₹/kg = sales ÷ kg ordered`; `per_kg`,
+  category traffic, product `tacos` and `category_names` come from the server.
 
 ## Portfolio → "Ask": a read-only assistant over the three sub-tabs
 

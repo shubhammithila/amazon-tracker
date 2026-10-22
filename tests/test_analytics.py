@@ -421,51 +421,51 @@ def test_a_child_split_across_two_parents_is_summed_not_overwritten():
     assert r["buy_box_pct"] == pytest.approx((99.93 * 1467 + 99.89 * 1032) / 2499, abs=0.01)
 
 
-def test_only_the_month_on_month_chart_is_left_and_the_tables_replace_the_rest():
-    """Asked for: "apart from the month on month graph, rest of the graphs I am not liking"."""
-    for gone in ('id="cat-chart"', 'id="cost-chart"', 'id="funnel-chart"', 'id="kg-chart"',
-                 'id="detail-chart"', "Why sales moved", "renderGrowth"):
-        assert gone not in PAGE, gone
-    for present in ('id="mom-chart"', 'id="month-table"', 'id="cat-table"', 'id="show-bar"',
-                    'id="range"', 'id="product-pick"'):
-        assert present in PAGE, present
+def test_the_page_is_charts_only_in_five_sections():
+    """Asked for: "In the analytics tab I want only graphs and charts" (22 Oct 2026)."""
+    for sec in ("overview", "categories", "products", "price", "traffic"):
+        assert f'data-section="{sec}"' in PAGE, sec
+    for el in ('id="period-end"', 'id="span"', 'id="show-cats"', 'id="mom-chart"', 'id="donut-chart"',
+               'id="waterfall-chart"', 'id="movers-chart"', 'id="share-chart"', 'id="netcat-grid"',
+               'id="heatmap"', 'id="treemap"', 'id="pareto-chart"', 'id="bubble-chart"',
+               'id="perkg-chart"', 'id="admap-chart"', 'id="yoy-chart"', 'id="funnel-chart"',
+               'id="buybox-chart"', 'id="product-panel"'):
+        assert el in PAGE, el
+    script = PAGE[PAGE.rindex("<script>"):]
+    assert "<table" not in script and 'id="month-table"' not in PAGE and 'id="cat-table"' not in PAGE
 
 
-FOCUS_FNS = ["esc", "whole", "chartMonths", "focusSeries", "tableMonths", "changeHtml"]
+CHART_FNS = ["trendMonths", "squarify", "heatColour", "movers"]
 
 
 def _page_js(body):
     from tests.js_harness import run_template_js
-    return run_template_js(ROOT / "templates" / "portfolio_analytics.html", FOCUS_FNS, [],
-                           "let range = '12'; let picked = null; let category = ''; " + body)
+    return run_template_js(ROOT / "templates" / "portfolio_analytics.html", CHART_FNS, [], body)
 
 
-def test_the_focus_reads_the_totals_or_the_picked_products_series():
-    out = _page_js("""
-      data = {totals: {"2026-09": {sales: 10}}, products: [{key: "P", product: "Chana", series: {"2026-09": {sales: 4}}}],
-              complete_months: ["2026-09"], months: ["2026-09"], mtd: null};
-      const a = focusSeries(); picked = "P"; const b = focusSeries(); category = "Rice"; picked = null; const c = focusSeries();
-      emit([a.label, a.months["2026-09"].sales, b.label, b.months["2026-09"].sales, c.label]);""")
-    assert out == ["all products", 10, "Chana", 4, "Rice"]
+def test_trend_months_are_the_twelve_ending_at_the_picked_month():
+    months = [f"2025-{m:02d}" for m in range(1, 13)] + ["2026-01", "2026-02"]
+    out = _page_js(f"""data = {{months: {months + ["2026-03"]}, complete_months: {months},
+        mtd: {{month: "2026-03"}}, period: {{end: "2026-02"}}}}; const a = trendMonths();
+        data.period.end = "2026-03"; const b = trendMonths(); data.period.end = "2025-06";
+        const c = trendMonths(); emit([a, b, c]);""")
+    assert out[0] == months[-12:]
+    assert out[1] == months[-12:] + ["2026-03"]          # 12 complete months, then the month to date
+    assert out[2] == months[:6]
 
 
-def test_the_month_table_is_newest_first_with_the_month_to_date_on_top():
-    out = _page_js("""
-      data = {complete_months: ["2026-07", "2026-08", "2026-09"], months: ["2026-07", "2026-08", "2026-09", "2026-10"],
-              mtd: {month: "2026-10", days: 16}};
-      range = "2"; emit(tableMonths());""")
-    assert out == ["2026-10", "2026-09", "2026-08"]
+def test_the_treemap_fills_its_box_in_proportion():
+    out = _page_js("""const r = squarify([{value: 6}, {value: 3}, {value: 1}], 0, 0, 100, 50);
+        emit(r.map(b => [Math.round(b.w * b.h), b.x >= -0.01 && b.y >= -0.01 && b.x + b.w <= 100.01 && b.y + b.h <= 50.01]));""")
+    assert [a for a, _ in out] == [3000, 1500, 500] and all(ok for _, ok in out)
 
 
-def test_a_change_is_coloured_by_whether_up_is_good():
-    out = _page_js("""emit([changeHtml("money", 1, 110, 100), changeHtml("pct", -1, 0.30, 0.25),
-                             changeHtml("money", 0, 90, 100), changeHtml("money", 1, 5, null),
-                             changeHtml("rate", 1, 0.064, 0.069)]);""")
-    assert "chg pos" in out[0] and "+10%" in out[0]
-    assert "chg neg" in out[1] and "+5 pts" in out[1]
-    assert "−10%" in out[2] and "pos" not in out[2] and "neg" not in out[2]
-    assert out[3] == ""
-    assert "chg neg" in out[4] and "−0.5 pts" in out[4]
+def test_heat_colour_and_movers():
+    out = _page_js("""emit([heatColour(0.2), heatColour(-0.5), heatColour(null),
+        movers([{product: "a", sales: 10, prior_sales: 2}, {product: "b", sales: 1, prior_sales: 9},
+                {product: "c", sales: 5, prior_sales: null}], 5)]);""")
+    assert "var(--green) 40%" in out[0] and "var(--red) 80%" in out[1] and out[2] == "var(--surface2)"
+    assert [m["product"] for m in out[3]["up"]] == ["a"] and [m["product"] for m in out[3]["down"]] == ["b"]
 
 
 async def test_per_kg_tacos_and_category_traffic_come_from_sums(stored):

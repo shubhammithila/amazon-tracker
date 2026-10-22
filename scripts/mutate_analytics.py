@@ -61,6 +61,10 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
      "a category carries no traffic"),
     (S, '                      "per_kg": logic.pct(e["sales"], e.get("kg")),', '                      "per_kg": None,',
      "a product series has no per kg"),
+    (S, '    prior = months[start - span: start] if start - span >= 0 else []', '    prior = months[max(0, start - span): start]',
+     "a short prior period is compared as if it were full"),
+    (S, '    totals = _month_totals([e for p in rows for e in entries(p, cur)])', '    totals = _month_totals([e for p in rows for e in entries(p, cur[-1:])])',
+     "the period total is only its last month"),
 ]
 
 TESTS = ["tests/test_analytics.py", "tests/test_retention_and_scheduler.py"]

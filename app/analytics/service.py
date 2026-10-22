@@ -118,7 +118,7 @@ def _period(rows, months, complete, mtd, period_end, span, totals_by_month) -> d
             no_prior.append(p["product"])
         products.append({"key": p["key"], "product": p["product"], "category": p["category"], **t,
                          "prior_sales": b["sales"],
-                         "growth": logic.growth(t["sales"], b["sales"]) if prior else None})
+                         "growth": logic.growth(t["sales"], b["sales"])})   # None with no prior sales
     totals = _month_totals([e for p in rows for e in entries(p, cur)])
     totals["prior"] = _month_totals([e for p in rows for e in entries(p, prior)])
     categories = []
