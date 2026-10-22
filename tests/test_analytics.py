@@ -492,3 +492,40 @@ async def test_every_category_is_named_even_when_one_is_picked(stored):
     async with async_session() as db:
         only = await service.build(db, category="Rice", today=TODAY)
     assert set(only["category_names"]) == {"Sattu", "Rice"}
+
+
+async def test_the_period_sums_its_months_and_compares_the_same_length_before(stored):
+    async with async_session() as db:
+        one = await service.build(db, today=TODAY)
+        two = await service.build(db, today=TODAY, period_end="2026-09", span=3)
+    p = one["period"]
+    assert p["end"] == "2026-09" and p["months"] == ["2026-09"] and p["prior_months"] == ["2026-08"]
+    assert p["totals"]["sales"] == pytest.approx(one["totals"]["2026-09"]["sales"])
+    assert p["totals"]["prior"]["sales"] == pytest.approx(one["totals"]["2026-08"]["sales"])
+    assert p["totals"]["net_pct"] == pytest.approx(p["totals"]["net"] / p["totals"]["sales"])
+    # The waterfall's bars are these sums. (Sales - refunds - fees - ads = Net holds on Amazon's real
+    # rows, measured 22 Oct 2026; this fixture sets Net by hand, so only the sums are checked here.)
+    sep = one["totals"]["2026-09"]
+    for key in ("refunded", "fees", "ad_spend", "net"):
+        assert p["totals"][key] == pytest.approx(sep[key]), key
+    q = two["period"]
+    assert q["months"] == ["2026-08", "2026-09"] and q["prior_months"] == []   # history is short
+    assert q["totals"]["sales"] == pytest.approx(2000 + 2720)
+    assert all(x["growth"] is None for x in q["products"])
+
+
+async def test_period_products_and_categories_carry_growth_shares_and_no_prior(stored):
+    async with async_session() as db:
+        p = (await service.build(db, today=TODAY))["period"]
+    chana = next(x for x in p["products"] if x["product"] == "Chana Sattu")
+    assert chana["prior_sales"] == pytest.approx(1000.0) and chana["growth"] == pytest.approx(0.72)
+    by = {c["category"]: c for c in p["categories"]}
+    assert by["Sattu"]["share"] == pytest.approx(1720 / 2720)
+    assert sum(c["share"] for c in p["categories"]) == pytest.approx(1.0)
+    assert p["no_prior"] == []
+
+
+async def test_a_period_end_not_held_falls_back_to_the_last_complete_month(stored):
+    async with async_session() as db:
+        p = (await service.build(db, today=TODAY, period_end="2019-01", span=7))["period"]
+    assert p["end"] == "2026-09" and p["span"] == 1

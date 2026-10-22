@@ -83,7 +83,60 @@ def _month_totals(entries: list[dict]) -> dict:
     return out
 
 
-def _payload(base: dict, brand: str, category: str | None, sb_days: dict, today: date) -> dict:
+SPANS = (1, 3, 6, 12)
+
+
+def _period(rows, months, complete, mtd, period_end, span, totals_by_month) -> dict | None:
+    """The picked period summed, and the same number of months immediately before it.
+
+    Every figure is `_month_totals` over the summed month entries, so rates come from rupee sums.
+    With too little history for a full period before, `prior_months` is empty and no growth is
+    given: a short comparison would read as growth that did not happen."""
+    held = complete + ([mtd] if mtd else [])
+    if period_end not in held:
+        period_end = complete[-1] if complete else (held[-1] if held else None)
+    if period_end is None:
+        return None
+    span = span if span in SPANS else 1
+    i = months.index(period_end)
+    start = i - span + 1
+    cur = months[max(0, start): i + 1]
+    prior = months[start - span: start] if start - span >= 0 else []
+
+    def entries(p, ms):
+        return [p["months"][m] for m in ms if p["months"].get(m)]
+
+    products, no_prior = [], []
+    by_cat: dict[str, list] = {}
+    for p in rows:
+        now, before = entries(p, cur), entries(p, prior)
+        if not now and not before:
+            continue
+        t, b = _month_totals(now), _month_totals(before)
+        by_cat.setdefault(p["category"], []).extend(now)
+        if prior and (t["sales"] or 0) > 0 and not b["sales"]:
+            no_prior.append(p["product"])
+        products.append({"key": p["key"], "product": p["product"], "category": p["category"], **t,
+                         "prior_sales": b["sales"],
+                         "growth": logic.growth(t["sales"], b["sales"]) if prior else None})
+    totals = _month_totals([e for p in rows for e in entries(p, cur)])
+    totals["prior"] = _month_totals([e for p in rows for e in entries(p, prior)])
+    categories = []
+    for name, ents in by_cat.items():
+        c = _month_totals(ents)
+        c.update(category=name, share=logic.pct(c["sales"], totals["sales"]),
+                 net_share=logic.pct(c["net"], totals["net"]),
+                 kg_share=logic.pct(c["kg"], totals["kg"]))
+        categories.append(c)
+    categories.sort(key=lambda c: -(c["sales"] or 0))
+    products.sort(key=lambda r: -(r["sales"] or 0))
+    return {"end": period_end, "span": span, "months": cur, "prior_months": prior, "totals": totals,
+            "categories": categories, "products": products, "no_prior": sorted(no_prior),
+            "sp_only": any(totals_by_month[m]["sb"] != "full" for m in cur)}
+
+
+def _payload(base: dict, brand: str, category: str | None, sb_days: dict, today: date,
+             period_end: str | None = None, span: int = 1) -> dict:
     current = today.strftime("%Y-%m")
     rows = [p for p in base.values()
             if (brand == ALL_BRANDS or p["brand"] == brand) and (not category or p["category"] == category)]
@@ -180,13 +233,16 @@ def _payload(base: dict, brand: str, category: str | None, sb_days: dict, today:
         "mtd": {"month": mtd, "days": today.day - 1} if mtd else None,
         "totals": totals, "growth": splits, "categories": categories, "products": table,
         "category_names": sorted(cat_sales, key=lambda c: -cat_sales[c]),
+        "period": _period(rows, months, complete, mtd, period_end, span, totals),
+        "period_choices": list(reversed(complete + ([mtd] if mtd else []))),
         "brand": brand, "category": category,
         "brands": [ALL_BRANDS] + sorted({p["brand"] for p in base.values() if p["brand"]}),
     }
 
 
 async def build(db, *, brand: str | None = None, category: str | None = None,
-                include_inactive: bool = False, today: date | None = None) -> dict:
+                include_inactive: bool = False, today: date | None = None,
+                period_end: str | None = None, span: int = 1) -> dict:
     from app.portfolio import repository as pf_repo
     from app.shipment import catalogue, repository as ship_repo
 
@@ -208,7 +264,7 @@ async def build(db, *, brand: str | None = None, category: str | None = None,
         hit = (time.monotonic(), base, sb_days, source)
         _CACHE[include_inactive] = hit
     _, base, sb_days, source = hit
-    payload = _payload(base, brand or ALL_BRANDS, category, sb_days, today)
+    payload = _payload(base, brand or ALL_BRANDS, category, sb_days, today, period_end, span)
     payload.update(include_inactive=include_inactive, catalogue_source=source,
                    last_run=await repository.last_run(db))
     return payload

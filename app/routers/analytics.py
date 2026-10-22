@@ -20,8 +20,10 @@ MEDIA = {"xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sh
 
 @router.get("")
 async def analytics(brand: str | None = None, category: str | None = None, include_inactive: bool = False,
+                    period_end: str | None = None, span: int = 1,
                     db: AsyncSession = Depends(get_db), grant=Depends(require_area(permissions.PORTFOLIO))):
-    return await service.build(db, brand=brand, category=category or None, include_inactive=include_inactive)
+    return await service.build(db, brand=brand, category=category or None, include_inactive=include_inactive,
+                               period_end=period_end, span=span)
 
 
 @router.post("/refresh")
