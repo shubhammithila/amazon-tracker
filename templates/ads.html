@@ -1884,6 +1884,15 @@ async function renderBidLog(options){
       : `<div class="empty-note">No bid changes match${search ? ` “${esc(search)}”` : ""}.</div>`}`;
 }
 
+/* A ledger timestamp (stored UTC) as the IST date and time the owner reads, "2026-10-23 17:48". */
+function istStamp(iso){
+  if(!iso) return "";
+  const d = new Date(String(iso).replace(/Z?$/, "Z"));
+  const part = (o) => d.toLocaleString("en-CA", {timeZone: "Asia/Kolkata", ...o});
+  return `${part({year: "numeric", month: "2-digit", day: "2-digit"})} ${
+    part({hour: "2-digit", minute: "2-digit", hour12: false})}`;
+}
+
 async function renderHistory(){
   const response = await fetch("/ads/runs?limit=15");
   const body = await response.json();
@@ -1899,13 +1908,15 @@ async function renderHistory(){
         <th scope="col" class="num">Failed</th><th scope="col"></th>
       </tr></thead>
       <tbody>${runs.map(r => `<tr>
-        <td>${esc(String(r.at).slice(0, 16).replace("T", " "))}</td>
+        <td>${esc(istStamp(r.at))}</td>
         <td>${esc(r.rule)}${r.reverts_run_id ? ' <span class="tag">undo</span>' : ""}</td>
         <td class="num">${n(r.rows)}</td>
         <td class="num pos">${n(r.applied)}</td>
         <td class="num ${r.failed ? "neg" : "dim"}">${n(r.failed)}</td>
-        <td>${r.undoable && !r.reverts_run_id
-          ? `<button class="btn-outline" data-undo="${esc(r.run_id)}">↩ Undo</button>` : ""}</td>
+        <td style="white-space:nowrap">${r.undoable && !r.reverts_run_id
+          ? `<button class="btn-outline" data-undo="${esc(r.run_id)}">↩ Undo</button>` : ""}
+          <a class="btn-outline" href="/ads/runs/${encodeURIComponent(r.run_id)}/download.xlsx"
+             download title="Every change this run made, as an Excel file">⬇ Excel</a></td>
       </tr>`).join("")}</tbody></table></div>`
       : `<div class="empty-note">No bid changes have been made yet.</div>`}`;
 }

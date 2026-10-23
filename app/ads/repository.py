@@ -1307,11 +1307,31 @@ async def load_run(db: AsyncSession, run_id: str) -> list[dict]:
             "ad_group_id": r.ad_group_id or "",
             "old_bid": _f(r.old_bid),
             "new_bid": _f(r.new_bid),
+            "old_state": r.old_state or "",
+            "new_state": r.new_state or "",
+            "ad_product": r.ad_product or logic.AD_PRODUCT_SP,
+            "rule": r.rule_summary or "",
+            "at": r.created_at.isoformat() if r.created_at else "",
             "status": r.status,
             "error": r.error or "",
         }
         for r in rows
     ]
+
+
+async def entity_names(db: AsyncSession, ids) -> dict[str, str]:
+    """`{entity_id: name}` for campaigns and ad groups, in one query — for documents that name them."""
+    wanted = sorted({str(i) for i in ids if i})
+    if not wanted:
+        return {}
+    out: dict[str, str] = {}
+    for start in range(0, len(wanted), 500):
+        out.update(dict((await db.execute(
+            select(AdsEntity.entity_id, AdsEntity.name)
+            .where(AdsEntity.entity_type.in_(("campaign", "ad_group")),
+                   AdsEntity.entity_id.in_(wanted[start:start + 500]))
+        )).all()))
+    return out
 
 
 async def build_undo(db: AsyncSession, run_id: str) -> list[dict]:

@@ -71,3 +71,54 @@ async def test_the_campaign_list_does_not_read_every_keyword_row(auth_client, db
                                                  + sum(10.0 + i for i in range(2))), 2)
     await auth_client.get("/ads?start=2026-10-20&end=2026-10-22&campaign_id=c1")
     assert calls == [["c1"]]
+
+
+async def test_the_window_note_still_counts_every_keyword_row(auth_client, db):
+    """"27728 target rows cached" under the window read 0 once the rows stopped being fetched."""
+    await _seed(db)
+    body = (await auth_client.get("/ads?start=2026-10-20&end=2026-10-22")).json()
+    assert body["totals"]["targets"] == 4 + 3 + 2
+
+
+# ─── Run history: the Excel download beside Undo ────────────────────────────
+
+
+async def test_a_run_downloads_as_excel_with_every_change_and_its_result(auth_client, db):
+    import io
+    from datetime import datetime
+
+    from openpyxl import load_workbook
+
+    from app.models import AdsMutation
+    await repository.save_entities(db, [
+        {"entity_type": "campaign", "entity_id": "c1", "name": "MF_SP_keywords", "state": "ENABLED"},
+        {"entity_type": "ad_group", "entity_id": "g1", "name": "chana sattu", "state": "ENABLED"}])
+    when = datetime(2026, 10, 23, 12, 18)            # 17:48 IST
+    for i, (old, new, state, status, err) in enumerate([
+            (10.0, 9.0, None, "applied", None), (None, None, "PAUSED", "applied", None),
+            (5.0, 4.5, None, "failed", "rangeError: too low")]):
+        db.add(AdsMutation(run_id="run-1", entity_id=f"E{i}", entity_type="keyword", writer="keyword",
+                           text=f"kw{i}", campaign_id="c1", ad_group_id="g1", old_bid=old, new_bid=new,
+                           old_state="ENABLED" if state else None, new_state=state,
+                           action="state" if state else "bid", status=status, error=err,
+                           rule_summary="Spend > 100 -> bid decrease 10%", created_at=when))
+    await db.commit()
+    r = await auth_client.get("/ads/runs/run-1/download.xlsx")
+    assert r.status_code == 200
+    assert "ads-run-2026-10-23-1748.xlsx" in r.headers["content-disposition"]
+    sheet = load_workbook(io.BytesIO(r.content)).active
+    cells = [[c.value for c in row] for row in sheet.iter_rows()]
+    text = " ".join(str(v) for row in cells for v in row if v is not None)
+    assert "17:48 IST" in text and "Spend > 100 -> bid decrease 10%" in text
+    body = [row for row in cells if row and row[2] in ("kw0", "kw1", "kw2")]
+    assert [row[0] for row in body] == ["MF_SP_keywords"] * 3 and body[0][1] == "chana sattu"
+    assert body[0][5] == "bid ₹10.00 → ₹9.00" and body[1][5] == "turned OFF"
+    assert body[2][10] == "refused by Amazon" and body[2][11] == "rangeError: too low"
+    assert (await auth_client.get("/ads/runs/nope/download.xlsx")).status_code == 404
+
+
+def test_run_history_offers_the_download_and_reads_ist():
+    from pathlib import Path
+    page = (Path(__file__).resolve().parent.parent / "templates" / "ads.html").read_text(encoding="utf-8")
+    assert "/download.xlsx" in page and "⬇ Excel" in page
+    assert "esc(istStamp(r.at))" in page

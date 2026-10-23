@@ -406,7 +406,8 @@ async def ads_dashboard(
             "roas": (total_sales / total_spend) if total_spend else None,
             "acos": (total_spend / total_sales) if total_sales else None,
             "campaigns": len(campaigns),
-            "targets": len(rows),
+            # Keyword and target rows in the window: counted by the SQL totals when the list is shown.
+            "targets": len(rows) if campaign_id else sum(b["rows"] for b in totals_by_campaign.values()),
             "sp_campaigns": sum(1 for c in campaigns if c.get("ad_product", "sp") == "sp"),
             "sb_campaigns": sum(1 for c in campaigns if c.get("ad_product") == "sb"),
         },
@@ -1244,6 +1245,72 @@ async def run_detail(
     if not rows:
         return JSONResponse({"error": "No such run."}, status_code=404)
     return {"run_id": run_id, "rows": rows, "count": len(rows)}
+
+
+#: What each writer is, in the owner's words, for the run download.
+WRITER_LABELS = {
+    logic.WRITER_KEYWORD: "SP keyword", logic.WRITER_TARGET: "SP target",
+    logic.WRITER_SB_KEYWORD: "SB keyword", logic.WRITER_SB_TARGET: "SB target",
+    logic.WRITER_PRODUCT_AD: "SP product ad (SKU)",
+}
+
+#: A ledger status as the owner reads it.
+STATUS_LABELS = {"applied": "applied", "failed": "refused by Amazon", "pending": "no answer from Amazon",
+                 "reverted": "undone"}
+
+
+def _change_words(row: dict) -> str:
+    """One change in words: "bid ₹10.00 → ₹9.00" or "turned OFF"."""
+    if row.get("new_state"):
+        return logic.describe_change({"state": row["new_state"]})
+    return logic.describe_change({"bid_from": row.get("old_bid"), "bid_to": row.get("new_bid")})
+
+
+@router.get("/runs/{run_id}/download.xlsx")
+async def run_xlsx(
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+    grant=Depends(require_area(permissions.ADS)),
+):
+    """Every change one run made, as a spreadsheet — the download beside Undo in Run history.
+
+    Asked for as *"in the run report, besides undo tab can you give a download button in excel
+    format to see the changes done"*. Read from the ledger only (`load_run`, the same rows the undo is
+    built from), so the file is exactly what was sent and what Amazon answered for each row. Times are
+    IST; campaign and ad group are NAMED, since the ledger keeps only their ids.
+    """
+    rows = await repository.load_run(db, run_id)
+    if not rows:
+        return JSONResponse({"error": "No such run."}, status_code=404)
+    names = await repository.entity_names(
+        db, [r["campaign_id"] for r in rows] + [r["ad_group_id"] for r in rows])
+    when = ist.to_ist(datetime.fromisoformat(rows[0]["at"])) if rows[0]["at"] else None
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+
+    sheet = [
+        [names.get(r["campaign_id"]) or r["campaign_id"], names.get(r["ad_group_id"]) or r["ad_group_id"],
+         r["text"], r["entity_id"], WRITER_LABELS.get(r["writer"], r["writer"]), _change_words(r),
+         r["old_bid"], r["new_bid"], r["old_state"], r["new_state"],
+         STATUS_LABELS.get(r["status"], r["status"]), r["error"]]
+        for r in rows
+    ]
+    stream = documents.build_portfolio_xlsx(
+        "Ads run",
+        f"{when.strftime('%d %b %Y %H:%M') + ' IST' if when else ''} · {rows[0]['rule']} · "
+        + ", ".join(f"{n} {STATUS_LABELS.get(k, k)}" for k, n in sorted(counts.items())),
+        ["Campaign", "Ad group", "Keyword / target / SKU", "Id", "Type", "Change",
+         "Old bid", "New bid", "Old state", "New state", "Result", "Amazon's error"],
+        sheet,
+        [26, 22, 32, 18, 18, 22, 10, 10, 11, 11, 16, 40],
+    )
+    stamp = when.strftime("%Y-%m-%d-%H%M") if when else run_id[:8]
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="ads-run-{stamp}.xlsx"'},
+    )
 
 
 # ─── Saved rules and guardrails ──────────────────────────────────────────────
