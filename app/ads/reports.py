@@ -100,6 +100,35 @@ REPORT_COLUMNS = (
 )
 
 
+#: The PRODUCT-AD report (SKU rules): spend and sales per `adId`, i.e. per SKU per ad group. The same
+#: report type the Portfolio tab reads, asked for differently: it collapses every campaign into one
+#: line per SKU, while a rule that turns a SKU off needs the `adId` and the ad group. `groupBy
+#: advertiser` is the only legal value for this type (see `portfolio.ads`). `sales7d`/`purchases7d`
+#: rather than the 14-day same-SKU figures, so a SKU rule reads ROAS the way a keyword rule does.
+PRODUCT_REPORT_TYPE_ID = "spAdvertisedProduct"
+PRODUCT_REPORT_COLUMNS = (
+    "date", "campaignId", "campaignName", "adGroupId", "adGroupName", "adId",
+    "advertisedAsin", "advertisedSku", "impressions", "clicks", "cost", "sales7d", "purchases7d",
+)
+
+
+def build_product_report_request(start: str, end: str) -> dict:
+    """The DAILY product-ad report body. Always daily: the rows are stored per day like the keywords."""
+    return {
+        "name": f"ads product ads daily {start}..{end}",
+        "startDate": start,
+        "endDate": end,
+        "configuration": {
+            "adProduct": AD_PRODUCT,
+            "groupBy": ["advertiser"],
+            "columns": list(PRODUCT_REPORT_COLUMNS),
+            "reportTypeId": PRODUCT_REPORT_TYPE_ID,
+            "timeUnit": "DAILY",
+            "format": "GZIP_JSON",
+        },
+    }
+
+
 def build_report_request(start: str, end: str, *, daily: bool = False,
                          ad_product: str = "sp") -> dict:
     """The report body Amazon accepts. ONE function, so the shape is stated once.
@@ -183,8 +212,12 @@ async def fetch_targeting(
     sleep=None,
     on_progress=None,
     on_chunk=None,
+    report: str = "targeting",
 ) -> list[dict]:
     """Run the targeting report for a window and return aggregated rows.
+
+    ``report="product"`` runs the product-ad report instead (`build_product_report_request`): always
+    daily, never aggregated, same chunking, throttle and duplicate handling.
 
     A window longer than 31 days becomes several reports — `split_window` is shared with
     `portfolio.ads` rather than reimplemented, because that cap was learned the hard way there and
@@ -206,6 +239,8 @@ async def fetch_targeting(
     import asyncio
 
     sleep = sleep or asyncio.sleep
+    # The product-ad report is ALWAYS per day, so it is never collapsed below.
+    daily = daily or report == "product"
     settings = get_settings()
     if not settings.ads_configured:
         raise AdsNotConfigured()
@@ -229,7 +264,7 @@ async def fetch_targeting(
 
             chunk_rows = await _one_report(
                 client, chunk_start, chunk_end, daily=daily, ad_product=ad_product,
-                sleep=sleep, on_progress=chunk_progress,
+                sleep=sleep, on_progress=chunk_progress, report=report,
             )
             # **Hand each chunk over as it lands.** See the docstring: a 60-day window is two reports
             # per ad product, `sbTargeting` throttles for HOURS, and accumulating everything before
@@ -250,7 +285,8 @@ async def fetch_targeting(
 
 
 async def _one_report(client, start: str, end: str, *, daily: bool = False,
-                      ad_product: str = "sp", sleep, on_progress=None) -> list[dict]:
+                      ad_product: str = "sp", sleep, on_progress=None,
+                      report: str = "targeting") -> list[dict]:
     """Create, poll and download ONE report. Returns RAW rows, un-aggregated.
 
     Raw so `fetch_targeting` sums every chunk through the single `aggregate` path — aggregating per
@@ -260,7 +296,10 @@ async def _one_report(client, start: str, end: str, *, daily: bool = False,
     token = await _access_token(client)
     head = _headers(token)
 
-    body = json.dumps(build_report_request(start, end, daily=daily, ad_product=ad_product))
+    body = json.dumps(
+        build_product_report_request(start, end) if report == "product"
+        else build_report_request(start, end, daily=daily, ad_product=ad_product)
+    )
 
     # **A 429 here is a WAIT, not a failure.** Measured on `sbTargeting`: three immediate creates all
     # returned 429 and one after a 60-second pause returned 200, while `sbCampaigns` was accepted

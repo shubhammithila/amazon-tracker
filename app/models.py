@@ -1351,6 +1351,41 @@ class AdsPerformanceDaily(Base):
     fetched_at = Column(DateTime, default=datetime.utcnow)
 
 
+class AdsProductDaily(Base):
+    """Spend and sales per SP PRODUCT AD (one SKU inside one ad group), for ONE DAY. **Amazon's.**
+
+    The working set for a product rule ("turn the 0.5 kg Easy Ship SKU off in the chana sattu ad
+    group"), from an `spAdvertisedProduct` DAILY report.
+
+    **Its own table, never rows in `ads_performance_daily`.** A product ad's spend is the SAME money
+    as its ad group's keyword and target spend, seen from the other side; stored together, every
+    campaign and ad group total on the Ads tab would double. A test sums both and asserts they stay
+    apart.
+
+    Not the Portfolio tab's `ads_daily` either: that one collapses every campaign and ad group into
+    one line per SKU, which loses exactly the `adId` and ad group a pause needs.
+    """
+    __tablename__ = "ads_product_daily"
+    __table_args__ = (
+        Index("idx_ads_product_daily_day_ad", "day", "ad_id", unique=True),
+        Index("idx_ads_product_daily_day_group", "day", "ad_group_id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    day = Column(String(10), nullable=False)
+    ad_id = Column(String(32), nullable=False)
+    campaign_id = Column(String(32))
+    ad_group_id = Column(String(32))
+    asin = Column(String(10))
+    sku = Column(String(80))
+    impressions = Column(Integer, default=0)
+    clicks = Column(Integer, default=0)
+    spend = Column(Numeric(12, 2), default=0)
+    orders = Column(Integer, default=0)
+    sales = Column(Numeric(12, 2), default=0)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
 class AdsRule(Base):
     """A saved bid rule: conditions plus an action. **The owner's, not Amazon's.**
 
@@ -1391,6 +1426,9 @@ class AdsRule(Base):
     #: Window in days. 7/14/30 are single reports and attribution-exact; above 31 Amazon needs
     #: several reports (its measured per-report cap).
     window_days = Column(Integer, default=7)
+    #: "keyword" (keywords and targets) or "product" (SP product ads, i.e. one SKU in an ad group).
+    #: Part of the rule's identity: the same numbers at the two levels are two different rules.
+    level = Column(String(10), nullable=False, default="keyword", server_default="keyword")
     created_at = Column(DateTime, default=datetime.utcnow)
     last_run_at = Column(DateTime)
 
@@ -1511,6 +1549,9 @@ class AdsRefresh(Base):
     #: because the two call for different sentences on screen: "the refresh failed" is wrong when 72%
     #: of the spend was updated successfully.
     sb_error = Column(Text)
+    #: The SP product-ad report (SKU rules), stored and failing on its own like Sponsored Brands.
+    product_rows = Column(Integer, default=0)
+    product_error = Column(Text)
     started_at = Column(DateTime, default=datetime.utcnow)
     finished_at = Column(DateTime)
 

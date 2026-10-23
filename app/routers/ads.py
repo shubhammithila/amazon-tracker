@@ -48,7 +48,8 @@ MAX_WINDOW_DAYS = 60
 
 #: How each ad product is named to a person. `sp`/`sb` are Amazon's own tokens and mean nothing to
 #: the owner, and a refusal that says "sb is missing 25 days" is a refusal he cannot act on.
-PRODUCT_NAMES = {"sp": "Sponsored Products", "sb": "Sponsored Brands", "sd": "Sponsored Display"}
+PRODUCT_NAMES = {"sp": "Sponsored Products", "sb": "Sponsored Brands", "sd": "Sponsored Display",
+                 "product": "The product-ad (SKU) report"}
 
 
 def product_name(product: str) -> str:
@@ -147,7 +148,24 @@ def _plain(value):
         return value
 
 
-def _rule_summary(conditions, action: str, amount) -> str:
+def _condition_words(condition) -> str:
+    """One condition in words. Numbers read plainly; a SKU channel reads by its label; text quoted."""
+    field_key = condition.get("field")
+    meta = logic.ALL_FIELDS.get(field_key, {})
+    field = meta.get("label", field_key)
+    operators = logic.operators_for(field_key)
+    operator = operators.get(condition.get("op"), condition.get("op"))
+    value = condition.get("value")
+    if meta.get("kind") == "choice":
+        value = meta["choices"].get(str(value or "").strip().lower(), value)
+    elif meta.get("kind") == "text":
+        value = f'"{str(value or "").strip()}"'
+    else:
+        value = _plain(value)
+    return f"{field} {operator} {value}"
+
+
+def _rule_summary(conditions, action: str, amount, level: str = logic.LEVEL_KEYWORD) -> str:
     """The rule in words, stored on every ledger row — and, since 22 Oct 2026, the rule's identity.
 
     So the history reads without joining to a rule that may since have been edited or deleted —
@@ -156,18 +174,18 @@ def _rule_summary(conditions, action: str, amount) -> str:
     rule must always produce the same sentence.
     """
     amount = _plain(amount) if not logic.is_state_action(action) else amount
-    parts = []
-    for condition in conditions or ():
-        field = logic.FIELDS.get(condition.get("field"), {}).get("label", condition.get("field"))
-        operator = logic.OPERATORS.get(condition.get("op"), condition.get("op"))
-        parts.append(f"{field} {operator} {_plain(condition.get('value'))}")
+    parts = [_condition_words(condition) for condition in conditions or ()]
+    # **A product rule says so first.** The sentence is the rule's identity for the once-a-day limit,
+    # and "Spend > 500 -> turn OFF" means a different thing on a SKU than on a keyword. Keyword
+    # sentences are unchanged, so every stored ledger row keeps matching its rule.
+    prefix = "Products: " if level == logic.LEVEL_PRODUCT else ""
     # **A state rule does not read "-> bid ...".** It is stored on every ledger row and is what the
     # owner recognises three weeks later, so "spend > 1000, roas < 1 -> bid set_state" would describe
     # the wrong action entirely.
     if logic.is_state_action(action):
         state = str(amount).strip().upper()
         verb = "turn OFF (pause)" if state == logic.STATE_PAUSED else "turn ON (enable)"
-        return f"{', '.join(parts)} -> {verb}"
+        return f"{prefix}{', '.join(parts)} -> {verb}"
 
     verb = {
         logic.ACTION_INCREASE_PCT: f"increase {amount}%",
@@ -176,7 +194,7 @@ def _rule_summary(conditions, action: str, amount) -> str:
         logic.ACTION_DECREASE_ABS: f"decrease by {amount}",
         logic.ACTION_SET: f"set to {amount}",
     }.get(action, action)
-    return f"{', '.join(parts)} -> bid {verb}"
+    return f"{prefix}{', '.join(parts)} -> bid {verb}"
 
 
 # ─── Reads ───────────────────────────────────────────────────────────────────
@@ -386,6 +404,10 @@ async def ads_dashboard(
         },
         "fields": logic.FIELDS,
         "operators": logic.OPERATORS,
+        # SKU rules: their fields (no bid; channel and SKU/ASIN text) and the operators of the two
+        # non-numeric kinds. From the server, like `fields`, so the screen holds no second copy.
+        "product_fields": logic.PRODUCT_FIELDS,
+        "kind_operators": logic.KIND_OPERATORS,
         "actions": list(logic.ACTIONS),
         "guardrails": await repository.load_guardrails(db),
         "rules": await repository.load_rules(db),
@@ -555,6 +577,12 @@ async def preview(
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
+    level = body.get("level") or logic.LEVEL_KEYWORD
+    if level == logic.LEVEL_PRODUCT:
+        return await _preview_products(db, body, window_start, window_end)
+    if level != logic.LEVEL_KEYWORD:
+        return JSONResponse({"error": f"Unknown rule level {level!r}."}, status_code=400)
+
     # Summed from the per-day rows, which is now the ONLY source — and on this route that mattered
     # most. It used to prefer a per-window table that held Sponsored Brands while the daily rows did
     # not, so the same rule found **1,005 changes including 296 SB rows** on a fetched window and
@@ -619,6 +647,58 @@ async def preview(
         "rule": rule,
         **plan,
     }
+
+
+async def _preview_products(db, body, window_start: str, window_end: str):
+    """The preview of a SKU rule: product ads instead of keywords, through the same `plan_run`.
+
+    Every day of the window must be held in `ads_product_daily` (its own completeness, named in the
+    refusal). A PAUSE is checked against the enabled ads of each ad group, from the cached list with
+    our own later changes laid over it, so the last active SKU of a group is listed as skipped
+    rather than offered. `/ads/apply` checks again on Amazon's live states.
+    """
+    completeness = await repository.product_range_completeness(db, window_start, window_end)
+    rows = []
+    if completeness["complete"]:
+        rows = await repository.sum_product_daily(
+            db, window_start, window_end,
+            campaign_ids=body.get("campaign_ids") or None,
+            ad_group_ids=body.get("ad_group_ids") or None,
+        )
+    if not rows:
+        return JSONResponse(
+            {"error": f"No product-ad data for {window_start}..{window_end}. "
+                      f"{_gap_sentence(completeness)}",
+             "completeness": completeness},
+            status_code=400,
+        )
+    rows = await repository.attach_names(db, rows)
+
+    action = body.get("action") or ""
+    entity_ids = [r["entity_id"] for r in rows]
+    rule = _rule_summary(body.get("conditions"), action, body.get("amount"),
+                         level=logic.LEVEL_PRODUCT)
+    enabled = None
+    if logic.is_state_action(action) and str(body.get("amount") or "").upper() == logic.STATE_PAUSED:
+        enabled = await repository.enabled_product_ads(db, {r["ad_group_id"] for r in rows})
+
+    plan = logic.plan_run(
+        rows,
+        conditions=body.get("conditions") or [],
+        action=action,
+        amount=body.get("amount"),
+        guardrails=await repository.load_guardrails(db),
+        scope_campaign_ids=body.get("campaign_ids") or None,
+        scope_ad_group_ids=body.get("ad_group_ids") or None,
+        applied_today=await repository.last_applied_states(db, entity_ids),
+        rule=rule,
+        today_changes=await repository.changes_today(
+            db, entity_ids, logic.ist_day(datetime.utcnow())),
+        level=logic.LEVEL_PRODUCT,
+        enabled_ads=enabled,
+    )
+    return {"window": [window_start, window_end], "rule": rule, "level": logic.LEVEL_PRODUCT,
+            **plan}
 
 
 @router.post("/suggested-bids")
@@ -710,6 +790,22 @@ async def apply(
     # does not need in order to know what it is doing.
     states = {str(c.get("new_state")).strip().upper() for c in approved if c.get("new_state")}
     bids = [c for c in approved if c.get("new_state") is None]
+
+    # **Product ads (SKUs) and keywords never share a run**, and a product ad is never sent a bid —
+    # it has none. Both refused before anything else, like the mixed bid/state payload below.
+    products = [c for c in approved if c.get("writer") == logic.WRITER_PRODUCT_AD]
+    if products and len(products) != len(approved):
+        return JSONResponse(
+            {"error": f"This request mixes {len(products)} SKU(s) with "
+                      f"{len(approved) - len(products)} keyword or target row(s). One run acts on "
+                      f"one kind of thing."},
+            status_code=400,
+        )
+    if any(c.get("new_state") is None for c in products):
+        return JSONResponse(
+            {"error": "A product ad has no bid, so a SKU can only be turned off or on."},
+            status_code=400,
+        )
 
     # **A mixed payload is refused, never half-applied.** The writer picks its field per row, so a
     # batch holding both would silently send bids for some rows and states for others under a single
@@ -825,7 +921,8 @@ async def apply(
         # nothing is wrong, the rows simply already moved today.
         return {
             "run_id": None, "applied": 0, "failed": 0, "pending": 0,
-            "moved": [], "inactive": [], "unchanged": [], "repeated": repeated, "results": [],
+            "moved": [], "inactive": [], "unchanged": [], "repeated": repeated,
+            "last_active": [], "results": [],
         }
 
     # Only now: the request is well-formed and within every limit, so a missing credential is the
@@ -910,11 +1007,28 @@ async def apply(
                     continue
                 to_send.append(change)
 
+            # **The last active SKU of an ad group is not turned off — checked again on LIVE states.**
+            # The preview judged it on the morning's list; a SKU paused in Seller Central since would
+            # otherwise let this run silence the group. `live` holds every ad of the affected groups,
+            # because `fetch_current_bids` lists product ads by ad group.
+            last_active = []
+            if target_state == logic.STATE_PAUSED and products:
+                enabled_by_group: dict[str, set[str]] = {}
+                for ad_id, entry in live.items():
+                    if entry.get("writer") == logic.WRITER_PRODUCT_AD:
+                        group = enabled_by_group.setdefault(str(entry.get("ad_group_id") or ""), set())
+                        if (entry.get("state") or "").upper() == logic.STATE_ENABLED:
+                            group.add(str(ad_id))
+                refused = logic.last_active_refusals(to_send, enabled_by_group)
+                last_active = [{**c, "reason": logic.SKIP_LAST_ACTIVE}
+                               for c in to_send if str(c["entity_id"]) in refused]
+                to_send = [c for c in to_send if str(c["entity_id"]) not in refused]
+
             if not to_send:
                 return {
                     "run_id": None, "applied": 0, "failed": 0, "pending": 0,
                     "moved": moved, "inactive": inactive, "unchanged": unchanged,
-                    "repeated": repeated,
+                    "repeated": repeated, "last_active": last_active,
                     "note": "Nothing was sent: every approved row had either changed at Amazon, is "
                             "no longer active, or is already in the state the rule wanted.",
                 }
@@ -935,7 +1049,8 @@ async def apply(
         try:
             await repository.mark_rules_run(db, [
                 r["id"] for r in await repository.load_rules(db)
-                if _rule_summary(r["conditions"], r["action"], r["amount"]) == rule_summary])
+                if _rule_summary(r["conditions"], r["action"], r["amount"],
+                                 level=r.get("level") or logic.LEVEL_KEYWORD) == rule_summary])
         except Exception:  # noqa: BLE001 - bookkeeping only
             logger.warning("ads: could not stamp the saved rule's last run", exc_info=True)
 
@@ -962,6 +1077,8 @@ async def apply(
         # bucket rather than folded into `inactive`: "already paused" is the rule having nothing left
         # to do, where `inactive` means a bid change would have been pointless.
         "unchanged": unchanged,
+        # SKUs NOT turned off because each was the last active product ad of its ad group at Amazon.
+        "last_active": last_active,
         "results": results,
     }
 

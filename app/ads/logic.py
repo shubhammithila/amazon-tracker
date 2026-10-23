@@ -30,6 +30,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 
 from app import ist
+from app.portfolio.logic import FBA_SKU_SUFFIX, _SKU_SEPARATORS
 
 #: India is UTC+5:30, and the ledger stores naive `datetime.utcnow()`.
 #:
@@ -93,6 +94,41 @@ WRITER_SB_KEYWORD = "sb_keyword"
 #: **51% of all SB spend.** Excluding them would have left half of Sponsored Brands unmanageable
 #: while the tab claimed full support.
 WRITER_SB_TARGET = "sb_target"
+
+#: Sponsored Products PRODUCT ADS: one SKU inside one ad group. A FIFTH writer
+#: (`PUT /sp/productAds`, keyed by `adId`), and the only one with no bid — a product ad can only be
+#: turned off or on. Asked for as *"just like I was able to turn off or on a keyword I should be able
+#: to turn off on a product in an ad group. product means sku"* (23 Oct 2026). **Sponsored Products
+#: only**: a Sponsored Brands ad holds a LIST of ASINs, so there is no per-SKU ad there to switch.
+WRITER_PRODUCT_AD = "product_ad"
+
+#: What a rule acts on. `keyword` is every rule before 23 Oct 2026 (keywords and targets); `product`
+#: acts on product ads. Part of the rule's identity: the same numbers at the two levels are two rules.
+LEVEL_KEYWORD = "keyword"
+LEVEL_PRODUCT = "product"
+LEVELS = (LEVEL_KEYWORD, LEVEL_PRODUCT)
+
+#: The three ways a SKU is fulfilled on this account, read off the SKU's LAST TOKEN — the Shipment
+#: tab's rule (`portfolio.logic._channel_of`, the one that keeps a Flex SKU off an FBA plan), widened
+#: to three answers. Measured on 6,404 product ads: last token `fba` 2,508, `flex` 950, everything
+#: else is a merchant (Easy Ship) SKU.
+CHANNEL_FBA = "fba"
+CHANNEL_FLEX = "flex"
+CHANNEL_EASY_SHIP = "easy_ship"
+CHANNEL_LABELS = {CHANNEL_FBA: "FBA", CHANNEL_FLEX: "Flex", CHANNEL_EASY_SHIP: "Easy Ship"}
+
+
+def sku_channel(sku) -> str:
+    """`fba`, `flex` or `easy_ship` for a merchant SKU. **A TOKEN test, never a substring test**, for
+    the reason `_channel_of` gives: `fbagel 1kg` must not read as FBA. Same separators (space,
+    underscore, hyphen), because Mithila SKUs use spaces and Howrah/Prayagraj use underscores."""
+    parts = [p for p in _SKU_SEPARATORS.split(str(sku or "").upper().strip()) if p]
+    last = parts[-1] if parts else ""
+    if last == FBA_SKU_SUFFIX:
+        return CHANNEL_FBA
+    if last == "FLEX":
+        return CHANNEL_FLEX
+    return CHANNEL_EASY_SHIP
 
 #: SB match types, lowercase as Amazon returns them from the entity API (`exact`, `phrase`) and
 #: uppercase from the report. Compared upper-cased, so the case Amazon happens to use cannot
@@ -414,6 +450,49 @@ def metrics_for(row: Mapping, ad_product: str = AD_PRODUCT_SP) -> dict:
     }
 
 
+def product_metrics(row: Mapping) -> dict:
+    """One product-ad row (summed `ads_product_daily`) in the shape `plan_run` reads.
+
+    `entity_id` is Amazon's `adId`; `text` is the SKU, which is what the owner recognises. `channel`
+    and `sku_asin` are the two product-only fields a condition can test.
+    """
+    spend = _as_float(row.get("spend"))
+    sales = _as_float(row.get("sales"))
+    clicks = _as_int(row.get("clicks"))
+    impressions = _as_int(row.get("impressions"))
+    orders = _as_int(row.get("orders"))
+    sku = str(row.get("sku") or "")
+    asin = str(row.get("asin") or "")
+    campaign_name = row.get("campaign_name") or ""
+    return {
+        "entity_id": str(row.get("ad_id") or row.get("entity_id") or ""),
+        "ad_product": AD_PRODUCT_SP,
+        "writer": WRITER_PRODUCT_AD,
+        "manager": row.get("manager") or manager_of(campaign_name),
+        "match_type": "PRODUCT_AD",
+        "text": sku or asin,
+        "sku": sku,
+        "asin": asin,
+        "channel": sku_channel(sku),
+        "sku_asin": f"{sku} {asin}",
+        "campaign_id": str(row.get("campaign_id") or ""),
+        "campaign_name": campaign_name,
+        "ad_group_id": str(row.get("ad_group_id") or ""),
+        "ad_group_name": row.get("ad_group_name") or "",
+        "bid": None,
+        "spend": spend,
+        "sales": sales,
+        "clicks": clicks,
+        "impressions": impressions,
+        "orders": orders,
+        "roas": _ratio(sales, spend),
+        "acos": _ratio(spend, sales),
+        "ctr": _ratio(clicks, impressions),
+        "cvr": _ratio(orders, clicks),
+        "cpc": _ratio(spend, clicks),
+    }
+
+
 # ─── Rule conditions ─────────────────────────────────────────────────────────
 
 #: The fields a condition may test, with the unit each is entered in. `pct` fields are typed as
@@ -435,15 +514,61 @@ FIELDS = {
 
 OPERATORS = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<=", "eq": "="}
 
+#: Fields a PRODUCT rule may test as well as the numbers. Product-level only: a keyword row has no
+#: SKU. `channel` is a choice (`is` / `is not`), `sku_asin` free text (`contains` / `does not
+#: contain`, case-insensitive, over the SKU and the ASIN together).
+PRODUCT_ONLY_FIELDS = {
+    "channel": {"label": "SKU channel", "kind": "choice", "choices": CHANNEL_LABELS},
+    "sku_asin": {"label": "SKU or ASIN", "kind": "text"},
+}
 
-def condition_error(condition: Mapping) -> str | None:
-    """Why a condition is unusable, or None. Checked before a run, not during it."""
+#: A product ad has no bid, so `bid` is not offered at that level.
+PRODUCT_FIELDS = {**{k: v for k, v in FIELDS.items() if k != "bid"}, **PRODUCT_ONLY_FIELDS}
+
+ALL_FIELDS = {**FIELDS, **PRODUCT_ONLY_FIELDS}
+
+#: Operators per non-numeric kind. Numbers keep `OPERATORS`.
+KIND_OPERATORS = {
+    "choice": {"is": "is", "is_not": "is not"},
+    "text": {"contains": "contains", "not_contains": "does not contain"},
+}
+
+
+def fields_for(level: str) -> dict:
+    """The fields a rule at this level may test."""
+    return PRODUCT_FIELDS if level == LEVEL_PRODUCT else FIELDS
+
+
+def operators_for(field: str) -> dict:
+    kind = ALL_FIELDS.get(field, {}).get("kind")
+    return KIND_OPERATORS.get(kind, OPERATORS)
+
+
+def condition_error(condition: Mapping, level: str = LEVEL_KEYWORD) -> str | None:
+    """Why a condition is unusable, or None. Checked before a run, not during it.
+
+    `level` decides which fields exist: a keyword row has no SKU, and a product ad has no bid.
+    """
     field = condition.get("field")
-    if field not in FIELDS:
-        return f"Unknown field {field!r}. Valid: {', '.join(sorted(FIELDS))}."
-    if condition.get("op") not in OPERATORS:
+    allowed = fields_for(level)
+    if field not in allowed:
+        if field in ALL_FIELDS:
+            where = "product rules" if field in PRODUCT_ONLY_FIELDS else "keyword rules"
+            return f"{ALL_FIELDS[field]['label']} can only be used in {where}."
+        return f"Unknown field {field!r}. Valid: {', '.join(sorted(allowed))}."
+    if condition.get("op") not in operators_for(field):
         return f"Unknown comparison {condition.get('op')!r}."
     raw = condition.get("value")
+    kind = allowed[field]["kind"]
+    if kind == "choice":
+        if str(raw or "").strip().lower() not in allowed[field]["choices"]:
+            valid = ", ".join(allowed[field]["choices"].values())
+            return f"{allowed[field]['label']} must be one of: {valid}."
+        return None
+    if kind == "text":
+        if not str(raw or "").strip():
+            return f"{allowed[field]['label']} needs some text to look for."
+        return None
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         # An empty box is not a zero. The Portfolio tab shipped this exact bug: `Number("")` is
         # 0, so a blank filter became a live `> 0` and hid half the portfolio.
@@ -460,7 +585,7 @@ def condition_error(condition: Mapping) -> str | None:
 def _threshold(condition: Mapping) -> float:
     """A condition's value in the same unit as the metric — percentages become ratios."""
     number = float(condition["value"])
-    return number / 100.0 if FIELDS[condition["field"]]["kind"] == "pct" else number
+    return number / 100.0 if ALL_FIELDS[condition["field"]]["kind"] == "pct" else number
 
 
 def matches(row_metrics: Mapping, conditions: Sequence[Mapping]) -> bool:
@@ -477,6 +602,16 @@ def matches(row_metrics: Mapping, conditions: Sequence[Mapping]) -> bool:
         value = row_metrics.get(condition["field"])
         if value is None:
             return False
+        kind = ALL_FIELDS.get(condition["field"], {}).get("kind")
+        if kind in ("choice", "text"):
+            wanted = str(condition.get("value") or "").strip().lower()
+            have = str(value).lower()
+            hit = (have == wanted) if kind == "choice" else (wanted in have)
+            if condition["op"] in ("is_not", "not_contains"):
+                hit = not hit
+            if not hit:
+                return False
+            continue
         threshold = _threshold(condition)
         op = condition["op"]
         if op == "gt" and not value > threshold:
@@ -638,6 +773,47 @@ SKIP_BELOW_PAUSE_SPEND = (
 )
 
 
+#: Turning this SKU off would leave its ad group with NO enabled product ad, and then every keyword in
+#: the group stops serving. **Refused, the owner's choice** (23 Oct 2026): silencing a whole ad group
+#: is a Seller Central job. Measured, 952 ad groups hold exactly one enabled product ad, so this is
+#: the common case rather than an edge.
+SKIP_LAST_ACTIVE = (
+    "it is the last active SKU in its ad group — turning it off would stop every keyword in the group"
+)
+
+
+def last_active_refusals(changes: Sequence[Mapping], enabled_by_group: Mapping) -> set[str]:
+    """Which of these PAUSES must not be sent, so that every ad group keeps one enabled product ad.
+
+    ``enabled_by_group`` is ``{ad_group_id: {ad_id, ...}}`` — the ads currently ENABLED. Per ad group:
+    if pausing every row here would leave none enabled, the BEST SELLER among those rows (sales, then
+    orders, then clicks, then id, so the answer never depends on input order) is kept on. Pure, and
+    the one copy: the preview runs it on cached states and `/ads/apply` again on Amazon's live ones.
+
+    **An ad group missing from ``enabled_by_group`` is treated as holding only these rows**, so one is
+    kept. Not knowing the siblings must never be read as "there are others".
+    """
+    by_group: dict[str, list[Mapping]] = {}
+    for change in changes:
+        by_group.setdefault(str(change.get("ad_group_id") or ""), []).append(change)
+
+    refused: set[str] = set()
+    for group_id, rows in by_group.items():
+        ids = {str(r["entity_id"]) for r in rows}
+        enabled = enabled_by_group.get(group_id)
+        enabled = {str(e) for e in enabled} if enabled is not None else set(ids)
+        pausing = ids & enabled
+        if not pausing or enabled - pausing:
+            continue
+        keep = max(
+            (r for r in rows if str(r["entity_id"]) in pausing),
+            key=lambda r: (_as_float(r.get("sales")), _as_int(r.get("orders")),
+                           _as_int(r.get("clicks")), str(r["entity_id"])),
+        )
+        refused.add(str(keep["entity_id"]))
+    return refused
+
+
 def describe_change(entry: Mapping) -> str:
     """One earlier change in words, for the note on a preview row: "bid ₹10.00 → ₹9.00", "turned OFF"."""
     state = str(entry.get("state") or "").upper()
@@ -664,8 +840,15 @@ def plan_run(
     today: str | None = None,
     rule: str | None = None,
     today_changes: Mapping | None = None,
+    level: str = LEVEL_KEYWORD,
+    enabled_ads: Mapping | None = None,
 ) -> dict:
     """Turn a rule plus a report into an auditable, un-sent PLAN.
+
+    ``level="product"`` plans over PRODUCT ADS (rows from `product_metrics`): only `set_state` is
+    allowed, the product-only conditions are, and a pause is checked against ``enabled_ads``
+    (``{ad_group_id: {enabled ad_id}}``) so no ad group loses its last active SKU — see
+    `last_active_refusals`.
 
     Returns `{"changes": [...], "skipped": [...], "blocked": str|None, "totals": {...},
     "approved_ids": [...]}`.
@@ -715,13 +898,20 @@ def plan_run(
     """
     limits = guardrails_or_default(guardrails)
 
+    if level not in LEVELS:
+        return {"changes": [], "skipped": [], "blocked": f"Unknown rule level {level!r}.",
+                "totals": {}}
     for condition in conditions or ():
-        problem = condition_error(condition)
+        problem = condition_error(condition, level)
         if problem:
             return {"changes": [], "skipped": [], "blocked": problem, "totals": {}}
     if action not in ACTIONS:
         return {"changes": [], "skipped": [],
                 "blocked": f"Unknown action {action!r}.", "totals": {}}
+    if level == LEVEL_PRODUCT and not is_state_action(action):
+        return {"changes": [], "skipped": [], "totals": {}, "blocked": (
+            "A product ad has no bid, so a product rule can only turn a SKU off or on. Bid rules "
+            "work on keywords and targets.")}
 
     # **A state action's `amount` is a STATE STRING, validated before any row is considered.**
     # Refused here rather than at the writer so the owner sees "this rule is not allowed" instead of
@@ -783,7 +973,10 @@ def plan_run(
         return False, "", "", others
 
     for row in rows:
-        m = row if "spend" in row and "roas" in row else metrics_for(row)
+        if level == LEVEL_PRODUCT:
+            m = row if row.get("writer") == WRITER_PRODUCT_AD else product_metrics(row)
+        else:
+            m = row if "spend" in row and "roas" in row else metrics_for(row)
 
         # Scope first: cheapest test, and it is what "go inside one campaign" means.
         if campaigns and m.get("campaign_id") not in campaigns:
@@ -890,6 +1083,16 @@ def plan_run(
     # route re-appliable from a hand-built request, and it is the only route in this app that spends
     # money. The rows are still returned — unticked and visible with their reason — because a row
     # silently missing from a 1,005-row preview is indistinguishable from a bug.
+    # **The last active SKU in an ad group is never turned off** (product pauses only). Judged on the
+    # rows that would actually be sent — a row held back by the once-a-day limit is not being paused.
+    if level == LEVEL_PRODUCT and target_state == STATE_PAUSED:
+        refused = last_active_refusals(
+            [c for c in changes if not c["changed_today"]], enabled_ads or {})
+        if refused:
+            skipped.extend({**c, "reason": SKIP_LAST_ACTIVE}
+                           for c in changes if str(c["entity_id"]) in refused)
+            changes = [c for c in changes if str(c["entity_id"]) not in refused]
+
     approved_ids = [c["entity_id"] for c in changes if not c["changed_today"]]
 
     # **The row limit counts what will actually be SENT**, so it is measured on the appliable rows
@@ -931,6 +1134,8 @@ def plan_run(
             "targets": sum(1 for c in changes if c["writer"] == WRITER_TARGET),
             "sb_keywords": sum(1 for c in changes if c["writer"] == WRITER_SB_KEYWORD),
             "sb_targets": sum(1 for c in changes if c["writer"] == WRITER_SB_TARGET),
+            "product_ads": sum(1 for c in changes if c["writer"] == WRITER_PRODUCT_AD),
+            "last_active": sum(1 for s in skipped if s.get("reason") == SKIP_LAST_ACTIVE),
             # How many matched rows belong to a campaign somebody else optimises, so the preview can
             # say "12 more matched but M19 manages them" rather than leaving them unexplained.
             "automated": sum(1 for s in skipped if s.get("reason") == SKIP_AUTOMATED),
@@ -1029,6 +1234,7 @@ def split_by_writer(changes: Sequence[Mapping]) -> dict[str, list[dict]]:
     """
     out: dict[str, list[dict]] = {
         WRITER_KEYWORD: [], WRITER_TARGET: [], WRITER_SB_KEYWORD: [], WRITER_SB_TARGET: [],
+        WRITER_PRODUCT_AD: [],
     }
     for change in changes:
         writer = change.get("writer")

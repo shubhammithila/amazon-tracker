@@ -156,6 +156,16 @@ tr.child td:first-child{padding-left:30px}
 .tag.auto{background:var(--yellow-soft);color:var(--yellow)}
 .tag.product{background:var(--green-soft);color:var(--green)}
 .tag.paused{background:var(--surface2);color:var(--text-dim)}
+/* The SKU's channel on a product-ad row. */
+.tag.ch-fba{background:var(--blue-soft);color:var(--blue)}
+.tag.ch-flex{background:var(--yellow-soft);color:var(--yellow)}
+.tag.ch-easy_ship{background:var(--green-soft);color:var(--green)}
+/* "Apply to": keywords and targets, or product ads (one SKU in an ad group). */
+.level-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.level-bar .seg{border:1px solid var(--border-strong);background:var(--surface);color:var(--text);
+  border-radius:20px;padding:5px 12px;font-size:12.5px;cursor:pointer}
+.level-bar .seg.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent);font-weight:700}
+.level-bar .level-note{font-size:12px;color:var(--text-muted)}
 /* Match types — how a row COMPETES, which is a different question from which API its bid is written
    to (the .kw/.auto/.product tags above). The three keyword matches share a hue and the three target
    kinds another, so the shape of a 1,005-row preview is readable without reading every row.
@@ -242,6 +252,15 @@ tr.child td:first-child{padding-left:30px}
        Preview -> Apply path is the same for a saved rule as for a hand-built one. -->
   <div id="saved-bar"></div>
 
+  <!-- What the rule acts on. A product rule turns one SKU (a Sponsored Products product ad) off or on
+       inside its ad group; it has no bid, so only the on/off action is offered. -->
+  <div class="level-bar" id="level-bar">
+    <span class="win-label">Apply to</span>
+    <button type="button" class="seg" data-level="keyword">Keywords &amp; targets</button>
+    <button type="button" class="seg" data-level="product">Products (SKUs)</button>
+    <span class="level-note" id="level-note"></span>
+  </div>
+
   <div id="conditions"></div>
   <div class="controls" style="margin-bottom:0">
     <button class="btn-outline" id="add-condition">+ condition</button>
@@ -301,6 +320,9 @@ const $ = id => document.getElementById(id);
 const MATCH_LABELS = {{ match_labels | tojson }};
 let data = {campaigns: [], totals: {}, window: ["", ""], guardrails: {}, runs: []};
 let conditions = remembered("conditions", [{field: "spend", op: "gt", value: 100}]);
+/* "keyword" (keywords and targets) or "product" (product ads: one SKU in an ad group). Sent with the
+   preview and saved with a rule; the server owns what each level allows. */
+let level = remembered("level", "keyword") === "product" ? "product" : "keyword";
 let selected = new Set();          // campaign ids
 let openCampaigns = new Set();
 /* Which PREVIEW groups are expanded. Separate from `openCampaigns`, which belongs to the campaign
@@ -417,6 +439,11 @@ function render(){
   renderBanners();
   renderWindow();
   renderKpis();
+  renderLevel();
+  /* A remembered condition the remembered level cannot use (e.g. after a release changed a field)
+     is dropped rather than rendered as a blank select. */
+  conditions = conditions.filter(c => levelFields()[c.field]);
+  if(!conditions.length) conditions = [{field: "spend", op: "gt", value: 100}];
   renderConditions();
   renderSaved();
   renderTable();
@@ -689,22 +716,91 @@ function renderKpis(){
 }
 
 /* ── Conditions ────────────────────────────────────────────────────────────── */
+/* The fields this level may test: a product rule has no bid, and only it has SKU channel and SKU/ASIN. */
+function levelFields(){
+  return (level === "product" ? data.product_fields : data.fields) || {};
+}
+function fieldKind(field){
+  return ((data.product_fields || {})[field] || (data.fields || {})[field] || {}).kind;
+}
+function operatorsFor(field){
+  return (data.kind_operators || {})[fieldKind(field)] || data.operators || {};
+}
+/* A fresh condition for a field whose KIND differs from the row's old one: a channel needs a channel,
+   text needs text, and a number keeps "> 100". */
+function defaultsFor(field){
+  const kind = fieldKind(field);
+  if(kind === "choice") return {op: "is", value: "easy_ship"};
+  if(kind === "text") return {op: "contains", value: ""};
+  return {op: "gt", value: 100};
+}
+
+/* The operator and value controls of one condition, for its field's kind. One builder for the full
+   render and for the in-place swap when a row's field changes kind. */
+function opHtml(c){
+  return `<select data-part="op">${Object.entries(operatorsFor(c.field)).map(([key, label]) =>
+    `<option value="${esc(key)}"${key === c.op ? " selected" : ""}>${esc(label)}</option>`
+  ).join("")}</select>`;
+}
+function valueHtml(c){
+  const meta = levelFields()[c.field] || {};
+  return meta.kind === "choice"
+      ? `<select data-part="value">${Object.entries(meta.choices || {}).map(([key, label]) =>
+          `<option value="${esc(key)}"${key === String(c.value) ? " selected" : ""}>${esc(label)}</option>`
+        ).join("")}</select>`
+      : meta.kind === "text"
+        ? `<input type="text" data-part="value" value="${esc(c.value)}" placeholder="e.g. 0.5kg or B0…"/>`
+        : `<input type="number" step="any" data-part="value" value="${esc(c.value)}"/>`;
+}
+
 function renderConditions(){
-  const fields = data.fields || {};
-  const operators = data.operators || {};
-  $("conditions").innerHTML = conditions.map((c, index) => `
+  const fields = levelFields();
+  $("conditions").innerHTML = conditions.map((c, index) => {
+    return `
     <div class="frow" data-index="${index}">
       <span class="win-label">${index ? "and" : "When"}</span>
-      <select data-part="field">${Object.entries(fields).map(([key, meta]) =>
-        `<option value="${esc(key)}"${key === c.field ? " selected" : ""}>${esc(meta.label)}</option>`
+      <select data-part="field">${Object.entries(fields).map(([key, f]) =>
+        `<option value="${esc(key)}"${key === c.field ? " selected" : ""}>${esc(f.label)}</option>`
       ).join("")}</select>
-      <select data-part="op">${Object.entries(operators).map(([key, label]) =>
-        `<option value="${esc(key)}"${key === c.op ? " selected" : ""}>${esc(label)}</option>`
-      ).join("")}</select>
-      <input type="number" step="any" data-part="value" value="${esc(c.value)}"/>
+      ${opHtml(c)}
+      ${valueHtml(c)}
       <span class="dim" style="font-size:11.5px">${esc(unitFor(c.field))}</span>
       <button class="fdrop" data-drop="${index}" title="remove">×</button>
-    </div>`).join("");
+    </div>`;
+  }).join("");
+}
+
+/* The level switch. Switching drops conditions the other level cannot use (a bid on a SKU, a channel
+   on a keyword), forces the on/off action for products, and clears the plan on screen, which belongs
+   to the other kind of rule. */
+function renderLevel(){
+  document.querySelectorAll("#level-bar [data-level]").forEach(b =>
+    b.classList.toggle("on", b.dataset.level === level));
+  const product = level === "product";
+  $("level-note").textContent = product
+    ? "Sponsored Products only: a Sponsored Brands ad holds several products, so one SKU cannot be "
+      + "switched off there. The last active SKU of an ad group is never turned off."
+    : "";
+  [...$("action").options].forEach(o => { o.disabled = product && o.value !== "set_state"; });
+  const stateOption = [...$("action").options].find(o => o.value === "set_state");
+  if(stateOption) stateOption.textContent = product ? "turn the SKU" : "turn the keyword";
+  if(product && $("action").value !== "set_state"){
+    $("action").value = "set_state";
+    $("action").dispatchEvent(new Event("change"));
+  }
+}
+function setLevel(next){
+  if(next === level) return;
+  level = next;
+  remember("level", level);
+  const allowed = levelFields();
+  conditions = conditions.filter(c => allowed[c.field]);
+  if(!conditions.length) conditions = [{field: "spend", op: "gt", value: next === "product" ? 500 : 100}];
+  remember("conditions", conditions);
+  plan = null;
+  $("preview-area").innerHTML = "";
+  renderLevel();
+  renderConditions();
 }
 
 function unitFor(field){
@@ -767,9 +863,12 @@ function renderSaveArea(){
 
 function builderSnapshot(){
   return {conditions: conditions.map(c => ({...c})), action: $("action").value,
-          amount: $("amount").value, state: $("state-amount").value};
+          amount: $("amount").value, state: $("state-amount").value, level};
 }
 function restoreBuilder(snap){
+  level = snap.level === "product" ? "product" : "keyword";
+  remember("level", level);
+  renderLevel();
   conditions = snap.conditions.map(c => ({...c}));
   remember("conditions", conditions);
   $("action").value = snap.action;
@@ -783,11 +882,16 @@ function ruleById(id){ return (data.rules || []).find(r => String(r.id) === Stri
 /* The rule in words, for the button's tooltip — so picking a saved rule does not require
    remembering what the name meant. */
 function ruleWords(rule){
-  const fields = data.fields || {}, ops = data.operators || {};
-  const parts = (rule.conditions || []).map(c =>
-    `${(fields[c.field] || {}).label || c.field} ${ops[c.op] || c.op} ${c.value}`);
+  const fields = {...(data.fields || {}), ...(data.product_fields || {})};
+  const parts = (rule.conditions || []).map(c => {
+    const meta = fields[c.field] || {};
+    const value = meta.kind === "choice" ? ((meta.choices || {})[c.value] || c.value)
+      : meta.kind === "text" ? `"${c.value}"` : c.value;
+    return `${meta.label || c.field} ${operatorsFor(c.field)[c.op] || c.op} ${value}`;
+  });
+  const prefix = rule.level === "product" ? "Products: " : "";
   if(rule.action === "set_state"){
-    return `${parts.join(", ")} → turn ${String(rule.amount).toUpperCase() === "PAUSED" ? "OFF (pause)" : "ON (enable)"}`;
+    return `${prefix}${parts.join(", ")} → turn ${String(rule.amount).toUpperCase() === "PAUSED" ? "OFF (pause)" : "ON (enable)"}`;
   }
   const verb = {
     decrease_pct: `decrease ${rule.amount}%`, increase_pct: `increase ${rule.amount}%`,
@@ -800,6 +904,10 @@ function ruleWords(rule){
 function loadRule(name){
   const rule = (data.rules || []).find(r => r.name === name);
   if(!rule) return;
+  // The rule's level first, so its conditions render with the fields that level allows.
+  level = rule.level === "product" ? "product" : "keyword";
+  remember("level", level);
+  renderLevel();
   // REPLACES the conditions rather than merging: a loaded rule that inherited leftover conditions
   // from the previous one would run something the owner never built.
   conditions = (rule.conditions || []).map(c => ({...c}));
@@ -857,7 +965,7 @@ async function saveRule(mode){
   const send = extra => fetch("/ads/rules", {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({name, conditions, action: $("action").value,
-                          amount: ruleAmount(), window_days: 7, ...extra}),
+                          amount: ruleAmount(), window_days: 7, level, ...extra}),
   });
   let response = await send(mode === "update" ? {id: editing.id} : {});
   let body = await response.json();
@@ -1092,6 +1200,7 @@ async function runPreview(){
         conditions: conditions,
         action: $("action").value,
         amount: ruleAmount(),
+        level: level,
         campaign_ids: [...selected],
         ad_group_ids: [...selectedAdGroups],
       }),
@@ -1270,14 +1379,22 @@ function renderPreview(options){
     return html;
   }).join("");
 
+  const products = plan.level === "product";
   $("preview-area").innerHTML = `<div class="card">
     <div class="section-title">${esc(plan.rule || "")}</div>
     <div class="section-sub">
-      <strong>${totals.changing} bid(s) would change</strong> —
+      ${products
+        ? `<strong>${totals.changing} SKU(s) would be turned ${
+            String($("state-amount").value).toUpperCase() === "PAUSED" ? "off" : "on"}</strong>,
+           carrying ${money(totals.spend)} of spend in this window.
+           ${(totals.last_active || 0) > 0
+             ? `${totals.last_active} more matched but each is the last active SKU of its ad group, so
+                it stays on.` : ""}`
+        : `<strong>${totals.changing} bid(s) would change</strong> —
       ${totals.keywords} keyword(s) and ${totals.targets} target(s), carrying
       ${money(totals.spend)} of spend in this window.
       Amazon writes these through two different endpoints, which is what the kw/auto/product column
-      shows. <strong>Nothing has been sent yet.</strong>
+      shows.`} <strong>Nothing has been sent yet.</strong>
       ${(totals.changed_today || 0) > 0
         ? `<br/><strong>${totals.changed_today} row(s) had their bid changed earlier today</strong> and
            arrive unticked — applying the same rule again would compound it. Their current bid is what
@@ -1289,8 +1406,11 @@ function renderPreview(options){
     ${applyBarHtml()}
     <div class="table-wrap"><table>
       <thead><tr>
-        <th scope="col"></th><th scope="col">Keyword / target</th><th scope="col">Type</th>
-        <th scope="col" title="How this row competes: exact, phrase, broad, or a target">Match</th>
+        ${products
+          ? `<th scope="col"></th><th scope="col">SKU</th><th scope="col">Channel</th>
+             <th scope="col">ASIN</th>`
+          : `<th scope="col"></th><th scope="col">Keyword / target</th><th scope="col">Type</th>
+             <th scope="col" title="How this row competes: exact, phrase, broad, or a target">Match</th>`}
         <th scope="col" class="num">Spend</th><th scope="col" class="num">ROAS</th>
         <th scope="col" class="num">ACOS</th>
         ${/* `Bid -> New bid` is meaningless for a pause, and leaving the Suggested header in place
@@ -1327,11 +1447,17 @@ function renderPreview(options){
    Asked for because EXACT, PHRASE and BROAD were all rendered as a single "keyword" tag: measured,
    1,418 broad rows looked identical to 14,435 exact ones, and they compete completely differently. */
 function matchTag(row){
+  if(row.writer === "product_ad") return `<span class="dim">${esc(row.asin || "")}</span>`;
   const label = MATCH_LABELS[String(row.match_type || "").toUpperCase()] || "?";
   return `<span class="tag m-${esc(label)}">${esc(label)}</span>`;
 }
 
+/* A product-ad row's channel: FBA, Flex or Easy Ship, read off the SKU by the server. */
+const CHANNEL_LABELS = {fba: "FBA", flex: "Flex", easy_ship: "Easy Ship"};
 function writerTag(row){
+  if(row.writer === "product_ad"){
+    return `<span class="tag ch-${esc(row.channel)}">${esc(CHANNEL_LABELS[row.channel] || row.channel)}</span>`;
+  }
   if(row.writer === "keyword") return '<span class="tag kw">keyword</span>';
   if(row.match_type === "TARGETING_EXPRESSION_PREDEFINED") return '<span class="tag auto">auto</span>';
   return '<span class="tag product">product</span>';
@@ -1565,6 +1691,12 @@ async function applyPlan(){
   /* Refused because their bid already moved today. Reported apart from `moved` — "somebody changed
      this" and "we changed this an hour ago" are different facts — and reported at all because a
      shrunken count with no reason reads as rows silently going missing. */
+  /* SKUs Amazon still shows as the last active product ad of their ad group: kept on, never silenced. */
+  const lastActive = body.last_active || [];
+  if(lastActive.length){
+    parts.push(`${lastActive.length} SKU(s) kept on because each is now the last active SKU of its ad
+      group at Amazon.`);
+  }
   const repeated = body.repeated || [];
   if(repeated.length){
     parts.push(`${repeated.length} skipped because their bid was already changed today — applying the
@@ -1854,7 +1986,16 @@ $("conditions").addEventListener("change", e => {
   const part = e.target.closest("[data-part]");
   if(!row || !part) return;
   const index = Number(row.dataset.index);
+  const oldKind = fieldKind(conditions[index].field);
   conditions[index][part.dataset.part] = part.value;
+  /* A field of another KIND (number, channel, text) needs other controls. Only THAT row's operator
+     and value are swapped, in place: the field select the user is on stays the same element (see
+     below for why a full re-render here lost the next change). */
+  if(part.dataset.part === "field" && fieldKind(part.value) !== oldKind){
+    Object.assign(conditions[index], defaultsFor(part.value));
+    row.querySelector('[data-part="op"]').outerHTML = opHtml(conditions[index]);
+    row.querySelector('[data-part="value"]').outerHTML = valueHtml(conditions[index]);
+  }
   remember("conditions", conditions);
 
   /* **Changing the field must NOT re-render the row being edited.**
@@ -1879,6 +2020,11 @@ $("conditions").addEventListener("click", e => {
   conditions.splice(Number(drop.dataset.drop), 1);
   remember("conditions", conditions);
   renderConditions();
+});
+
+$("level-bar").addEventListener("click", e => {
+  const b = e.target.closest("[data-level]");
+  if(b) setLevel(b.dataset.level);
 });
 
 $("add-condition").addEventListener("click", () => {

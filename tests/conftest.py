@@ -366,6 +366,20 @@ def no_live_bedrock(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_live_product_ads(monkeypatch):
+    """**No test may list Amazon's product ads for real.** The developer .env holds live Advertising
+    API credentials, and every ads refresh reads the product-ad list. A test that wants the real
+    function's paging logic calls it with a fake client: it is kept as `fetch_product_ads_live`."""
+    from app.ads import spapi_ads
+
+    async def none(*args, **kwargs):
+        return []
+    monkeypatch.setattr(spapi_ads, "fetch_product_ads_live", spapi_ads.fetch_product_ads,
+                        raising=False)
+    monkeypatch.setattr(spapi_ads, "fetch_product_ads", none)
+
+
+@pytest.fixture(autouse=True)
 def no_live_inventory(monkeypatch):
     """**No test may read Amazon's FBA Inventory API for real.** The developer .env holds live SP-API
     credentials and generating a shipment plan reads stock first; a test passes a fake `get`."""

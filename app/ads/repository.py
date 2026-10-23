@@ -34,6 +34,7 @@ from app.models import (
     AdsEntity,
     AdsMutation,
     AdsPerformanceDaily,
+    AdsProductDaily,
     AdsRefresh,
     AdsRule,
     PortfolioSettings,
@@ -600,6 +601,174 @@ async def sum_daily(
     return out
 
 
+# ─── Product ads (SKU rules) ─────────────────────────────────────────────────
+#
+# **A separate table from `ads_performance_daily`, and the separation is the point.** A product ad's
+# spend is the same money as its ad group's keyword spend; summed together, every campaign total on
+# the tab would double. Nothing here reads or writes the keyword table.
+
+#: How a product-ad range names itself in a completeness answer.
+PRODUCT_GRAIN = "product"
+
+
+async def save_product_daily(db: AsyncSession, rows: list[dict]) -> int:
+    """Store `spAdvertisedProduct` DAILY rows, delete-then-insert per day like `save_daily`.
+
+    Rows for the same `(day, adId)` are SUMMED before inserting rather than trusted to be unique —
+    `spAdvertisedProduct` is the report the Portfolio tab measured arriving split by campaign.
+    """
+    merged: dict[tuple[str, str], dict] = {}
+    now = datetime.utcnow()
+    for raw in rows or ():
+        day = str(raw.get("date") or "")[:10]
+        ad_id = str(raw.get("adId") or "")
+        if not day or not ad_id:
+            continue
+        row = merged.setdefault((day, ad_id), {
+            "day": day, "ad_id": ad_id,
+            "campaign_id": str(raw.get("campaignId") or "") or None,
+            "ad_group_id": str(raw.get("adGroupId") or "") or None,
+            "asin": (raw.get("advertisedAsin") or "")[:10] or None,
+            "sku": (raw.get("advertisedSku") or "")[:80] or None,
+            "impressions": 0, "clicks": 0, "spend": 0.0, "orders": 0, "sales": 0.0,
+            "fetched_at": now,
+        })
+        row["impressions"] += logic._as_int(raw.get("impressions"))
+        row["clicks"] += logic._as_int(raw.get("clicks"))
+        row["orders"] += logic._as_int(raw.get("purchases7d"))
+        row["spend"] = round(row["spend"] + logic._as_float(raw.get("cost")), 2)
+        row["sales"] = round(row["sales"] + logic._as_float(raw.get("sales7d")), 2)
+    if not merged:
+        return 0
+    days = sorted({k[0] for k in merged})
+    await db.execute(delete(AdsProductDaily).where(AdsProductDaily.day.in_(days)))
+    values = list(merged.values())
+    for start in range(0, len(values), 5000):
+        await db.execute(insert(AdsProductDaily), values[start:start + 5000])
+    await db.commit()
+    logger.info("ads: stored %d product-ad daily row(s) across %d day(s)", len(values), len(days))
+    return len(values)
+
+
+async def product_days_held(db: AsyncSession) -> set[str]:
+    rows = (await db.execute(select(AdsProductDaily.day).group_by(AdsProductDaily.day))).all()
+    return {r[0] for r in rows}
+
+
+async def product_range_completeness(db: AsyncSession, start: str, end: str) -> dict:
+    """`range_completeness`'s answer for the product-ad table: every DAY must be held."""
+    held = await product_days_held(db)
+    absent = [d for d in expected_days(start, end) if d not in held]
+    answer: dict = {"complete": bool(held) and not absent, "products": [PRODUCT_GRAIN],
+                    "missing": {}, "missing_count": {}, "held": {}}
+    if held:
+        answer["held"][PRODUCT_GRAIN] = [min(held), max(held)]
+    if absent or not held:
+        answer["missing_count"][PRODUCT_GRAIN] = len(absent)
+        answer["missing"][PRODUCT_GRAIN] = absent[:MISSING_DAYS_SHOWN]
+    return answer
+
+
+async def sum_product_daily(
+    db: AsyncSession,
+    start: str,
+    end: str,
+    *,
+    campaign_ids: list[str] | None = None,
+    ad_group_ids: list[str] | None = None,
+) -> list[dict]:
+    """One row per product ad for an arbitrary range, summed from the per-day rows. No Amazon call.
+
+    The SKU and ASIN are the ad's own (they cannot change for an `adId`), taken as `max` so a day
+    with a blank one cannot blank the row.
+    """
+    query = (
+        select(
+            AdsProductDaily.ad_id,
+            func.max(AdsProductDaily.campaign_id),
+            func.max(AdsProductDaily.ad_group_id),
+            func.max(AdsProductDaily.asin),
+            func.max(AdsProductDaily.sku),
+            func.sum(AdsProductDaily.impressions),
+            func.sum(AdsProductDaily.clicks),
+            func.sum(AdsProductDaily.spend),
+            func.sum(AdsProductDaily.orders),
+            func.sum(AdsProductDaily.sales),
+        )
+        .where(AdsProductDaily.day >= start, AdsProductDaily.day <= end)
+        .group_by(AdsProductDaily.ad_id)
+    )
+    if campaign_ids:
+        query = query.where(AdsProductDaily.campaign_id.in_([str(c) for c in campaign_ids]))
+    if ad_group_ids:
+        query = query.where(AdsProductDaily.ad_group_id.in_([str(a) for a in ad_group_ids]))
+    out = []
+    for row in (await db.execute(query)).all():
+        out.append({
+            "ad_id": row[0], "entity_id": row[0],
+            "campaign_id": row[1] or "", "ad_group_id": row[2] or "",
+            "asin": row[3] or "", "sku": row[4] or "",
+            "impressions": int(row[5] or 0), "clicks": int(row[6] or 0),
+            "spend": round(float(row[7] or 0), 2), "orders": int(row[8] or 0),
+            "sales": round(float(row[9] or 0), 2),
+        })
+    out.sort(key=lambda r: -r["spend"])
+    return out
+
+
+async def replace_product_ads(db: AsyncSession, rows: list[dict]) -> int:
+    """Replace the cached product-ad list (`ads_entity`, `entity_type="product_ad"`) wholesale.
+
+    Bulk rather than `save_entities`' per-row upsert: 6,404 rows, and the list is always fetched
+    whole. **An empty list writes nothing**, so a failed or empty fetch cannot wipe the states the
+    last-active guard reads.
+    """
+    rows = [r for r in rows or () if r.get("entity_id")]
+    if not rows:
+        return 0
+    now = datetime.utcnow()
+    await db.execute(delete(AdsEntity).where(AdsEntity.entity_type == "product_ad"))
+    values = [{
+        "entity_type": "product_ad", "ad_product": "sp", "entity_id": str(r["entity_id"]),
+        "parent_id": r.get("parent_id") or None, "campaign_id": r.get("campaign_id") or None,
+        "name": (r.get("name") or "")[:500], "state": r.get("state") or None, "fetched_at": now,
+    } for r in rows]
+    for start in range(0, len(values), 5000):
+        await db.execute(insert(AdsEntity), values[start:start + 5000])
+    await db.commit()
+    return len(values)
+
+
+async def enabled_product_ads(db: AsyncSession, ad_group_ids) -> dict[str, set[str]]:
+    """`{ad_group_id: {enabled ad_id}}` for the preview's last-active guard.
+
+    The cached list is from the morning refresh, so a pause or enable WE applied since is laid over
+    it from the ledger (newest applied state, when newer than the cached reading). An ad group the
+    cache does not hold is simply absent — `logic.last_active_refusals` then keeps one row on.
+    """
+    groups = sorted({str(g) for g in ad_group_ids or () if g})
+    if not groups:
+        return {}
+    cached: list = []
+    for start in range(0, len(groups), 500):
+        cached += (await db.execute(
+            select(AdsEntity.entity_id, AdsEntity.parent_id, AdsEntity.state, AdsEntity.fetched_at)
+            .where(AdsEntity.entity_type == "product_ad",
+                   AdsEntity.parent_id.in_(groups[start:start + 500]))
+        )).all()
+    ledger = await last_applied_states(db, [c[0] for c in cached])
+    out: dict[str, set[str]] = {}
+    for ad_id, group, state, fetched_at in cached:
+        entry = ledger.get(ad_id)
+        if entry and entry.get("at") and (fetched_at is None
+                                          or entry["at"] > fetched_at.isoformat()):
+            state = entry["state"]
+        out.setdefault(group, set())
+        if str(state or "").upper() == logic.STATE_ENABLED:
+            out[group].add(ad_id)
+    return out
+
+
 async def reclaim_space(db: AsyncSession) -> None:
     """`VACUUM` — actually return freed pages to the filesystem.
 
@@ -760,8 +929,10 @@ async def purge_daily(db: AsyncSession, *, keep_days: int = DAILY_RETENTION_DAYS
     result = await db.execute(
         delete(AdsPerformanceDaily).where(AdsPerformanceDaily.day < cutoff)
     )
+    # The product-ad rows keep the same 60 days: a SKU rule offers the same windows.
+    products = await db.execute(delete(AdsProductDaily).where(AdsProductDaily.day < cutoff))
     await db.commit()
-    removed = int(result.rowcount or 0)
+    removed = int(result.rowcount or 0) + int(products.rowcount or 0)
     if removed:
         logger.info("ads: purged %d daily row(s) older than %s", removed, cutoff)
     return removed
@@ -827,7 +998,9 @@ async def open_run(
             run_id=run_id,
             entity_id=str(change["entity_id"]),
             entity_type=("keyword" if change.get("writer") in (
-                logic.WRITER_KEYWORD, logic.WRITER_SB_KEYWORD) else "target"),
+                logic.WRITER_KEYWORD, logic.WRITER_SB_KEYWORD)
+                else "product_ad" if change.get("writer") == logic.WRITER_PRODUCT_AD
+                else "target"),
             ad_product=change.get("ad_product") or logic.AD_PRODUCT_SP,
             writer=change.get("writer") or logic.WRITER_KEYWORD,
             text=(change.get("text") or "")[:500],
@@ -1189,14 +1362,19 @@ async def save_rule(db: AsyncSession, name: str, rule: dict) -> dict:
     Validated on the way IN as well as out, so a rule that could never match cannot be saved and
     then puzzled over — the `good_rating: 99` lesson from the Portfolio tab.
     """
+    level = rule.get("level") or logic.LEVEL_KEYWORD
+    if level not in logic.LEVELS:
+        raise ValueError(f"Unknown rule level {level!r}.")
     conditions = rule.get("conditions") or []
     for condition in conditions:
-        problem = logic.condition_error(condition)
+        problem = logic.condition_error(condition, level)
         if problem:
             raise ValueError(problem)
     action = rule.get("action")
     if action not in logic.ACTIONS:
         raise ValueError(f"Unknown action {action!r}.")
+    if level == logic.LEVEL_PRODUCT and not logic.is_state_action(action):
+        raise ValueError("A product rule can only turn a SKU off or on.")
 
     # **A state rule's amount is a WORD, and it goes in its own column.**
     #
@@ -1235,6 +1413,7 @@ async def save_rule(db: AsyncSession, name: str, rule: dict) -> dict:
         "amount": amount,
         "target_state": target_state,
         "window_days": int(rule.get("window_days") or 7),
+        "level": level,
     }
     if existing:
         for field, value in values.items():
@@ -1279,6 +1458,7 @@ async def load_rules(db: AsyncSession) -> list[dict]:
             "amount": r.target_state if r.target_state else _f(r.amount),
             "target_state": r.target_state or "",
             "window_days": int(r.window_days or 7),
+            "level": r.level or logic.LEVEL_KEYWORD,
             "last_run_at": r.last_run_at.isoformat() if r.last_run_at else "",
         })
     return out
@@ -1379,6 +1559,8 @@ async def record_refresh(
     error: str | None = None,
     sb_error: str | None = None,
     started_at: datetime | None = None,
+    product_rows: int = 0,
+    product_error: str | None = None,
 ) -> None:
     """Log one refresh attempt: succeeded, partly succeeded, or failed.
 
@@ -1391,7 +1573,7 @@ async def record_refresh(
     """
     if error:
         status = "failed"
-    elif sb_error:
+    elif sb_error or product_error:
         status = "partial"
     else:
         status = "done"
@@ -1405,6 +1587,8 @@ async def record_refresh(
         ad_groups=int(ad_groups or 0),
         error=error,
         sb_error=sb_error,
+        product_rows=int(product_rows or 0),
+        product_error=product_error,
         started_at=started_at or datetime.utcnow(),
         finished_at=datetime.utcnow(),
     ))
@@ -1434,6 +1618,8 @@ async def last_refresh(db: AsyncSession) -> dict | None:
         "ad_groups": int(row.ad_groups or 0),
         "error": row.error or "",
         "sb_error": row.sb_error or "",
+        "product_rows": int(row.product_rows or 0),
+        "product_error": row.product_error or "",
         # isoformat HERE, not in the route: a datetime reaching JSONResponse is a 500, and that exact
         # defect has already shipped once on this project.
         "started_at": row.started_at.isoformat() if row.started_at else None,

@@ -55,6 +55,11 @@ def reset_state() -> None:
         #: `error` so the screen can say "SP is current, SB is stale" rather than "the refresh
         #: failed" — the same distinction the portfolio refresh draws for ACOS.
         "sb_error": None,
+        #: The product-ad report (SKU rules) and the product-ad list, failing on their own like SB:
+        #: the keyword figures above are already stored when this runs.
+        "product_rows": 0,
+        "product_ads": 0,
+        "product_error": None,
         "window_start": None,
         "window_end": None,
         #: {"sp": [start, end] | None, "sb": ...}: what this run asked Amazon for.
@@ -195,9 +200,26 @@ def plan_ranges(
     return plan
 
 
+def plan_product_range(window_start: str, window_end: str, held: set[str], *,
+                       settle_days: int = 0, freshen_days: int = 0) -> tuple[str, str] | None:
+    """The one range of the PRODUCT-AD report to fetch, by `plan_ranges`' own rule for Sponsored
+    Products: from the first missing day (or the settling tail) to the window's end, a short
+    freshen when nothing is missing and the owner pressed Refresh, else nothing. Pure.
+
+    Delegates rather than restating the rule, with the other product marked fully held so its
+    absence cannot suppress the freshen.
+    """
+    everything = set(repository.expected_days(window_start, window_end))
+    return plan_ranges(window_start, window_end, {"sp": held, "sb": everything},
+                       settle_days=settle_days, freshen_days=freshen_days)["sp"]
+
+
 async def _held_days(db_factory) -> dict[str, set[str]]:
+    """Days held per ad product, plus `"product"`: the days of the product-ad (SKU) table."""
     async with db_factory() as db:
-        return {p: await repository.daily_days_held(db, ad_product=p) for p in AD_PRODUCTS}
+        held = {p: await repository.daily_days_held(db, ad_product=p) for p in AD_PRODUCTS}
+        held["product"] = await repository.product_days_held(db)
+        return held
 
 
 async def _attribute_sb_to_portfolio(db_factory, start: str, end: str) -> None:
@@ -279,11 +301,21 @@ async def run(
     # and is never earlier than the purge's server-clock day, so no planned day can be one it purges.
     keep_from = ((today or ist.today())
                  - timedelta(days=repository.DAILY_RETENTION_DAYS - 1)).isoformat()
+    held = await _held_days(db_factory)
     plan = plan_ranges(
-        max(window_start, keep_from), window_end, await _held_days(db_factory),
+        max(window_start, keep_from), window_end, held,
         settle_days=settle_days, freshen_days=freshen_days,
     )
-    if only_if_missing and not any(plan.values()):
+    # The product report freshens on a manual press only when the keyword reports are freshening too
+    # (nothing missing for either), the same rule SP follows: a press that is already fetching SB
+    # brings fresh figures without a third report.
+    keywords_complete = not any(plan_ranges(
+        max(window_start, keep_from), window_end, held, settle_days=settle_days).values())
+    product_plan = plan_product_range(
+        max(window_start, keep_from), window_end, held.get("product") or set(),
+        settle_days=settle_days, freshen_days=freshen_days if keywords_complete else 0,
+    )
+    if only_if_missing and not any(plan.values()) and not product_plan:
         logger.info("ads refresh: %s..%s is complete for every ad product, nothing to fetch",
                     window_start, window_end)
         return {**status(), "skipped": True}
@@ -297,7 +329,8 @@ async def run(
         "window_end": window_end,
         # What this run will actually ask Amazon for, so the screen can say "fetched SB 3-4 Oct"
         # rather than implying the whole window was re-downloaded.
-        "fetched": {p: (list(r) if r else None) for p, r in plan.items()},
+        "fetched": {**{p: (list(r) if r else None) for p, r in plan.items()},
+                    "product": list(product_plan) if product_plan else None},
     })
 
     try:
@@ -344,6 +377,18 @@ async def run(
             async with db_factory() as db:
                 await repository.save_entities(db, ad_groups)
             STATE["ad_groups"] = len(ad_groups)
+
+            # ── Product ads: the SKU list and each one's state ──
+            #
+            # What the last-active guard reads at preview: an ad group must keep one enabled SKU.
+            # ~13 pages, seconds. Isolated, because the keyword figures do not depend on it.
+            try:
+                product_ads = await spapi_ads.fetch_product_ads(client)
+                async with db_factory() as db:
+                    STATE["product_ads"] = await repository.replace_product_ads(db, product_ads)
+            except AdsError as exc:
+                STATE["product_error"] = f"The product-ad list could not be read: {exc}"
+                logger.warning("ads refresh: product ads failed: %s", exc)
             _progress("ad_groups", 2, 2)
 
         # ── The report ──
@@ -454,6 +499,32 @@ async def run(
             STATE["sb_error"] = f"The Sponsored Brands report failed: {exc}"
             logger.warning("ads refresh: SB report failed: %s", exc)
 
+        # ── SP product ads (SKU rules), per day ──
+        #
+        # A THIRD report, after the keyword ones and isolated like Sponsored Brands: the product rows
+        # are the same money as the keyword rows from the other side, so they go to their own table
+        # and a failure here costs nothing above.
+        STATE["product_rows"] = 0
+
+        async def store_product_chunk(chunk_rows, chunk_start, chunk_end):
+            async with db_factory() as chunk_db:
+                stored = await repository.save_product_daily(chunk_db, chunk_rows)
+            STATE["product_rows"] = STATE.get("product_rows", 0) + stored
+            logger.info("ads refresh: stored %d product-ad daily row(s) for %s..%s",
+                        stored, chunk_start, chunk_end)
+
+        try:
+            if product_plan:
+                await reports.fetch_targeting(
+                    *product_plan, report="product", sleep=sleep, on_chunk=store_product_chunk,
+                )
+            else:
+                logger.info("ads refresh: product ads already hold %s..%s, not re-requested",
+                            window_start, window_end)
+        except AdsError as exc:
+            STATE["product_error"] = f"The product-ad report failed: {exc}"
+            logger.warning("ads refresh: product-ad report failed: %s", exc)
+
         _progress("store", 2, 2)
 
         STATE.update({"phase": "done", "percent": 100})
@@ -506,6 +577,8 @@ async def run(
                     error=STATE.get("error"),
                     sb_error=STATE.get("sb_error"),
                     started_at=STATE.get("started_at"),
+                    product_rows=STATE.get("product_rows") or 0,
+                    product_error=STATE.get("product_error"),
                 )
         except Exception:  # noqa: BLE001 - bookkeeping must never fail the run it describes
             logger.exception("ads refresh: could not record the run")

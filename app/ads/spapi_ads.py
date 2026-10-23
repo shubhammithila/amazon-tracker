@@ -49,6 +49,10 @@ CAMPAIGNS = ("/sp/campaigns", "application/vnd.spCampaign.v3+json", "campaigns")
 AD_GROUPS = ("/sp/adGroups", "application/vnd.spAdGroup.v3+json", "adGroups")
 KEYWORDS = ("/sp/keywords", "application/vnd.spKeyword.v3+json", "keywords")
 TARGETS = ("/sp/targets", "application/vnd.spTargetingClause.v3+json", "targetingClauses")
+#: Sponsored Products PRODUCT ADS — one SKU in one ad group. Measured 23 Oct 2026 (read-only): 6,404
+#: ads, each `{adId, adGroupId, campaignId, asin, sku, state}`; 952 ad groups hold exactly ONE enabled
+#: ad, which is why a pause is checked against its siblings (`logic.last_active_refusals`).
+PRODUCT_ADS = ("/sp/productAds", "application/vnd.spProductAd.v3+json", "productAds")
 
 # ─── Sponsored Brands: a different API, not a variant of the one above ───────
 #
@@ -657,6 +661,40 @@ def _parse_bid_recommendations(payload: Mapping) -> dict[str, dict]:
     return out
 
 
+async def fetch_product_ads(client, *, ad_group_ids=None,
+                            states=("ENABLED", "PAUSED")) -> list[dict]:
+    """SP product ads as entity rows (`entity_type="product_ad"`, `name` = the SKU).
+
+    With ``ad_group_ids`` only those ad groups are listed (500 per filter), which is how `/ads/apply`
+    reads a row's live state AND its siblings in one pass. Without, the whole account (~13 pages).
+    """
+    filters_list: list[dict] = []
+    if ad_group_ids:
+        ids = sorted({str(g) for g in ad_group_ids if g})
+        filters_list = [{"adGroupIdFilter": {"include": ids[i:i + PAGE_SIZE]}}
+                        for i in range(0, len(ids), PAGE_SIZE)]
+    else:
+        filters_list = [{}]
+
+    out: list[dict] = []
+    for extra in filters_list:
+        filters = {**extra}
+        if states:
+            filters["stateFilter"] = {"include": [str(x).upper() for x in states]}
+        for row in await _list(client, PRODUCT_ADS, filters=filters):
+            out.append({
+                "entity_type": "product_ad",
+                "ad_product": "sp",
+                "entity_id": str(row.get("adId") or ""),
+                "parent_id": str(row.get("adGroupId") or ""),
+                "campaign_id": str(row.get("campaignId") or ""),
+                "name": row.get("sku") or row.get("asin") or "",
+                "asin": row.get("asin") or "",
+                "state": (row.get("state") or "").upper(),
+            })
+    return out
+
+
 async def fetch_current_bids(client, changes: Sequence[Mapping]) -> dict[str, dict]:
     """Re-read the LIVE bid **and state** for the rows a run is about to change.
 
@@ -683,6 +721,7 @@ async def fetch_current_bids(client, changes: Sequence[Mapping]) -> dict[str, di
     """
     from app.ads.logic import (
         WRITER_KEYWORD,
+        WRITER_PRODUCT_AD,
         WRITER_SB_KEYWORD,
         WRITER_SB_TARGET,
         WRITER_TARGET,
@@ -730,6 +769,19 @@ async def fetch_current_bids(client, changes: Sequence[Mapping]) -> dict[str, di
                     "bid": float(row["bid"]) if row.get("bid") is not None else None,
                     "state": row.get("state") or "",
                 }
+
+    # ── Product ads: listed by AD GROUP, so the answer carries every SIBLING too ──
+    #
+    # A pause must not leave an ad group with no enabled product ad, and that can only be judged
+    # with the other ads of the group in hand — so the groups of the rows being changed are listed
+    # whole, and each entry carries its `ad_group_id`. Lookups elsewhere are by id, so the extra
+    # siblings are harmless to every other caller.
+    if by_writer.get(WRITER_PRODUCT_AD):
+        groups = {str(c.get("ad_group_id") or "") for c in changes
+                  if c.get("writer") == WRITER_PRODUCT_AD}
+        for row in await fetch_product_ads(client, ad_group_ids=groups, states=()):
+            live[row["entity_id"]] = {"bid": None, "state": row["state"],
+                                      "ad_group_id": row["parent_id"], "writer": WRITER_PRODUCT_AD}
 
     sb_target_ids = set(by_writer.get(WRITER_SB_TARGET) or [])
     if sb_target_ids:
@@ -824,6 +876,7 @@ async def apply_changes(
     """
     from app.ads.logic import (
         WRITER_KEYWORD,
+        WRITER_PRODUCT_AD,
         WRITER_SB_KEYWORD,
         WRITER_SB_TARGET,
         WRITER_TARGET,
@@ -844,6 +897,12 @@ async def apply_changes(
     elif writer == WRITER_KEYWORD:
         path, head_type, id_field = KEYWORDS[0], KEYWORDS[1], "keywordId"
         body_key = "keywords"
+    elif writer == WRITER_PRODUCT_AD:
+        # `{"productAds": [{adId, state}]}` and SP's own 207 shape, keyed by `adId`. A product ad has
+        # no bid, so `_sp_payload_row` only ever writes `state` here (`plan_run` makes product rules
+        # state-only).
+        path, head_type, id_field = PRODUCT_ADS[0], PRODUCT_ADS[1], "adId"
+        body_key = "productAds"
     else:
         path, head_type, id_field = TARGETS[0], TARGETS[1], "targetId"
         body_key = "targetingClauses"

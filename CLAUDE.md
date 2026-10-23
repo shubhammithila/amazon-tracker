@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (2966 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (3003 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3720,6 +3720,35 @@ day."* The guard above keyed on the KEYWORD; it now keys on the keyword AND the 
   the builder as it was). `POST /ads/rules` takes `id` (update, rename allowed) and `replace`; a
   taken name is a **409**, never a silent overwrite. The `window.prompt` and the lone × are gone.
   `tests/test_ads_rule_guard.py`; `scripts/mutate_ads_state.py` 23/23.
+
+### A rule can turn ONE SKU off inside an ad group (23 Oct 2026)
+Asked for as *"just like I was able to turn off or on a keyword I should be able to turn off on a
+product in an ad group. product means sku… flex, easy ship and fba"*. A SKU in an ad group is a
+Sponsored Products **product ad** (`PUT /sp/productAds {adId, state}`, writer `product_ad`). Spec:
+`docs/superpowers/specs/2026-10-23-ads-product-ad-rules-design.md`.
+
+- **Measured first (read-only):** 6,404 product ads, 312 paused; **952 ad groups hold exactly ONE
+  enabled ad**; 1,194 hold one ASIN under several SKUs; last SKU token `fba` 2,508, `flex` 950, the
+  rest Easy Ship. **Sponsored Brands has no per-SKU ad** (an SB ad holds an ASIN list), so SKU rules
+  are SP only and the screen says so.
+- **`ads_product_daily` is its OWN table** (`c5e9a2f71d36`), filled by an `spAdvertisedProduct`
+  DAILY report (`groupBy advertiser` with `adId`/`adGroupId`) as a third, isolated phase of the Ads
+  refresh (`product_error`, `ads_refresh.product_rows`), planned like SP (`refresh.plan_product_range`).
+  **Never rows in `ads_performance_daily`**: a product ad's spend is the same money as its ad group's
+  keyword spend, so every campaign total would double. The ad list (state per ad) is cached in
+  `ads_entity` as `product_ad`, replaced whole each refresh (an empty fetch writes nothing).
+- **A rule has a `level`** (`keyword` | `product`, `ads_rule.level`). Product rules are on/off only,
+  get `SKU channel is FBA / Flex / Easy Ship` (`logic.sku_channel`, the Shipment tab's last-token rule
+  widened to three) and `SKU or ASIN contains …`, and their sentence starts `Products: ` so they are a
+  different rule for the once-a-day limit. Keyword sentences are unchanged.
+- **The last active SKU of an ad group is never turned off** (the owner's choice):
+  `logic.last_active_refusals` keeps the best seller on when a pause would empty a group, and an ad
+  group whose siblings are unknown keeps one. Preview runs it on the cached list with our own later
+  ledger states laid over it (`repository.enabled_product_ads`); `/ads/apply` runs it again on
+  Amazon's LIVE list (`fetch_current_bids` lists product ads by ad group) and reports `last_active`.
+  SKUs and keywords never share a run, and a SKU is never sent a bid.
+- `conftest.no_live_product_ads` stops every test listing product ads for real.
+  `tests/test_ads_product_ads.py`; `scripts/mutate_ads_state.py` now 37 mutations.
 
 ### 1,700 rows open as 7 lines: campaign → ad group → rows
 Asked for as *"when there are so many matches 1700. better to sort it campaign wise and ad group
