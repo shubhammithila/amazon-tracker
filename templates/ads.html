@@ -770,6 +770,22 @@ function renderConditions(){
   }).join("");
 }
 
+/* The amount controls for the action shown: the number box and its unit for a bid action, the ON/OFF
+   choice for "turn the keyword / SKU". The number box is REPLACED rather than relabelled, so a stale
+   numeric value cannot travel with a rule that has no use for it — and the unit is cleared, because
+   a state has no unit.
+
+   **Run on every render, not only on a `change` event.** A reload lets the browser put the previous
+   action back in the select WITHOUT firing `change`, and the page then showed "turn the keyword 10 %"
+   with the ON/OFF choice hidden — on both levels. */
+function syncActionControls(){
+  const value = $("action").value;
+  const state = isStateRun(value);
+  $("amount").style.display = state ? "none" : "";
+  $("state-amount").style.display = state ? "" : "none";
+  $("amount-unit").textContent = state ? "" : (value.endsWith("_pct") ? "%" : "₹");
+}
+
 /* The level switch. Switching drops conditions the other level cannot use (a bid on a SKU, a channel
    on a keyword), forces the on/off action for products, and clears the plan on screen, which belongs
    to the other kind of rule. */
@@ -784,10 +800,8 @@ function renderLevel(){
   [...$("action").options].forEach(o => { o.disabled = product && o.value !== "set_state"; });
   const stateOption = [...$("action").options].find(o => o.value === "set_state");
   if(stateOption) stateOption.textContent = product ? "turn the SKU" : "turn the keyword";
-  if(product && $("action").value !== "set_state"){
-    $("action").value = "set_state";
-    $("action").dispatchEvent(new Event("change"));
-  }
+  if(product && $("action").value !== "set_state") $("action").value = "set_state";
+  syncActionControls();
 }
 function setLevel(next){
   if(next === level) return;
@@ -2033,15 +2047,7 @@ $("add-condition").addEventListener("click", () => {
   renderConditions();
 });
 
-$("action").addEventListener("change", () => {
-  const value = $("action").value;
-  const state = isStateRun(value);
-  // The number box is REPLACED rather than relabelled, so a stale numeric value cannot travel with a
-  // rule that has no use for it — and the unit is cleared, because a state has no unit.
-  $("amount").style.display = state ? "none" : "";
-  $("state-amount").style.display = state ? "" : "none";
-  $("amount-unit").textContent = state ? "" : (value.endsWith("_pct") ? "%" : "₹");
-});
+$("action").addEventListener("change", syncActionControls);
 
 $("preview-btn").addEventListener("click", runPreview);
 

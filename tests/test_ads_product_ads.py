@@ -394,3 +394,17 @@ def test_the_page_offers_the_level_and_posts_it():
     assert "window_days: 7, level," in PAGE                      # the saved rule
     assert 'row.writer === "product_ad"' in PAGE                 # channel and ASIN cells
     assert "body.last_active" in PAGE
+
+
+def test_the_on_off_choice_follows_the_action_shown_even_without_a_change_event():
+    """Reported as "turn the keyword 10%" on both levels: after a reload the browser put the
+    previous action back WITHOUT firing `change`, so the number box stayed up and the ON/OFF choice
+    stayed hidden. The controls are now synced on every render, through `renderLevel`."""
+    import re
+    level = re.search(r"function renderLevel\(\)\{[\s\S]*?\n\}", PAGE).group(0)
+    assert "syncActionControls();" in level
+    sync = re.search(r"function syncActionControls\(\)\{[\s\S]*?\n\}", PAGE).group(0)
+    assert '$("state-amount").style.display = state ? "" : "none";' in sync
+    assert '$("action").addEventListener("change", syncActionControls);' in PAGE
+    render = re.search(r"function render\(\)\{[\s\S]*?\n\}", PAGE).group(0)
+    assert "renderLevel();" in render
