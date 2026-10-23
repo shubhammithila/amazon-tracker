@@ -247,7 +247,10 @@ async def ads_dashboard(
 
     # A product we have never held rows for is a typo, not an empty account. Answering with zeroes
     # would read as "no Sponsored Brands spend" rather than "there is no such product".
-    known_products = await repository.daily_products(db)
+    # Which days are held, per product — read ONCE, and every completeness answer, coverage span and
+    # product list below comes from it. Asked separately it was ~10 scans of the whole table per click.
+    held = await repository.held_days_by_product(db)
+    known_products = sorted(held)
     if ad_product and ad_product not in known_products:
         return JSONResponse(
             {"error": f"Unknown ad product {ad_product!r}. Held: "
@@ -267,7 +270,7 @@ async def ads_dashboard(
     # point of the per-day grain; what has gone is the second path that could disagree with it.
     # `daily_range_complete` checks EVERY day rather than the endpoints, so a range with an interior
     # gap declines to answer instead of summing short.
-    completeness = await repository.range_completeness(db, window_start, window_end)
+    completeness = await repository.range_completeness(db, window_start, window_end, held=held)
 
     # **When one product is asked for, only THAT product's days gate the answer.** The whole point of
     # the opt-in: `sp` is complete for this window and `sb` is 24 days behind, so requiring both would
@@ -277,15 +280,20 @@ async def ads_dashboard(
     else:
         complete = completeness["complete"]
 
+    # **The campaign list needs only per-campaign totals, summed in SQL** (`campaign_totals`): summing
+    # every keyword row here took 2.4 s for 30 days and made the 7d/14d/30d buttons slow. The keyword
+    # rows themselves are read only when ONE campaign is asked for, which is when they are shown.
     rows = []
-    if complete:
+    totals_by_campaign: dict[str, dict] = {}
+    if complete and campaign_id:
         rows = await repository.sum_daily(
-            db, window_start, window_end,
-            campaign_ids=[campaign_id] if campaign_id else None,
-            ad_product=ad_product,
+            db, window_start, window_end, campaign_ids=[campaign_id], ad_product=ad_product,
         )
-    if rows:
-        rows = await repository.attach_names(db, rows)
+        if rows:
+            rows = await repository.attach_names(db, rows)
+    elif complete:
+        totals_by_campaign = await repository.campaign_totals(
+            db, window_start, window_end, ad_product=ad_product)
     cached = complete
 
     campaigns = await repository.load_campaigns(db, include_paused=include_paused)
@@ -300,7 +308,7 @@ async def ads_dashboard(
 
     # Roll the report rows up per campaign. Summed from the SAME rows the table shows, never a
     # second query — the Orders tab's "86 orders beside 87 lines" was exactly that mistake.
-    per_campaign: dict[str, dict] = {}
+    per_campaign: dict[str, dict] = dict(totals_by_campaign)
     for row in rows:
         bucket = per_campaign.setdefault(row["campaign_id"], {
             "spend": 0.0, "sales": 0.0, "clicks": 0, "impressions": 0, "orders": 0, "rows": 0,
@@ -351,11 +359,11 @@ async def ads_dashboard(
         # NOTHING** — it is merged across products, and the screen trusting it to mark a preset
         # "instant" is the bug being fixed here: it promised summed-instantly for three windows the
         # server refused, because `sp` spanned 59 days while `sb` held 7.
-        "daily_coverage": list(await repository.daily_coverage(db) or ()),
+        "daily_coverage": ([min(min(d) for d in held.values()), max(max(d) for d in held.values())]
+                           if any(held.values()) else []),
         # Per product, so a note can say WHICH report is behind and by how much.
         "daily_coverage_by_product": {
-            product: list(span)
-            for product, span in (await repository.daily_coverage_by_product(db)).items()
+            product: [min(days), max(days)] for product, days in sorted(held.items()) if days
         },
         # **The same computation the server gates on**, for the window on screen and for each preset
         # button. One rule, one answer — see `repository.daily_range_complete`.
@@ -372,7 +380,7 @@ async def ads_dashboard(
             str(preset): {
                 "start": preset_start,
                 "end": preset_end,
-                **await repository.range_completeness(db, preset_start, preset_end),
+                **await repository.range_completeness(db, preset_start, preset_end, held=held),
             }
             for preset in PRESET_DAYS
             for preset_start, preset_end in (refresh.default_window(preset),)

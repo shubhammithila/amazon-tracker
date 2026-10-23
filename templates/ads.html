@@ -80,6 +80,8 @@ h2{font-size:19px;font-weight:600;margin-bottom:2px}
 .win-btn{border:1px solid var(--border-strong);background:var(--surface);border-radius:8px;
   padding:6px 12px;font-size:12.5px;font-weight:600;cursor:pointer;color:var(--text-muted)}
 .win-btn:hover{border-color:var(--accent)}
+/* Figures being replaced by a load in flight: dimmed, not blanked, so the page never jumps. */
+#kpis.loading, #table-area.loading{opacity:.55;transition:opacity .12s}
 /* The saved-rules panel: one small card per rule in a grid, the actions underneath, so seven rules
    take two short rows rather than a tall list. */
 .rules-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
@@ -415,12 +417,28 @@ function windowQuery(){
        + `&show_automated=${showAutomated ? "true" : "false"}` + productQuery();
 }
 
+/* Each load gets a number, and only the NEWEST may render: clicking 7d then 30d quickly must end on
+   30d even if the 7d answer arrives second. While a load is out the figures are dimmed (`loading`),
+   so a click is acknowledged at once rather than looking ignored. */
+let loadSeq = 0;
+function setLoading(on){
+  ["kpis", "table-area"].forEach(id => $(id).classList.toggle("loading", on));
+}
+
 async function load(){
+  const seq = ++loadSeq;
+  setLoading(true);
   const w = remembered("window", null);
   const base = w ? `start=${encodeURIComponent(w[0])}&end=${encodeURIComponent(w[1])}` : "days=7";
-  const response = await fetch(`/ads?${base}&include_paused=${showPaused ? "true" : "false"}`
-    + `&show_automated=${showAutomated ? "true" : "false"}` + productQuery());
-  const body = await response.json();
+  let response, body;
+  try {
+    response = await fetch(`/ads?${base}&include_paused=${showPaused ? "true" : "false"}`
+      + `&show_automated=${showAutomated ? "true" : "false"}` + productQuery());
+    body = await response.json();
+  } finally {
+    if(seq === loadSeq) setLoading(false);
+  }
+  if(seq !== loadSeq) return;
   if(!response.ok){
     $("messages").innerHTML = `<div class="banner error">${esc(body.error || "Could not load.")}</div>`;
     return;
@@ -2198,6 +2216,8 @@ $("window-bar").addEventListener("click", async e => {
 
   const preset = e.target.closest("[data-start]");
   if(preset){
+    // Lit at once, before the figures arrive, so the click never looks ignored.
+    document.querySelectorAll("#window-bar .win-btn").forEach(b => b.classList.toggle("on", b === preset));
     remember("window", [preset.dataset.start, preset.dataset.end]);
     await load();
     return;

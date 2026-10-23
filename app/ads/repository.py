@@ -389,7 +389,27 @@ async def daily_products(db: AsyncSession) -> list[str]:
     )
 
 
-async def range_completeness(db: AsyncSession, start: str, end: str) -> dict:
+async def held_days_by_product(db: AsyncSession) -> dict[str, set[str]]:
+    """`{ad_product: {day, ...}}` for every product that has rows — ONE query.
+
+    The Ads tab asks "which days are held" for the window on screen, for each of three presets and for
+    two coverage spans on every click. Asked separately that was ~10 scans of a ~600,000-row table,
+    about a second per click on production; read once here and passed to `range_completeness(held=…)`,
+    every answer comes from the same reading, so they also cannot disagree with each other.
+    """
+    rows = (await db.execute(
+        select(AdsPerformanceDaily.ad_product, AdsPerformanceDaily.day)
+        .group_by(AdsPerformanceDaily.ad_product, AdsPerformanceDaily.day)
+    )).all()
+    out: dict[str, set[str]] = {}
+    for product, day in rows:
+        if product:
+            out.setdefault(product, set()).add(day)
+    return out
+
+
+async def range_completeness(db: AsyncSession, start: str, end: str, *,
+                             held: dict[str, set[str]] | None = None) -> dict:
     """Is this range summable, and if not, **which product is missing which days**?
 
     ``{"complete": bool, "products": [...], "missing": {product: [day, ...]},
@@ -415,7 +435,9 @@ async def range_completeness(db: AsyncSession, start: str, end: str) -> dict:
     `missing` is capped at `MISSING_DAYS_SHOWN`; `missing_count` is always exact, because "missing 25
     days" and "missing 5 days" call for different actions.
     """
-    products = await daily_products(db)
+    if held is None:
+        held = await held_days_by_product(db)
+    products = sorted(held)
     answer: dict = {
         "complete": bool(products),
         "products": products,
@@ -428,10 +450,10 @@ async def range_completeness(db: AsyncSession, start: str, end: str) -> dict:
 
     wanted = expected_days(start, end)
     for product in products:
-        held = await daily_days_held(db, ad_product=product)
-        if held:
-            answer["held"][product] = [min(held), max(held)]
-        absent = [day for day in wanted if day not in held]
+        days = held[product]
+        if days:
+            answer["held"][product] = [min(days), max(days)]
+        absent = [day for day in wanted if day not in days]
         if absent:
             answer["complete"] = False
             answer["missing_count"][product] = len(absent)
@@ -766,6 +788,44 @@ async def enabled_product_ads(db: AsyncSession, ad_group_ids) -> dict[str, set[s
         out.setdefault(group, set())
         if str(state or "").upper() == logic.STATE_ENABLED:
             out[group].add(ad_id)
+    return out
+
+
+async def campaign_totals(
+    db: AsyncSession,
+    start: str,
+    end: str,
+    *,
+    ad_product: str | None = None,
+) -> dict[str, dict]:
+    """`{campaign_id: {spend, sales, clicks, impressions, orders, rows}}` for a range, summed IN SQL.
+
+    **The campaign list needs only these totals**, and building them by summing every keyword row in
+    Python (`sum_daily`) cost 2.4 s for 30 days on production: 27,728 rows fetched to make 29. Same
+    per-day rows, same window, so the figures are the ones `sum_daily` would give — a test asserts it.
+    `rows` counts distinct keywords and targets, which is what the old roll-up counted.
+    """
+    query = (
+        select(
+            AdsPerformanceDaily.campaign_id,
+            func.sum(AdsPerformanceDaily.spend),
+            func.sum(AdsPerformanceDaily.sales),
+            func.sum(AdsPerformanceDaily.clicks),
+            func.sum(AdsPerformanceDaily.impressions),
+            func.sum(AdsPerformanceDaily.orders),
+            func.count(func.distinct(AdsPerformanceDaily.entity_id + ":" + AdsPerformanceDaily.ad_product)),
+        )
+        .where(AdsPerformanceDaily.day >= start, AdsPerformanceDaily.day <= end)
+        .group_by(AdsPerformanceDaily.campaign_id)
+    )
+    if ad_product:
+        query = query.where(AdsPerformanceDaily.ad_product == ad_product)
+    out: dict[str, dict] = {}
+    for row in (await db.execute(query)).all():
+        out[row[0] or ""] = {
+            "spend": float(row[1] or 0), "sales": float(row[2] or 0), "clicks": int(row[3] or 0),
+            "impressions": int(row[4] or 0), "orders": int(row[5] or 0), "rows": int(row[6] or 0),
+        }
     return out
 
 
