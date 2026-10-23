@@ -3714,6 +3714,12 @@ day."* The guard above keyed on the KEYWORD; it now keys on the keyword AND the 
 - `/ads/apply` re-checks with the sentence the preview returned and stamps `ads_rule.last_run_at` on
   saved rules with the same sentence. Times on the notes and refusals are IST (they were sliced from
   UTC strings, 5½ hours early).
+- **Run history** has a **⬇ Excel** per run (`GET /ads/runs/{id}/download.xlsx`: every change, the
+  campaign and ad group by name, old → new, Amazon's answer per row, IST) and shows times in IST (they
+  were UTC, 5½ hours behind). **The 7d / 14d / 30d buttons** read campaign totals summed in SQL
+  (`repository.campaign_totals`) and the held days once per click (`held_days_by_product`): on
+  production 30 days went 3.8 s → 0.7 s and 7 days 2.0 s → 0.2 s. The clicked button lights at once,
+  the figures dim while loading, and only the newest click may render.
 - **Saved rules are a panel**: one small CARD per rule in a grid (name, sentence, last run, actions underneath; seven rules fit in two rows), **Use · Edit · Copy ·
   Delete** (delete asks first), a search box above 8 rules, and a save area with a name box —
   `Save` for a new rule, `Save changes` / `Save as new` / `Cancel` while editing (Cancel restores
