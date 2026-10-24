@@ -286,8 +286,43 @@ async def _fetch_sheet_text() -> str | None:
     return response.text
 
 
-async def load_catalogue() -> tuple[dict[str, dict], str | None, str]:
+#: How long a good read of the sheet is shared by every screen. **Measured: reading it from Google
+#: took 1.1 s, on every Profit, Repeat, Customer value, Analytics, Projections and Orders load**, which
+#: was most of the wait when switching Portfolio windows and sub-tabs. A sheet edit shows within this
+#: long; the Shipment plan builder asks for a fresh read (`fresh=True`), because that is the moment the
+#: owner has just edited the Active flags and uploaded.
+SHEET_MEMO_SECONDS = 300
+_MEMO: dict = {}
+
+
+async def content_stamp() -> str:
+    """A short fingerprint of the product list's CONTENTS (name, weight, brand, Active per ASIN).
+
+    Part of the Portfolio payload caches' data version: a re-read of the sheet that comes back
+    unchanged keeps them valid, and an edited Active flag or weight drops them at the next read.
+    """
+    import hashlib
+    import json as _json
+
+    products, _warning, source = await load_catalogue()
+    body = _json.dumps(
+        [source] + sorted([a, r.get("name"), r.get("weight"), r.get("brand"), bool(r.get("active"))]
+                          for a, r in products.items()),
+        default=str,
+    )
+    return hashlib.sha1(body.encode("utf-8")).hexdigest()[:16]
+
+
+def clear_memo() -> None:
+    """Forget the shared copy (tests, and anything that must see an edit at once)."""
+    _MEMO.clear()
+
+
+async def load_catalogue(*, fresh: bool = False) -> tuple[dict[str, dict], str | None, str]:
     """({ASIN: record}, warning or None, source).
+
+    A good SHEET read is shared for `SHEET_MEMO_SECONDS` unless ``fresh``; a fallback to the cached
+    file is never shared, so a Google outage is retried on the next call.
 
     ``source`` is one of ``"sheet"``, ``"cache"`` or ``"none"``, so the caller can say
     on screen where the plan's product list came from. A plan built from last week's
@@ -297,6 +332,12 @@ async def load_catalogue() -> tuple[dict[str, dict], str | None, str]:
     Never raises. The caller gets the best answer available plus a warning describing
     what it had to settle for.
     """
+    import time
+
+    memo = _MEMO.get("sheet")
+    if not fresh and memo and time.monotonic() - memo[0] < SHEET_MEMO_SECONDS:
+        return {a: dict(r) for a, r in memo[1].items()}, None, "sheet"
+
     text = await _fetch_sheet_text()
     if text:
         products = parse_catalogue(text)
@@ -304,6 +345,7 @@ async def load_catalogue() -> tuple[dict[str, dict], str | None, str]:
             _write_cache(
                 {a: bool(r["active"]) for a, r in products.items()}, products
             )
+            _MEMO["sheet"] = (time.monotonic(), {a: dict(r) for a, r in products.items()})
             return products, None, "sheet"
         logger.warning("Product sheet fetched but contained no ASIN rows")
 

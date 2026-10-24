@@ -276,13 +276,15 @@ def no_live_product_sheet(request, monkeypatch):
     the genuine functions — testing their fallbacks is the entire point of that file —
     and fakes httpx underneath them instead.
     """
+    from app.shipment import catalogue as _catalogue
+    _catalogue.clear_memo()
     if request.node.get_closest_marker("real_catalogue"):
         return
 
     async def _no_flags():
         return {}, None
 
-    async def _no_catalogue():
+    async def _no_catalogue(**_kwargs):
         return {}, None, "none"
 
     monkeypatch.setattr(
@@ -363,6 +365,21 @@ def no_live_bedrock(monkeypatch):
     async def refuse(**kwargs):
         raise AssertionError("a test tried to call Bedrock for real; pass a fake `converse`")
     monkeypatch.setattr("app.assistant.bedrock.converse", refuse)
+
+
+@pytest.fixture(autouse=True)
+def fresh_payload_caches():
+    """Every in-memory payload cache starts empty. They are keyed by a data version, and two tests
+    that both start from an empty database share a version, so a cached answer from one would be
+    served to the next."""
+    from app.projections import service as projections_service
+    from app.repeat import service as repeat_service, value_service
+    from app.routers import portfolio as portfolio_router
+    portfolio_router.clear_dashboard_cache()
+    repeat_service._CACHE.clear()
+    value_service._CACHE.clear()
+    projections_service._CACHE.clear()
+    yield
 
 
 @pytest.fixture(autouse=True)

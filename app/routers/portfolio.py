@@ -42,7 +42,78 @@ logger = logging.getLogger(__name__)
 STALE_RATING_DAYS = 3
 
 
+#: The finished Profit payload, per (window, include_inactive), for one data version.
+#:
+#: **Measured on production: 1.0 / 1.6 / 2.2 s for 7 / 30 / 60 days, on every click**, of which the
+#: arithmetic was 0.04 s — the rest was reading the same stored rows again (and the MRP sheet). The
+#: answer only changes when its inputs do, so it is kept until `_data_version` moves, and for at most
+#: the MRP sheet's contents (`catalogue.content_stamp`), so an edited Active flag drops it too. The
+#: time limit is only a safety belt. A deep copy is handed out, because callers decorate the result
+#: (`_attach_stock`) or filter it (the export). At most `DASHBOARD_CACHE_ENTRIES` windows are kept,
+#: so custom ranges cannot grow it without bound on a 951 MB box. `portfolio.warm` keeps the
+#: presets built, so the first click after a refresh is quick too.
+DASHBOARD_CACHE_SECONDS = 6 * 3600
+DASHBOARD_CACHE_ENTRIES = 12
+_DASH_CACHE: dict = {}
+
+
+async def _data_version(db: AsyncSession) -> tuple:
+    """Everything the Profit figures are computed from that can change: the stored days (and SB
+    attribution, which arrives with an Ads refresh), the owner's decisions, thresholds and
+    categories, and the ratings scrape. One cheap MAX/COUNT each."""
+    from sqlalchemy import func, select
+
+    from app.models import (
+        AdsDaily, AdsRefresh, EconomicsDaily, PortfolioSettings, ProductCategory,
+        ProductDecision, RatingHistory,
+    )
+
+    async def one(query):
+        return (await db.execute(query)).one()
+
+    return (
+        tuple(await one(select(func.max(EconomicsDaily.fetched_at)))),
+        tuple(await one(select(func.max(AdsDaily.fetched_at)))),
+        tuple(await one(select(func.max(AdsRefresh.id)))),
+        tuple(await one(select(func.count(ProductDecision.id), func.max(ProductDecision.decided_at)))),
+        tuple(await one(select(func.max(PortfolioSettings.updated_at)))),
+        tuple(await one(select(func.count(ProductCategory.id), func.max(ProductCategory.updated_at)))),
+        tuple(await one(select(func.max(RatingHistory.id)))),
+    )
+
+
+def clear_dashboard_cache() -> None:
+    _DASH_CACHE.clear()
+
+
 async def _dashboard(
+    db: AsyncSession,
+    window: tuple[str, str] | None = None,
+    *,
+    include_inactive: bool = False,
+) -> dict:
+    """`_build_dashboard`, cached per data version. See `_DASH_CACHE`."""
+    import copy
+    import time
+
+    window = window or await repository.latest_window(db)
+    version = (date.today(), await _data_version(db), await catalogue.content_stamp())
+    if _DASH_CACHE.get("version") != version:
+        _DASH_CACHE.clear()
+        _DASH_CACHE["version"] = version
+    key = (tuple(window) if window else None, bool(include_inactive))
+    hit = _DASH_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < DASHBOARD_CACHE_SECONDS:
+        return copy.deepcopy(hit[1])
+    data = await _build_dashboard(db, window, include_inactive=include_inactive)
+    entries = [k for k in _DASH_CACHE if k != "version"]
+    if len(entries) >= DASHBOARD_CACHE_ENTRIES:
+        _DASH_CACHE.pop(min(entries, key=lambda k: _DASH_CACHE[k][0]))
+    _DASH_CACHE[key] = (time.monotonic(), copy.deepcopy(data))
+    return data
+
+
+async def _build_dashboard(
     db: AsyncSession,
     window: tuple[str, str] | None = None,
     *,

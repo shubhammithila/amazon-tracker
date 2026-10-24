@@ -1,4 +1,5 @@
-{# Profit | Repeat customers | Customer value | Analytics | Projections: the Portfolio sub-tabs. A fragment (no
+{# Profit | Projections | Repeat customers | Customer value | Analytics: the Portfolio sub-tabs (Projections
+   second, as asked). A fragment (no
    <head>), so it is exempt from the stylesheet-link rule in tests/test_theme.py; each page styles .seg
    itself. Each tab shows only to a login that can open it: the first four need Portfolio,
    Projections needs Projections. With no `grant` (an admin, or a test) every tab shows. #}
@@ -7,11 +8,13 @@
 <div class="seg pf-tabs">
   {% if can_pf %}
   <a class="seg-btn{% if pf_tab == 'profit' %} on{% endif %}" href="/portfolio-page">Profit</a>
-  <a class="seg-btn{% if pf_tab == 'repeat' %} on{% endif %}" href="/portfolio-page/repeat">Repeat customers</a>
-  <a class="seg-btn{% if pf_tab == 'value' %} on{% endif %}" href="/portfolio-page/value">Customer value</a>
-  <a class="seg-btn{% if pf_tab == 'analytics' %} on{% endif %}" href="/portfolio-page/analytics">Analytics</a>
   {% endif %}
   {% if can_pj %}
   <a class="seg-btn{% if pf_tab == 'projections' %} on{% endif %}" href="/portfolio-page/projections">Projections</a>
+  {% endif %}
+  {% if can_pf %}
+  <a class="seg-btn{% if pf_tab == 'repeat' %} on{% endif %}" href="/portfolio-page/repeat">Repeat customers</a>
+  <a class="seg-btn{% if pf_tab == 'value' %} on{% endif %}" href="/portfolio-page/value">Customer value</a>
+  <a class="seg-btn{% if pf_tab == 'analytics' %} on{% endif %}" href="/portfolio-page/analytics">Analytics</a>
   {% endif %}
 </div>

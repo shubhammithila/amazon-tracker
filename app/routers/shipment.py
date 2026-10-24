@@ -552,6 +552,8 @@ async def generate_plan(
     #
     # Never raises: on a fetch failure this returns the cached copy (or nothing) plus
     # a warning, because a Google outage must not stop the owner building a plan.
+    # Fresh, never the shared copy: the owner edits the sheet's Active flags right before uploading.
+    catalogue.clear_memo()
     sheet_products, sheet_warning, sheet_source = await catalogue.load_catalogue()
 
     # The union, so neither source can lose a product on its own:

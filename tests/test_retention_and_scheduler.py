@@ -249,6 +249,8 @@ def test_all_scheduled_jobs_are_registered(monkeypatch):
         "daily_product_scrape", "daily_keyword_track", "daily_history_purge",
         "order_refresh", "portfolio_refresh", "ads_refresh", "ads_refresh_retry",
         "repeat_refresh", "fba_inventory_refresh", "analytics_refresh",
+        # Keeps the Portfolio sub-tabs' answers built (read-only; app/portfolio/warm.py).
+        "portfolio_warm",
     }
 
 

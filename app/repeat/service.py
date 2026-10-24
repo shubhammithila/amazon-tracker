@@ -81,8 +81,47 @@ async def prepare(db, catalogue, brand: str, since: str) -> Context:
     return Context(lines, flavour_of, brand_of, names, category_of, everything, brand)
 
 
+#: The Repeat customers payload, per brand, for one data version. **Measured: 4.5 s cold and 2.3 s
+#: warm on production, on every visit to the sub-tab and every brand switch.** It changes only when
+#: new order lines, a refresh run, the economics (FBA share), a category or the MRP sheet's contents
+#: does; the time limit is only a safety belt. Handed out as a copy because the export reorders rows.
+CACHE_SECONDS = 6 * 3600
+_CACHE: dict = {}
+
+
+async def _data_version(db) -> tuple:
+    from sqlalchemy import func, select
+
+    from app.models import CustomerOrderLine, EconomicsDaily, ProductCategory, RepeatRefresh
+    q = lambda *cols: select(*cols)  # noqa: E731
+    return (tuple((await db.execute(q(func.max(RepeatRefresh.id)))).one()),
+            tuple((await db.execute(q(func.max(CustomerOrderLine.fetched_at)))).one()),
+            tuple((await db.execute(q(func.max(EconomicsDaily.fetched_at)))).one()),
+            tuple((await db.execute(q(func.count(ProductCategory.id),
+                                      func.max(ProductCategory.updated_at)))).one()))
+
+
 async def build_payload(db, brand: str | None, today: date) -> dict:
+    """`_build_payload`, cached per brand and data version. See `_CACHE`."""
+    import copy
+    import time
+
+    from app.shipment import catalogue as _catalogue
+
     brand = brand or DEFAULT_BRAND
+    version = (today, await _data_version(db), await _catalogue.content_stamp())
+    if _CACHE.get("version") != version:
+        _CACHE.clear()
+        _CACHE["version"] = version
+    hit = _CACHE.get(brand)
+    if hit and time.monotonic() - hit[0] < CACHE_SECONDS:
+        return copy.deepcopy(hit[1])
+    payload = await _build_payload(db, brand, today)
+    _CACHE[brand] = (time.monotonic(), copy.deepcopy(payload))
+    return payload
+
+
+async def _build_payload(db, brand: str, today: date) -> dict:
     runs = await repository.done_runs(db)
     # Only a run that fetched RECENT days can say the screen's data is at risk; see last_run.
     last = await repository.last_run(

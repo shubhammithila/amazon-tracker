@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (3003 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (3021 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3344,6 +3344,28 @@ month with sales) and refuses Oct 2024: Amazon keeps about two years. Both the e
   theme colours. **`${{` inside a JS template literal is a Jinja tag** and broke the page render;
   keep object literals out of `${…}` (`DONUT_WORDS`). `₹/kg = sales ÷ kg ordered`; `per_kg`,
   category traffic, product `tacos` and `category_names` come from the server.
+
+## Portfolio sub-tabs answer from caches, kept warm (24 Oct 2026)
+Reported as *"this transition lag and the speed at which the page loads is also an issue in the
+portfolio tab… everything should be seamless and as fast as possible"*, with *"take the projections
+sub tab on second number"* (tabs now Profit · Projections · Repeat customers · Customer value ·
+Analytics). Measured on production first: Profit data **1.0 / 1.6 / 2.2 s** for 7 / 30 / 60 days and
+Repeat customers **2.3–4.5 s**, on every click, while the Profit arithmetic was 0.04 s; reading the
+MRP sheet from Google was **1.1 s** of every load on six screens.
+
+- **The MRP sheet is shared for 5 minutes** (`catalogue.SHEET_MEMO_SECONDS`, copies handed out); only
+  a good sheet read is shared. The Shipment plan builder calls `catalogue.clear_memo()` first, because
+  that is when the owner has just edited the Active flags.
+- **Profit (`routers.portfolio._dashboard`) and Repeat (`repeat.service.build_payload`) cache their
+  finished payload** per window / brand under a data version: the stored days, Ads refresh (SB
+  attribution), decisions, thresholds, categories, ratings, order lines, **and the sheet's contents**
+  (`catalogue.content_stamp`), so an unchanged re-read keeps them and an edited flag drops them.
+  Deep copies are handed out (callers decorate and filter); at most 12 Profit windows are kept.
+- **`app/portfolio/warm.py`**, job `portfolio_warm` every 5 minutes (first a minute after start):
+  builds the Profit presets, Projections, Repeat and Customer value, so the first click after a
+  refresh is quick too. Read-only; only version checks when nothing has changed.
+- The Profit window buttons light at once, the figures dim while loading, and only the newest click
+  renders. `conftest.fresh_payload_caches` empties every cache per test. `tests/test_portfolio_speed.py`.
 
 ## Portfolio → "Ask": a read-only assistant over the three sub-tabs
 

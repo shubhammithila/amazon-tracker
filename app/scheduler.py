@@ -479,6 +479,11 @@ async def scheduled_order_refresh():
         )
 
 
+#: How often the Portfolio warm-up checks its caches. Inside the sheet's 5-minute share, so an edited
+#: Active flag is rebuilt in the background rather than on the owner's next click.
+PORTFOLIO_WARM_MINUTES = 5
+
+
 def setup_scheduler():
     """Register the background jobs. Nothing runs unless a flag asks for it.
 
@@ -647,6 +652,21 @@ def setup_scheduler():
         coalesce=True,
     )
     parts.append(f"repeat customers at {ist.label(*REPEAT_REFRESH_IST)}")
+
+    # Keeps the Portfolio sub-tabs' answers built (see `app/portfolio/warm.py`): every few minutes,
+    # first a minute after start so a deploy does not leave the first click to pay the build.
+    # Read-only, and only version checks when nothing has changed.
+    from app.portfolio import warm as portfolio_warm
+    scheduler.add_job(
+        portfolio_warm.warm,
+        IntervalTrigger(minutes=PORTFOLIO_WARM_MINUTES),
+        id="portfolio_warm",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now() + timedelta(seconds=60),
+    )
+    parts.append(f"portfolio warm-up every {PORTFOLIO_WARM_MINUTES}m")
 
     analytics_utc = ist.utc_hhmm(*ANALYTICS_REFRESH_IST)
     scheduler.add_job(

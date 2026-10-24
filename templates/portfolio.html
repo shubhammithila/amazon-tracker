@@ -70,6 +70,8 @@ h2{font-size:19px;font-weight:600;margin-bottom:2px}
 #progress-label{font-size:12px;color:var(--text-muted)}
 
 .kpis{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+/* Figures being replaced by a load in flight: dimmed, not blanked, so the page never jumps. */
+#kpis.loading, #table-area.loading{opacity:.55;transition:opacity .12s}
 .kpi{flex:1 1 130px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
 .kpi .v{font-size:21px;font-weight:700;line-height:1.15}
 .kpi .k{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
@@ -684,17 +686,30 @@ async function downloadExport(format, btn){
   }
 }
 
+/* Each load is numbered and only the NEWEST may render: clicking 7d then 30d quickly must end on 30d
+   even if the 7d answer arrives second. While a load is out the figures dim (`loading`), so a click
+   is acknowledged at once instead of looking ignored. */
+let loadSeq = 0;
+function setLoading(on){
+  ["kpis", "table-area"].forEach(id => { const el = $(id); if(el) el.classList.toggle("loading", on); });
+}
+
 async function load(){
+  const seq = ++loadSeq;
+  setLoading(true);
   try{
     const r = await fetch("/portfolio" + payloadQuery());
     const body = await r.json();
+    if(seq !== loadSeq) return;
     if(!r.ok){ message(body.error || "Could not load the portfolio.", "error"); return; }
     data = body;
     applyLayoutFrom(data);
     render();
     renderRefresh(data.refresh);
   }catch(err){
-    message("Could not reach the server.", "error");
+    if(seq === loadSeq) message("Could not reach the server.", "error");
+  }finally{
+    if(seq === loadSeq) setLoading(false);
   }
 }
 
@@ -1975,6 +1990,8 @@ $("search").addEventListener("input", renderTable);
 $("window-bar").addEventListener("click", async e => {
   const preset = e.target.closest(".win-btn");
   if(preset){
+    // Lit at once, before the figures arrive, so the click never looks ignored.
+    document.querySelectorAll("#window-bar .win-btn").forEach(b => b.classList.toggle("on", b === preset));
     window_ = {start: preset.dataset.start, end: preset.dataset.end};
     remember("window", window_);
     await load();
