@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ads import logic
 from app.models import (
+    AdsCoverageIgnore,
     AdsEntity,
     AdsMutation,
     AdsPerformanceDaily,
@@ -753,12 +754,59 @@ async def replace_product_ads(db: AsyncSession, rows: list[dict]) -> int:
     values = [{
         "entity_type": "product_ad", "ad_product": "sp", "entity_id": str(r["entity_id"]),
         "parent_id": r.get("parent_id") or None, "campaign_id": r.get("campaign_id") or None,
-        "name": (r.get("name") or "")[:500], "state": r.get("state") or None, "fetched_at": now,
+        "name": (r.get("name") or "")[:500], "state": r.get("state") or None,
+        "asin": (r.get("asin") or "")[:10] or None, "fetched_at": now,
     } for r in rows]
     for start in range(0, len(values), 5000):
         await db.execute(insert(AdsEntity), values[start:start + 5000])
     await db.commit()
     return len(values)
+
+
+async def add_product_ads_to_cache(db: AsyncSession, rows: list[dict]) -> int:
+    """Put product ads the SKU-coverage Add just created into the cached list, so the coverage panel
+    stops naming them at once rather than at the next morning's refresh. Skips ids already held."""
+    rows = [r for r in rows or () if r.get("entity_id")]
+    if not rows:
+        return 0
+    held = set((await db.execute(
+        select(AdsEntity.entity_id).where(
+            AdsEntity.entity_type == "product_ad",
+            AdsEntity.entity_id.in_([str(r["entity_id"]) for r in rows]))
+    )).scalars().all())
+    now = datetime.utcnow()
+    added = 0
+    for r in rows:
+        if str(r["entity_id"]) in held:
+            continue
+        db.add(AdsEntity(
+            entity_type="product_ad", ad_product="sp", entity_id=str(r["entity_id"]),
+            parent_id=r.get("parent_id") or None, campaign_id=r.get("campaign_id") or None,
+            name=(r.get("name") or "")[:500], state=r.get("state") or "ENABLED",
+            asin=(r.get("asin") or "")[:10] or None, fetched_at=now))
+        added += 1
+    await db.commit()
+    return added
+
+
+async def load_coverage_ignores(db: AsyncSession) -> set[tuple[str, str]]:
+    return {(i.ad_group_id, i.product_key)
+            for i in (await db.execute(select(AdsCoverageIgnore))).scalars().all()}
+
+
+async def set_coverage_ignore(db: AsyncSession, ad_group_id: str, product_key: str,
+                              ignored: bool) -> None:
+    """Mark (or unmark) one product of an ad group — or the whole group, `product_key="*"` — as
+    deliberately not holding every SKU. Unmarking DELETES the row, so absence is "check it"."""
+    ad_group_id, product_key = str(ad_group_id), str(product_key)
+    row = (await db.execute(select(AdsCoverageIgnore).where(
+        AdsCoverageIgnore.ad_group_id == ad_group_id,
+        AdsCoverageIgnore.product_key == product_key))).scalar_one_or_none()
+    if ignored and row is None:
+        db.add(AdsCoverageIgnore(ad_group_id=ad_group_id, product_key=product_key))
+    elif not ignored and row is not None:
+        await db.delete(row)
+    await db.commit()
 
 
 async def enabled_product_ads(db: AsyncSession, ad_group_ids) -> dict[str, set[str]]:
@@ -1069,7 +1117,11 @@ async def open_run(
             # **Which KIND of change, derived from what the plan actually carries.** Keyed on
             # `new_state` rather than on a passed-in action, so a caller cannot label a state change
             # as a bid change; the two column pairs are then mutually exclusive by construction.
-            action="state" if change.get("new_state") else "bid",
+            # `create` is a product ad the SKU-coverage Add is about to make: its `entity_id` is a
+            # provisional `new-…` id until Amazon answers with the real `adId`
+            # (`record_create_results`).
+            action=("create" if change.get("create") else
+                    "state" if change.get("new_state") else "bid"),
             # The value BEFORE. Without this the run is not reversible.
             old_bid=change.get("old_bid"),
             new_bid=change.get("new_bid"),
@@ -1115,6 +1167,34 @@ async def record_results(db: AsyncSession, run_id: str, results: list[dict]) -> 
         if row.status in counts:
             counts[row.status] += 1
     logger.info("ads: run %s -> %s", run_id, counts)
+    return counts
+
+
+async def record_create_results(db: AsyncSession, run_id: str, results: list[dict]) -> dict:
+    """`record_results` for a run of CREATED product ads: each row Amazon made takes its real `adId`.
+
+    The provisional `new-…` id stays on a refused or unanswered row, which can never be undone (there
+    is nothing at Amazon to pause). Returns the counts, like `record_results`.
+    """
+    by_id = {str(r["entity_id"]): r for r in results}
+    now = datetime.utcnow()
+    rows = (await db.execute(select(AdsMutation).where(AdsMutation.run_id == run_id))).scalars().all()
+    for row in rows:
+        result = by_id.get(row.entity_id)
+        if result is None:
+            continue
+        ok = bool(result.get("ok") and result.get("ad_id"))
+        row.status = "applied" if ok else "failed"
+        row.error = None if ok else (result.get("error") or "Amazon did not return the new ad's id.")[:2000]
+        if ok:
+            row.entity_id = str(result["ad_id"])
+        row.sent_at = now
+    await db.commit()
+    counts = {"applied": 0, "failed": 0, "pending": 0}
+    for row in rows:
+        if row.status in counts:
+            counts[row.status] += 1
+    logger.info("ads: create run %s -> %s", run_id, counts)
     return counts
 
 
@@ -1309,6 +1389,7 @@ async def load_run(db: AsyncSession, run_id: str) -> list[dict]:
             "new_bid": _f(r.new_bid),
             "old_state": r.old_state or "",
             "new_state": r.new_state or "",
+            "action": r.action or "bid",
             "ad_product": r.ad_product or logic.AD_PRODUCT_SP,
             "rule": r.rule_summary or "",
             "at": r.created_at.isoformat() if r.created_at else "",
@@ -1377,6 +1458,15 @@ async def build_undo(db: AsyncSession, run_id: str) -> list[dict]:
         # undoing an 88-row pause run would reverse nothing and report success. Exactly the shape of
         # `delete_draft_plans`, whose docstring asserted an invariant that a later feature invalidated,
         # and which destroyed 400 units of packed stock on production.
+        if r.action == "create":
+            # A product ad the coverage Add made. Amazon has no delete, so the undo PAUSES it. A row
+            # still on its provisional id never reached Amazon and has nothing to pause.
+            if r.entity_id.startswith("new-"):
+                continue
+            undo.append({**common, "old_state": logic.STATE_ENABLED,
+                         "new_state": logic.STATE_PAUSED})
+            continue
+
         if r.action == "state":
             if not r.old_state:
                 # Nothing measured to restore. `/ads/apply` always records the live state, so this

@@ -1274,6 +1274,8 @@ class AdsEntity(Base):
     default_bid = Column(Numeric(12, 2))
     #: Campaigns only, so the tab can show what a bid change is competing for.
     daily_budget = Column(Numeric(12, 2))
+    #: Product ads only: the advertised ASIN, which the SKU-coverage check groups by.
+    asin = Column(String(10))
     fetched_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -1384,6 +1386,48 @@ class AdsProductDaily(Base):
     orders = Column(Integer, default=0)
     sales = Column(Numeric(12, 2), default=0)
     fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ListingSku(Base):
+    """One SKU on the account, from `GET_MERCHANT_LISTINGS_ALL_DATA`. **Amazon's, cached.**
+
+    The list of every SKU each ASIN is sold under — FBA, Flex and Easy Ship, active or not — which is
+    what the Ads tab's SKU coverage check compares an ad group against. Measured: 688 SKUs in 32 s
+    (Active 235, Inactive 380, Incomplete 73). Replaced whole on a good read; an empty or failed read
+    writes nothing, so the previous list stands.
+    """
+    __tablename__ = "listing_sku"
+    __table_args__ = (
+        Index("idx_listing_sku_sku", "seller_sku", unique=True),
+        Index("idx_listing_sku_asin", "asin"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    seller_sku = Column(String(80), nullable=False)
+    asin = Column(String(10))
+    #: Amazon's listing status: `Active`, `Inactive` or `Incomplete`.
+    status = Column(String(20))
+    #: `AMAZON_IN` (FBA and Flex) or `DEFAULT` (merchant, Easy Ship).
+    fulfillment_channel = Column(String(20))
+    item_name = Column(String(500))
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AdsCoverageIgnore(Base):
+    """The owner's "this ad group is meant not to hold every SKU of this product". **Ours.**
+
+    `product_key` is a Portfolio row id (flavour id or Amazon's parent), or `*` for the whole ad group
+    (a deliberately mixed one such as Bestsellers). Deleting the row shows the gaps again.
+    """
+    __tablename__ = "ads_coverage_ignore"
+    __table_args__ = (
+        Index("idx_ads_coverage_ignore", "ad_group_id", "product_key", unique=True),
+    )
+
+    id = Column(Integer, primary_key=True)
+    ad_group_id = Column(String(32), nullable=False)
+    product_key = Column(String(32), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class AdsRule(Base):

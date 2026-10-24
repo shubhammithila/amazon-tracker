@@ -225,6 +225,7 @@ tr.child td:first-child{padding-left:30px}
     <button class="btn-outline" id="guardrails-btn">⚙ Limits</button>
     <button class="btn-outline" id="history-btn">🕘 Run history</button>
     <button class="btn-outline" id="bidlog-btn">📜 Bid log</button>
+    <button class="btn-outline" id="coverage-btn">🧩 SKU coverage</button>
     <span id="refresh-note" class="dim" style="font-size:12px">—</span>
   </div>
   <div id="progress-wrap">
@@ -241,6 +242,7 @@ tr.child td:first-child{padding-left:30px}
      "what did that run do" versus "what has happened to this keyword" — and only the second needs
      the rows ungrouped. Both read the same ads_mutation rows. -->
 <div class="card" id="bidlog-panel" style="display:none"></div>
+<div class="card" id="coverage-panel" style="display:none"></div>
 
 <!-- The rule bar. Conditions are ANDed, exactly like the Portfolio tab's filter builder, so the
      owner meets one vocabulary across both screens. -->
@@ -1764,7 +1766,7 @@ async function undoRun(runId){
   const body = await response.json();
   const cls = response.ok ? "good" : "error";
   const message = response.ok
-    ? `<strong>${body.applied} bid(s) restored.</strong>${
+    ? `<strong>${body.applied} change(s) reversed.</strong>${
         body.failed ? ` ${body.failed} could not be restored.` : ""}`
     : esc(body.error || "The undo failed.");
   $("preview-area").innerHTML = `<div class="card"><div class="banner ${cls}">${message}</div></div>`;
@@ -2334,6 +2336,215 @@ $("history-btn").addEventListener("click", () => {
   const showing = panel.style.display !== "none";
   panel.style.display = showing ? "none" : "";
   if(!showing) renderHistory();
+});
+
+/* ── SKU coverage ──────────────────────────────────────────────────────────────
+   Every SKU of each product an SP ad group advertises, by the Portfolio's product grouping (a flavour
+   on its own where Amazon files flavours together). The SERVER decides what is missing
+   (`/ads/coverage`); the screen sends only {ad_group_id, sku} pairs to Add, and the server re-checks
+   each one is still a gap before anything reaches Amazon. */
+let coverageData = null;
+let coverageShowIgnored = false;
+let coveragePick = new Set();
+let coverageNote = "";
+const coverageKey = (group, sku) => `${group}|${sku}`;
+
+async function loadCoverage(){
+  $("coverage-panel").innerHTML = `<div class="dim">Loading…</div>`;
+  const response = await fetch("/ads/coverage");
+  coverageData = await response.json();
+  if(!response.ok){
+    $("coverage-panel").innerHTML = `<div class="banner error">${
+      esc(coverageData.error || "Could not read the SKU coverage.")}</div>`;
+    return;
+  }
+  /* A tick survives a reload only while its row is still a gap — a tick on a row that has gone would
+     send a SKU nobody is looking at. */
+  const live = new Set();
+  for(const c of coverageData.campaigns || []) for(const g of c.groups) for(const p of g.products){
+    if(!p.ignored) for(const m of p.missing) live.add(coverageKey(g.ad_group_id, m.sku));
+  }
+  coveragePick = new Set([...coveragePick].filter(k => live.has(k)));
+  renderCoverage();
+}
+
+function coverageRowsHtml(group, product){
+  const chan = coverageData.channel_labels || {};
+  return product.missing.map(m => {
+    const key = coverageKey(group.ad_group_id, m.sku);
+    return `<tr class="child${product.ignored ? " dim" : ""}">
+      <td>${product.ignored ? "" : `<input type="checkbox" data-cov-pick="${esc(key)}"${
+        coveragePick.has(key) ? " checked" : ""} aria-label="Add ${esc(m.sku)}"/>`}</td>
+      <td class="mono">${esc(m.sku)}</td>
+      <td>${esc(m.product)}</td>
+      <td>${esc(m.size)}</td>
+      <td><span class="tag ch-${esc(m.channel)}">${esc(chan[m.channel] || m.channel)}</span></td>
+      <td>${esc(m.listing_status)}</td>
+      <td class="dim">${m.kind === "sku" ? "another SKU of a size already here" : "a size not in this group"}</td>
+      <td class="mono">${esc(m.asin)}</td>
+    </tr>`;
+  }).join("");
+}
+
+function renderCoverage(){
+  const d = coverageData || {};
+  const t = d.totals || {};
+  const l = d.listings || {};
+  const listingFailed = l.error && (!l.ok_at || l.at > l.ok_at);
+  const status = [];
+  if(listingFailed){
+    status.push(`<div class="banner warn">${esc(l.error)}${l.ok_at
+      ? ` The listings read on ${esc(istStamp(l.ok_at))} are being used.` : ""}</div>`);
+  }
+  if(!l.held){
+    status.push(`<div class="banner warn">The account's listings have not been read yet, so no SKU
+      can be named as missing. Press “Re-read listings”.</div>`);
+  }
+  const groups = [];
+  for(const c of d.campaigns || []) for(const g of c.groups){
+    const products = g.products.filter(p => coverageShowIgnored || !p.ignored);
+    if(products.length) groups.push({c, g, products});
+  }
+  const picked = coveragePick.size;
+  $("coverage-panel").innerHTML = `
+    <div class="section-title">SKU coverage</div>
+    <div class="section-sub">Every SKU of each product an SP ad group advertises — FBA, Flex and Easy
+      Ship, whatever its listing status — grouped as on the Portfolio tab, so a flavour's own ad group
+      expects only that flavour. A paused SKU counts as present. Sizes marked inactive in the MRP sheet
+      and Incomplete listings are never expected. Sponsored Brands is not checked: an SB ad lists
+      ASINs, not SKUs.</div>
+    ${status.join("")}
+    <div class="controls" style="margin-bottom:10px">
+      <strong>${n(t.missing)} SKU(s) missing</strong>
+      <span class="dim">in ${n(t.groups_with_gaps)} of ${n(t.groups_checked)} ad groups${
+        t.incomplete_skipped ? ` · ${n(t.incomplete_skipped)} Incomplete listing(s) skipped` : ""}</span>
+      ${t.ignored ? `<button class="link-btn" data-cov-show-ignored>${coverageShowIgnored
+        ? "hide" : "show"} ${n(t.ignored)} ignored</button>` : ""}
+      <button class="btn" data-cov-add${picked ? "" : " disabled"}>Add ${n(picked)} selected</button>
+      <button class="btn-outline" data-cov-listings>↻ Re-read listings</button>
+      <a class="btn-outline" href="/ads/coverage.xlsx" download>⬇ Excel</a>
+      <span class="dim" style="font-size:12px">${l.ok_at
+        ? `listings read ${esc(istStamp(l.ok_at))} (${n(l.held)} SKUs)` : ""}</span>
+    </div>
+    <div id="coverage-note">${coverageNote}</div>
+    ${groups.length ? `<div class="table-wrap"><table>
+      <thead><tr><th scope="col"></th><th scope="col">SKU</th><th scope="col">Product</th>
+        <th scope="col">Size</th><th scope="col">Channel</th><th scope="col">Listing</th>
+        <th scope="col">Gap</th><th scope="col">ASIN</th></tr></thead>
+      <tbody>${groups.map(({c, g, products}) => {
+        const keys = products.filter(p => !p.ignored)
+          .flatMap(p => p.missing.map(m => coverageKey(g.ad_group_id, m.sku)));
+        const all = keys.length && keys.every(k => coveragePick.has(k));
+        return `<tr class="parent-static">
+          <td>${keys.length ? `<input type="checkbox" data-cov-group="${esc(g.ad_group_id)}"${
+            all ? " checked" : ""} aria-label="Select every missing SKU of this ad group"/>` : ""}</td>
+          <td colspan="6"><span class="p-name">${esc(c.campaign)} › ${esc(g.ad_group)}</span>
+            <span class="dim"> · ${n(g.missing)} missing</span></td>
+          <td style="text-align:right">${g.ignored
+            ? `<button class="link-btn" data-cov-ignore="${esc(g.ad_group_id)}" data-key="*" data-on="0">check this group again</button>`
+            : `<button class="link-btn" data-cov-ignore="${esc(g.ad_group_id)}" data-key="*" data-on="1"
+                 title="For a group that mixes products on purpose">ignore this group</button>`}</td>
+        </tr>${products.map(p => `<tr class="child">
+          <td></td><td colspan="6"><strong>${esc(p.product)}</strong>${p.ignored
+            ? ' <span class="tag">ignored</span>' : ""}</td>
+          <td style="text-align:right">${g.ignored ? "" : `<button class="link-btn"
+            data-cov-ignore="${esc(g.ad_group_id)}" data-key="${esc(p.product_key)}"
+            data-on="${p.ignored ? 0 : 1}">${p.ignored ? "check again" : "ignore"}</button>`}</td>
+        </tr>${coverageRowsHtml(g, p)}`).join("")}`;
+      }).join("")}</tbody></table></div>`
+      : `<div class="empty-note">${l.held ? "Every SP ad group holds every SKU of the products it advertises."
+          : "Nothing to check until the listings are read."}</div>`}`;
+}
+
+async function addCoverage(){
+  const rows = [...coveragePick].map(k => {
+    const at = k.indexOf("|");
+    return {ad_group_id: k.slice(0, at), sku: k.slice(at + 1)};
+  });
+  if(!rows.length) return;
+  if(!confirm(`Create ${rows.length} product ad(s) at Amazon, switched ON, in their ad groups?\n\n`
+              + "Undo pauses them (Amazon has no delete).")) return;
+  coverageNote = `<div class="dim">Adding at Amazon…</div>`;
+  renderCoverage();
+  const response = await fetch("/ads/coverage/add", {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({rows}),
+  });
+  const body = await response.json();
+  if(!response.ok){
+    coverageNote = `<div class="banner error">${esc(body.error || "The add failed.")}</div>`;
+  } else {
+    const parts = [`<strong>${n(body.applied)} SKU(s) added.</strong>`];
+    if(body.failed) parts.push(`${n(body.failed)} refused by Amazon.`);
+    if(body.pending) parts.push(`${n(body.pending)} with no answer from Amazon — check the run history.`);
+    if((body.already_there || []).length) parts.push(`${body.already_there.length} were already in
+      their ad group at Amazon, so nothing was sent for them.`);
+    if((body.not_a_gap || []).length) parts.push(`${body.not_a_gap.length} are no longer missing and
+      were not sent.`);
+    const refused = (body.results || []).filter(r => !r.ok);
+    coverageNote = `<div class="banner ${body.failed || body.pending ? "warn" : "good"}">${parts.join(" ")}
+      ${body.run_id ? ` <button class="btn-outline" data-undo="${esc(body.run_id)}">↩ Undo (pause them)</button>` : ""}
+      ${refused.length ? `<ul style="margin:6px 0 0 18px">${refused.slice(0, 12).map(r =>
+        `<li><span class="mono">${esc(r.sku)}</span> — ${esc(r.error)}</li>`).join("")}</ul>` : ""}</div>`;
+    coveragePick = new Set();
+  }
+  await loadCoverage();
+}
+
+$("coverage-btn").addEventListener("click", () => {
+  const panel = $("coverage-panel");
+  const showing = panel.style.display !== "none";
+  panel.style.display = showing ? "none" : "";
+  if(!showing){ coverageNote = ""; loadCoverage(); }
+});
+
+$("coverage-panel").addEventListener("change", e => {
+  const one = e.target.closest("[data-cov-pick]");
+  if(one){
+    if(one.checked) coveragePick.add(one.dataset.covPick); else coveragePick.delete(one.dataset.covPick);
+    renderCoverage();
+    return;
+  }
+  const group = e.target.closest("[data-cov-group]");
+  if(group){
+    for(const c of coverageData.campaigns || []) for(const g of c.groups){
+      if(g.ad_group_id !== group.dataset.covGroup) continue;
+      for(const p of g.products) if(!p.ignored) for(const m of p.missing){
+        const key = coverageKey(g.ad_group_id, m.sku);
+        if(group.checked) coveragePick.add(key); else coveragePick.delete(key);
+      }
+    }
+    renderCoverage();
+  }
+});
+
+$("coverage-panel").addEventListener("click", async e => {
+  if(e.target.closest("[data-cov-add]")){ addCoverage(); return; }
+  if(e.target.closest("[data-cov-show-ignored]")){
+    coverageShowIgnored = !coverageShowIgnored; renderCoverage(); return;
+  }
+  const ignore = e.target.closest("[data-cov-ignore]");
+  if(ignore){
+    await fetch("/ads/coverage/ignore", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ad_group_id: ignore.dataset.covIgnore, product_key: ignore.dataset.key,
+                            ignored: ignore.dataset.on === "1"}),
+    });
+    loadCoverage();
+    return;
+  }
+  if(e.target.closest("[data-cov-listings]")){
+    coverageNote = `<div class="dim">Reading the account's listings from Amazon (about a minute)…</div>`;
+    renderCoverage();
+    const response = await fetch("/ads/coverage/listings", {method: "POST"});
+    const body = await response.json();
+    const l = body.listings || {};
+    coverageNote = l.error ? `<div class="banner warn">${esc(l.error)}</div>`
+      : `<div class="banner good">${n(l.rows)} SKUs read.</div>`;
+    loadCoverage();
+    return;
+  }
+  const undo = e.target.closest("[data-undo]");
+  if(undo){ await undoRun(undo.dataset.undo); coverageNote = ""; loadCoverage(); }
 });
 
 $("bidlog-btn").addEventListener("click", () => {

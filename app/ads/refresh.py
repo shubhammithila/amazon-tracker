@@ -23,7 +23,7 @@ from datetime import date, datetime, timedelta
 import httpx
 
 from app import ist
-from app.ads import repository, reports, spapi_ads
+from app.ads import listings, repository, reports, spapi_ads
 from app.config import get_settings
 from app.database import async_session
 from app.portfolio.ads import AdsError, AdsNotConfigured
@@ -389,6 +389,10 @@ async def run(
             except AdsError as exc:
                 STATE["product_error"] = f"The product-ad list could not be read: {exc}"
                 logger.warning("ads refresh: product ads failed: %s", exc)
+
+            # ── Listings: every SKU on the account, for the SKU coverage check ──
+            # SP-API, not the Advertising API; ~30 s; never raises and records its own failure.
+            await listings.refresh_if_stale(db_factory, client, sleep=sleep or asyncio.sleep)
             _progress("ad_groups", 2, 2)
 
         # ── The report ──

@@ -99,8 +99,8 @@ MUTATIONS = [
     (
         "the ledger labels a pause as a bid change, so undo cannot tell them apart",
         REPO,
-        '            action="state" if change.get("new_state") else "bid",',
-        '            action="bid",',
+        '                    "state" if change.get("new_state") else "bid"),',
+        '                    "bid"),',
         "test_open_run_records_a_state_change_and_its_action",
     ),
     (

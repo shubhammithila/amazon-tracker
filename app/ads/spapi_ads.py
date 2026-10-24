@@ -689,6 +689,7 @@ async def fetch_product_ads(client, *, ad_group_ids=None,
                 "parent_id": str(row.get("adGroupId") or ""),
                 "campaign_id": str(row.get("campaignId") or ""),
                 "name": row.get("sku") or row.get("asin") or "",
+                "sku": row.get("sku") or "",
                 "asin": row.get("asin") or "",
                 "state": (row.get("state") or "").upper(),
             })
@@ -948,6 +949,79 @@ async def apply_changes(
         else:
             results.extend(_parse_sp_outcome(body, order, id_field, body_key))
 
+    return results
+
+
+async def create_product_ads(
+    client: httpx.AsyncClient,
+    rows: Sequence[Mapping],
+    *,
+    sleep=asyncio.sleep,
+) -> list[dict]:
+    """Create SP product ads — the SKU-coverage Add. Per-row results, never a success flag.
+
+    `rows`: `[{"entity_id": provisional id, "campaign_id", "ad_group_id", "sku"}]`. Returns
+    `[{"entity_id": provisional id, "ok", "error", "ad_id"}]`, one per row.
+
+    `POST /sp/productAds {"productAds": [{campaignId, adGroupId, sku, state: "ENABLED"}]}`. A seller
+    names the SKU (the ASIN form is for vendors). **Measured with a deliberately invalid ad group**, so
+    nothing was created: `207` with SP's own shape,
+
+        {"productAds": {"success": [], "error": [{"index": 0, "errors": [{"errorType":
+            "entityNotFoundError", "errorValue": {"entityNotFoundError": {"message":
+            "no campaign found", "reason": "ENTITY_NOT_FOUND"}}}]}]}}
+
+    so failures are matched back by `index`, the same as every other SP write. A row Amazon does not
+    mention, or a success without an `adId`, is FAILED: without the id there is nothing to undo.
+    """
+    if not rows:
+        return []
+    settings = get_settings()
+    token = await _access_token(client)
+    head = _media(PRODUCT_ADS[1], token)
+    results: list[dict] = []
+    for batch_start in range(0, len(rows), WRITE_BATCH):
+        batch = list(rows[batch_start:batch_start + WRITE_BATCH])
+        order = [str(r["entity_id"]) for r in batch]
+        payload = {"productAds": [{
+            "campaignId": str(r["campaign_id"]), "adGroupId": str(r["ad_group_id"]),
+            "sku": str(r["sku"]), "state": "ENABLED"} for r in batch]}
+        if batch_start:
+            await sleep(WRITE_INTERVAL)
+        response = await client.post(settings.ads_endpoint + PRODUCT_ADS[0], json=payload, headers=head)
+        if response.status_code >= 400 and response.status_code != 207:
+            message = f"Amazon refused the batch ({response.status_code}): {response.text[:200]}"
+            logger.warning("ads: product-ad create batch failed: %s", message)
+            results.extend({"entity_id": i, "ok": False, "error": message, "ad_id": None} for i in order)
+            continue
+        results.extend(_parse_create_outcome(response.json(), order))
+    return results
+
+
+def _parse_create_outcome(body, order: list[str]) -> list[dict]:
+    """SP's 207 for a CREATE: `success` items carry the new `adId` (on the item or under `productAd`)."""
+    outcome = body.get("productAds") if isinstance(body, Mapping) else None
+    if not isinstance(outcome, Mapping):
+        logger.warning("ads: unexpected product-ad create response (%s)", type(body).__name__)
+        return [{**r, "ad_id": None} for r in _unmentioned(order, set())]
+    results, seen = [], set()
+    for item in outcome.get("success") or []:
+        index = item.get("index")
+        if not (isinstance(index, int) and 0 <= index < len(order)):
+            continue
+        ad = item.get("productAd") if isinstance(item.get("productAd"), Mapping) else {}
+        ad_id = str(item.get("adId") or ad.get("adId") or "")
+        seen.add(order[index])
+        results.append({"entity_id": order[index], "ok": bool(ad_id), "ad_id": ad_id or None,
+                        "error": None if ad_id else "Amazon did not return the new ad's id."})
+    for item in outcome.get("error") or []:
+        index = item.get("index")
+        if not (isinstance(index, int) and 0 <= index < len(order)):
+            continue
+        seen.add(order[index])
+        results.append({"entity_id": order[index], "ok": False, "ad_id": None,
+                        "error": _error_message(item)})
+    results.extend({**r, "ad_id": None} for r in _unmentioned(order, seen))
     return results
 
 
@@ -1233,5 +1307,5 @@ def _error_message(item: Mapping) -> str:
 __all__ = [
     "AdsError", "AdsNotConfigured",
     "fetch_campaigns", "fetch_ad_groups", "fetch_keywords", "fetch_targets",
-    "fetch_current_bids", "apply_changes",
+    "fetch_current_bids", "apply_changes", "create_product_ads",
 ]

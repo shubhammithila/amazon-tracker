@@ -12,7 +12,7 @@ from app.config import get_settings
 from app.database import engine, Base, async_session
 from app import permissions
 from app.routers import (
-    admin_users, ads, analytics, assistant, auth, invoice, keywords, orders, portfolio, product_prices, products,
+    admin_users, ads, ads_coverage, analytics, assistant, auth, invoice, keywords, orders, portfolio, product_prices, products,
     projections, repeat, scrape, shipment, ws,
 )
 from app.routers.auth import (
@@ -143,6 +143,7 @@ app.include_router(repeat.value_router)
 app.include_router(assistant.router)
 app.include_router(analytics.router)
 app.include_router(ads.router)
+app.include_router(ads_coverage.router)
 app.include_router(projections.router)
 app.include_router(shipment.router)
 app.include_router(admin_users.router)

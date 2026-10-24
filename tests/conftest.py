@@ -397,6 +397,18 @@ def no_live_product_ads(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_live_listings(monkeypatch):
+    """**No test may request Amazon's listings report for real** (the developer .env is live, and the
+    Ads refresh reads it). The real function is kept as `fetch_live` for a test with a fake client."""
+    from app.ads import listings
+
+    async def refuse(*args, **kwargs):
+        raise listings.ListingsFailed("tests never call Amazon")
+    monkeypatch.setattr(listings, "fetch_live", listings.fetch, raising=False)
+    monkeypatch.setattr(listings, "fetch", refuse)
+
+
+@pytest.fixture(autouse=True)
 def no_live_inventory(monkeypatch):
     """**No test may read Amazon's FBA Inventory API for real.** The developer .env holds live SP-API
     credentials and generating a shipment plan reads stock first; a test passes a fake `get`."""

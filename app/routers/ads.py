@@ -1260,7 +1260,9 @@ STATUS_LABELS = {"applied": "applied", "failed": "refused by Amazon", "pending":
 
 
 def _change_words(row: dict) -> str:
-    """One change in words: "bid ₹10.00 → ₹9.00" or "turned OFF"."""
+    """One change in words: "bid ₹10.00 → ₹9.00", "turned OFF" or "added to the ad group (ON)"."""
+    if row.get("action") == "create":
+        return "added to the ad group (ON)"
     if row.get("new_state"):
         return logic.describe_change({"state": row["new_state"]})
     return logic.describe_change({"bid_from": row.get("old_bid"), "bid_to": row.get("new_bid")})

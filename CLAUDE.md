@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (3021 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (3062 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3777,6 +3777,34 @@ Sponsored Products **product ad** (`PUT /sp/productAds {adId, state}`, writer `p
   SKUs and keywords never share a run, and a SKU is never sent a bid.
 - `conftest.no_live_product_ads` stops every test listing product ads for real.
   `tests/test_ads_product_ads.py`; `scripts/mutate_ads_state.py` now 37 mutations.
+
+### SKU coverage: every SKU of an advertised product is in its SP ad group (24 Oct 2026)
+Asked for as *"check that all the sku's of a parent has been added to that particular ad group where it
+should — whether it is active or inactive is a different thing but it should be added. in SP… maybe we
+do the list in fba and flex but forgot to add it in the ad group where the easy ship sku was added."*
+**🧩 SKU coverage** on the Ads tab. Spec: `docs/superpowers/specs/2026-10-24-ads-sku-coverage-design.md`.
+
+- **Measured first:** 110 enabled ad groups checked; **8 miss 77 SKUs of ASINs they already advertise**
+  (Easy Ship 33, Flex 30, FBA 14); 1 (Bestsellers) misses sizes on purpose.
+- **The product is the Portfolio Profit row** (`flavour_keys`, else `parent_of_children`, else the
+  ASIN), so a flavour's own ad group expects only that flavour, and an all-flavour group expects all.
+  Expected = every listing SKU of every child ASIN of each product the group advertises; never a size
+  the MRP sheet marks N (only an EXPLICIT N) or an Incomplete listing (counted). A paused SKU is
+  present; an archived one is not. SP only, enabled campaigns we manage, enabled ad groups.
+  `ads.coverage.compute` is pure; gap kind `sku` (another SKU of a size held) or `size`.
+- **The SKU list is `GET_MERCHANT_LISTINGS_ALL_DATA`** (`app/ads/listings.py`, 688 SKUs in 32 s, a BOM
+  on the first header), stored whole in `listing_sku` (`d7a3e5c19b42`); an empty or failed read writes
+  nothing and the attempt is recorded in `portfolio_settings.listings_refresh`. Read inside the 08:00
+  IST Ads refresh when older than 12 hours, and by "Re-read listings". `ads_entity.asin` now holds each
+  cached product ad's ASIN (the listings fill the gap until the next refresh).
+- **Ignore** one product in an ad group, or the whole group (`ads_coverage_ignore`, `product_key="*"`).
+- **Add selected is a WRITE** (`POST /ads/coverage/add`, `POST /sp/productAds {campaignId, adGroupId,
+  sku, state: ENABLED}`). The screen sends only `{ad_group_id, sku}`; the server keeps only its own
+  current gaps (`not_a_gap`), checks `max_rows`, re-reads the groups' live product ads and drops a SKU
+  Amazon already holds (`already_there`), writes the ledger first (`action="create"`, provisional
+  `new-…` id replaced by the `adId`), and caches the new ads so the panel updates at once. Probed with
+  an invalid ad group: SP's own 207 shape, nothing created. **Undo pauses them** (Amazon has no
+  delete). `tests/test_ads_coverage.py`; `scripts/mutate_ads_coverage.py` 29/29.
 
 ### 1,700 rows open as 7 lines: campaign → ad group → rows
 Asked for as *"when there are so many matches 1700. better to sort it campaign wise and ad group
