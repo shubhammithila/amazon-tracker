@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Ads · Expansion — Amazon Tracker</title>
+{#
+  Ads → Expansion: what is MISSING from the ad account (24 Oct 2026). Optimisation (/ads-page) tunes
+  what already runs; this tab adds. It opens with SKU coverage — the SKUs each SP ad group lacks, one
+  CARD per ad group, asked for as *"put these recommendations as cards instead of a long list. one card
+  for one ad group"* — and will later hold adding keywords and product targets.
+
+  The SERVER decides what is missing (`GET /ads/coverage`); the screen sends only {ad_group_id, sku}
+  pairs to Add, and the server re-checks each is still a gap and re-reads the live ad group before
+  anything reaches Amazon. Delegated listeners only: SKU and campaign names come from Amazon and the
+  owner, and an inline handler built out of them is an injection waiting to happen.
+#}
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px}
+header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
+header h1{font-size:16px;font-weight:600}
+.nav-links{display:flex;gap:16px;margin-left:32px}
+.nav-links a{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
+.nav-links a:hover,.nav-links a.active{color:var(--text);border-color:var(--accent)}
+.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:13px;text-decoration:none}
+main{max-width:1280px;margin:0 auto;padding:16px 20px 80px}
+h2{font-size:19px;font-weight:600;margin-bottom:6px}
+.seg{display:inline-flex;border:1px solid var(--border-strong);border-radius:8px;overflow:hidden}
+.seg-btn{background:transparent;border:none;color:var(--text-muted);font-size:12.5px;font-weight:600;padding:7px 13px;cursor:pointer}
+.seg-btn:hover{color:var(--text)}
+.seg-btn.on{background:var(--accent);color:var(--on-accent)}
+a.seg-btn{text-decoration:none;display:inline-block}
+.ads-tabs{margin:2px 0 12px}
+.section-title{font-size:14px;font-weight:700;margin-bottom:2px}
+.section-sub{font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.5;max-width:900px}
+.banner{border-radius:8px;padding:10px 13px;font-size:12.5px;margin-bottom:10px;line-height:1.55}
+.banner.warn{background:var(--yellow-soft);border:1px solid var(--yellow);color:var(--yellow)}
+.banner.good{background:var(--green-soft);border:1px solid var(--green);color:var(--green)}
+.banner.error{background:var(--red-soft);border:1px solid var(--red);color:var(--red)}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+.btn:disabled{opacity:.55;cursor:not-allowed}
+.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border-strong);border-radius:8px;padding:7px 13px;font-size:12.5px;cursor:pointer;text-decoration:none;display:inline-block}
+.link-btn{background:none;border:none;padding:0;font:inherit;font-size:12px;color:var(--accent);cursor:pointer}
+.link-btn:hover{text-decoration:underline}
+.dim{color:var(--text-dim)}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+.tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;background:var(--surface2);color:var(--text-muted);white-space:nowrap}
+.tag.ch-fba{background:var(--blue-soft);color:var(--blue)}
+.tag.ch-flex{background:var(--yellow-soft);color:var(--yellow)}
+.tag.ch-easy_ship{background:var(--green-soft);color:var(--green)}
+.tag.size{background:var(--orange-soft);color:var(--orange)}
+.search-input{flex:1 1 220px;min-width:170px;max-width:320px;background:var(--bg);border:1px solid var(--border-strong);
+  border-radius:8px;color:var(--text);padding:7px 12px;font-size:13px}
+.search-input:focus{outline:none;border-color:var(--accent)}
+
+/* The bar stays in view while the cards scroll, so the Add button and its count are always reachable. */
+.cov-bar{position:sticky;top:57px;z-index:50;background:var(--surface);border:1px solid var(--border);
+  border-radius:10px;padding:10px 12px;margin-bottom:12px;display:flex;gap:8px;align-items:center;
+  flex-wrap:wrap;box-shadow:var(--shadow)}
+.cov-bar .count{font-size:14px;font-weight:700}
+.cov-bar .meta{font-size:12px;color:var(--text-muted)}
+
+.cov-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr));gap:10px;align-items:start}
+.cov-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);
+  display:flex;flex-direction:column;overflow:hidden}
+.cov-card.ignored{opacity:.6}
+.cov-head{display:flex;gap:8px;align-items:flex-start;padding:10px 12px;border-bottom:1px solid var(--border);background:var(--surface2)}
+.cov-head .names{flex:1;min-width:0}
+.cov-camp{font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cov-group{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cov-badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:var(--accent-soft);color:var(--accent);white-space:nowrap}
+.cov-body{padding:6px 12px 10px}
+.cov-product{margin-top:6px}
+.cov-product.ignored{opacity:.6}
+.cov-ptitle{display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;padding:4px 0}
+.cov-ptitle .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cov-row{display:flex;align-items:center;gap:7px;padding:4px 0 4px 2px;border-top:1px dashed var(--border);font-size:12.5px}
+.cov-row .sku{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cov-row .sz{color:var(--text-muted);font-size:12px;white-space:nowrap}
+.cov-foot{border-top:1px solid var(--border);padding:6px 12px;display:flex;justify-content:flex-end}
+.empty-note{padding:24px;text-align:center;color:var(--text-muted);font-size:13px;line-height:1.6;
+  background:var(--surface);border:1px solid var(--border);border-radius:10px}
+</style>
+<link rel="stylesheet" href="/static/theme.css"/>
+</head>
+<body>
+<header>
+<span>📣</span><h1>Amazon Tracker v2</h1>
+{% include "nav.html" %}
+<div class="header-right"><a href="/logout">Logout</a></div>
+</header>
+<main>
+
+<h2>Ads</h2>
+{% include "_ads_tabs.html" %}
+
+<div class="section-title">SKU coverage</div>
+<div class="section-sub">Every SKU of each product an SP ad group advertises — FBA, Flex and Easy Ship,
+  whatever its listing status — grouped as on the Portfolio tab, so a flavour's own ad group expects only
+  that flavour. A paused SKU counts as present. Sizes marked inactive in the MRP sheet and Incomplete
+  listings are never expected. Sponsored Brands is not checked: an SB ad lists ASINs, not SKUs.</div>
+
+<div id="coverage-status"></div>
+<div class="cov-bar" id="coverage-bar"><span class="dim">Loading…</span></div>
+<div id="coverage-note"></div>
+<div id="coverage-cards"></div>
+
+</main>
+<script>
+const $ = id => document.getElementById(id);
+/* Every server string goes through esc() before it reaches innerHTML. */
+const esc = s => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+const n = v => (v == null || isNaN(v)) ? 0 : v;
+
+/* A ledger timestamp (stored UTC) as the IST date and time the owner reads, "2026-10-23 17:48". */
+function istStamp(iso){
+  if(!iso) return "";
+  const d = new Date(String(iso).replace(/Z?$/, "Z"));
+  const part = (o) => d.toLocaleString("en-CA", {timeZone: "Asia/Kolkata", ...o});
+  return `${part({year: "numeric", month: "2-digit", day: "2-digit"})} ${
+    part({hour: "2-digit", minute: "2-digit", hour12: false})}`;
+}
+
+let coverageData = null;
+let coverageShowIgnored = false;
+let coveragePick = new Set();
+let coverageSearch = "";
+const coverageKey = (group, sku) => `${group}|${sku}`;
+
+async function loadCoverage(){
+  const response = await fetch("/ads/coverage");
+  coverageData = await response.json();
+  if(!response.ok){
+    $("coverage-cards").innerHTML = `<div class="banner error">${
+      esc(coverageData.error || "Could not read the SKU coverage.")}</div>`;
+    return;
+  }
+  /* A tick survives a reload only while its row is still a gap — a tick on a row that has gone would
+     send a SKU nobody is looking at. */
+  const live = new Set();
+  for(const c of coverageData.campaigns || []) for(const g of c.groups) for(const p of g.products){
+    if(!p.ignored) for(const m of p.missing) live.add(coverageKey(g.ad_group_id, m.sku));
+  }
+  coveragePick = new Set([...coveragePick].filter(k => live.has(k)));
+  renderCoverage();
+}
+
+/* Every card, flat, biggest gap first — the server orders campaigns and their groups by missing count. */
+function coverageGroups(){
+  const out = [];
+  const q = coverageSearch.trim().toLowerCase();
+  for(const c of (coverageData && coverageData.campaigns) || []) for(const g of c.groups){
+    const products = g.products.filter(p => coverageShowIgnored || !p.ignored);
+    if(!products.length) continue;
+    if(q){
+      const hay = [c.campaign, g.ad_group, ...products.flatMap(p =>
+        [p.product, ...p.missing.map(m => m.sku + " " + m.asin)])].join(" ").toLowerCase();
+      if(!hay.includes(q)) continue;
+    }
+    out.push({c, g, products});
+  }
+  out.sort((a, b) => b.g.missing - a.g.missing);
+  return out;
+}
+
+function groupKeys(g){
+  return g.products.filter(p => !p.ignored)
+    .flatMap(p => p.missing.map(m => coverageKey(g.ad_group_id, m.sku)));
+}
+
+function coverageRowsHtml(group, product){
+  const chan = coverageData.channel_labels || {};
+  return product.missing.map(m => {
+    const key = coverageKey(group.ad_group_id, m.sku);
+    return `<div class="cov-row">
+      ${product.ignored ? "" : `<input type="checkbox" data-cov-pick="${esc(key)}"${
+        coveragePick.has(key) ? " checked" : ""} aria-label="Add ${esc(m.sku)}"/>`}
+      <span class="sku mono" title="${esc(m.asin)}">${esc(m.sku)}</span>
+      <span class="sz">${esc(m.size)}</span>
+      <span class="tag ch-${esc(m.channel)}">${esc(chan[m.channel] || m.channel)}</span>
+      ${m.listing_status && m.listing_status !== "Active" ? `<span class="tag">${esc(m.listing_status)}</span>` : ""}
+      ${m.kind === "size" ? '<span class="tag size" title="No SKU of this size is in the ad group yet">new size</span>' : ""}
+    </div>`;
+  }).join("");
+}
+
+function cardHtml({c, g, products}){
+  const keys = groupKeys(g);
+  const all = keys.length && keys.every(k => coveragePick.has(k));
+  return `<div class="cov-card${g.ignored ? " ignored" : ""}">
+    <div class="cov-head">
+      ${keys.length ? `<input type="checkbox" data-cov-group="${esc(g.ad_group_id)}"${all ? " checked" : ""}
+        aria-label="Select every missing SKU of this ad group" style="margin-top:3px"/>` : ""}
+      <div class="names">
+        <div class="cov-camp" title="${esc(c.campaign)}">${esc(c.campaign)}</div>
+        <div class="cov-group" title="${esc(g.ad_group)}">${esc(g.ad_group)}</div>
+      </div>
+      <span class="cov-badge">${g.ignored ? "ignored" : `${n(g.missing)} missing`}</span>
+    </div>
+    <div class="cov-body">${products.map(p => `<div class="cov-product${p.ignored ? " ignored" : ""}">
+      <div class="cov-ptitle"><span class="grow" title="${esc(p.product)}">${esc(p.product)}</span>
+        ${g.ignored ? "" : `<button class="link-btn" data-cov-ignore="${esc(g.ad_group_id)}"
+          data-key="${esc(p.product_key)}" data-on="${p.ignored ? 0 : 1}">${p.ignored ? "check again" : "ignore"}</button>`}
+      </div>${coverageRowsHtml(g, p)}</div>`).join("")}</div>
+    <div class="cov-foot">${g.ignored
+      ? `<button class="link-btn" data-cov-ignore="${esc(g.ad_group_id)}" data-key="*" data-on="0">check this group again</button>`
+      : `<button class="link-btn" data-cov-ignore="${esc(g.ad_group_id)}" data-key="*" data-on="1"
+           title="For a group that mixes products on purpose">ignore this group</button>`}</div>
+  </div>`;
+}
+
+function renderCoverage(){
+  const d = coverageData || {};
+  const t = d.totals || {};
+  const l = d.listings || {};
+  const status = [];
+  if(l.error && (!l.ok_at || l.at > l.ok_at)){
+    status.push(`<div class="banner warn">${esc(l.error)}${l.ok_at
+      ? ` The listings read on ${esc(istStamp(l.ok_at))} are being used.` : ""}</div>`);
+  }
+  if(!l.held){
+    status.push(`<div class="banner warn">The account's listings have not been read yet, so no SKU
+      can be named as missing. Press “Re-read listings”.</div>`);
+  }
+  $("coverage-status").innerHTML = status.join("");
+
+  const picked = coveragePick.size;
+  const searchFocused = document.activeElement && document.activeElement.id === "coverage-search";
+  $("coverage-bar").innerHTML = `
+    <span class="count">${n(t.missing)} SKU(s) missing</span>
+    <span class="meta">in ${n(t.groups_with_gaps)} of ${n(t.groups_checked)} ad groups${
+      t.incomplete_skipped ? ` · ${n(t.incomplete_skipped)} Incomplete listing(s) skipped` : ""}</span>
+    ${t.ignored ? `<button class="link-btn" data-cov-show-ignored>${coverageShowIgnored
+      ? "hide" : "show"} ${n(t.ignored)} ignored</button>` : ""}
+    <input class="search-input" id="coverage-search" placeholder="Search ad group, product or SKU"
+      value="${esc(coverageSearch)}" aria-label="Search the cards"/>
+    <button class="btn" data-cov-add${picked ? "" : " disabled"}>Add ${n(picked)} selected</button>
+    <button class="btn-outline" data-cov-listings>↻ Re-read listings</button>
+    <a class="btn-outline" href="/ads/coverage.xlsx" download>⬇ Excel</a>
+    <span class="meta">${l.ok_at ? `listings read ${esc(istStamp(l.ok_at))} (${n(l.held)} SKUs)` : ""}</span>`;
+  if(searchFocused){
+    const box = $("coverage-search");
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+  }
+
+  const groups = coverageGroups();
+  $("coverage-cards").innerHTML = groups.length
+    ? `<div class="cov-grid">${groups.map(cardHtml).join("")}</div>`
+    : `<div class="empty-note">${!l.held ? "Nothing to check until the listings are read."
+        : coverageSearch ? `No ad group matches “${esc(coverageSearch)}”.`
+        : "Every SP ad group holds every SKU of the products it advertises."}</div>`;
+}
+
+async function undoRun(runId){
+  const response = await fetch(`/ads/undo/${encodeURIComponent(runId)}`, {method: "POST"});
+  const body = await response.json();
+  $("coverage-note").innerHTML = response.ok
+    ? `<div class="banner good"><strong>${n(body.applied)} ad(s) paused.</strong>${
+        body.failed ? ` ${n(body.failed)} could not be paused.` : ""}</div>`
+    : `<div class="banner error">${esc(body.error || "The undo failed.")}</div>`;
+}
+
+async function addCoverage(){
+  const rows = [...coveragePick].map(k => {
+    const at = k.indexOf("|");
+    return {ad_group_id: k.slice(0, at), sku: k.slice(at + 1)};
+  });
+  if(!rows.length) return;
+  if(!confirm(`Create ${rows.length} product ad(s) at Amazon, switched ON, in their ad groups?\n\n`
+              + "Undo pauses them (Amazon has no delete).")) return;
+  $("coverage-note").innerHTML = `<div class="banner warn">Adding at Amazon…</div>`;
+  const response = await fetch("/ads/coverage/add", {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({rows}),
+  });
+  const body = await response.json();
+  if(!response.ok){
+    $("coverage-note").innerHTML = `<div class="banner error">${esc(body.error || "The add failed.")}</div>`;
+  } else {
+    const parts = [`<strong>${n(body.applied)} SKU(s) added.</strong>`];
+    if(body.failed) parts.push(`${n(body.failed)} refused by Amazon.`);
+    if(body.pending) parts.push(`${n(body.pending)} with no answer from Amazon — check the run history.`);
+    if((body.already_there || []).length) parts.push(`${body.already_there.length} were already in
+      their ad group at Amazon, so nothing was sent for them.`);
+    if((body.not_a_gap || []).length) parts.push(`${body.not_a_gap.length} are no longer missing and
+      were not sent.`);
+    const refused = (body.results || []).filter(r => !r.ok);
+    $("coverage-note").innerHTML = `<div class="banner ${body.failed || body.pending ? "warn" : "good"}">${parts.join(" ")}
+      ${body.run_id ? ` <button class="btn-outline" data-undo="${esc(body.run_id)}">↩ Undo (pause them)</button>` : ""}
+      ${refused.length ? `<ul style="margin:6px 0 0 18px">${refused.slice(0, 12).map(r =>
+        `<li><span class="mono">${esc(r.sku)}</span> — ${esc(r.error)}</li>`).join("")}</ul>` : ""}</div>`;
+    coveragePick = new Set();
+  }
+  await loadCoverage();
+}
+
+document.querySelector("main").addEventListener("input", e => {
+  if(e.target.id === "coverage-search"){ coverageSearch = e.target.value; renderCoverage(); }
+});
+
+document.querySelector("main").addEventListener("change", e => {
+  const one = e.target.closest("[data-cov-pick]");
+  if(one){
+    if(one.checked) coveragePick.add(one.dataset.covPick); else coveragePick.delete(one.dataset.covPick);
+    renderCoverage();
+    return;
+  }
+  const group = e.target.closest("[data-cov-group]");
+  if(group){
+    for(const c of coverageData.campaigns || []) for(const g of c.groups){
+      if(g.ad_group_id !== group.dataset.covGroup) continue;
+      for(const p of g.products) if(!p.ignored) for(const m of p.missing){
+        const key = coverageKey(g.ad_group_id, m.sku);
+        if(group.checked) coveragePick.add(key); else coveragePick.delete(key);
+      }
+    }
+    renderCoverage();
+  }
+});
+
+document.querySelector("main").addEventListener("click", async e => {
+  if(e.target.closest("[data-cov-add]")){ addCoverage(); return; }
+  if(e.target.closest("[data-cov-show-ignored]")){
+    coverageShowIgnored = !coverageShowIgnored; renderCoverage(); return;
+  }
+  const ignore = e.target.closest("[data-cov-ignore]");
+  if(ignore){
+    await fetch("/ads/coverage/ignore", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ad_group_id: ignore.dataset.covIgnore, product_key: ignore.dataset.key,
+                            ignored: ignore.dataset.on === "1"}),
+    });
+    loadCoverage();
+    return;
+  }
+  if(e.target.closest("[data-cov-listings]")){
+    $("coverage-note").innerHTML = `<div class="banner warn">Reading the account's listings from Amazon
+      (about a minute)…</div>`;
+    const response = await fetch("/ads/coverage/listings", {method: "POST"});
+    const body = await response.json();
+    const l = body.listings || {};
+    $("coverage-note").innerHTML = l.error ? `<div class="banner warn">${esc(l.error)}</div>`
+      : `<div class="banner good">${n(l.rows)} SKUs read.</div>`;
+    loadCoverage();
+    return;
+  }
+  const undo = e.target.closest("[data-undo]");
+  if(undo){ await undoRun(undo.dataset.undo); loadCoverage(); }
+});
+
+loadCoverage();
+</script>
+</body>
+</html>

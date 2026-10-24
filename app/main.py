@@ -265,6 +265,16 @@ async def ads_page(request: Request, grant=Depends(require_area(permissions.ADS)
         # The match-type vocabulary, sent rather than hardcoded in the template — otherwise adding a
         # match type on the server would silently render "?" on screen while the server knew its name.
         "match_labels": ads_logic.MATCH_LABELS,
+        "ads_tab": "optimisation",
+    })
+
+
+@app.get("/ads-page/expansion", response_class=HTMLResponse)
+async def ads_expansion_page(request: Request, grant=Depends(require_area(permissions.ADS))):
+    """Ads → Expansion: what is missing from the account (SKU coverage now; new keywords and targets
+    later). Optimisation (`/ads-page`) tunes what already runs."""
+    return templates.TemplateResponse(request, "ads_expansion.html", {
+        "active": "ads", "grant": grant, "ads_tab": "expansion",
     })
 
 

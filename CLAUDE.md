@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (3062 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (3075 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3782,7 +3782,14 @@ Sponsored Products **product ad** (`PUT /sp/productAds {adId, state}`, writer `p
 Asked for as *"check that all the sku's of a parent has been added to that particular ad group where it
 should — whether it is active or inactive is a different thing but it should be added. in SP… maybe we
 do the list in fba and flex but forgot to add it in the ad group where the easy ship sku was added."*
-**🧩 SKU coverage** on the Ads tab. Spec: `docs/superpowers/specs/2026-10-24-ads-sku-coverage-design.md`.
+Spec: `docs/superpowers/specs/2026-10-24-ads-sku-coverage-design.md`.
+
+**The Ads page has two sub-tabs** (`templates/_ads_tabs.html`): **Optimisation** (`/ads-page`, bid
+changes and turning keywords/SKUs on or off) and **Expansion** (`/ads-page/expansion`,
+`templates/ads_expansion.html`), named by the owner: Optimisation tunes what runs, Expansion adds what
+is missing. Expansion holds SKU coverage as **one card per ad group** (*"cards instead of a long list"*),
+with a sticky bar (counts, search, Add selected, Re-read listings, Excel); adding keywords and product
+targets will live there too (brief to come).
 
 - **Measured first:** 110 enabled ad groups checked; **8 miss 77 SKUs of ASINs they already advertise**
   (Easy Ship 33, Flex 30, FBA 14); 1 (Bestsellers) misses sizes on purpose.

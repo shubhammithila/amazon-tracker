@@ -13,7 +13,8 @@ import pytest
 from app.ads import coverage, listings, logic, repository, spapi_ads
 
 ROOT = Path(__file__).resolve().parent.parent
-PAGE = (ROOT / "templates" / "ads.html").read_text(encoding="utf-8")
+PAGE = (ROOT / "templates" / "ads_expansion.html").read_text(encoding="utf-8")
+OPTIMISATION = (ROOT / "templates" / "ads.html").read_text(encoding="utf-8")
 
 CAMPAIGNS = {"c1": {"name": "MF_SP_keywords", "state": "ENABLED"},
              "c2": {"name": "m19 autopilot chana", "state": "ENABLED"},
@@ -464,7 +465,7 @@ def test_the_run_history_names_an_add():
 
 
 def test_the_screen_sends_only_the_ad_group_and_sku_pairs():
-    body = PAGE[PAGE.index("async function addCoverage"):PAGE.index('$("coverage-btn")')]
+    body = PAGE[PAGE.index("async function addCoverage"):PAGE.index('addEventListener("input"')]
     assert "{ad_group_id: k.slice(0, at), sku: k.slice(at + 1)}" in body
     assert 'fetch("/ads/coverage/add"' in body and "JSON.stringify({rows})" in body
 
@@ -474,3 +475,44 @@ def test_the_screen_never_ticks_an_ignored_row():
     assert 'product.ignored ? "" : `<input type="checkbox" data-cov-pick' in rows
     group = PAGE[PAGE.index('const group = e.target.closest("[data-cov-group]")'):]
     assert "if(!p.ignored) for(const m of p.missing)" in group[:600]
+    # The card's own "select all" tick reads the same rule.
+    keys = PAGE[PAGE.index("function groupKeys"):PAGE.index("function coverageRowsHtml")]
+    assert "g.products.filter(p => !p.ignored)" in keys
+
+
+# ─── The Expansion sub-tab ───────────────────────────────────────────────────
+
+
+async def test_expansion_is_its_own_ads_sub_tab_with_one_card_per_ad_group(auth_client):
+    r = await auth_client.get("/ads-page/expansion")
+    assert r.status_code == 200
+    html = r.text
+    assert 'href="/ads-page">Optimisation</a>' in html
+    assert 'class="seg-btn on" href="/ads-page/expansion">Expansion</a>' in html
+    assert 'id="coverage-cards"' in html and "cov-card" in html
+
+
+async def test_optimisation_carries_the_tabs_and_no_longer_the_coverage_panel(auth_client):
+    html = (await auth_client.get("/ads-page")).text
+    assert 'class="seg-btn on" href="/ads-page">Optimisation</a>' in html
+    assert 'href="/ads-page/expansion">Expansion</a>' in html
+    assert "coverage-panel" not in OPTIMISATION and "coverage-btn" not in OPTIMISATION
+    assert "/ads/coverage" not in OPTIMISATION
+
+
+def test_a_card_is_one_ad_group():
+    cards = PAGE[PAGE.index("function coverageGroups"):PAGE.index("function groupKeys")]
+    # One entry per (campaign, ad group), never one per product or per SKU.
+    assert "for(const c of (coverageData && coverageData.campaigns) || []) for(const g of c.groups){" in cards
+    assert "out.push({c, g, products});" in cards
+    render = PAGE[PAGE.index("function renderCoverage"):PAGE.index("async function undoRun")]
+    assert "groups.map(cardHtml)" in render
+
+
+async def test_the_expansion_page_needs_the_ads_area(db_schema):
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import app
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/ads-page/expansion", follow_redirects=False)
+    assert r.status_code in (302, 303, 307) and "/login" in r.headers["location"]

@@ -14,7 +14,7 @@ LIST = pathlib.Path("app/ads/listings.py")
 REPO = pathlib.Path("app/ads/repository.py")
 WRITER = pathlib.Path("app/ads/spapi_ads.py")
 ROUTE = pathlib.Path("app/routers/ads_coverage.py")
-HTML = pathlib.Path("templates/ads.html")
+HTML = pathlib.Path("templates/ads_expansion.html")
 
 MUTATIONS = [
     ("an ARCHIVED product ad counts as present", COV,
@@ -110,6 +110,15 @@ MUTATIONS = [
     ("the screen ticks an ignored row", HTML,
      'product.ignored ? "" : `<input type="checkbox" data-cov-pick', 'false ? "" : `<input type="checkbox" data-cov-pick',
      "test_the_screen_never_ticks_an_ignored_row"),
+    ("a card's select-all ticks ignored products", HTML,
+     "return g.products.filter(p => !p.ignored)", "return g.products",
+     "test_the_screen_never_ticks_an_ignored_row"),
+    ("the Expansion tab link is dropped", pathlib.Path("templates/_ads_tabs.html"),
+     'href="/ads-page/expansion">Expansion</a>', 'href="/ads-page/expansion"></a>',
+     "test_expansion_is_its_own or test_optimisation_carries"),
+    ("a card per product instead of per ad group", HTML,
+     "    out.push({c, g, products});", "    for(const p of products) out.push({c, g, products: [p]});",
+     "test_a_card_is_one_ad_group"),
 ]
 
 
