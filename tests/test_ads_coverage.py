@@ -516,3 +516,20 @@ async def test_the_expansion_page_needs_the_ads_area(db_schema):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.get("/ads-page/expansion", follow_redirects=False)
     assert r.status_code in (302, 303, 307) and "/login" in r.headers["location"]
+
+
+def test_a_big_card_shows_eight_rows_and_a_show_all_link():
+    card = PAGE[PAGE.index("function cardHtml"):PAGE.index("function renderCoverage")]
+    assert "const CARD_ROWS = 8;" in PAGE
+    assert "let left = open ? Infinity : CARD_ROWS;" in card
+    assert "coverageRowsHtml(g, p, left)" in card
+    assert "product.missing.slice(0, limit)" in PAGE
+    assert "total > CARD_ROWS" in card and "data-cov-open" in card
+
+
+def test_every_row_of_a_card_is_the_same_grid_so_the_columns_line_up():
+    assert ".cov-grid-row{display:grid;grid-template-columns:" in PAGE
+    rows = PAGE[PAGE.index("function coverageRowsHtml"):PAGE.index("function cardHtml")]
+    assert 'class="cov-grid-row cov-row"' in rows
+    card = PAGE[PAGE.index("function cardHtml"):PAGE.index("function renderCoverage")]
+    assert 'class="cov-grid-row cov-cols"' in card and 'class="cov-grid-row cov-ptitle' in card

@@ -60,24 +60,27 @@ a.seg-btn{text-decoration:none;display:inline-block}
 .cov-bar .count{font-size:14px;font-weight:700}
 .cov-bar .meta{font-size:12px;color:var(--text-muted)}
 
-.cov-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr));gap:10px;align-items:start}
-.cov-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);
-  display:flex;flex-direction:column;overflow:hidden}
+/* One card per ad group, full width and stacked, so a 36-SKU group never leaves holes beside a 1-SKU
+   one. Inside, every row is the same grid, so SKU, size, channel, listing and gap line up down the card. */
+.cov-list{display:flex;flex-direction:column;gap:10px}
+.cov-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);overflow:hidden}
 .cov-card.ignored{opacity:.6}
-.cov-head{display:flex;gap:8px;align-items:flex-start;padding:10px 12px;border-bottom:1px solid var(--border);background:var(--surface2)}
-.cov-head .names{flex:1;min-width:0}
-.cov-camp{font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.cov-group{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cov-head{display:flex;gap:10px;align-items:center;padding:9px 12px;border-bottom:1px solid var(--border);background:var(--surface2)}
+.cov-head .names{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cov-camp{font-size:12px;color:var(--text-muted)}
+.cov-group{font-size:14px;font-weight:700}
 .cov-badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:var(--accent-soft);color:var(--accent);white-space:nowrap}
-.cov-body{padding:6px 12px 10px}
-.cov-product{margin-top:6px}
-.cov-product.ignored{opacity:.6}
-.cov-ptitle{display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;padding:4px 0}
-.cov-ptitle .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cov-row{display:flex;align-items:center;gap:7px;padding:4px 0 4px 2px;border-top:1px dashed var(--border);font-size:12.5px}
-.cov-row .sku{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cov-row .sz{color:var(--text-muted);font-size:12px;white-space:nowrap}
-.cov-foot{border-top:1px solid var(--border);padding:6px 12px;display:flex;justify-content:flex-end}
+.cov-body{padding:2px 12px 6px;overflow-x:auto}
+.cov-grid-row{display:grid;grid-template-columns:22px minmax(200px,2.4fr) 70px 100px 90px 110px 110px;
+  align-items:center;column-gap:10px;min-width:740px;padding:5px 0;font-size:12.5px}
+.cov-grid-row > *{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cov-cols{font-size:10.5px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;
+  border-bottom:1px solid var(--border)}
+.cov-ptitle{font-weight:700;padding-top:9px}
+.cov-ptitle .act{text-align:right}
+.cov-row{border-top:1px dashed var(--border)}
+.cov-row .sz{color:var(--text-muted)}
+.cov-more{padding:6px 0 4px 32px}
 .empty-note{padding:24px;text-align:center;color:var(--text-muted);font-size:13px;line-height:1.6;
   background:var(--surface);border:1px solid var(--border);border-radius:10px}
 </style>
@@ -127,6 +130,10 @@ let coverageData = null;
 let coverageShowIgnored = false;
 let coveragePick = new Set();
 let coverageSearch = "";
+/* Ad groups whose card shows every row. A card shows CARD_ROWS rows and a "show all" link below that, so
+   one big group (Bestsellers held 36) cannot push every other card a screen away. */
+let coverageOpen = new Set();
+const CARD_ROWS = 8;
 const coverageKey = (group, sku) => `${group}|${sku}`;
 
 async function loadCoverage(){
@@ -170,18 +177,21 @@ function groupKeys(g){
     .flatMap(p => p.missing.map(m => coverageKey(g.ad_group_id, m.sku)));
 }
 
-function coverageRowsHtml(group, product){
+function coverageRowsHtml(group, product, limit){
   const chan = coverageData.channel_labels || {};
-  return product.missing.map(m => {
+  return product.missing.slice(0, limit).map(m => {
     const key = coverageKey(group.ad_group_id, m.sku);
-    return `<div class="cov-row">
-      ${product.ignored ? "" : `<input type="checkbox" data-cov-pick="${esc(key)}"${
-        coveragePick.has(key) ? " checked" : ""} aria-label="Add ${esc(m.sku)}"/>`}
-      <span class="sku mono" title="${esc(m.asin)}">${esc(m.sku)}</span>
+    return `<div class="cov-grid-row cov-row">
+      <span>${product.ignored ? "" : `<input type="checkbox" data-cov-pick="${esc(key)}"${
+        coveragePick.has(key) ? " checked" : ""} aria-label="Add ${esc(m.sku)}"/>`}</span>
+      <span class="mono" title="${esc(m.sku)}">${esc(m.sku)}</span>
       <span class="sz">${esc(m.size)}</span>
-      <span class="tag ch-${esc(m.channel)}">${esc(chan[m.channel] || m.channel)}</span>
-      ${m.listing_status && m.listing_status !== "Active" ? `<span class="tag">${esc(m.listing_status)}</span>` : ""}
-      ${m.kind === "size" ? '<span class="tag size" title="No SKU of this size is in the ad group yet">new size</span>' : ""}
+      <span><span class="tag ch-${esc(m.channel)}">${esc(chan[m.channel] || m.channel)}</span></span>
+      <span class="${m.listing_status === "Active" ? "dim" : ""}">${esc(m.listing_status)}</span>
+      <span>${m.kind === "size"
+        ? '<span class="tag size" title="No SKU of this size is in the ad group yet">new size</span>'
+        : '<span class="dim" title="Another SKU of this size is already in the ad group">other channel</span>'}</span>
+      <span class="mono dim">${esc(m.asin)}</span>
     </div>`;
   }).join("");
 }
@@ -189,25 +199,40 @@ function coverageRowsHtml(group, product){
 function cardHtml({c, g, products}){
   const keys = groupKeys(g);
   const all = keys.length && keys.every(k => coveragePick.has(k));
+  const total = products.reduce((s, p) => s + p.missing.length, 0);
+  const open = coverageOpen.has(g.ad_group_id);
+  /* Rows left to show in this card; products are drawn until it runs out. */
+  let left = open ? Infinity : CARD_ROWS;
+  const body = [];
+  for(const p of products){
+    if(left <= 0) break;
+    body.push(`<div class="cov-grid-row cov-ptitle${p.ignored ? " dim" : ""}">
+      <span></span><span title="${esc(p.product)}" style="grid-column:2 / 7">${esc(p.product)}${
+        p.ignored ? ' <span class="tag">ignored</span>' : ""}</span>
+      <span class="act">${g.ignored ? "" : `<button class="link-btn" data-cov-ignore="${esc(g.ad_group_id)}"
+        data-key="${esc(p.product_key)}" data-on="${p.ignored ? 0 : 1}">${p.ignored ? "check again" : "ignore"}</button>`}</span>
+    </div>${coverageRowsHtml(g, p, left)}`);
+    left -= p.missing.length;
+  }
   return `<div class="cov-card${g.ignored ? " ignored" : ""}">
     <div class="cov-head">
       ${keys.length ? `<input type="checkbox" data-cov-group="${esc(g.ad_group_id)}"${all ? " checked" : ""}
-        aria-label="Select every missing SKU of this ad group" style="margin-top:3px"/>` : ""}
-      <div class="names">
-        <div class="cov-camp" title="${esc(c.campaign)}">${esc(c.campaign)}</div>
-        <div class="cov-group" title="${esc(g.ad_group)}">${esc(g.ad_group)}</div>
-      </div>
+        aria-label="Select every missing SKU of this ad group"/>` : ""}
+      <div class="names"><span class="cov-camp">${esc(c.campaign)} ›</span>
+        <span class="cov-group" title="${esc(g.ad_group)}">${esc(g.ad_group)}</span></div>
       <span class="cov-badge">${g.ignored ? "ignored" : `${n(g.missing)} missing`}</span>
+      ${g.ignored
+        ? `<button class="link-btn" data-cov-ignore="${esc(g.ad_group_id)}" data-key="*" data-on="0">check this group again</button>`
+        : `<button class="link-btn" data-cov-ignore="${esc(g.ad_group_id)}" data-key="*" data-on="1"
+             title="For a group that mixes products on purpose">ignore this group</button>`}
     </div>
-    <div class="cov-body">${products.map(p => `<div class="cov-product${p.ignored ? " ignored" : ""}">
-      <div class="cov-ptitle"><span class="grow" title="${esc(p.product)}">${esc(p.product)}</span>
-        ${g.ignored ? "" : `<button class="link-btn" data-cov-ignore="${esc(g.ad_group_id)}"
-          data-key="${esc(p.product_key)}" data-on="${p.ignored ? 0 : 1}">${p.ignored ? "check again" : "ignore"}</button>`}
-      </div>${coverageRowsHtml(g, p)}</div>`).join("")}</div>
-    <div class="cov-foot">${g.ignored
-      ? `<button class="link-btn" data-cov-ignore="${esc(g.ad_group_id)}" data-key="*" data-on="0">check this group again</button>`
-      : `<button class="link-btn" data-cov-ignore="${esc(g.ad_group_id)}" data-key="*" data-on="1"
-           title="For a group that mixes products on purpose">ignore this group</button>`}</div>
+    <div class="cov-body">
+      <div class="cov-grid-row cov-cols"><span></span><span>SKU</span><span>Size</span><span>Channel</span>
+        <span>Listing</span><span>Gap</span><span>ASIN</span></div>
+      ${body.join("")}
+      ${total > CARD_ROWS ? `<div class="cov-more"><button class="link-btn" data-cov-open="${esc(g.ad_group_id)}">${
+        open ? "show fewer" : `show all ${n(total)}`}</button></div>` : ""}
+    </div>
   </div>`;
 }
 
@@ -248,7 +273,7 @@ function renderCoverage(){
 
   const groups = coverageGroups();
   $("coverage-cards").innerHTML = groups.length
-    ? `<div class="cov-grid">${groups.map(cardHtml).join("")}</div>`
+    ? `<div class="cov-list">${groups.map(cardHtml).join("")}</div>`
     : `<div class="empty-note">${!l.held ? "Nothing to check until the listings are read."
         : coverageSearch ? `No ad group matches “${esc(coverageSearch)}”.`
         : "Every SP ad group holds every SKU of the products it advertises."}</div>`;
@@ -322,6 +347,13 @@ document.querySelector("main").addEventListener("change", e => {
 
 document.querySelector("main").addEventListener("click", async e => {
   if(e.target.closest("[data-cov-add]")){ addCoverage(); return; }
+  const more = e.target.closest("[data-cov-open]");
+  if(more){
+    const id = more.dataset.covOpen;
+    if(coverageOpen.has(id)) coverageOpen.delete(id); else coverageOpen.add(id);
+    renderCoverage();
+    return;
+  }
   if(e.target.closest("[data-cov-show-ignored]")){
     coverageShowIgnored = !coverageShowIgnored; renderCoverage(); return;
   }

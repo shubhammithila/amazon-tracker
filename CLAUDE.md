@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (3075 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (3077 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3788,7 +3788,9 @@ Spec: `docs/superpowers/specs/2026-10-24-ads-sku-coverage-design.md`.
 changes and turning keywords/SKUs on or off) and **Expansion** (`/ads-page/expansion`,
 `templates/ads_expansion.html`), named by the owner: Optimisation tunes what runs, Expansion adds what
 is missing. Expansion holds SKU coverage as **one card per ad group** (*"cards instead of a long list"*),
-with a sticky bar (counts, search, Add selected, Re-read listings, Excel); adding keywords and product
+**full width and stacked** (a 3-across grid left holes beside the 36-SKU Bestsellers card, *"the
+alignment of the cards is not good"*), each row the same CSS grid (SKU · size · channel · listing ·
+gap · ASIN) so columns line up, 8 rows then "show all N"; with a sticky bar (counts, search, Add selected, Re-read listings, Excel); adding keywords and product
 targets will live there too (brief to come).
 
 - **Measured first:** 110 enabled ad groups checked; **8 miss 77 SKUs of ASINs they already advertise**
