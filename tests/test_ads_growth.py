@@ -424,3 +424,27 @@ async def test_a_failed_relevance_check_offers_nothing(auth_client, seeded, monk
     r = await auth_client.post("/ads/growth/find", json={"ad_group_id": "g1"})
     assert r.status_code == 502 and r.json()["judge_failed"]
     assert all(not c["suggestions"] for c in (await auth_client.get("/ads/growth")).json()["cards"])
+
+
+# ─── The screen ──────────────────────────────────────────────────────────────
+
+
+def test_the_screen_posts_keys_and_the_bid_choice_and_never_the_rows():
+    body = PAGE[PAGE.index("async function add("):][:2600]
+    assert '"/ads/growth/add"' in body
+    assert "JSON.stringify({ad_group_id: groupId, keys, bid_mode: mode, custom_bid: custom, progress_id: bar.id})" in body
+    assert "} finally {\n    bar.stop();" in body
+    assert "Exact AND Phrase" in body, "the confirm says each keyword goes twice"
+
+
+def test_every_server_string_is_escaped_on_the_screen():
+    for field in ("s.term", "s.reason", "f.title", "card.campaign_name", "card.ad_group_name", "body.error",
+                  "r.error", "r.term"):
+        for bad in (f"${{{field}}}", f"${{{field} "):
+            assert bad not in PAGE, f"{field} reaches innerHTML unescaped"
+
+
+def test_rejected_rows_are_shown_with_reasons_but_never_tickable():
+    body = PAGE[PAGE.index("function cardHtml("):][:3000]
+    assert "rejected.map(s => rowHtml(card, s, false))" in body
+    assert "kept.map(s => rowHtml(card, s, true))" in body

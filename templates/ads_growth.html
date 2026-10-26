@@ -50,6 +50,40 @@ a.seg-btn{text-decoration:none;display:inline-block}
   border-radius:8px;color:var(--text);padding:7px 12px;font-size:13px}
 .search-input:focus{outline:none;border-color:var(--accent)}
 
+
+/* One card per ad group, stacked full width like SKU coverage. */
+.gr-bar{position:sticky;top:57px;z-index:50;background:var(--surface);border:1px solid var(--border);
+  border-radius:10px;padding:10px 12px;margin-bottom:12px;display:flex;gap:10px;align-items:center;
+  flex-wrap:wrap;box-shadow:var(--shadow)}
+.gr-bar label{font-size:12.5px;display:inline-flex;gap:5px;align-items:center}
+.gr-bar input[type=number]{width:80px;background:var(--bg);border:1px solid var(--border-strong);border-radius:6px;
+  color:var(--text);padding:5px 7px;font-size:13px}
+.gr-list{display:flex;flex-direction:column;gap:10px}
+.gr-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);overflow:hidden}
+.gr-head{display:flex;gap:10px;align-items:center;padding:9px 12px;border-bottom:1px solid var(--border);background:var(--surface2);flex-wrap:wrap}
+.gr-head .names{flex:1;min-width:220px}
+.gr-camp{font-size:12px;color:var(--text-muted)}
+.gr-group{font-size:14px;font-weight:700}
+.gr-asins{font-size:11px;color:var(--text-dim)}
+.gr-body{padding:4px 12px 10px;overflow-x:auto}
+.gr-row{display:grid;grid-template-columns:22px minmax(220px,2fr) 170px 110px 120px minmax(200px,2fr);
+  column-gap:10px;align-items:center;min-width:900px;padding:5px 0;font-size:12.5px;border-top:1px dashed var(--border)}
+.gr-row > *{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gr-row .why{white-space:normal;color:var(--text-muted);font-size:12px}
+.gr-cols{font-size:10.5px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;border-top:none}
+.tag.src-sold{background:var(--green-soft);color:var(--green)}
+.tag.src-amazon{background:var(--blue-soft);color:var(--blue)}
+.tag.src-autocomplete{background:var(--yellow-soft);color:var(--yellow)}
+.tag.src-page{background:var(--accent-soft);color:var(--accent)}
+.gr-foot{display:flex;gap:8px;align-items:center;padding-top:8px;flex-wrap:wrap}
+.gr-card details{margin-top:6px}
+.gr-card summary{font-size:12px;color:var(--text-muted);cursor:pointer}
+.progress-bar-bg{height:10px;background:var(--bg);border-radius:99px;overflow:hidden;margin-bottom:6px}
+.progress-bar-fill{height:100%;background:var(--accent);border-radius:99px;width:0%;transition:width .4s}
+.apply-progress{padding:10px 0}
+.apply-progress-text{font-size:13px}
+.empty-note{padding:24px;text-align:center;color:var(--text-muted);font-size:13px;line-height:1.6;
+  background:var(--surface);border:1px solid var(--border);border-radius:10px}
 </style>
 <link rel="stylesheet" href="/static/theme.css"/>
 </head>
@@ -68,12 +102,252 @@ a.seg-btn{text-decoration:none;display:inline-block}
 <div class="section-sub">Keywords and competitor targets for each ad group, kept only when they match the
   product's own page. Every keyword is added as Exact and Phrase.</div>
 
+<div class="gr-bar" id="growth-bar">
+  <input class="search-input" id="growth-search" placeholder="Search ad groups or products…"/>
+  <span class="dim">Add at:</span>
+  <label><input type="radio" name="bid-mode" value="low" checked/> Amazon's low end</label>
+  <label><input type="radio" name="bid-mode" value="custom"/> custom</label>
+  <label>₹ <input type="number" id="custom-bid" min="1" step="0.5" placeholder="e.g. 6"/></label>
+  <span class="dim" id="growth-bar-note">Rows with no Amazon suggestion (all Sponsored Brands, and
+    "shoppers type" / "from the page" ideas) use the ₹ typed here.</span>
+</div>
 <div id="growth-status"></div>
 <div id="growth-cards"></div>
 
 </main>
 <script>
 const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+const n = v => (v == null || isNaN(v)) ? 0 : v;
+const money = v => v == null ? "—" : "₹" + Number(v).toLocaleString("en-IN", {maximumFractionDigits: 2});
+
+let data = null;
+const picked = {};            // ad_group_id -> Set of keys
+const busy = new Set();       // ad groups with a Find or Add in flight
+const notes = {};             // ad_group_id -> html of the last message
+
+function istStamp(iso){
+  if(!iso) return "";
+  const d = new Date(String(iso).replace(/Z?$/, "Z"));
+  return d.toLocaleString("en-IN", {timeZone: "Asia/Kolkata", day: "numeric", month: "short",
+                                    hour: "2-digit", minute: "2-digit"});
+}
+
+/* The sources a term came from, as tags. */
+function sourceTags(list){
+  return (list || []).map(s => `<span class="tag src-${esc(s)}">${esc((data.source_labels || {})[s] || s)}</span>`).join(" ");
+}
+
+function rowHtml(card, s, tickable){
+  const f = s.figures || {}, b = s.bids || {};
+  const label = card.kind === "product" && f.title ? `${esc(s.term)} <span class="dim">${esc(f.title)}</span>` : esc(s.term);
+  const bid = card.ad_product === "sb" ? `<span class="dim" title="Amazon offers no suggested bid for Sponsored Brands">custom ₹</span>`
+    : b.low ? `${money(b.low)} <span class="dim">/ ${money(b.suggested_bid)}</span>`
+    : `<span class="dim" title="${esc(b.unavailable || "no suggestion")}">custom ₹</span>`;
+  const sold = n(f.orders) ? `${n(f.orders)} orders · ${money(f.spend)}` : `<span class="dim">—</span>`;
+  const set = picked[card.ad_group_id] || new Set();
+  return `<div class="gr-row">
+    <span>${tickable ? `<input type="checkbox" data-pick="${esc(s.key)}" data-group="${esc(card.ad_group_id)}"${
+      set.has(s.key) ? " checked" : ""} aria-label="Add ${esc(s.term)}"/>` : ""}</span>
+    <span class="${card.kind === "product" ? "mono" : ""}" title="${esc(s.term)}">${label}</span>
+    <span>${sourceTags(s.sources)}</span>
+    <span>${sold}</span>
+    <span>${bid}</span>
+    <span class="why">${esc(s.reason)}</span>
+  </div>`;
+}
+
+function cardHtml(card){
+  const kept = (card.suggestions || []).filter(s => s.keep);
+  const rejected = (card.suggestions || []).filter(s => !s.keep);
+  const set = picked[card.ad_group_id] || new Set();
+  const found = (card.suggestions || [])[0] ? istStamp(card.suggestions[0].found_at) : "";
+  const kindWord = card.kind === "product" ? "competitor products" : "keywords";
+  const head = `<div class="gr-head">
+      <div class="names"><div class="gr-camp">${esc(card.campaign_name)}</div>
+        <div class="gr-group">${esc(card.ad_group_name)}</div>
+        <div class="gr-asins">${(card.asins || []).map(esc).join(" · ") || "no product known yet"}</div></div>
+      <span class="tag">${esc(String(card.ad_product).toUpperCase())}</span>
+      <span class="tag">${kindWord}</span>
+      ${found ? `<span class="dim" style="font-size:12px">found ${esc(found)}</span>` : ""}
+      <button class="btn-outline" data-find="${esc(card.ad_group_id)}"${busy.has(card.ad_group_id) || !(card.asins || []).length
+        ? " disabled" : ""}>${busy.has(card.ad_group_id) ? "Finding…" : found ? "Find again" : `Find ${kindWord}`}</button>
+    </div>`;
+  if(!(card.suggestions || []).length){
+    return `<div class="gr-card" data-card="${esc(card.ad_group_id)}">${head}
+      <div class="gr-body">${notes[card.ad_group_id] || ""}</div></div>`;
+  }
+  const cols = `<div class="gr-row gr-cols"><span></span><span>${card.kind === "product" ? "Competitor ASIN" : "Keyword"}</span>
+    <span>Found by</span><span>Sold here</span><span>Amazon low / sugg.</span><span>Why it fits</span></div>`;
+  return `<div class="gr-card" data-card="${esc(card.ad_group_id)}">${head}
+    <div class="gr-body">
+      ${notes[card.ad_group_id] || ""}
+      ${kept.length ? cols + kept.map(s => rowHtml(card, s, true)).join("")
+        : `<div class="dim" style="padding:8px 0;font-size:12.5px">Nothing relevant enough was found.</div>`}
+      ${kept.length ? `<div class="gr-foot">
+        <button class="btn" data-add="${esc(card.ad_group_id)}"${set.size && !busy.has(card.ad_group_id) ? "" : " disabled"}>
+          Add ${set.size} ${card.kind === "product" ? "target(s)" : "keyword(s) as Exact + Phrase"}</button>
+        <button class="link-btn" data-all="${esc(card.ad_group_id)}">${set.size === kept.length ? "Clear" : "Select all"}</button>
+        <span class="dim" style="font-size:12px">${kept.length} relevant of ${(card.suggestions || []).length} found</span>
+      </div>` : ""}
+      ${rejected.length ? `<details><summary>Left out as not relevant (${rejected.length}) — and why</summary>
+        ${rejected.map(s => rowHtml(card, s, false)).join("")}</details>` : ""}
+    </div></div>`;
+}
+
+function render(){
+  if(!data) return;
+  const q = $("growth-search").value.trim().toLowerCase();
+  const cards = (data.cards || []).filter(c => !q || `${c.campaign_name} ${c.ad_group_name} ${(c.asins || []).join(" ")}`
+    .toLowerCase().includes(q));
+  $("growth-cards").innerHTML = cards.length ? `<div class="gr-list">${cards.map(cardHtml).join("")}</div>`
+    : `<div class="empty-note">${(data.cards || []).length ? "No ad group matches the search."
+      : "No keyword or product-target ad group is held yet. They appear after the nightly Ads refresh."}</div>`;
+}
+
+async function load(){
+  const response = await fetch("/ads/growth");
+  const body = await response.json();
+  if(!response.ok){
+    $("growth-status").innerHTML = `<div class="banner error">${esc(body.error || "Could not load.")}</div>`;
+    return;
+  }
+  data = body;
+  render();
+}
+
+function cardOf(groupId){ return (data.cards || []).find(c => c.ad_group_id === groupId); }
+
+async function find(groupId){
+  busy.add(groupId);
+  notes[groupId] = `<div class="dim" style="padding:8px 0;font-size:12.5px">Reading the product page, Amazon's
+    suggestions, autocomplete and our search terms, then checking each against the page — about a minute.</div>`;
+  render();
+  try {
+    const response = await fetch("/ads/growth/find", {method: "POST", headers: {"Content-Type": "application/json"},
+                                                       body: JSON.stringify({ad_group_id: groupId})});
+    const body = await response.json();
+    if(!response.ok){
+      notes[groupId] = `<div class="banner error">${esc(body.error || "The find failed.")}</div>`;
+      return;
+    }
+    const card = cardOf(groupId);
+    card.suggestions = body.suggestions || [];
+    picked[groupId] = new Set();
+    const d = body.dropped || {};
+    notes[groupId] = (d.already || d.negative) ? `<div class="dim" style="font-size:12px;padding-top:6px">Left out
+      before checking: ${n(d.already)} already in this ad group (any state), ${n(d.negative)} negated here.</div>` : "";
+  } finally {
+    busy.delete(groupId);
+    render();
+  }
+}
+
+/* The progress bar while Add runs, polled like Apply on Optimisation. */
+function startApplyProgress(host){
+  const id = "ap-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  const box = document.createElement("div");
+  box.className = "apply-progress";
+  box.innerHTML = `<div class="progress-bar-bg"><div class="progress-bar-fill" style="width:2%"></div></div>
+    <div class="dim apply-progress-text">Starting…</div>`;
+  host.prepend(box);
+  const fill = box.querySelector(".progress-bar-fill");
+  const text = box.querySelector(".apply-progress-text");
+  let stopped = false;
+  const poll = async () => {
+    if(stopped) return;
+    try {
+      const response = await fetch(`/ads/apply/progress/${id}`);
+      if(response.ok && !stopped){
+        const p = await response.json();
+        fill.style.width = Math.max(2, p.percent) + "%";
+        text.textContent = `${p.label}${p.total > 1 ? ` — ${n(p.done)} of ${n(p.total)}` : ""} · ${p.percent}%`;
+      }
+    } catch(e){ /* the next poll catches up */ }
+    if(!stopped) setTimeout(poll, 700);
+  };
+  setTimeout(poll, 300);
+  return {id, stop(){ stopped = true; box.remove(); }};
+}
+
+async function add(groupId){
+  const card = cardOf(groupId);
+  const keys = [...(picked[groupId] || [])];
+  if(!keys.length) return;
+  const mode = document.querySelector('input[name="bid-mode"]:checked').value;
+  const custom = $("custom-bid").value;
+  const words = card.kind === "product" ? `${keys.length} competitor target(s)` : `${keys.length} keyword(s), each as Exact AND Phrase`;
+  /* Plain text in a confirm(), built by concatenation so no server string sits in a ${} literal. */
+  if(!confirm(`Add ${words} to "` + card.ad_group_name + `" at Amazon, at ${mode === "low" ? "Amazon's low-end bid" : "₹" + custom}`
+              + `${custom ? ` (₹${custom} where Amazon has no suggestion)` : ""}?\n\nUndo pauses them again.`)) return;
+  busy.add(groupId);
+  render();
+  const host = document.querySelector(`[data-card="${CSS.escape(groupId)}"] .gr-body`);
+  const bar = startApplyProgress(host);
+  let response, body;
+  try {
+    response = await fetch("/ads/growth/add", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ad_group_id: groupId, keys, bid_mode: mode, custom_bid: custom, progress_id: bar.id})});
+    body = await response.json();
+  } finally {
+    bar.stop();
+    busy.delete(groupId);
+  }
+  if(!response.ok){
+    notes[groupId] = `<div class="banner error">${esc(body.error || "The add failed.")}</div>`;
+    render();
+    return;
+  }
+  const parts = [`<strong>${n(body.applied)} added.</strong>`];
+  if(body.failed) parts.push(`${n(body.failed)} refused by Amazon.`);
+  if(body.pending) parts.push(`${n(body.pending)} with no answer — check the run history on Optimisation.`);
+  if((body.already_there || []).length) parts.push(`${body.already_there.length} were already in the ad group.`);
+  if((body.refused || []).length) parts.push(`${body.refused.length} not sent (${esc(body.refused[0].reason_text)}).`);
+  const refused = (body.results || []).filter(r => !r.ok);
+  notes[groupId] = `<div class="banner ${body.failed || body.pending ? "warn" : "good"}">${parts.join(" ")}
+    ${refused.length ? `<ul style="margin:6px 0 0 18px">${refused.slice(0, 10).map(r =>
+      `<li>${esc(r.term)} ${esc(r.match_type)} — ${esc(r.error)}</li>`).join("")}</ul>` : ""}
+    ${body.run_id ? ` <button class="btn-outline" data-undo="${esc(body.run_id)}" data-group="${esc(groupId)}">↩ Undo (pause them)</button>` : ""}</div>`;
+  picked[groupId] = new Set();
+  await load();
+}
+
+async function undoRun(runId, groupId){
+  const response = await fetch(`/ads/undo/${encodeURIComponent(runId)}`, {method: "POST"});
+  const body = await response.json();
+  notes[groupId] = response.ok ? `<div class="banner good">Undone: ${n(body.applied)} paused again.</div>`
+    : `<div class="banner error">${esc(body.error || "The undo failed.")}</div>`;
+  render();
+}
+
+$("growth-cards").addEventListener("click", e => {
+  const f = e.target.closest("[data-find]");
+  if(f){ find(f.dataset.find); return; }
+  const a = e.target.closest("[data-add]");
+  if(a){ add(a.dataset.add); return; }
+  const all = e.target.closest("[data-all]");
+  if(all){
+    const card = cardOf(all.dataset.all);
+    const kept = (card.suggestions || []).filter(s => s.keep).map(s => s.key);
+    const set = picked[card.ad_group_id] || new Set();
+    picked[card.ad_group_id] = set.size === kept.length ? new Set() : new Set(kept);
+    render();
+    return;
+  }
+  const u = e.target.closest("[data-undo]");
+  if(u) undoRun(u.dataset.undo, u.dataset.group);
+});
+$("growth-cards").addEventListener("change", e => {
+  const box = e.target.closest("[data-pick]");
+  if(!box) return;
+  const set = picked[box.dataset.group] = picked[box.dataset.group] || new Set();
+  if(box.checked) set.add(box.dataset.pick); else set.delete(box.dataset.pick);
+  render();
+});
+$("growth-search").addEventListener("input", render);
+load();
 </script>
 </body>
 </html>
