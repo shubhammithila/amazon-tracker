@@ -1,0 +1,108 @@
+"""Mutation harness for Ads → Keyword growth. Throwaway; not imported by the app.
+
+Each entry breaks ONE decision from `docs/superpowers/specs/2026-10-26-ads-keyword-growth-design.md`
+and names the test that must catch it. A SKIP (target text not found) counts as a survivor.
+
+    venv/Scripts/python scripts/mutate_ads_growth.py
+"""
+import pathlib
+import subprocess
+import sys
+
+CORE = pathlib.Path("app/ads/growth.py")
+JUDGE = pathlib.Path("app/ads/growth_judge.py")
+PAGES = pathlib.Path("app/ads/pages.py")
+ROUTE = pathlib.Path("app/routers/ads_growth.py")
+HTML = pathlib.Path("templates/ads_growth.html")
+
+MUTATIONS = [
+    ("a keyword held in some state is offered again", CORE,
+     "missing = [m for m in MATCHES if (term, m) not in held_keywords]", "missing = list(MATCHES)",
+     "test_anything_held_in_any_state"),
+    ("a negated keyword is offered", CORE, "        if term in negatives:\n            dropped", "        if False:\n            dropped",
+     "test_anything_held_in_any_state"),
+    ("a targeted ASIN is offered again", CORE, "if term.upper() in held_asins:", "if False:",
+     "test_anything_held_in_any_state"),
+    ("an ASIN becomes a keyword", CORE, "if (kind == KIND_PRODUCT) != is_asin(term):", "if False:",
+     "test_candidates_merge"),
+    ("auto ad groups get a card", CORE, "        if kind == KIND_AUTO:\n            continue\n", "",
+     "test_cards_are_enabled"),
+    ("M19/Amazon campaigns get a card", CORE, "if logic.manager_of(campaign.get(\"name\")) != logic.MANAGER_US:",
+     "if False:", "test_cards_are_enabled"),
+    ("keywords go as Exact only", CORE, '(s.get("missing_matches") or list(MATCHES))', '["EXACT"]',
+     "test_every_keyword_goes_as_exact_and_phrase"),
+    ("the max-bid guardrail is skipped", CORE, "if max_bid and bid > max_bid:", "if False:",
+     "test_every_keyword_goes_as_exact_and_phrase"),
+    ("no suggestion no longer falls back to custom", CORE, "if mode == BID_LOW and low:", "if mode == BID_LOW:",
+     "test_the_bid_is_amazons_low_end"),
+    ("a term Claude skips is kept", JUDGE, 'said.get(c["term"], (False, "not judged"))',
+     'said.get(c["term"], (True, "not judged"))', "test_the_judge_keeps_what_claude_keeps"),
+    ("cached verdicts are asked again", JUDGE, 'todo = [c for c in candidates if c["term"] not in cached]',
+     "todo = list(candidates)", "test_the_judge_keeps_what_claude_keeps"),
+    ("a Bedrock failure keeps everything", JUDGE,
+     'raise JudgeError(f"The relevance check failed: {exc}") from exc',
+     'return {"verdicts": {c["term"]: (True, "") for c in candidates}, "ideas": [], "judged": 0, "cached": 0}',
+     "failed"),
+    ("the daily cap is not checked", JUDGE, "if await used_today(db) >= cap:", "if False:",
+     "test_a_failed_judge_raises_and_the_daily_cap_refuses"),
+    ("a fresh page is read again", PAGES, "now - row.fetched_at < timedelta(days=max_age_days)", "False",
+     "test_a_page_is_reread_only_when_stale"),
+    ("a rejected row can be added", ROUTE, "unknown = [k for k in keys if k not in by_key or not by_key[k].keep]",
+     "unknown = [k for k in keys if k not in by_key]", "test_add_sends_exact_and_phrase"),
+    ("Add skips the live re-read", ROUTE,
+     'or (r["kind"] == growth.KIND_KEYWORD and (r["text"], r["match_type"]) in held["keywords"]))]',
+     "or False)]", "test_add_drops_a_match_amazon_already_holds"),
+    ("an added keyword stays on the list", ROUTE, "        if added_keys:\n", "        if False:\n",
+     "test_add_sends_exact_and_phrase"),
+    ("the screen sends no bid choice", HTML,
+     "JSON.stringify({ad_group_id: groupId, keys, bid_mode: mode, custom_bid: custom, progress_id: bar.id})",
+     "JSON.stringify({ad_group_id: groupId, keys, progress_id: bar.id})", "test_the_screen_posts_keys"),
+    ("rejected rows are tickable", HTML, "rejected.map(s => rowHtml(card, s, false))",
+     "rejected.map(s => rowHtml(card, s, true))", "test_rejected_rows_are_shown"),
+]
+
+
+def run(expression):
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:randomly", "-k", expression, "tests/test_ads_growth.py"],
+        capture_output=True, text=True, timeout=600,
+    )
+    last = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+    return result.returncode, last
+
+
+def _write(path, text):
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+
+
+def main():
+    survivors = []
+    for label, path, old, new, test_name in MUTATIONS:
+        original = path.read_text(encoding="utf-8")
+        if old not in original:
+            print(f"SKIP      {label}\n          target text not found in {path}")
+            survivors.append((label, f"target text not found in {path}"))
+            continue
+        _write(path, original.replace(old, new, 1))
+        try:
+            code, summary = run(test_name)
+        finally:
+            _write(path, original)
+        if code == 0:
+            print(f"SURVIVED  {label}\n          {test_name} still passes -> {summary}")
+            survivors.append((label, test_name))
+        else:
+            print(f"caught    {label}\n          {summary}")
+    print()
+    if survivors:
+        print(f"{len(survivors)} SURVIVOR(S):")
+        for label, detail in survivors:
+            print(f"  - {label} ({detail})")
+        return 1
+    print(f"all {len(MUTATIONS)} mutations caught")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (3148 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (3186 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3814,6 +3814,40 @@ targets will live there too (brief to come).
   `new-…` id replaced by the `adId`), and caches the new ads so the panel updates at once. Probed with
   an invalid ad group: SP's own 207 shape, nothing created. **Undo pauses them** (Amazon has no
   delete). `tests/test_ads_coverage.py`; `scripts/mutate_ads_coverage.py` 29/29.
+
+### Keyword growth: relevant keywords and competitor targets (26 Oct 2026)
+Asked for as *"keyword/target addition… at a bid I choose… the suggested bid lower end or a custom bid…
+other keywords from the internet… the product detail page… very relevant… sattu should not have just atta…
+leave out the keywords which are in negative or archived or paused… exact and phrase… both for sb and sp"*.
+Spec `docs/superpowers/specs/2026-10-26-ads-keyword-growth-design.md`; tabs now **Optimisation · SKU
+coverage** (`/ads-page/expansion`, was Expansion) **· Keyword growth** (`/ads-page/growth`).
+
+- **One card per enabled ad group we manage**, SP and SB. Its kind comes from what it targets
+  (`growth.group_kind` over its report match types): keyword groups get keywords, product/category groups
+  get competitor ASINs, auto groups get no card.
+- **Find** (`POST /ads/growth/find`, ~1 min, writes nothing at Amazon) gathers four sources:
+  - our search terms with orders in that group;
+  - Amazon's suggestions (SP v5 / SB keyword, SP product targets);
+  - amazon.in autocomplete for the MRP product names (`www.amazon.in/suggestions`; `completion.amazon.in`
+    is a 502);
+  - Claude's own ideas from the page.
+
+  It then drops what the group holds in **any state**, read live (`fetch_group_targeting`), plus cached
+  negatives. **Claude judges** the rest against the Catalog page text (`pages.py`, cached 7 days),
+  one call per Find. Verdicts are cached 30 days in `growth_verdict`, so a repeat Find is free. A term
+  Claude skips is rejected, and a failed check offers nothing.
+- **Measured first:** 2,127 search terms with orders were not yet exact/phrase in their group (30 days).
+  **The v5 suggestion `bid` is not rupees** ("rice" 1372 vs ₹7.66), so bids come from
+  `fetch_bid_recommendations`. SB has no suggested bid, so it takes the custom ₹.
+- **Add** (`POST /ads/growth/add`, a WRITE) takes only stored KEPT rows by key, then:
+  - every keyword goes as **EXACT and PHRASE** (only the missing one if the group holds the other);
+  - bid = Amazon's low end, else the custom ₹; `max_bid` and `max_rows` hold;
+  - live re-read, then the ledger first (`action=create`, `new-` ids), then `create_targeting`
+    (four shapes, probed with an invalid ad group), with the progress bar.
+
+  **Undo pauses** what was added, and added rows leave the list. `GROWTH_DAILY_LIMIT` (60) checks per IST
+  day, logged in `assistant_log` (tab `growth`). Migration `a1c5e8f20b74`.
+- `tests/test_ads_growth.py`; `scripts/mutate_ads_growth.py` 19/19.
 
 ### Search-term negatives, and the Grow / Cut rule columns (25 Oct 2026)
 Asked for as *"negative targeting based on search terms not just targets added… in auto campaigns there
