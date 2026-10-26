@@ -1769,3 +1769,56 @@ class AnalyticsRefresh(Base):
     source = Column(String(12), nullable=False, default="nightly")
     months = Column(Text)
     error = Column(Text)
+
+
+class ProductPage(Base):
+    """Our own product page text, from the Catalog API (`/catalog/2022-04-01/items/{asin}`).
+    **Amazon's.** What Keyword growth's relevance check reads: title, bullets, description. Cached 7 days.
+    """
+    __tablename__ = "product_page"
+
+    asin = Column(String(10), primary_key=True)
+    title = Column(Text)
+    bullets_json = Column(Text)
+    description = Column(Text)
+    fetched_at = Column(DateTime)
+
+
+class GrowthVerdict(Base):
+    """Claude's keep/reject verdict on one candidate keyword or competitor ASIN for one product, with its
+    one-line reason. **Ours.** Reused for 30 days, so asking again costs nothing.
+    """
+    __tablename__ = "growth_verdict"
+    __table_args__ = (Index("uq_growth_verdict", "product_key", "kind", "term", unique=True),)
+
+    id = Column(Integer, primary_key=True)
+    product_key = Column(String(20), nullable=False)
+    #: `keyword` or `product` (a competitor ASIN).
+    kind = Column(String(10), nullable=False)
+    term = Column(String(300), nullable=False)
+    keep = Column(Boolean, nullable=False)
+    reason = Column(String(300))
+    judged_at = Column(DateTime)
+
+
+class GrowthSuggestion(Base):
+    """The last Find's candidates for one ad group, kept and rejected, with their sources, figures and
+    Amazon's suggested bids. **Ours.** Replaced whole on each Find; Add is rebuilt from these rows, never
+    from what a browser sends.
+    """
+    __tablename__ = "growth_suggestion"
+    __table_args__ = (Index("uq_growth_suggestion", "ad_group_id", "key", unique=True),)
+
+    id = Column(Integer, primary_key=True)
+    ad_group_id = Column(String(32), nullable=False)
+    key = Column(String(400), nullable=False)
+    ad_product = Column(String(4), nullable=False)
+    campaign_id = Column(String(32))
+    kind = Column(String(10), nullable=False)
+    term = Column(String(300), nullable=False)
+    sources_json = Column(Text)
+    figures_json = Column(Text)
+    keep = Column(Boolean, nullable=False)
+    reason = Column(String(300))
+    bids_json = Column(Text)
+    found_at = Column(DateTime)

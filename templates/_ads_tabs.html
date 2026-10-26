@@ -1,8 +1,9 @@
-{# Optimisation | Expansion: the Ads sub-tabs (24 Oct 2026). Optimisation tunes what is already
-   running (bid changes, turning keywords and SKUs on or off); Expansion adds what is missing (SKUs an
-   ad group lacks now, new keywords and targets later). A fragment (no <head>), so it is exempt from
-   the stylesheet-link rule in tests/test_theme.py; each page styles .seg itself. #}
+{# The Ads sub-tabs. Optimisation tunes what already runs (bids, turning keywords and SKUs on or off,
+   negatives); SKU coverage adds the SKUs an ad group lacks (24 Oct 2026, first named Expansion); Keyword
+   growth adds relevant keywords and competitor targets (26 Oct 2026). A fragment (no <head>), so it is
+   exempt from the stylesheet-link rule in tests/test_theme.py; each page styles .seg itself. #}
 <div class="seg ads-tabs">
   <a class="seg-btn{% if ads_tab == 'optimisation' %} on{% endif %}" href="/ads-page">Optimisation</a>
-  <a class="seg-btn{% if ads_tab == 'expansion' %} on{% endif %}" href="/ads-page/expansion">Expansion</a>
+  <a class="seg-btn{% if ads_tab == 'expansion' %} on{% endif %}" href="/ads-page/expansion">SKU coverage</a>
+  <a class="seg-btn{% if ads_tab == 'growth' %} on{% endif %}" href="/ads-page/growth">Keyword growth</a>
 </div>

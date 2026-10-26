@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Ads · Keyword growth — Amazon Tracker</title>
+{#
+  Ads → Keyword growth (26 Oct 2026): relevant keywords and competitor targets for each ad group, judged
+  against the product page by Claude and added at a bid the owner chooses. Spec:
+  docs/superpowers/specs/2026-10-26-ads-keyword-growth-design.md. The SERVER finds and judges
+  (`POST /ads/growth/find`); the screen sends only keys to Add, and the server rebuilds the list,
+  re-reads the live ad group and writes the ledger before anything reaches Amazon. Delegated listeners
+  only: keyword text comes from Amazon and shoppers.
+#}
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px}
+header{display:flex;align-items:center;gap:12px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100}
+header h1{font-size:16px;font-weight:600}
+.nav-links{display:flex;gap:16px;margin-left:32px}
+.nav-links a{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:500;padding:4px 0;border-bottom:2px solid transparent}
+.nav-links a:hover,.nav-links a.active{color:var(--text);border-color:var(--accent)}
+.header-right{margin-left:auto}.header-right a{color:var(--text-muted);font-size:13px;text-decoration:none}
+main{max-width:1280px;margin:0 auto;padding:16px 20px 80px}
+h2{font-size:19px;font-weight:600;margin-bottom:6px}
+.seg{display:inline-flex;border:1px solid var(--border-strong);border-radius:8px;overflow:hidden}
+.seg-btn{background:transparent;border:none;color:var(--text-muted);font-size:12.5px;font-weight:600;padding:7px 13px;cursor:pointer}
+.seg-btn:hover{color:var(--text)}
+.seg-btn.on{background:var(--accent);color:var(--on-accent)}
+a.seg-btn{text-decoration:none;display:inline-block}
+.ads-tabs{margin:2px 0 12px}
+.section-title{font-size:14px;font-weight:700;margin-bottom:2px}
+.section-sub{font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.5;max-width:900px}
+.banner{border-radius:8px;padding:10px 13px;font-size:12.5px;margin-bottom:10px;line-height:1.55}
+.banner.warn{background:var(--yellow-soft);border:1px solid var(--yellow);color:var(--yellow)}
+.banner.good{background:var(--green-soft);border:1px solid var(--green);color:var(--green)}
+.banner.error{background:var(--red-soft);border:1px solid var(--red);color:var(--red)}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+.btn:disabled{opacity:.55;cursor:not-allowed}
+.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border-strong);border-radius:8px;padding:7px 13px;font-size:12.5px;cursor:pointer;text-decoration:none;display:inline-block}
+.link-btn{background:none;border:none;padding:0;font:inherit;font-size:12px;color:var(--accent);cursor:pointer}
+.link-btn:hover{text-decoration:underline}
+.dim{color:var(--text-dim)}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+.tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;background:var(--surface2);color:var(--text-muted);white-space:nowrap}
+.tag.ch-fba{background:var(--blue-soft);color:var(--blue)}
+.tag.ch-flex{background:var(--yellow-soft);color:var(--yellow)}
+.tag.ch-easy_ship{background:var(--green-soft);color:var(--green)}
+.tag.size{background:var(--orange-soft);color:var(--orange)}
+.search-input{flex:1 1 220px;min-width:170px;max-width:320px;background:var(--bg);border:1px solid var(--border-strong);
+  border-radius:8px;color:var(--text);padding:7px 12px;font-size:13px}
+.search-input:focus{outline:none;border-color:var(--accent)}
+
+</style>
+<link rel="stylesheet" href="/static/theme.css"/>
+</head>
+<body>
+<header>
+<span>📣</span><h1>Amazon Tracker v2</h1>
+{% include "nav.html" %}
+<div class="header-right"><a href="/logout">Logout</a></div>
+</header>
+<main>
+
+<h2>Ads</h2>
+{% include "_ads_tabs.html" %}
+
+<div class="section-title">Keyword growth</div>
+<div class="section-sub">Keywords and competitor targets for each ad group, kept only when they match the
+  product's own page. Every keyword is added as Exact and Phrase.</div>
+
+<div id="growth-status"></div>
+<div id="growth-cards"></div>
+
+</main>
+<script>
+const $ = id => document.getElementById(id);
+</script>
+</body>
+</html>

@@ -480,7 +480,7 @@ def test_the_screen_never_ticks_an_ignored_row():
     assert "g.products.filter(p => !p.ignored)" in keys
 
 
-# ─── The Expansion sub-tab ───────────────────────────────────────────────────
+# ─── The SKU coverage sub-tab (first named Expansion) ───────────────────────────────────────────────────
 
 
 async def test_expansion_is_its_own_ads_sub_tab_with_one_card_per_ad_group(auth_client):
@@ -488,14 +488,15 @@ async def test_expansion_is_its_own_ads_sub_tab_with_one_card_per_ad_group(auth_
     assert r.status_code == 200
     html = r.text
     assert 'href="/ads-page">Optimisation</a>' in html
-    assert 'class="seg-btn on" href="/ads-page/expansion">Expansion</a>' in html
+    assert 'class="seg-btn on" href="/ads-page/expansion">SKU coverage</a>' in html
     assert 'id="coverage-cards"' in html and "cov-card" in html
 
 
 async def test_optimisation_carries_the_tabs_and_no_longer_the_coverage_panel(auth_client):
     html = (await auth_client.get("/ads-page")).text
     assert 'class="seg-btn on" href="/ads-page">Optimisation</a>' in html
-    assert 'href="/ads-page/expansion">Expansion</a>' in html
+    assert 'href="/ads-page/expansion">SKU coverage</a>' in html
+    assert 'href="/ads-page/growth">Keyword growth</a>' in html
     assert "coverage-panel" not in OPTIMISATION and "coverage-btn" not in OPTIMISATION
     assert "/ads/coverage" not in OPTIMISATION
 

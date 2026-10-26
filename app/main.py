@@ -279,6 +279,15 @@ async def ads_expansion_page(request: Request, grant=Depends(require_area(permis
     })
 
 
+@app.get("/ads-page/growth", response_class=HTMLResponse)
+async def ads_growth_page(request: Request, grant=Depends(require_area(permissions.ADS))):
+    """Ads → Keyword growth: relevant keywords and competitor targets for each ad group, judged against
+    the product page and added at a bid the owner chooses."""
+    return templates.TemplateResponse(request, "ads_growth.html", {
+        "active": "ads", "grant": grant, "ads_tab": "growth",
+    })
+
+
 @app.get("/portfolio-page/projections", response_class=HTMLResponse)
 async def portfolio_projections_page(
     request: Request, grant=Depends(require_area(permissions.PROJECTIONS))
