@@ -112,6 +112,40 @@ PRODUCT_REPORT_COLUMNS = (
 )
 
 
+#: The SEARCH-TERM reports (negative rules): per search term, per the keyword or target that matched it,
+#: per day. Measured 25 Oct 2026 on SP: 30 days SUMMARY = 18,545 rows, ₹12.3 lakh. `groupBy
+#: searchTerm` is the only grouping that carries the term. SP and SB name their figures differently,
+#: as on the targeting report.
+SEARCH_REPORT_TYPE_ID = "spSearchTerm"
+SEARCH_REPORT_COLUMNS = (
+    "date", "campaignId", "campaignName", "adGroupId", "adGroupName", "keywordId", "keyword",
+    "matchType", "targeting", "searchTerm", "impressions", "clicks", "cost", "purchases7d", "sales7d",
+)
+SB_SEARCH_REPORT_TYPE_ID = "sbSearchTerm"
+SB_SEARCH_REPORT_COLUMNS = (
+    "date", "campaignId", "campaignName", "adGroupId", "adGroupName", "keywordId", "keywordText",
+    "matchType", "searchTerm", "impressions", "clicks", "cost", "purchases", "sales",
+)
+
+
+def build_search_report_request(start: str, end: str, *, ad_product: str = "sp") -> dict:
+    """The DAILY search-term report body for one ad product."""
+    is_sb = (ad_product or "sp").strip().lower() == "sb"
+    return {
+        "name": f"ads {'sb ' if is_sb else ''}search terms daily {start}..{end}",
+        "startDate": start,
+        "endDate": end,
+        "configuration": {
+            "adProduct": SB_AD_PRODUCT if is_sb else AD_PRODUCT,
+            "groupBy": ["searchTerm"],
+            "columns": list(SB_SEARCH_REPORT_COLUMNS if is_sb else SEARCH_REPORT_COLUMNS),
+            "reportTypeId": SB_SEARCH_REPORT_TYPE_ID if is_sb else SEARCH_REPORT_TYPE_ID,
+            "timeUnit": "DAILY",
+            "format": "GZIP_JSON",
+        },
+    }
+
+
 def build_product_report_request(start: str, end: str) -> dict:
     """The DAILY product-ad report body. Always daily: the rows are stored per day like the keywords."""
     return {
@@ -239,8 +273,8 @@ async def fetch_targeting(
     import asyncio
 
     sleep = sleep or asyncio.sleep
-    # The product-ad report is ALWAYS per day, so it is never collapsed below.
-    daily = daily or report == "product"
+    # The product-ad and search-term reports are ALWAYS per day, so they are never collapsed below.
+    daily = daily or report in ("product", "search")
     settings = get_settings()
     if not settings.ads_configured:
         raise AdsNotConfigured()
@@ -298,6 +332,7 @@ async def _one_report(client, start: str, end: str, *, daily: bool = False,
 
     body = json.dumps(
         build_product_report_request(start, end) if report == "product"
+        else build_search_report_request(start, end, ad_product=ad_product) if report == "search"
         else build_report_request(start, end, daily=daily, ad_product=ad_product)
     )
 

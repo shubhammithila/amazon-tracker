@@ -1388,6 +1388,44 @@ class AdsProductDaily(Base):
     fetched_at = Column(DateTime, default=datetime.utcnow)
 
 
+class AdsSearchTermDaily(Base):
+    """Spend and sales per SEARCH TERM per ad group (and per target that brought it in), per DAY.
+    **Amazon's.** From the `spSearchTerm` / `sbSearchTerm` DAILY reports.
+
+    The working set for a negative rule: a term that overspent inside an ad group becomes a negative
+    exact keyword (or, for an ASIN term, a negative product target) in that ad group. Its own table,
+    never rows in `ads_performance_daily`: a search term's spend is the same money as its target's, so
+    every keyword total would double. Measured 25 Oct 2026: 30 days of SP was 18,545 summary rows.
+    Delete-then-insert per (day, ad_product), 60-day retention like the keyword rows.
+    """
+    __tablename__ = "ads_search_term_daily"
+    __table_args__ = (
+        Index("idx_ads_search_term_day", "day", "ad_product"),
+        Index("idx_ads_search_term_group", "ad_group_id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    day = Column(String(10), nullable=False)
+    ad_product = Column(String(4), nullable=False, default="sp", server_default="sp")
+    campaign_id = Column(String(32))
+    campaign_name = Column(String(300))
+    ad_group_id = Column(String(32))
+    ad_group_name = Column(String(300))
+    #: The keyword or target that matched the search term (an auto target's id for auto campaigns).
+    keyword_id = Column(String(32))
+    keyword_text = Column(String(300))
+    match_type = Column(String(40))
+    #: `close-match`, `asin="B0…"`, `category="…"` — how the term came in, for a target.
+    targeting = Column(String(300))
+    search_term = Column(String(300), nullable=False)
+    impressions = Column(Integer, default=0)
+    clicks = Column(Integer, default=0)
+    cost = Column(Numeric(12, 2), default=0)
+    orders = Column(Integer, default=0)
+    sales = Column(Numeric(12, 2), default=0)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
 class ListingSku(Base):
     """One SKU on the account, from `GET_MERCHANT_LISTINGS_ALL_DATA`. **Amazon's, cached.**
 
@@ -1553,6 +1591,9 @@ class AdsMutation(Base):
     #: Set when this row was created BY an undo, naming the run being reversed — so a double-undo
     #: is detectable and the history reads as a chain rather than a loop.
     reverts_run_id = Column(String(36))
+    #: The window the rule was previewed on, `start..end`. The saved-rules panel greys a rule that ran
+    #: today for THE WINDOW ON SCREEN, so a rule run on 7 days still reads fresh on 30.
+    rule_window = Column(String(23))
     created_at = Column(DateTime, default=datetime.utcnow)
     sent_at = Column(DateTime)
 
@@ -1596,6 +1637,9 @@ class AdsRefresh(Base):
     #: The SP product-ad report (SKU rules), stored and failing on its own like Sponsored Brands.
     product_rows = Column(Integer, default=0)
     product_error = Column(Text)
+    #: The search-term reports (negative rules), stored and failing on their own too.
+    search_rows = Column(Integer, default=0)
+    search_error = Column(Text)
     started_at = Column(DateTime, default=datetime.utcnow)
     finished_at = Column(DateTime)
 

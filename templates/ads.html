@@ -102,6 +102,18 @@ a.seg-btn{text-decoration:none;display:inline-block}
 .rule-acts button{border:1px solid var(--border-strong);background:var(--surface);border-radius:6px;
   padding:2px 8px;font-size:12px;cursor:pointer;color:var(--text)}
 .rule-acts button:hover{border-color:var(--accent)}
+/* Grow (raise spend) and Cut (lower it) side by side, each card edged in its colour. A rule that
+   already ran today ON THE WINDOW ON SCREEN is greyed with the time, and stays usable. */
+.rules-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:12px;margin-bottom:10px}
+.rules-col-head{font-size:12px;font-weight:700;margin-bottom:6px}
+.rules-col-head.grow{color:var(--green)}
+.rules-col-head.cut{color:var(--red)}
+.rules-cols .rules-grid{grid-template-columns:repeat(auto-fill,minmax(200px,1fr));margin-bottom:0}
+.rule-card.grow{border-left:4px solid var(--green)}
+.rule-card.cut{border-left:4px solid var(--red)}
+.rule-card.ran{background:var(--surface2);border-left-color:var(--border-strong);opacity:.7}
+.rule-card.ran .rule-name{color:var(--text-muted)}
+.rule-ran{font-size:11px;font-weight:700;color:var(--text-muted)}
 .rule-acts button.danger{color:var(--red);margin-left:auto}
 .rule-acts button.danger:hover{border-color:var(--red)}
 .save-area{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;padding-top:10px;
@@ -268,6 +280,7 @@ tr.child td:first-child{padding-left:30px}
     <span class="win-label">Apply to</span>
     <button type="button" class="seg" data-level="keyword">Keywords &amp; targets</button>
     <button type="button" class="seg" data-level="product">Products (SKUs)</button>
+    <button type="button" class="seg" data-level="search">Search terms</button>
     <span class="level-note" id="level-note"></span>
   </div>
 
@@ -285,6 +298,7 @@ tr.child td:first-child{padding-left:30px}
       <option value="increase_abs">increase bid by (₹)</option>
       <option value="set">set bid to (₹)</option>
       <option value="set_state">turn the keyword</option>
+      <option value="negate">add as negative</option>
     </select>
     <input type="number" id="amount" value="10" step="0.5" style="width:90px"/>
     {# Shown INSTEAD of the number box for a state action. A state is not a quantity, and
@@ -332,7 +346,7 @@ let data = {campaigns: [], totals: {}, window: ["", ""], guardrails: {}, runs: [
 let conditions = remembered("conditions", [{field: "spend", op: "gt", value: 100}]);
 /* "keyword" (keywords and targets) or "product" (product ads: one SKU in an ad group). Sent with the
    preview and saved with a rule; the server owns what each level allows. */
-let level = remembered("level", "keyword") === "product" ? "product" : "keyword";
+let level = ["product", "search"].includes(remembered("level", "keyword")) ? remembered("level", "keyword") : "keyword";
 let selected = new Set();          // campaign ids
 let openCampaigns = new Set();
 /* Which PREVIEW groups are expanded. Separate from `openCampaigns`, which belongs to the campaign
@@ -744,10 +758,11 @@ function renderKpis(){
 /* ── Conditions ────────────────────────────────────────────────────────────── */
 /* The fields this level may test: a product rule has no bid, and only it has SKU channel and SKU/ASIN. */
 function levelFields(){
-  return (level === "product" ? data.product_fields : data.fields) || {};
+  return (level === "product" ? data.product_fields : level === "search" ? data.search_fields : data.fields) || {};
 }
 function fieldKind(field){
-  return ((data.product_fields || {})[field] || (data.fields || {})[field] || {}).kind;
+  return ((data.search_fields || {})[field] || (data.product_fields || {})[field]
+          || (data.fields || {})[field] || {}).kind;
 }
 function operatorsFor(field){
   return (data.kind_operators || {})[fieldKind(field)] || data.operators || {};
@@ -756,7 +771,7 @@ function operatorsFor(field){
    text needs text, and a number keeps "> 100". */
 function defaultsFor(field){
   const kind = fieldKind(field);
-  if(kind === "choice") return {op: "is", value: "easy_ship"};
+  if(kind === "choice") return {op: "is", value: Object.keys((levelFields()[field] || {}).choices || {})[0] || ""};
   if(kind === "text") return {op: "contains", value: ""};
   return {op: "gt", value: 100};
 }
@@ -807,9 +822,10 @@ function renderConditions(){
 function syncActionControls(){
   const value = $("action").value;
   const state = isStateRun(value);
-  $("amount").style.display = state ? "none" : "";
+  const negate = value === "negate";
+  $("amount").style.display = state || negate ? "none" : "";
   $("state-amount").style.display = state ? "" : "none";
-  $("amount-unit").textContent = state ? "" : (value.endsWith("_pct") ? "%" : "₹");
+  $("amount-unit").textContent = state || negate ? "" : (value.endsWith("_pct") ? "%" : "₹");
 }
 
 /* The level switch. Switching drops conditions the other level cannot use (a bid on a SKU, a channel
@@ -819,11 +835,20 @@ function renderLevel(){
   document.querySelectorAll("#level-bar [data-level]").forEach(b =>
     b.classList.toggle("on", b.dataset.level === level));
   const product = level === "product";
+  const search = level === "search";
   $("level-note").textContent = product
     ? "Sponsored Products only: a Sponsored Brands ad holds several products, so one SKU cannot be "
       + "switched off there. The last active SKU of an ad group is never turned off."
-    : "";
-  [...$("action").options].forEach(o => { o.disabled = product && o.value !== "set_state"; });
+    : search
+      ? "Each search term within its ad group. A word becomes a negative exact keyword there, an ASIN a "
+        + "negative product. A term that IS one of the ad group's own keywords or targets is never "
+        + "negated — turn that target off instead. Never touches bids or turns anything off."
+      : "";
+  [...$("action").options].forEach(o => {
+    o.disabled = search ? o.value !== "negate" : (o.value === "negate" || (product && o.value !== "set_state"));
+  });
+  if(search) $("action").value = "negate";
+  else if($("action").value === "negate") $("action").value = "decrease_pct";
   const stateOption = [...$("action").options].find(o => o.value === "set_state");
   if(stateOption) stateOption.textContent = product ? "turn the SKU" : "turn the keyword";
   if(product && $("action").value !== "set_state") $("action").value = "set_state";
@@ -835,7 +860,10 @@ function setLevel(next){
   remember("level", level);
   const allowed = levelFields();
   conditions = conditions.filter(c => allowed[c.field]);
-  if(!conditions.length) conditions = [{field: "spend", op: "gt", value: next === "product" ? 500 : 100}];
+  if(!conditions.length) conditions = next === "search"
+    ? [{field: "spend", op: "gt", value: 200}, {field: "orders", op: "eq", value: 0}]
+    : [{field: "spend", op: "gt", value: next === "product" ? 500 : 100}];
+  negPlan = null;
   remember("conditions", conditions);
   plan = null;
   $("preview-area").innerHTML = "";
@@ -869,18 +897,34 @@ function renderSaved(){
     const d = new Date(r.last_run_at + "Z");
     return "last run " + d.toLocaleString("en-IN", {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"});
   };
-  $("saved-bar").innerHTML = `<div class="rules-head"><span class="win-label">Saved rules (${rules.length})</span>
-      ${rules.length > 8 ? `<input class="search-input" id="rule-search" placeholder="Search rules…" value="${esc(ruleSearch)}" style="margin-left:auto;max-width:220px"/>` : ""}</div>
-    <div class="rules-grid">${shown.map(r => `<div class="rule-card${(editing && editing.id === r.id) || loadedRule === r.name ? " on" : ""}">
+  // Ran today on the window on screen — keyed "start..end", so switching 7d → 30d un-greys it.
+  const ranAt = r => ((r.ran_today || {})[(data.window || []).join("..")] || "");
+  const card = r => {
+    const at = ranAt(r);
+    const time = at ? new Date(at + "Z").toLocaleTimeString("en-IN", {hour: "2-digit", minute: "2-digit"}) : "";
+    return `<div class="rule-card ${r.impact === "cut" ? "cut" : "grow"}${at ? " ran" : ""}${
+        (editing && editing.id === r.id) || loadedRule === r.name ? " on" : ""}" data-rule-card="${r.id}">
         <div class="rule-name" title="${esc(r.name)}">${esc(r.name)}</div>
         <div class="rule-words" title="${esc(ruleWords(r))}">${esc(ruleWords(r))}</div>
+        ${at ? `<div class="rule-ran">✓ ran today ${esc(time)} on this window</div>` : ""}
         <div class="rule-meta">${esc(lastRun(r))}</div>
         <div class="rule-acts">
           <button type="button" data-use="${r.id}" title="Load into the builder, then Preview">Use</button>
           <button type="button" data-edit="${r.id}" title="Change this rule's conditions, action or name">Edit</button>
           <button type="button" data-copy="${r.id}" title="Start a new rule from this one">Copy</button>
           <button type="button" class="danger" data-delete="${r.id}" title="Delete this saved rule">Delete</button>
-        </div></div>`).join("") || `<div class="dim" style="font-size:12px">No rule matches.</div>`}</div>`;
+        </div></div>`;
+  };
+  const column = (impact, title) => {
+    const list = shown.filter(r => (r.impact === "cut" ? "cut" : "grow") === impact);
+    return `<div><div class="rules-col-head ${impact}">${title} (${list.length})</div>
+      <div class="rules-grid">${list.map(card).join("") || `<div class="dim" style="font-size:12px">${
+        q ? "No rule matches." : "None saved."}</div>`}</div></div>`;
+  };
+  $("saved-bar").innerHTML = `<div class="rules-head"><span class="win-label">Saved rules (${rules.length})</span>
+      ${rules.length > 8 ? `<input class="search-input" id="rule-search" placeholder="Search rules…" value="${esc(ruleSearch)}" style="margin-left:auto;max-width:220px"/>` : ""}</div>
+    <div class="rules-cols">${column("grow", "▲ Grow — raise bids, turn on")}${
+      column("cut", "▼ Cut — lower bids, turn off, negatives")}</div>`;
   renderSaveArea();
 }
 
@@ -906,7 +950,7 @@ function builderSnapshot(){
           amount: $("amount").value, state: $("state-amount").value, level};
 }
 function restoreBuilder(snap){
-  level = snap.level === "product" ? "product" : "keyword";
+  level = ["product", "search"].includes(snap.level) ? snap.level : "keyword";
   remember("level", level);
   renderLevel();
   conditions = snap.conditions.map(c => ({...c}));
@@ -922,14 +966,15 @@ function ruleById(id){ return (data.rules || []).find(r => String(r.id) === Stri
 /* The rule in words, for the button's tooltip — so picking a saved rule does not require
    remembering what the name meant. */
 function ruleWords(rule){
-  const fields = {...(data.fields || {}), ...(data.product_fields || {})};
+  const fields = {...(data.fields || {}), ...(data.product_fields || {}), ...(data.search_fields || {})};
   const parts = (rule.conditions || []).map(c => {
     const meta = fields[c.field] || {};
     const value = meta.kind === "choice" ? ((meta.choices || {})[c.value] || c.value)
       : meta.kind === "text" ? `"${c.value}"` : c.value;
     return `${meta.label || c.field} ${operatorsFor(c.field)[c.op] || c.op} ${value}`;
   });
-  const prefix = rule.level === "product" ? "Products: " : "";
+  const prefix = rule.level === "product" ? "Products: " : rule.level === "search" ? "Search terms: " : "";
+  if(rule.action === "negate") return `${prefix}${parts.join(", ")} → add as negative`;
   if(rule.action === "set_state"){
     return `${prefix}${parts.join(", ")} → turn ${String(rule.amount).toUpperCase() === "PAUSED" ? "OFF (pause)" : "ON (enable)"}`;
   }
@@ -945,7 +990,7 @@ function loadRule(name){
   const rule = (data.rules || []).find(r => r.name === name);
   if(!rule) return;
   // The rule's level first, so its conditions render with the fields that level allows.
-  level = rule.level === "product" ? "product" : "keyword";
+  level = ["product", "search"].includes(rule.level) ? rule.level : "keyword";
   remember("level", level);
   renderLevel();
   // REPLACES the conditions rather than merging: a loaded rule that inherited leftover conditions
@@ -985,6 +1030,7 @@ function isStateRun(action){
 }
 
 function ruleAmount(){
+  if($("action").value === "negate") return null;
   return isStateRun() ? $("state-amount").value : Number($("amount").value);
 }
 
@@ -1229,6 +1275,8 @@ function renderRefreshNote(){
 
 /* ── Preview ───────────────────────────────────────────────────────────────── */
 async function runPreview(){
+  if(level === "search") return runNegPreview();
+  negPlan = null;
   const button = $("preview-btn");
   button.disabled = true;
   button.textContent = "Checking…";
@@ -1691,7 +1739,7 @@ async function applyPlan(){
 
   const response = await fetch("/ads/apply", {
     method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({changes: changes, rule: plan.rule}),
+    body: JSON.stringify({changes: changes, rule: plan.rule, start: data.window[0], end: data.window[1]}),
   });
   const body = await response.json();
 
@@ -1779,6 +1827,151 @@ async function undoRun(runId){
   load();
 }
 
+/* ── Search-term negatives ────────────────────────────────────────────────────
+   The third level (25 Oct 2026). A search term that overspent inside an ad group is added there as a
+   negative EXACT keyword, or, for an ASIN term, a negative product target. The SERVER builds the plan
+   (`/ads/negatives/preview`) and rebuilds it on apply, taking only the keys the screen sends back, so
+   nothing reaches Amazon that the plan did not approve. */
+let negPlan = null;
+let negPick = new Set();
+
+async function runNegPreview(){
+  const button = $("preview-btn");
+  button.disabled = true;
+  button.textContent = "Checking…";
+  try {
+    const response = await fetch("/ads/negatives/preview", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({start: data.window[0], end: data.window[1], conditions,
+                            campaign_ids: [...selected], ad_group_ids: [...selectedAdGroups]}),
+    });
+    const body = await response.json();
+    if(!response.ok){
+      negPlan = null;
+      $("preview-area").innerHTML = `<div class="card"><div class="banner error">${
+        esc(body.error || "Could not build the preview.")}</div></div>`;
+      return;
+    }
+    negPlan = body;
+    negPick = new Set(body.approved_ids || []);
+    renderNegPreview();
+  } finally {
+    button.disabled = false;
+    button.textContent = "Preview changes";
+  }
+}
+
+function negRowHtml(c, tickable){
+  const via = (c.via || []).map(v => `${esc(v.label)}${v.target ? ` <span class="dim">(${esc(v.target)})</span>` : ""}`).join(", ");
+  return `<tr>
+    <td>${tickable ? `<input type="checkbox" data-neg-pick="${esc(c.key)}"${negPick.has(c.key) ? " checked" : ""}
+      aria-label="Add ${esc(c.search_term)} as a negative"/>` : ""}</td>
+    <td class="mono">${esc(c.search_term)}</td>
+    <td><span class="tag ${c.kind === "product" ? "m-product" : "m-exact"}">${esc(c.kind_label)}</span>
+      <span class="tag ${esc(c.ad_product)}">${esc(String(c.ad_product).toUpperCase())}</span>${
+      c.no_undo ? ' <span class="tag changed" title="Amazon\'s Sponsored Brands archive is permanent">no undo</span>' : ""}</td>
+    <td style="white-space:normal;max-width:320px;font-size:12px">${via}</td>
+    <td class="num">${money(c.spend)}</td><td class="num">${n(c.clicks)}</td>
+    <td class="num">${n(c.orders)}</td><td class="num">${money(c.sales)}</td>
+    <td class="num">${roas(c.roas)}</td>
+    ${tickable ? "" : `<td class="dim" style="white-space:normal;font-size:12px">${esc(c.reason_text)}</td>`}
+  </tr>`;
+}
+
+function renderNegPreview(){
+  const p = negPlan;
+  if(!p) return;
+  const t = p.totals || {};
+  const picked = (p.changes || []).filter(c => negPick.has(c.key));
+  const groups = {};
+  for(const c of p.changes || []){
+    const k = (c.campaign_name || "") + " › " + (c.ad_group_name || c.ad_group_id);
+    (groups[k] = groups[k] || []).push(c);
+  }
+  const skippedCounts = Object.entries(t.skipped || {}).map(([k, v]) =>
+    `${n(v)} ${esc((p.skip_reasons || {})[k] || k)}`).join(" · ");
+  const head = `<thead><tr><th></th><th>Search term</th><th>Becomes</th><th>Came in via</th>
+    <th class="num">Spend</th><th class="num">Clicks</th><th class="num">Orders</th>
+    <th class="num">Sales</th><th class="num">ROAS</th></tr></thead>`;
+  $("preview-area").innerHTML = `<div class="card">
+    <div class="section-title">Negatives preview</div>
+    <div class="section-sub">${esc(p.rule)} · ${esc(p.window[0])} → ${esc(p.window[1])}. A word term is added
+      as a <strong>negative exact</strong> keyword in its ad group, an ASIN as a <strong>negative product</strong>.
+      Nothing is sent until you press Add.</div>
+    ${(p.notes || []).map(x => `<div class="banner warn">${esc(x)}</div>`).join("")}
+    ${p.blocked ? `<div class="banner error">${esc(p.blocked)}</div>` : ""}
+    <div class="controls">
+      <strong>${n(t.changes)} search term(s) to negate</strong>
+      <span class="dim">${money(t.spend)} spent · ${n(p.matched)} matched${skippedCounts ? " · not negated: " + skippedCounts : ""}</span>
+      <button class="btn-danger" data-neg-apply${p.blocked || !picked.length ? " disabled" : ""}>Add ${n(picked.length)} negative(s)</button>
+      <button class="btn-outline" data-neg-all>${picked.length === (p.changes || []).length ? "Clear" : "Select all"}</button>
+      <button class="btn-outline" data-cancel-preview>Close</button>
+    </div>
+    ${(p.changes || []).length ? `<div class="table-wrap"><table>${head}<tbody>${
+      Object.entries(groups).map(([name, rows]) => `<tr class="parent"><td colspan="9"><strong>${esc(name)}</strong>
+        <span class="dim"> · ${rows.length} term(s) · ${money(rows.reduce((s, r) => s + r.spend, 0))}</span></td></tr>${
+        rows.map(c => negRowHtml(c, true)).join("")}`).join("")}</tbody></table></div>`
+      : `<div class="empty-note">No search term matches the rule and can be negated.</div>`}
+    ${(p.skipped || []).length ? `<details style="margin-top:10px"><summary class="dim">Not negated (${(p.skipped || []).length}) — and why</summary>
+      <div class="table-wrap"><table><thead><tr><th></th><th>Search term</th><th>Becomes</th><th>Came in via</th>
+      <th class="num">Spend</th><th class="num">Clicks</th><th class="num">Orders</th><th class="num">Sales</th>
+      <th class="num">ROAS</th><th>Why not</th></tr></thead><tbody>${
+      (p.skipped || []).slice(0, 200).map(c => negRowHtml(c, false)).join("")}</tbody></table></div></details>` : ""}
+  </div>`;
+}
+
+async function applyNegatives(confirmSb){
+  const keys = (negPlan.changes || []).filter(c => negPick.has(c.key)).map(c => c.key);
+  if(!keys.length) return;
+  const sb = (negPlan.changes || []).filter(c => negPick.has(c.key) && c.no_undo).length;
+  if(!confirmSb){
+    const words = `Add ${keys.length} negative(s) at Amazon in their ad groups?`
+      + (sb ? `\n\n${sb} of them are Sponsored Brands negatives, which CANNOT be undone.` : "\n\nUndo removes them again.");
+    if(!confirm(words)) return;
+  }
+  const response = await fetch("/ads/negatives/apply", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({start: negPlan.window[0], end: negPlan.window[1], conditions,
+                          campaign_ids: [...selected], ad_group_ids: [...selectedAdGroups],
+                          keys, confirm_sb: sb > 0}),
+  });
+  const body = await response.json();
+  if(!response.ok){
+    $("preview-area").innerHTML = `<div class="card"><div class="banner error">${esc(body.error || "The add failed.")}</div></div>`;
+    return;
+  }
+  const parts = [`<strong>${n(body.applied)} negative(s) added.</strong>`];
+  if(body.failed) parts.push(`${n(body.failed)} refused by Amazon.`);
+  if(body.pending) parts.push(`${n(body.pending)} with no answer from Amazon — check the run history.`);
+  if((body.already_there || []).length) parts.push(`${body.already_there.length} were already negatives
+    in their ad group, so nothing was sent for them.`);
+  const refused = (body.results || []).filter(r => !r.ok);
+  $("preview-area").innerHTML = `<div class="card"><div class="banner ${body.failed || body.pending ? "warn" : "good"}">${parts.join(" ")}
+    ${refused.length ? `<ul style="margin:6px 0 0 18px">${refused.slice(0, 12).map(r =>
+      `<li><span class="mono">${esc(r.search_term)}</span> — ${esc(r.error)}</li>`).join("")}</ul>` : ""}</div>
+    <div class="controls" style="margin-bottom:0">${body.run_id
+      ? `<button class="btn-outline" data-undo="${esc(body.run_id)}">↩ Undo (removes the SP ones)</button>` : ""}
+      <button class="btn-outline" data-cancel-preview>Close</button></div></div>`;
+  negPlan = null;
+  load();
+}
+
+$("preview-area").addEventListener("change", e => {
+  const one = e.target.closest("[data-neg-pick]");
+  if(!one || !negPlan) return;
+  if(one.checked) negPick.add(one.dataset.negPick); else negPick.delete(one.dataset.negPick);
+  renderNegPreview();
+});
+$("preview-area").addEventListener("click", e => {
+  if(!negPlan) return;
+  if(e.target.closest("[data-neg-apply]")){ applyNegatives(false); return; }
+  if(e.target.closest("[data-neg-all]")){
+    const all = (negPlan.changes || []).map(c => c.key);
+    negPick = negPick.size === all.length ? new Set() : new Set(all);
+    renderNegPreview();
+  }
+});
+
 /* ── Guardrails ────────────────────────────────────────────────────────────── */
 async function renderGuardrails(){
   const response = await fetch("/ads/guardrails");
@@ -1786,7 +1979,8 @@ async function renderGuardrails(){
   const g = body.guardrails || {};
   const help = body.help || {};
   const label = {max_bid: "Bid ceiling (₹)", min_bid: "Bid floor (₹)",
-                 max_change_pct: "Max change per run (%)", max_rows: "Max rows per run"};
+                 max_change_pct: "Max change per run (%)", max_rows: "Max rows per run",
+                 min_pause_spend: "Least spend to turn off (₹)", min_negative_spend: "Least spend to negate (₹)"};
   $("guardrails-panel").innerHTML = `
     <div class="section-title">Limits</div>
     <div class="section-sub">These exist because Amazon barely enforces any: a ₹1,000 bid was

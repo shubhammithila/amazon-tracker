@@ -394,6 +394,9 @@ def no_live_product_ads(monkeypatch):
     monkeypatch.setattr(spapi_ads, "fetch_product_ads_live", spapi_ads.fetch_product_ads,
                         raising=False)
     monkeypatch.setattr(spapi_ads, "fetch_product_ads", none)
+    # The negatives list too (search-term rules), read by every ads refresh.
+    monkeypatch.setattr(spapi_ads, "fetch_negatives_live", spapi_ads.fetch_negatives, raising=False)
+    monkeypatch.setattr(spapi_ads, "fetch_negatives", none)
 
 
 @pytest.fixture(autouse=True)

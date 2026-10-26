@@ -165,6 +165,27 @@ def _condition_words(condition) -> str:
     return f"{field} {operator} {value}"
 
 
+def _window_key(body) -> str | None:
+    """`start..end` of the window a rule was previewed on, or None when the request did not say."""
+    start, end = str(body.get("start") or "")[:10], str(body.get("end") or "")[:10]
+    return f"{start}..{end}" if start and end else None
+
+
+async def _rules_with_runs(db) -> list[dict]:
+    """The saved rules, each with `ran_today`: `{"start..end": applied-at}` for today (IST).
+
+    The panel greys a rule that ran today ON THE WINDOW ON SCREEN — the rule's sentence is its
+    identity, the same one the once-a-day limit uses."""
+    rules = await repository.load_rules(db)
+    ran = await repository.ran_today_by_rule(db, logic.ist_day(datetime.utcnow()))
+    for r in rules:
+        sentence = _rule_summary(r["conditions"], r["action"], r["amount"],
+                                 level=r.get("level") or logic.LEVEL_KEYWORD)
+        r["sentence"] = sentence
+        r["ran_today"] = ran.get(sentence, {})
+    return rules
+
+
 def _rule_summary(conditions, action: str, amount, level: str = logic.LEVEL_KEYWORD) -> str:
     """The rule in words, stored on every ledger row — and, since 22 Oct 2026, the rule's identity.
 
@@ -178,7 +199,9 @@ def _rule_summary(conditions, action: str, amount, level: str = logic.LEVEL_KEYW
     # **A product rule says so first.** The sentence is the rule's identity for the once-a-day limit,
     # and "Spend > 500 -> turn OFF" means a different thing on a SKU than on a keyword. Keyword
     # sentences are unchanged, so every stored ledger row keeps matching its rule.
-    prefix = "Products: " if level == logic.LEVEL_PRODUCT else ""
+    prefix = {logic.LEVEL_PRODUCT: "Products: ", logic.LEVEL_SEARCH: "Search terms: "}.get(level, "")
+    if action == logic.ACTION_NEGATE:
+        return f"{prefix}{', '.join(parts)} -> add as negative"
     # **A state rule does not read "-> bid ...".** It is stored on every ledger row and is what the
     # owner recognises three weeks later, so "spend > 1000, roas < 1 -> bid set_state" would describe
     # the wrong action entirely.
@@ -416,10 +439,11 @@ async def ads_dashboard(
         # SKU rules: their fields (no bid; channel and SKU/ASIN text) and the operators of the two
         # non-numeric kinds. From the server, like `fields`, so the screen holds no second copy.
         "product_fields": logic.PRODUCT_FIELDS,
+        "search_fields": logic.SEARCH_FIELDS,
         "kind_operators": logic.KIND_OPERATORS,
         "actions": list(logic.ACTIONS),
         "guardrails": await repository.load_guardrails(db),
-        "rules": await repository.load_rules(db),
+        "rules": await _rules_with_runs(db),
         "runs": await repository.load_runs(db, limit=10),
         "refresh": live_refresh,
         # **The stored record, so the reason survives a restart.** `refresh.status()` is a module-level
@@ -1042,8 +1066,10 @@ async def apply(
                             "no longer active, or is already in the state the rule wanted.",
                 }
 
-            # 3. The ledger, before the wire.
-            run_id = await repository.open_run(db, to_send, rule_summary=rule_summary)
+            # 3. The ledger, before the wire. The window travels too, so the saved-rules panel can say
+            # "ran today" for THIS time period only.
+            run_id = await repository.open_run(db, to_send, rule_summary=rule_summary,
+                                               rule_window=_window_key(body))
 
             # 4-5. Two endpoints, per-row outcomes.
             grouped = logic.split_by_writer(to_send)
@@ -1120,11 +1146,19 @@ async def undo(
             undo_run = await repository.open_run(
                 db, changes, rule_summary=f"undo of run {run_id}", reverts_run_id=run_id,
             )
-            grouped = logic.split_by_writer(changes)
+            # A negative a search-term rule added is REMOVED (SP only); everything else is a forward
+            # write of the old value through the usual writer.
+            negs = [c for c in changes if c.get("negate_undo")]
+            grouped = logic.split_by_writer([c for c in changes if not c.get("negate_undo")])
             results: list[dict] = []
             for writer, rows in grouped.items():
                 if rows:
                     results.extend(await spapi_ads.apply_changes(client, rows, writer=writer))
+            by_writer: dict[str, list[str]] = {}
+            for c in negs:
+                by_writer.setdefault(c["writer"], []).append(str(c["entity_id"]))
+            for writer, ids in by_writer.items():
+                results.extend(await spapi_ads.delete_negatives(client, ids, writer=writer))
 
         counts = await repository.record_results(db, undo_run, results)
         # Only the rows Amazon actually restored. A partly-failed undo must leave the rest

@@ -60,6 +60,10 @@ def reset_state() -> None:
         "product_rows": 0,
         "product_ads": 0,
         "product_error": None,
+        #: The search-term reports (negative rules) and the negatives list, failing on their own too.
+        "search_rows": 0,
+        "negatives": 0,
+        "search_error": None,
         "window_start": None,
         "window_end": None,
         #: {"sp": [start, end] | None, "sb": ...}: what this run asked Amazon for.
@@ -219,6 +223,10 @@ async def _held_days(db_factory) -> dict[str, set[str]]:
     async with db_factory() as db:
         held = {p: await repository.daily_days_held(db, ad_product=p) for p in AD_PRODUCTS}
         held["product"] = await repository.product_days_held(db)
+        from app.ads import search_store
+        terms = await search_store.search_days_held(db)
+        held["search_sp"] = terms.get("sp", set())
+        held["search_sb"] = terms.get("sb", set())
         return held
 
 
@@ -315,7 +323,14 @@ async def run(
         max(window_start, keep_from), window_end, held.get("product") or set(),
         settle_days=settle_days, freshen_days=freshen_days if keywords_complete else 0,
     )
-    if only_if_missing and not any(plan.values()) and not product_plan:
+    # The search-term reports (negative rules): SP planned like the product report; SB likewise, but
+    # only ASKED for after this run's SB keyword report landed, because SB reports are rationed and
+    # the keyword one is the one the bid rules need.
+    search_plans = {p: plan_product_range(
+        max(window_start, keep_from), window_end, held.get(f"search_{p}") or set(),
+        settle_days=settle_days, freshen_days=freshen_days if keywords_complete else 0,
+    ) for p in ("sp", "sb")}
+    if only_if_missing and not any(plan.values()) and not product_plan and not any(search_plans.values()):
         logger.info("ads refresh: %s..%s is complete for every ad product, nothing to fetch",
                     window_start, window_end)
         return {**status(), "skipped": True}
@@ -330,7 +345,8 @@ async def run(
         # What this run will actually ask Amazon for, so the screen can say "fetched SB 3-4 Oct"
         # rather than implying the whole window was re-downloaded.
         "fetched": {**{p: (list(r) if r else None) for p, r in plan.items()},
-                    "product": list(product_plan) if product_plan else None},
+                    "product": list(product_plan) if product_plan else None,
+                    **{f"search_{p}": (list(r) if r else None) for p, r in search_plans.items()}},
     })
 
     try:
@@ -389,6 +405,7 @@ async def run(
             except AdsError as exc:
                 STATE["product_error"] = f"The product-ad list could not be read: {exc}"
                 logger.warning("ads refresh: product ads failed: %s", exc)
+
 
             # ── Listings: every SKU on the account, for the SKU coverage check ──
             # SP-API, not the Advertising API; ~30 s; never raises and records its own failure.
@@ -529,6 +546,45 @@ async def run(
             STATE["product_error"] = f"The product-ad report failed: {exc}"
             logger.warning("ads refresh: product-ad report failed: %s", exc)
 
+        # ── Search terms (negative rules), per day: SP, then SB only if SB landed this run ──
+        STATE["search_rows"] = 0
+        for product, search_plan in search_plans.items():
+            if not search_plan:
+                continue
+            if product == "sb" and STATE.get("sb_error"):
+                logger.info("ads refresh: SB search terms not requested, the SB keyword report failed")
+                continue
+
+            async def store_search_chunk(chunk_rows, chunk_start, chunk_end, _product=product):
+                from app.ads import search_store
+                async with db_factory() as chunk_db:
+                    stored = await search_store.save_search_term_daily(chunk_db, chunk_rows, ad_product=_product)
+                STATE["search_rows"] = STATE.get("search_rows", 0) + stored
+
+            try:
+                await reports.fetch_targeting(*search_plan, report="search", ad_product=product,
+                                              sleep=sleep, on_chunk=store_search_chunk)
+            except AdsError as exc:
+                name = "Sponsored Brands" if product == "sb" else "Sponsored Products"
+                STATE["search_error"] = f"The {name} search-term report failed: {exc}"
+                logger.warning("ads refresh: %s search-term report failed: %s", product, exc)
+
+        # ── Existing negatives of the ad groups that HAVE search terms, so a rule never offers a
+        # duplicate. Not the whole account: measured, it holds 112,495 negatives (83,773 SP negative
+        # products) and listing them took 152 s — too much to hold on a 951 MB box every night.
+        try:
+            from app.ads import search_store
+            async with db_factory() as db:
+                groups = await search_store.search_ad_groups(db)
+            if groups:
+                async with httpx.AsyncClient(timeout=settings.ads_timeout) as neg_client:
+                    found = await spapi_ads.fetch_negatives(neg_client, ad_group_ids=groups)
+                async with db_factory() as db:
+                    STATE["negatives"] = await search_store.replace_negatives(db, found)
+        except AdsError as exc:
+            STATE["search_error"] = f"The existing negatives could not be read: {exc}"
+            logger.warning("ads refresh: negatives failed: %s", exc)
+
         _progress("store", 2, 2)
 
         STATE.update({"phase": "done", "percent": 100})
@@ -583,6 +639,8 @@ async def run(
                     started_at=STATE.get("started_at"),
                     product_rows=STATE.get("product_rows") or 0,
                     product_error=STATE.get("product_error"),
+                    search_rows=STATE.get("search_rows") or 0,
+                    search_error=STATE.get("search_error"),
                 )
         except Exception:  # noqa: BLE001 - bookkeeping must never fail the run it describes
             logger.exception("ads refresh: could not record the run")

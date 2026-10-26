@@ -106,7 +106,10 @@ WRITER_PRODUCT_AD = "product_ad"
 #: acts on product ads. Part of the rule's identity: the same numbers at the two levels are two rules.
 LEVEL_KEYWORD = "keyword"
 LEVEL_PRODUCT = "product"
-LEVELS = (LEVEL_KEYWORD, LEVEL_PRODUCT)
+#: A SEARCH TERM within an ad group (25 Oct 2026): the only action is adding it as a negative there.
+#: Independent of the other two — it never touches a keyword, target or SKU, and they never negate.
+LEVEL_SEARCH = "search"
+LEVELS = (LEVEL_KEYWORD, LEVEL_PRODUCT, LEVEL_SEARCH)
 
 #: The three ways a SKU is fulfilled on this account, read off the SKU's LAST TOKEN — the Shipment
 #: tab's rule (`portfolio.logic._channel_of`, the one that keeps a Flex SKU off an FBA plan), widened
@@ -307,6 +310,9 @@ DEFAULT_GUARDRAILS = {
     #: Rs 100 rather than higher because the owner's own rule uses `spend > 1000`; this is a floor
     #: under a mistyped rule, not a second opinion about the rule itself.
     "min_pause_spend": 100.0,
+    #: A negative rule may not negate a search term that spent less than this in the window — the
+    #: pause floor's sibling, for the same typo (`spend > 10` where `spend > 1000` was meant).
+    "min_negative_spend": 100.0,
 }
 
 #: Bounds for each guardrail, so an edited value cannot be absurd. Same lesson as
@@ -320,6 +326,7 @@ GUARDRAIL_RANGES = {
     # The upper bound is generous on purpose: the point is to refuse 0 (which would disable the
     # guard entirely) and negatives, not to have an opinion about how selective a pause rule is.
     "min_pause_spend": (1.0, 100000.0),
+    "min_negative_spend": (1.0, 100000.0),
 }
 
 
@@ -525,7 +532,24 @@ PRODUCT_ONLY_FIELDS = {
 #: A product ad has no bid, so `bid` is not offered at that level.
 PRODUCT_FIELDS = {**{k: v for k, v in FIELDS.items() if k != "bid"}, **PRODUCT_ONLY_FIELDS}
 
-ALL_FIELDS = {**FIELDS, **PRODUCT_ONLY_FIELDS}
+#: How a search term reached the ad group: an auto target, a keyword's match type, or a manual target.
+VIA_LABELS = {
+    "close-match": "auto: close match", "loose-match": "auto: loose match",
+    "substitutes": "auto: substitutes", "complements": "auto: complements",
+    "broad": "broad keyword", "phrase": "phrase keyword", "exact": "exact keyword",
+    "category": "category target", "product": "product target", "theme": "brand theme",
+}
+TERM_KIND_LABELS = {"word": "a search phrase", "asin": "a product (ASIN)"}
+
+#: Fields a SEARCH-TERM rule may test besides the numbers. A search term has no bid.
+SEARCH_ONLY_FIELDS = {
+    "via": {"label": "Came in via", "kind": "choice", "choices": VIA_LABELS},
+    "term_kind": {"label": "Search term is", "kind": "choice", "choices": TERM_KIND_LABELS},
+    "term": {"label": "Search term", "kind": "text"},
+}
+SEARCH_FIELDS = {**{k: v for k, v in FIELDS.items() if k != "bid"}, **SEARCH_ONLY_FIELDS}
+
+ALL_FIELDS = {**FIELDS, **PRODUCT_ONLY_FIELDS, **SEARCH_ONLY_FIELDS}
 
 #: Operators per non-numeric kind. Numbers keep `OPERATORS`.
 KIND_OPERATORS = {
@@ -536,7 +560,7 @@ KIND_OPERATORS = {
 
 def fields_for(level: str) -> dict:
     """The fields a rule at this level may test."""
-    return PRODUCT_FIELDS if level == LEVEL_PRODUCT else FIELDS
+    return {LEVEL_PRODUCT: PRODUCT_FIELDS, LEVEL_SEARCH: SEARCH_FIELDS}.get(level, FIELDS)
 
 
 def operators_for(field: str) -> dict:
@@ -553,7 +577,8 @@ def condition_error(condition: Mapping, level: str = LEVEL_KEYWORD) -> str | Non
     allowed = fields_for(level)
     if field not in allowed:
         if field in ALL_FIELDS:
-            where = "product rules" if field in PRODUCT_ONLY_FIELDS else "keyword rules"
+            where = ("product rules" if field in PRODUCT_ONLY_FIELDS
+                     else "search-term rules" if field in SEARCH_ONLY_FIELDS else "keyword rules")
             return f"{ALL_FIELDS[field]['label']} can only be used in {where}."
         return f"Unknown field {field!r}. Valid: {', '.join(sorted(allowed))}."
     if condition.get("op") not in operators_for(field):
@@ -643,7 +668,23 @@ ACTION_SET_STATE = "set_state"
 BID_ACTIONS = (ACTION_INCREASE_PCT, ACTION_DECREASE_PCT,
                ACTION_INCREASE_ABS, ACTION_DECREASE_ABS, ACTION_SET)
 
-ACTIONS = BID_ACTIONS + (ACTION_SET_STATE,)
+#: Add the search term as a negative in its ad group (search-term rules only). Exact for a word term,
+#: a negative product target for an ASIN term — never phrase, as the owner asked.
+ACTION_NEGATE = "negate"
+ACTIONS = BID_ACTIONS + (ACTION_SET_STATE, ACTION_NEGATE)
+
+#: Which column of the saved-rules panel a rule sits in. `cut` lowers spend, `grow` raises it.
+IMPACT_GROW = "grow"
+IMPACT_CUT = "cut"
+
+
+def rule_impact(action, amount=None) -> str:
+    """`grow` (raise a bid, set a bid, turn ON) or `cut` (lower a bid, turn OFF, add a negative)."""
+    if action in (ACTION_DECREASE_PCT, ACTION_DECREASE_ABS, ACTION_NEGATE):
+        return IMPACT_CUT
+    if action == ACTION_SET_STATE:
+        return IMPACT_CUT if str(amount or "").strip().upper() == STATE_PAUSED else IMPACT_GROW
+    return IMPACT_GROW
 
 STATE_PAUSED = "PAUSED"
 STATE_ENABLED = "ENABLED"

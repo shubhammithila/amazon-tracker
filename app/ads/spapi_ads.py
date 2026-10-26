@@ -1304,8 +1304,248 @@ def _error_message(item: Mapping) -> str:
     return "; ".join(parts) or "Amazon refused this row without giving a reason."
 
 
+# ─── Negatives (search-term rules) ───────────────────────────────────────────
+#
+# Probed 25 Oct 2026 with a deliberately invalid ad group, so nothing was created:
+#
+#   POST /sp/negativeKeywords   207  {"negativeKeywords": {"success": [], "error": [{index, errors}]}}
+#   POST /sp/negativeTargets    207  {"negativeTargetingClauses": {"success": [], "error": [...]}}
+#   POST /sb/negativeKeywords   207  [{"code": "INVALID_ARGUMENT", "description": ...}]   bare list
+#   POST /sb/negativeTargets    200  {"createTargetSuccessResults": [], "createTargetErrorResults":
+#                                     [{"targetRequestIndex": 0, "code": ..., "details": ...}]}
+#   POST /sp/negativeKeywords/delete, /sp/negativeTargets/delete   207, SP's shape
+#
+# Note the last SB one: **a refusal inside a 200**, so the status code says nothing about the rows.
+
+SP_NEG_KEYWORDS = ("/sp/negativeKeywords", "application/vnd.spNegativeKeyword.v3+json", "negativeKeywords")
+SP_NEG_TARGETS = ("/sp/negativeTargets", "application/vnd.spNegativeTargetingClause.v3+json",
+                  "negativeTargetingClauses")
+SB_NEG_KEYWORDS_PATH = "/sb/negativeKeywords"
+SB_NEG_TARGETS_PATH = "/sb/negativeTargets"
+#: Sponsored Brands' create batches are kept small; its list endpoints cap at 100 too.
+SB_NEG_BATCH = 100
+
+
+def _neg_row(entity_type, product, ident, group, campaign, name, state) -> dict:
+    return {"entity_type": entity_type, "ad_product": product, "entity_id": str(ident or ""),
+            "parent_id": str(group or ""), "campaign_id": str(campaign or ""),
+            "name": str(name or "").strip().lower(), "state": str(state or "").upper()}
+
+
+def _asin_of(expressions) -> str:
+    for e in expressions or ():
+        if str(e.get("type") or "").upper() in ("ASIN_SAME_AS", "ASINSAMEAS"):
+            return str(e.get("value") or "")
+    return ""
+
+
+async def fetch_negatives(client, *, ad_group_ids=None) -> list[dict]:
+    """Every ENABLED ad-group negative, SP and SB, as `ads_entity` rows (`neg_keyword` / `neg_target`,
+    `name` = lower-case keyword text or ASIN). With ``ad_group_ids``, only those groups (SP filters at
+    Amazon; SB is listed whole and filtered here — it is a few hundred rows)."""
+    from app.ads.search_store import NEG_KEYWORD, NEG_TARGET
+
+    settings = get_settings()
+    groups = sorted({str(g) for g in ad_group_ids or () if g})
+    out: list[dict] = []
+    filter_sets = ([{"adGroupIdFilter": {"include": groups[i:i + PAGE_SIZE]}}
+                    for i in range(0, len(groups), PAGE_SIZE)] if groups else [{}])
+    for extra in filter_sets:
+        flt = {**extra, "stateFilter": {"include": ["ENABLED"]}}
+        for r in await _list(client, SP_NEG_KEYWORDS, filters=flt):
+            out.append(_neg_row(NEG_KEYWORD, "sp", r.get("keywordId"), r.get("adGroupId"),
+                                r.get("campaignId"), r.get("keywordText"), r.get("state")))
+        for r in await _list(client, SP_NEG_TARGETS, filters=flt):
+            out.append(_neg_row(NEG_TARGET, "sp", r.get("targetId"), r.get("adGroupId"), r.get("campaignId"),
+                                _asin_of(r.get("expression") or r.get("resolvedExpression")), r.get("state")))
+
+    token = await _access_token(client)
+    start = 0
+    for _ in range(MAX_PAGES):
+        response = await client.get(settings.ads_endpoint + SB_NEG_KEYWORDS_PATH,
+                                    params={"startIndex": start, "count": 5000}, headers=_headers(token))
+        if response.status_code >= 400:
+            raise AdsError(f"Listing Sponsored Brands negative keywords failed: {response.text[:200]}",
+                           status=response.status_code)
+        page = response.json() or []
+        for r in page:
+            out.append(_neg_row(NEG_KEYWORD, "sb", r.get("keywordId"), r.get("adGroupId"),
+                                r.get("campaignId"), r.get("keywordText"), r.get("state")))
+        if len(page) < 5000:
+            break
+        start += len(page)
+    for r in await _sb_list(client, (SB_NEG_TARGETS_PATH + "/list", SB_NO_MEDIA_TYPE, "negativeTargets"),
+                            {}, "negative targets"):
+        out.append(_neg_row(NEG_TARGET, "sb", r.get("targetId"), r.get("adGroupId"), r.get("campaignId"),
+                            _asin_of(r.get("expressions") or r.get("resolvedExpressions")), r.get("state")))
+    out = [r for r in out if r["state"] in ("ENABLED", "") and r["entity_id"]]
+    if groups:
+        wanted = set(groups)
+        out = [r for r in out if r["parent_id"] in wanted]
+    return out
+
+
+def _sp_outcome(body, order: list[str], key: str, id_fields: Sequence[str]) -> list[dict]:
+    """SP's 207 for a negative create or delete: `{key: {success: [{index, <id>}], error: [...]}}`."""
+    outcome = body.get(key) if isinstance(body, Mapping) else None
+    if not isinstance(outcome, Mapping):
+        return [{**r, "new_id": None} for r in _unmentioned(order, set())]
+    results, seen = [], set()
+    for item in outcome.get("success") or []:
+        index = item.get("index")
+        if not (isinstance(index, int) and 0 <= index < len(order)):
+            continue
+        new_id = next((str(item[f]) for f in id_fields if item.get(f)), "")
+        seen.add(order[index])
+        results.append({"entity_id": order[index], "ok": bool(new_id), "new_id": new_id or None,
+                        "error": None if new_id else "Amazon did not return the new negative's id."})
+    for item in outcome.get("error") or []:
+        index = item.get("index")
+        if isinstance(index, int) and 0 <= index < len(order):
+            seen.add(order[index])
+            results.append({"entity_id": order[index], "ok": False, "new_id": None,
+                            "error": _error_message(item)})
+    results.extend({**r, "new_id": None} for r in _unmentioned(order, seen))
+    return results
+
+
+def _sb_keyword_outcome(body, order: list[str]) -> list[dict]:
+    """SB's bare list: one `{code, keywordId}` per request row, in request order."""
+    results, seen = [], set()
+    for index, item in enumerate(body if isinstance(body, list) else []):
+        if index >= len(order) or not isinstance(item, Mapping):
+            continue
+        seen.add(order[index])
+        ok = str(item.get("code") or "").upper() == "SUCCESS" and item.get("keywordId")
+        results.append({"entity_id": order[index], "ok": bool(ok),
+                        "new_id": str(item["keywordId"]) if ok else None,
+                        "error": None if ok else (_sb_error_message(item) or str(item.get("code") or "refused"))})
+    results.extend({**r, "new_id": None} for r in _unmentioned(order, seen))
+    return results
+
+
+def _sb_target_outcome(body, order: list[str]) -> list[dict]:
+    """SB negative targets: **200 with the refusals inside** (`createTargetErrorResults`)."""
+    results, seen = [], set()
+    body = body if isinstance(body, Mapping) else {}
+    for item in body.get("createTargetSuccessResults") or []:
+        index = item.get("targetRequestIndex")
+        if isinstance(index, int) and 0 <= index < len(order) and item.get("targetId"):
+            seen.add(order[index])
+            results.append({"entity_id": order[index], "ok": True, "new_id": str(item["targetId"]), "error": None})
+    for item in body.get("createTargetErrorResults") or []:
+        index = item.get("targetRequestIndex")
+        if isinstance(index, int) and 0 <= index < len(order):
+            seen.add(order[index])
+            results.append({"entity_id": order[index], "ok": False, "new_id": None,
+                            "error": str(item.get("details") or item.get("code") or "refused")})
+    results.extend({**r, "new_id": None} for r in _unmentioned(order, seen))
+    return results
+
+
+def _negative_payload(row: Mapping, writer: str) -> dict:
+    from app.ads.negatives import W_SB_KEYWORD, W_SB_PRODUCT, W_SP_KEYWORD
+
+    term = str(row["search_term"])
+    if writer == W_SP_KEYWORD:
+        return {"campaignId": str(row["campaign_id"]), "adGroupId": str(row["ad_group_id"]),
+                "keywordText": term, "matchType": "NEGATIVE_EXACT", "state": "ENABLED"}
+    if writer == W_SB_KEYWORD:
+        return {"campaignId": int(row["campaign_id"]), "adGroupId": int(row["ad_group_id"]),
+                "keywordText": term, "matchType": "negativeExact"}
+    if writer == W_SB_PRODUCT:
+        return {"campaignId": int(row["campaign_id"]), "adGroupId": int(row["ad_group_id"]),
+                "expressions": [{"type": "asinSameAs", "value": term.upper()}]}
+    return {"campaignId": str(row["campaign_id"]), "adGroupId": str(row["ad_group_id"]),
+            "expression": [{"type": "ASIN_SAME_AS", "value": term.upper()}], "state": "ENABLED"}
+
+
+async def create_negatives(client, rows: Sequence[Mapping], *, writer: str, sleep=asyncio.sleep) -> list[dict]:
+    """Create ad-group negatives for one writer. Per-row results `{entity_id, ok, new_id, error}`.
+
+    `rows`: `[{"entity_id": provisional id, "campaign_id", "ad_group_id", "search_term"}]`. A word term
+    is sent as NEGATIVE EXACT, an ASIN as "ASIN same as". A row Amazon does not mention, or a success
+    without an id, is FAILED: without the id there is nothing to undo.
+    """
+    from app.ads.negatives import W_SB_KEYWORD, W_SB_PRODUCT, W_SP_KEYWORD
+
+    if not rows:
+        return []
+    settings = get_settings()
+    token = await _access_token(client)
+    sb = writer in (W_SB_KEYWORD, W_SB_PRODUCT)
+    batch_size = SB_NEG_BATCH if sb else WRITE_BATCH
+    results: list[dict] = []
+    for batch_start in range(0, len(rows), batch_size):
+        batch = list(rows[batch_start:batch_start + batch_size])
+        order = [str(r["entity_id"]) for r in batch]
+        items = [_negative_payload(r, writer) for r in batch]
+        if batch_start:
+            await sleep(WRITE_INTERVAL)
+        if writer == W_SP_KEYWORD:
+            path, head, payload = SP_NEG_KEYWORDS[0], _media(SP_NEG_KEYWORDS[1], token), {"negativeKeywords": items}
+        elif writer == W_SB_KEYWORD:
+            path, head, payload = SB_NEG_KEYWORDS_PATH, _headers(token), items
+        elif writer == W_SB_PRODUCT:
+            path, head, payload = SB_NEG_TARGETS_PATH, _headers(token), {"negativeTargets": items}
+        else:
+            path, head, payload = (SP_NEG_TARGETS[0], _media(SP_NEG_TARGETS[1], token),
+                                   {"negativeTargetingClauses": items})
+        response = await client.post(settings.ads_endpoint + path, json=payload, headers=head)
+        if response.status_code >= 400 and response.status_code != 207:
+            message = f"Amazon refused the batch ({response.status_code}): {response.text[:200]}"
+            logger.warning("ads: negative create batch failed: %s", message)
+            results.extend({"entity_id": i, "ok": False, "new_id": None, "error": message} for i in order)
+            continue
+        body = response.json()
+        if writer == W_SP_KEYWORD:
+            results.extend(_sp_outcome(body, order, "negativeKeywords", ("negativeKeywordId", "keywordId")))
+        elif writer == W_SB_KEYWORD:
+            results.extend(_sb_keyword_outcome(body, order))
+        elif writer == W_SB_PRODUCT:
+            results.extend(_sb_target_outcome(body, order))
+        else:
+            results.extend(_sp_outcome(body, order, "negativeTargetingClauses", ("targetId", "negativeTargetId")))
+    return results
+
+
+async def delete_negatives(client, ids: Sequence[str], *, writer: str) -> list[dict]:
+    """Remove SP ad-group negatives (the undo of a negative rule). Sponsored Brands is refused: its
+    archive is permanent, so there is no undo there."""
+    from app.ads.negatives import W_SP_KEYWORD, W_SP_PRODUCT
+
+    if not ids:
+        return []
+    if writer not in (W_SP_KEYWORD, W_SP_PRODUCT):
+        return [{"entity_id": str(i), "ok": False,
+                 "error": "A Sponsored Brands negative cannot be removed (Amazon's archive is permanent)."}
+                for i in ids]
+    settings = get_settings()
+    token = await _access_token(client)
+    results: list[dict] = []
+    for start in range(0, len(ids), WRITE_BATCH):
+        order = [str(i) for i in ids[start:start + WRITE_BATCH]]
+        if writer == W_SP_KEYWORD:
+            path, vnd, key, flt = (SP_NEG_KEYWORDS[0] + "/delete", SP_NEG_KEYWORDS[1], "negativeKeywords",
+                                   "negativeKeywordIdFilter")
+        else:
+            path, vnd, key, flt = (SP_NEG_TARGETS[0] + "/delete", SP_NEG_TARGETS[1], "negativeTargetingClauses",
+                                   "negativeTargetIdFilter")
+        response = await client.post(settings.ads_endpoint + path, json={flt: {"include": order}},
+                                     headers=_media(vnd, token))
+        if response.status_code >= 400 and response.status_code != 207:
+            results.extend({"entity_id": i, "ok": False, "error": response.text[:200]} for i in order)
+            continue
+        parsed = _sp_outcome(response.json(), order, key, ("negativeKeywordId", "targetId", "keywordId"))
+        # A delete answers with the SAME id it was given, so success is "Amazon named it".
+        results.extend({"entity_id": r["entity_id"], "ok": r["ok"] or bool(r.get("new_id")),
+                        "error": r["error"]} for r in parsed)
+    return results
+
+
 __all__ = [
     "AdsError", "AdsNotConfigured",
     "fetch_campaigns", "fetch_ad_groups", "fetch_keywords", "fetch_targets",
     "fetch_current_bids", "apply_changes", "create_product_ads",
+    "fetch_negatives", "create_negatives", "delete_negatives",
 ]

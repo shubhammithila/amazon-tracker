@@ -92,7 +92,8 @@ def _fake_amazon(monkeypatch, calls):
         return []
 
     async def fetch_targeting(start, end, *, ad_product="sp", on_chunk=None, report="targeting", **kw):
-        calls.append(("product" if report == "product" else ad_product, start, end))
+        calls.append(("product" if report == "product"
+                      else f"search_{ad_product}" if report == "search" else ad_product, start, end))
         if on_chunk:
             await on_chunk([], start, end)
         return []
@@ -126,12 +127,15 @@ async def test_run_asks_Amazon_for_ONLY_the_missing_SB_days(monkeypatch, db_sche
     async def held(_factory):
         return {"sp": _days(END - timedelta(days=60), END),
                 "sb": _days(END - timedelta(days=60), END - timedelta(days=2)),
-                "product": _days(END - timedelta(days=60), END)}
+                "product": _days(END - timedelta(days=60), END),
+                "search_sp": _days(END - timedelta(days=60), END),
+                "search_sb": _days(END - timedelta(days=60), END)}
 
     monkeypatch.setattr(refresh, "_held_days", held)
     result = await refresh.run(start=start, end=end, freshen_days=refresh.MANUAL_FRESHEN_DAYS)
     assert calls == [("sb", "2026-10-03", "2026-10-04")], calls
-    assert result["fetched"] == {"sp": None, "sb": ["2026-10-03", "2026-10-04"], "product": None}
+    assert result["fetched"] == {"sp": None, "sb": ["2026-10-03", "2026-10-04"], "product": None,
+                                 "search_sp": None, "search_sb": None}
     assert result["phase"] == "done"
 
 
@@ -145,7 +149,7 @@ async def test_the_gap_fill_makes_NO_Amazon_call_when_nothing_is_missing(monkeyp
     full = _days(END - timedelta(days=70), END)
 
     async def held(_factory):
-        return {"sp": full, "sb": full, "product": full}
+        return {"sp": full, "sb": full, "product": full, "search_sp": full, "search_sb": full}
 
     monkeypatch.setattr(refresh, "_held_days", held)
     result = await refresh.run(days=60, only_if_missing=True, today=END + timedelta(days=1))
@@ -159,7 +163,9 @@ async def test_the_gap_fill_DOES_fetch_a_throttled_SB_morning(monkeypatch, db_sc
     async def held(_factory):
         return {"sp": _days(END - timedelta(days=70), END),
                 "sb": _days(END - timedelta(days=70), END - timedelta(days=1)),
-                "product": _days(END - timedelta(days=70), END)}
+                "product": _days(END - timedelta(days=70), END),
+                "search_sp": _days(END - timedelta(days=70), END),
+                "search_sb": _days(END - timedelta(days=70), END)}
 
     monkeypatch.setattr(refresh, "_held_days", held)
     await refresh.run(days=60, only_if_missing=True, today=END + timedelta(days=1))
@@ -178,7 +184,7 @@ async def test_a_day_the_purge_already_deleted_is_NOT_missing(monkeypatch, db_sc
     kept = _days(keep_from, END)          # exactly what retention holds
 
     async def held(_factory):
-        return {"sp": kept, "sb": kept, "product": kept}
+        return {"sp": kept, "sb": kept, "product": kept, "search_sp": kept, "search_sb": kept}
 
     monkeypatch.setattr(refresh, "_held_days", held)
     result = await refresh.run(days=60, only_if_missing=True, today=today)
@@ -187,8 +193,10 @@ async def test_a_day_the_purge_already_deleted_is_NOT_missing(monkeypatch, db_sc
     calls.clear()
     await refresh.run(days=60, settle_days=refresh.NIGHTLY_SETTLE_DAYS, today=today)
     tail = (END - timedelta(days=refresh.NIGHTLY_SETTLE_DAYS - 1)).isoformat()
+    # The search-term reports (negative rules) take the same settling tail, SP then SB.
     assert calls == [("sp", tail, END.isoformat()), ("sb", tail, END.isoformat()),
-                     ("product", tail, END.isoformat())], calls
+                     ("product", tail, END.isoformat()), ("search_sp", tail, END.isoformat()),
+                     ("search_sb", tail, END.isoformat())], calls
 
 
 def test_the_scheduler_passes_the_settling_tail_and_registers_the_gap_fill():

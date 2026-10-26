@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (3077 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (3141 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3815,6 +3815,47 @@ targets will live there too (brief to come).
   an invalid ad group: SP's own 207 shape, nothing created. **Undo pauses them** (Amazon has no
   delete). `tests/test_ads_coverage.py`; `scripts/mutate_ads_coverage.py` 29/29.
 
+### Search-term negatives, and the Grow / Cut rule columns (25 Oct 2026)
+Asked for as *"negative targeting based on search terms not just targets added… in auto campaigns there
+is close match, loose match… some of the keywords that it targets might be overspending… add that
+keyword as a negative target… negative exact only… for the asins/other products there is a separate
+negative… make it independent of the turn target off or on"*. Spec:
+`docs/superpowers/specs/2026-10-25-ads-search-term-negatives-design.md`.
+
+**A third rule level, "Search terms"**, with one action, **add as negative**, which nothing else may
+use (`save_rule` refuses the mix both ways). A word term becomes a **negative EXACT keyword** in its
+ad group, an ASIN term (`b0` + 8) a **negative product** ("ASIN same as"); never phrase. SP and SB.
+
+- **Measured first (30 days of SP):** 18,545 search-term rows, ₹12.3 lakh; 413 terms spent ₹200+ with
+  no order. **301 of them (₹1.08 lakh) were the target itself** — an exact keyword's own words, an ASIN
+  target's own ASIN — and negating one is a pause by another name. `negatives.plan` skips them
+  (`is_target`, from the group's own keyword texts and ASINs in the window), leaving **112 real
+  candidates (₹37k)**. Also skipped and named: already a negative in that group (of the same TYPE),
+  M19/Amazon campaigns, under `min_negative_spend` (₹100), no ad group.
+- **`ads_search_term_daily`** (`e9b4c2d7a813`), filled by `spSearchTerm` / `sbSearchTerm` DAILY
+  reports as an isolated phase of the Ads refresh, planned per product like the others. SB search
+  terms are only asked for when that run's SB report succeeded (SB reports are rationed). A preview
+  needs every SP day held (409 otherwise); an SB window missing days is LEFT OUT whole, with a note.
+- **Existing negatives are cached** (`ads_entity` `neg_keyword` / `neg_target`) only for ad groups
+  that have search terms: the account holds **112,495 negatives** and listing them all took 152 s. An
+  empty fetch writes nothing.
+- **Four writers, four shapes** (probed with an invalid ad group, nothing created): SP keyword
+  `POST /sp/negativeKeywords` (207), SP product `/sp/negativeTargets` (207), SB keyword
+  `/sb/negativeKeywords` (a BARE list both ways), SB product `/sb/negativeTargets` (**200 with the
+  refusals inside**). A row Amazon does not mention is failed.
+- **`/ads/negatives/apply` rebuilds the plan** and keeps only approved rows whose KEY the screen sent;
+  re-reads the groups' live negatives and drops `already_there`; ledger first (`action="negate"`).
+  **Undo removes SP negatives** (`/delete`); **SB has no undo** (Amazon's archive is permanent), so SB
+  rows need `confirm_sb` and are tagged "no undo" on screen.
+
+**Saved rules sit in two columns: Grow (raise bids, turn on) and Cut (lower bids, turn off,
+negatives)**, from `logic.rule_impact`. **A rule that ran today ON THE WINDOW ON SCREEN is greyed**
+with the time and stays usable — asked for as *"when we change the time period say from 7 days to 30
+days the rules which were set grey shows again normally"*. `ads_mutation.rule_window` ("start..end")
+is stamped by both apply routes (`/ads/apply` now receives start/end from the screen), and
+`repository.ran_today_by_rule` keys on sentence + window for the IST day.
+`tests/test_ads_negatives.py`; `scripts/mutate_ads_negatives.py`.
+
 ### 1,700 rows open as 7 lines: campaign → ad group → rows
 Asked for as *"when there are so many matches 1700. better to sort it campaign wise and ad group
 wise."* Measured on the live account for `spend < 50, bid < 40 → +10%`: **1,425 changing rows across 7
@@ -4472,6 +4513,11 @@ success code; and a duplicate negative errors rather than dedupes. A pause is re
 88 rows. Negatives are better designed after the owner has used pause and can see where the spend
 actually moved to — pausing an exact-match keyword does not stop the same query arriving through a
 broad match or an auto campaign.
+
+> **Built on 25 Oct 2026, on exactly that evidence** — see "Search-term negatives, and the Grow / Cut
+> rule columns". The objections above shaped it: negatives are added per SEARCH TERM (not per target),
+> a term that is the group's own target is refused, SB negatives need explicit confirmation as they
+> cannot be undone, and SB's 200-with-errors shape has its own parser.
 
 ### `ads` is absent from the Packer and Accounts presets on purpose
 The only area that can spend money has to be granted knowingly, per person, rather than arriving

@@ -366,8 +366,10 @@ def indexes(table):
 
 if not tables:
     print("")                                       # empty: migrate from scratch
+elif "ads_search_term_daily" in tables:
+    print("e9b4c2d7a813")                           # head: Ads negatives from search terms
 elif "listing_sku" in tables:
-    print("d7a3e5c19b42")                           # head: Ads SKU coverage per ad group
+    print("d7a3e5c19b42")                           # Ads SKU coverage per ad group
 elif "ads_product_daily" in tables:
     print("c5e9a2f71d36")                           # Ads rules that turn a SKU off
 elif "analytics_monthly" in tables:
@@ -503,6 +505,8 @@ need = {"shipment_plans", "shipment_plan_items", "shipment_packing_days",
         "ads_product_daily",
         # Ads SKU coverage per ad group (d7a3e5c19b42).
         "listing_sku", "ads_coverage_ignore",
+        # Ads negatives from search terms (e9b4c2d7a813).
+        "ads_search_term_daily",
         # The Ads tab. `ads_mutation` is the one that matters most here: it is the audit trail and
         # the undo for live bid changes, so a deploy that left it missing would make the tab
         # unsafe rather than merely broken.

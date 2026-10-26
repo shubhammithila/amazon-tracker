@@ -1039,8 +1039,11 @@ async def purge_daily(db: AsyncSession, *, keep_days: int = DAILY_RETENTION_DAYS
     )
     # The product-ad rows keep the same 60 days: a SKU rule offers the same windows.
     products = await db.execute(delete(AdsProductDaily).where(AdsProductDaily.day < cutoff))
+    # The search-term rows keep the same 60 days: a negative rule offers the same windows.
+    from app.models import AdsSearchTermDaily
+    terms = await db.execute(delete(AdsSearchTermDaily).where(AdsSearchTermDaily.day < cutoff))
     await db.commit()
-    removed = int(result.rowcount or 0) + int(products.rowcount or 0)
+    removed = int(result.rowcount or 0) + int(products.rowcount or 0) + int(terms.rowcount or 0)
     if removed:
         logger.info("ads: purged %d daily row(s) older than %s", removed, cutoff)
     return removed
@@ -1081,6 +1084,7 @@ async def open_run(
     *,
     rule_summary: str,
     reverts_run_id: str | None = None,
+    rule_window: str | None = None,
 ) -> str:
     """Write every intended change as `pending` and return the run id. **Called BEFORE any request.**
 
@@ -1108,6 +1112,8 @@ async def open_run(
             entity_type=("keyword" if change.get("writer") in (
                 logic.WRITER_KEYWORD, logic.WRITER_SB_KEYWORD)
                 else "product_ad" if change.get("writer") == logic.WRITER_PRODUCT_AD
+                else "neg_keyword" if str(change.get("writer") or "").endswith("_kw")
+                else "neg_target" if str(change.get("writer") or "").startswith("neg_")
                 else "target"),
             ad_product=change.get("ad_product") or logic.AD_PRODUCT_SP,
             writer=change.get("writer") or logic.WRITER_KEYWORD,
@@ -1120,7 +1126,8 @@ async def open_run(
             # `create` is a product ad the SKU-coverage Add is about to make: its `entity_id` is a
             # provisional `new-…` id until Amazon answers with the real `adId`
             # (`record_create_results`).
-            action=("create" if change.get("create") else
+            action=("negate" if change.get("negate") else
+                    "create" if change.get("create") else
                     "state" if change.get("new_state") else "bid"),
             # The value BEFORE. Without this the run is not reversible.
             old_bid=change.get("old_bid"),
@@ -1130,6 +1137,7 @@ async def open_run(
             status="pending",
             rule_summary=(rule_summary or "")[:300],
             reverts_run_id=reverts_run_id,
+            rule_window=(rule_window or "")[:23] or None,
             created_at=now,
         ))
 
@@ -1458,6 +1466,16 @@ async def build_undo(db: AsyncSession, run_id: str) -> list[dict]:
         # undoing an 88-row pause run would reverse nothing and report success. Exactly the shape of
         # `delete_draft_plans`, whose docstring asserted an invariant that a later feature invalidated,
         # and which destroyed 400 units of packed stock on production.
+        if r.action == "negate":
+            # A negative a search-term rule added. Undo REMOVES it (SP); a Sponsored Brands negative
+            # cannot be removed (Amazon's archive is permanent), and a provisional id never reached
+            # Amazon — both are skipped, and the undo route says how many.
+            if r.entity_id.startswith("neg-") or (r.writer or "").startswith("neg_sb"):
+                continue
+            undo.append({**common, "old_state": logic.STATE_ENABLED, "new_state": "ARCHIVED",
+                         "negate_undo": True})
+            continue
+
         if r.action == "create":
             # A product ad the coverage Add made. Amazon has no delete, so the undo PAUSES it. A row
             # still on its provisional id never reached Amazon and has nothing to pause.
@@ -1545,6 +1563,10 @@ async def save_rule(db: AsyncSession, name: str, rule: dict) -> dict:
         raise ValueError(f"Unknown action {action!r}.")
     if level == logic.LEVEL_PRODUCT and not logic.is_state_action(action):
         raise ValueError("A product rule can only turn a SKU off or on.")
+    if (level == logic.LEVEL_SEARCH) != (action == logic.ACTION_NEGATE):
+        raise ValueError("Only a search-term rule adds negatives, and it does nothing else.")
+    if action == logic.ACTION_NEGATE:
+        rule = {**rule, "amount": None}
 
     # **A state rule's amount is a WORD, and it goes in its own column.**
     #
@@ -1630,7 +1652,33 @@ async def load_rules(db: AsyncSession) -> list[dict]:
             "window_days": int(r.window_days or 7),
             "level": r.level or logic.LEVEL_KEYWORD,
             "last_run_at": r.last_run_at.isoformat() if r.last_run_at else "",
+            # Which column of the saved-rules panel: grow (raise spend) or cut (lower it).
+            "impact": logic.rule_impact(r.action, r.target_state),
         })
+    return out
+
+
+async def ran_today_by_rule(db: AsyncSession, day: str) -> dict[str, dict[str, str]]:
+    """`{rule sentence: {rule_window: newest applied-at ISO}}` for the IST ``day``.
+
+    What greys a saved rule: it ran TODAY on THE WINDOW ON SCREEN. Asked for as *"when we change the
+    time period… the rules which were set grey shows again normally since it has not been run on that
+    time period"*. Only `applied` rows count (an undone run is `reverted`).
+    """
+    start = datetime.fromisoformat(day) - timedelta(days=1)
+    end = datetime.fromisoformat(day) + timedelta(days=1)
+    out: dict[str, dict[str, str]] = {}
+    for summary, window, created in (await db.execute(
+            select(AdsMutation.rule_summary, AdsMutation.rule_window, AdsMutation.created_at)
+            .where(AdsMutation.status == "applied", AdsMutation.created_at >= start,
+                   AdsMutation.created_at < end, AdsMutation.reverts_run_id.is_(None)))).all():
+        if not summary or logic.ist_day(created) != day:
+            continue
+        at = created.isoformat()
+        slot = out.setdefault(summary, {})
+        key = window or ""
+        if at > slot.get(key, ""):
+            slot[key] = at
     return out
 
 
@@ -1731,6 +1779,8 @@ async def record_refresh(
     started_at: datetime | None = None,
     product_rows: int = 0,
     product_error: str | None = None,
+    search_rows: int = 0,
+    search_error: str | None = None,
 ) -> None:
     """Log one refresh attempt: succeeded, partly succeeded, or failed.
 
@@ -1743,7 +1793,7 @@ async def record_refresh(
     """
     if error:
         status = "failed"
-    elif sb_error or product_error:
+    elif sb_error or product_error or search_error:
         status = "partial"
     else:
         status = "done"
@@ -1759,6 +1809,8 @@ async def record_refresh(
         sb_error=sb_error,
         product_rows=int(product_rows or 0),
         product_error=product_error,
+        search_rows=int(search_rows or 0),
+        search_error=search_error,
         started_at=started_at or datetime.utcnow(),
         finished_at=datetime.utcnow(),
     ))
@@ -1790,6 +1842,8 @@ async def last_refresh(db: AsyncSession) -> dict | None:
         "sb_error": row.sb_error or "",
         "product_rows": int(row.product_rows or 0),
         "product_error": row.product_error or "",
+        "search_rows": int(row.search_rows or 0),
+        "search_error": row.search_error or "",
         # isoformat HERE, not in the route: a datetime reaching JSONResponse is a 500, and that exact
         # defect has already shipped once on this project.
         "started_at": row.started_at.isoformat() if row.started_at else None,
