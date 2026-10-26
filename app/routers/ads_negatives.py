@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import permissions
-from app.ads import logic, negatives, repository, search_store, spapi_ads
+from app.ads import logic, negatives, progress, repository, search_store, spapi_ads
 from app.config import get_settings
 from app.database import get_db
 from app.models import AdsEntity
@@ -126,9 +126,12 @@ async def apply(request: Request, db: AsyncSession = Depends(get_db),
     if not settings.ads_configured:
         return JSONResponse({"error": "Advertising credentials are not configured."}, status_code=400)
 
+    progress.track(body.get("progress_id"))
+    progress.phase("check", 1)
     try:
         async with httpx.AsyncClient(timeout=settings.ads_timeout) as client:
             live = await spapi_ads.fetch_negatives(client, ad_group_ids={c["ad_group_id"] for c in wanted})
+            progress.tick(1)
             present = {(r["parent_id"], r["entity_type"], r["name"]) for r in live}
             def neg_type(c):
                 return search_store.NEG_TARGET if c["kind"] == negatives.KIND_PRODUCT else search_store.NEG_KEYWORD
@@ -148,11 +151,13 @@ async def apply(request: Request, db: AsyncSession = Depends(get_db),
             run_id = await repository.open_run(db, changes, rule_summary=plan["rule"],
                                                rule_window=_window_key(body))
             results: list[dict] = []
+            progress.phase("send", len(changes))
             for writer in negatives.WRITERS:
                 rows = [c for c in changes if c["writer"] == writer]
                 if rows:
                     results.extend(await spapi_ads.create_negatives(client, rows, writer=writer))
 
+        progress.phase("record", 1)
         counts = await repository.record_create_results(
             db, run_id, [{**r, "ad_id": r.get("new_id")} for r in results])
         made = {r["entity_id"]: r["new_id"] for r in results if r.get("ok") and r.get("new_id")}
@@ -173,6 +178,8 @@ async def apply(request: Request, db: AsyncSession = Depends(get_db),
     except AdsError as exc:
         logger.warning("ads negatives apply failed: %s", exc)
         return JSONResponse({"error": str(exc)}, status_code=502)
+    finally:
+        progress.finish()
 
     by_id = {c["entity_id"]: c for c in changes}
     logger.info("ads: negatives run %s %s", run_id, counts)

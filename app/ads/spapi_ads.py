@@ -35,6 +35,7 @@ from collections.abc import Mapping, Sequence
 import httpx
 
 from app.config import get_settings
+from app.ads import progress
 from app.portfolio.ads import AdsError, AdsNotConfigured, _access_token, _headers
 
 logger = logging.getLogger(__name__)
@@ -748,6 +749,7 @@ async def fetch_current_bids(client, changes: Sequence[Mapping]) -> dict[str, di
         for start in range(0, len(ids), PAGE_SIZE):
             chunk = ids[start:start + PAGE_SIZE]
             rows = await _list(client, endpoint, filters={filter_key: {"include": chunk}})
+            progress.tick(len(chunk))
             for row in rows:
                 identifier = str(row.get(id_field) or "")
                 if identifier:
@@ -770,6 +772,7 @@ async def fetch_current_bids(client, changes: Sequence[Mapping]) -> dict[str, di
                     "bid": float(row["bid"]) if row.get("bid") is not None else None,
                     "state": row.get("state") or "",
                 }
+        progress.tick(len(by_writer.get(WRITER_SB_KEYWORD) or []))
 
     # ── Product ads: listed by AD GROUP, so the answer carries every SIBLING too ──
     #
@@ -783,6 +786,7 @@ async def fetch_current_bids(client, changes: Sequence[Mapping]) -> dict[str, di
         for row in await fetch_product_ads(client, ad_group_ids=groups, states=()):
             live[row["entity_id"]] = {"bid": None, "state": row["state"],
                                       "ad_group_id": row["parent_id"], "writer": WRITER_PRODUCT_AD}
+        progress.tick(len(by_writer.get(WRITER_PRODUCT_AD) or []))
 
     sb_target_ids = set(by_writer.get(WRITER_SB_TARGET) or [])
     if sb_target_ids:
@@ -792,6 +796,7 @@ async def fetch_current_bids(client, changes: Sequence[Mapping]) -> dict[str, di
                     "bid": float(row["bid"]) if row.get("bid") is not None else None,
                     "state": row.get("state") or "",
                 }
+        progress.tick(len(by_writer.get(WRITER_SB_TARGET) or []))
 
     return live
 
@@ -939,9 +944,11 @@ async def apply_changes(
             message = f"Amazon refused the batch ({response.status_code}): {response.text[:200]}"
             logger.warning("ads: write batch failed: %s", message)
             results.extend({"entity_id": i, "ok": False, "error": message} for i in order)
+            progress.tick(len(order))
             continue
 
         body = response.json()
+        progress.tick(len(order))
         if is_sb_target:
             results.extend(_parse_sb_target_outcome(body, order))
         elif is_sb_keyword:
@@ -1496,8 +1503,10 @@ async def create_negatives(client, rows: Sequence[Mapping], *, writer: str, slee
             message = f"Amazon refused the batch ({response.status_code}): {response.text[:200]}"
             logger.warning("ads: negative create batch failed: %s", message)
             results.extend({"entity_id": i, "ok": False, "new_id": None, "error": message} for i in order)
+            progress.tick(len(order))
             continue
         body = response.json()
+        progress.tick(len(order))
         if writer == W_SP_KEYWORD:
             results.extend(_sp_outcome(body, order, "negativeKeywords", ("negativeKeywordId", "keywordId")))
         elif writer == W_SB_KEYWORD:

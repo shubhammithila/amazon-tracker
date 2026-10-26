@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import ist, permissions
-from app.ads import logic, refresh, repository, spapi_ads
+from app.ads import logic, progress, refresh, repository, spapi_ads
 from app.config import get_settings
 from app.database import get_db
 from app.portfolio.ads import AdsError, AdsNotConfigured
@@ -774,6 +774,16 @@ async def suggested_bids(
     return {"suggestions": suggestions}
 
 
+@router.get("/apply/progress/{progress_id}")
+async def apply_progress(progress_id: str, grant=Depends(require_area(permissions.ADS))):
+    """How far a running Apply has got: `{phase, label, done, total, percent, finished}`. Reads a
+    dict in memory, never the database or Amazon, so it answers while the Apply is still running."""
+    state = progress.get(progress_id)
+    if state is None:
+        return JSONResponse({"error": "No such run in progress."}, status_code=404)
+    return state
+
+
 @router.post("/apply")
 async def apply(
     request: Request,
@@ -966,6 +976,9 @@ async def apply(
             {"error": "Advertising credentials are not configured."}, status_code=400
         )
 
+    # The screen's progress bar (`progress.py`): an id it made up, polled while this request runs.
+    progress.track(body.get("progress_id"))
+    progress.phase("check", len(approved))
     try:
         async with httpx.AsyncClient(timeout=settings.ads_timeout) as client:
             # 1-3. The live re-read: ONE call that answers two questions.
@@ -1072,12 +1085,14 @@ async def apply(
                                                rule_window=_window_key(body))
 
             # 4-5. Two endpoints, per-row outcomes.
+            progress.phase("send", len(to_send))
             grouped = logic.split_by_writer(to_send)
             results: list[dict] = []
             for writer, rows in grouped.items():
                 if rows:
                     results.extend(await spapi_ads.apply_changes(client, rows, writer=writer))
 
+        progress.phase("record", 1)
         counts = await repository.record_results(db, run_id, results)
         # Stamp the saved rules this run came from, matched by the same sentence, so the panel can
         # say when each last ran. Never allowed to fail a run that has already reached Amazon.
@@ -1094,6 +1109,8 @@ async def apply(
     except AdsError as exc:
         logger.warning("ads apply failed: %s", exc)
         return JSONResponse({"error": str(exc)}, status_code=502)
+    finally:
+        progress.finish()
 
     logger.info("ads: run %s applied %s", run_id, counts)
     return {

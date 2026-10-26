@@ -67,6 +67,9 @@ h2{font-size:19px;font-weight:600;margin-bottom:2px}
 #progress-wrap{display:none;margin-top:10px}
 .progress-bar-bg{height:6px;background:var(--bg);border-radius:99px;overflow:hidden;margin-bottom:6px}
 .progress-bar-fill{height:100%;background:var(--accent);border-radius:99px;width:0%;transition:width .4s}
+.apply-progress{padding:12px 16px;margin-bottom:10px}
+.apply-progress .progress-bar-bg{height:10px}
+.apply-progress-text{font-size:13px}
 #progress-label{font-size:12px;color:var(--text-muted)}
 
 .kpis{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
@@ -1737,11 +1740,18 @@ async function applyPlan(){
     button.textContent = "Sending to Amazon…";
   });
 
-  const response = await fetch("/ads/apply", {
-    method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({changes: changes, rule: plan.rule, start: data.window[0], end: data.window[1]}),
-  });
-  const body = await response.json();
+  const bar = startApplyProgress();
+  let response, body;
+  try {
+    response = await fetch("/ads/apply", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({changes: changes, rule: plan.rule, start: data.window[0], end: data.window[1],
+                            progress_id: bar.id}),
+    });
+    body = await response.json();
+  } finally {
+    bar.stop();
+  }
 
   if(!response.ok){
     $("preview-area").innerHTML = `<div class="card"><div class="banner error">${
@@ -1929,13 +1939,19 @@ async function applyNegatives(confirmSb){
       + (sb ? `\n\n${sb} of them are Sponsored Brands negatives, which CANNOT be undone.` : "\n\nUndo removes them again.");
     if(!confirm(words)) return;
   }
-  const response = await fetch("/ads/negatives/apply", {
-    method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({start: negPlan.window[0], end: negPlan.window[1], conditions,
-                          campaign_ids: [...selected], ad_group_ids: [...selectedAdGroups],
-                          keys, confirm_sb: sb > 0}),
-  });
-  const body = await response.json();
+  const bar = startApplyProgress();
+  let response, body;
+  try {
+    response = await fetch("/ads/negatives/apply", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({start: negPlan.window[0], end: negPlan.window[1], conditions,
+                            campaign_ids: [...selected], ad_group_ids: [...selectedAdGroups],
+                            keys, confirm_sb: sb > 0, progress_id: bar.id}),
+    });
+    body = await response.json();
+  } finally {
+    bar.stop();
+  }
   if(!response.ok){
     $("preview-area").innerHTML = `<div class="card"><div class="banner error">${esc(body.error || "The add failed.")}</div></div>`;
     return;
@@ -1971,6 +1987,40 @@ $("preview-area").addEventListener("click", e => {
     renderNegPreview();
   }
 });
+
+/* ── Progress while Apply runs ───────────────────────────────────────────────
+   Reported as "a lot of keywords to change, nothing happens on the screen and after 30 sec it says
+   xxx applied". The Apply request carries a made-up id; the server counts rows through its two slow
+   steps (re-reading live bids, then sending batches of 500) and this polls GET
+   /ads/apply/progress/{id} until the request itself returns. Not crypto.randomUUID: production is
+   plain http, where it does not exist. */
+function startApplyProgress(){
+  const id = "ap-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  const box = document.createElement("div");
+  box.className = "card apply-progress";
+  box.innerHTML = `<div class="progress-bar-bg"><div class="progress-bar-fill" style="width:2%"></div></div>
+    <div class="dim apply-progress-text">Starting…</div>`;
+  $("preview-area").prepend(box);
+  box.scrollIntoView({block: "nearest"});
+  const fill = box.querySelector(".progress-bar-fill");
+  const text = box.querySelector(".apply-progress-text");
+  let stopped = false;
+  const poll = async () => {
+    if(stopped) return;
+    try {
+      const response = await fetch(`/ads/apply/progress/${id}`);
+      if(response.ok && !stopped){
+        const p = await response.json();
+        fill.style.width = Math.max(2, p.percent) + "%";
+        text.textContent = `${p.label}${p.total > 1 ? ` — ${n(p.done).toLocaleString("en-IN")} of ${
+          n(p.total).toLocaleString("en-IN")}` : ""} · ${p.percent}%`;
+      }
+    } catch(e){ /* a missed poll is not an error; the next one catches up */ }
+    if(!stopped) setTimeout(poll, 700);
+  };
+  setTimeout(poll, 300);
+  return {id, stop(){ stopped = true; box.remove(); }};
+}
 
 /* ── Guardrails ────────────────────────────────────────────────────────────── */
 async function renderGuardrails(){

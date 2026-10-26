@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (3141 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (3148 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3855,6 +3855,16 @@ days the rules which were set grey shows again normally"*. `ads_mutation.rule_wi
 is stamped by both apply routes (`/ads/apply` now receives start/end from the screen), and
 `repository.ran_today_by_rule` keys on sentence + window for the IST day.
 `tests/test_ads_negatives.py`; `scripts/mutate_ads_negatives.py`.
+
+**Apply shows a progress bar** (26 Oct 2026), asked for as *"a lot of keywords to change nothing happens
+on the screen and after 30 sec it says xxx applied"*. The screen sends a made-up `progress_id` (not
+`crypto.randomUUID`: production is plain http, where it is undefined) and polls
+`GET /ads/apply/progress/{id}`. `app/ads/progress.py` counts rows through the phases check (re-reading
+live bids, 0-45%), send (batches of 500, 45-97%) and record. The counter travels in a ContextVar set by
+the route, and `spapi_ads` ticks it per page and batch, so no signature changed and every test fake
+still works. Used by `/ads/apply` and `/ads/negatives/apply`; finished in a `finally`.
+`tests/test_ads_apply_progress.py`. **`tests/js_harness.py` writes one fixed temp file**, so the suite
+must not be run as parallel processes; three Portfolio/Repeat tests collide when it is.
 
 ### 1,700 rows open as 7 lines: campaign → ad group → rows
 Asked for as *"when there are so many matches 1700. better to sort it campaign wise and ad group
