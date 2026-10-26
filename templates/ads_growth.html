@@ -51,33 +51,42 @@ a.seg-btn{text-decoration:none;display:inline-block}
 .search-input:focus{outline:none;border-color:var(--accent)}
 
 
-/* One card per ad group, stacked full width like SKU coverage. */
-.gr-bar{position:sticky;top:57px;z-index:50;background:var(--surface);border:1px solid var(--border);
-  border-radius:10px;padding:10px 12px;margin-bottom:12px;display:flex;gap:10px;align-items:center;
-  flex-wrap:wrap;box-shadow:var(--shadow)}
-.gr-bar label{font-size:12.5px;display:inline-flex;gap:5px;align-items:center}
-.gr-bar input[type=number]{width:80px;background:var(--bg);border:1px solid var(--border-strong);border-radius:6px;
-  color:var(--text);padding:5px 7px;font-size:13px}
-.gr-list{display:flex;flex-direction:column;gap:10px}
-.gr-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);overflow:hidden}
-.gr-head{display:flex;gap:10px;align-items:center;padding:9px 12px;border-bottom:1px solid var(--border);background:var(--surface2);flex-wrap:wrap}
-.gr-head .names{flex:1;min-width:220px}
-.gr-camp{font-size:12px;color:var(--text-muted)}
-.gr-group{font-size:14px;font-weight:700}
-.gr-asins{font-size:11px;color:var(--text-dim)}
-.gr-body{padding:4px 12px 10px;overflow-x:auto}
+
+/* Campaign list -> one campaign's ad groups -> one ad group's keywords. */
+.gr-crumbs{display:flex;gap:8px;align-items:center;margin:4px 0 12px;font-size:13px}
+.gr-crumbs .here{font-weight:700}
+.gr-search{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+.gr-list{display:flex;flex-direction:column;gap:8px}
+.gr-camp-row{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:center;
+  background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 14px;cursor:pointer;
+  box-shadow:var(--shadow);font-size:13px}
+.gr-camp-row:hover{border-color:var(--accent)}
+.gr-camp-row .name{flex:1 1 260px;min-width:0;font-weight:700;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gr-group{background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);overflow:hidden}
+.gr-ghead{display:flex;gap:10px;align-items:center;padding:9px 12px;flex-wrap:wrap;cursor:pointer}
+.gr-group.open .gr-ghead{border-bottom:1px solid var(--border);background:var(--surface2)}
+.gr-ghead .names{flex:1;min-width:220px}
+.gr-ghead .gname{font-size:14px;font-weight:700}
+.gr-ghead .asins{font-size:11px;color:var(--text-dim)}
+.chev{display:inline-block;width:12px;transition:none}
+.gr-group.open .chev{transform:rotate(90deg)}
+.gr-body{padding:6px 12px 12px;overflow-x:auto}
 .gr-row{display:grid;grid-template-columns:22px minmax(220px,2fr) 170px 110px 120px minmax(200px,2fr);
   column-gap:10px;align-items:center;min-width:900px;padding:5px 0;font-size:12.5px;border-top:1px dashed var(--border)}
 .gr-row > *{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .gr-row .why{white-space:normal;color:var(--text-muted);font-size:12px}
 .gr-cols{font-size:10.5px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;border-top:none}
+.gr-sec{font-size:12.5px;font-weight:700;margin:10px 0 2px}
+.gr-sec.left{color:var(--text-muted)}
 .tag.src-sold{background:var(--green-soft);color:var(--green)}
 .tag.src-amazon{background:var(--blue-soft);color:var(--blue)}
 .tag.src-autocomplete{background:var(--yellow-soft);color:var(--yellow)}
 .tag.src-page{background:var(--accent-soft);color:var(--accent)}
-.gr-foot{display:flex;gap:8px;align-items:center;padding-top:8px;flex-wrap:wrap}
-.gr-card details{margin-top:6px}
-.gr-card summary{font-size:12px;color:var(--text-muted);cursor:pointer}
+.tag.moved{background:var(--accent-soft);color:var(--accent)}
+.gr-foot{display:flex;gap:10px;align-items:center;padding:10px 0 2px;flex-wrap:wrap;border-top:1px solid var(--border);margin-top:8px}
+.gr-foot label{font-size:12.5px;display:inline-flex;gap:5px;align-items:center}
+.gr-foot input[type=number]{width:80px;background:var(--bg);border:1px solid var(--border-strong);border-radius:6px;
+  color:var(--text);padding:5px 7px;font-size:13px}
 .progress-bar-bg{height:10px;background:var(--bg);border-radius:99px;overflow:hidden;margin-bottom:6px}
 .progress-bar-fill{height:100%;background:var(--accent);border-radius:99px;width:0%;transition:width .4s}
 .apply-progress{padding:10px 0}
@@ -99,20 +108,12 @@ a.seg-btn{text-decoration:none;display:inline-block}
 {% include "_ads_tabs.html" %}
 
 <div class="section-title">Keyword growth</div>
-<div class="section-sub">Keywords and competitor targets for each ad group, kept only when they match the
-  product's own page. Every keyword is added as Exact and Phrase.</div>
+<div class="section-sub">Pick a campaign, open an ad group and press Generate: keywords and competitor targets
+  that match the product's own page. Every keyword is added as Exact and Phrase.</div>
 
-<div class="gr-bar" id="growth-bar">
-  <input class="search-input" id="growth-search" placeholder="Search ad groups or products…"/>
-  <span class="dim">Add at:</span>
-  <label><input type="radio" name="bid-mode" value="low" checked/> Amazon's low end</label>
-  <label><input type="radio" name="bid-mode" value="custom"/> custom</label>
-  <label>₹ <input type="number" id="custom-bid" min="1" step="0.5" placeholder="e.g. 6"/></label>
-  <span class="dim" id="growth-bar-note">Rows with no Amazon suggestion (all Sponsored Brands, and
-    "shoppers type" / "from the page" ideas) use the ₹ typed here.</span>
-</div>
+<div id="growth-crumbs" class="gr-crumbs"></div>
 <div id="growth-status"></div>
-<div id="growth-cards"></div>
+<div id="growth-view"><div class="dim">Loading…</div></div>
 
 </main>
 <script>
@@ -123,10 +124,27 @@ const esc = s => String(s == null ? "" : s)
 const n = v => (v == null || isNaN(v)) ? 0 : v;
 const money = v => v == null ? "—" : "₹" + Number(v).toLocaleString("en-IN", {maximumFractionDigits: 2});
 
-let data = null;
-const picked = {};            // ad_group_id -> Set of keys
-const busy = new Set();       // ad groups with a Find or Add in flight
-const notes = {};             // ad_group_id -> html of the last message
+/* Where we are lives in the address (#c=<campaign>&g=<ad group>), so Back and a reload return here. */
+function route(){
+  const p = new URLSearchParams(location.hash.slice(1));
+  return {campaign: p.get("c") || "", group: p.get("g") || ""};
+}
+function go(campaign, group){
+  const p = new URLSearchParams();
+  if(campaign) p.set("c", campaign);
+  if(group) p.set("g", group);
+  const hash = p.toString();
+  if(("#" + hash) === location.hash || (!hash && !location.hash)) render(); else location.hash = hash;
+}
+
+let campaigns = null;        // the first screen
+let current = null;          // {campaign, groups, source_labels} of the campaign open
+const picked = {};           // ad_group_id -> Set of keys ticked to ADD (relevant rows)
+const pickedLeft = {};       // ad_group_id -> Set of keys ticked to MOVE to relevant
+const bidMode = {};          // ad_group_id -> {mode, custom}
+const busy = new Set();
+const notes = {};
+let search = "";
 
 function istStamp(iso){
   if(!iso) return "";
@@ -134,115 +152,165 @@ function istStamp(iso){
   return d.toLocaleString("en-IN", {timeZone: "Asia/Kolkata", day: "numeric", month: "short",
                                     hour: "2-digit", minute: "2-digit"});
 }
+function setOf(map, id){ return map[id] = map[id] || new Set(); }
 
-/* The sources a term came from, as tags. */
-function sourceTags(list){
-  return (list || []).map(s => `<span class="tag src-${esc(s)}">${esc((data.source_labels || {})[s] || s)}</span>`).join(" ");
+/* ── Screen 1: campaigns ── */
+function campaignsHtml(){
+  const q = search.trim().toLowerCase();
+  const rows = (campaigns || []).filter(c => !q || c.campaign_name.toLowerCase().includes(q));
+  return `<div class="gr-search"><input class="search-input" id="growth-search" placeholder="Search campaigns…"
+      value="${esc(search)}"/><span class="dim">${(campaigns || []).length} campaign(s)</span></div>
+    ${rows.length ? `<div class="gr-list">${rows.map(c => `<div class="gr-camp-row" data-open-campaign="${esc(c.campaign_id)}">
+      <span class="name" title="${esc(c.campaign_name)}">${esc(c.campaign_name)}</span>
+      <span><span class="tag">${esc(String(c.ad_product).toUpperCase())}</span></span>
+      <span>${n(c.keyword_groups)} keyword · ${n(c.product_groups)} product group(s)</span>
+      <span class="dim">${n(c.found_groups) ? `${n(c.kept)} relevant in ${n(c.found_groups)} group(s)` : "not generated yet"}</span>
+      <span class="dim">${c.last_found ? esc(istStamp(c.last_found)) : ""}</span>
+    </div>`).join("")}</div>`
+      : `<div class="empty-note">${(campaigns || []).length ? "No campaign matches the search."
+        : "No keyword or product-target ad group is held yet. They appear after the nightly Ads refresh."}</div>`}`;
 }
 
-function rowHtml(card, s, tickable){
+/* ── Screen 2: one campaign's ad groups, one opened ── */
+function sourceTags(list){
+  return (list || []).map(s => `<span class="tag src-${esc(s)}">${esc((current.source_labels || {})[s] || s)}</span>`).join(" ");
+}
+function rowHtml(card, s, set){
   const f = s.figures || {}, b = s.bids || {};
   const label = card.kind === "product" && f.title ? `${esc(s.term)} <span class="dim">${esc(f.title)}</span>` : esc(s.term);
   const bid = card.ad_product === "sb" ? `<span class="dim" title="Amazon offers no suggested bid for Sponsored Brands">custom ₹</span>`
     : b.low ? `${money(b.low)} <span class="dim">/ ${money(b.suggested_bid)}</span>`
     : `<span class="dim" title="${esc(b.unavailable || "no suggestion")}">custom ₹</span>`;
   const sold = n(f.orders) ? `${n(f.orders)} orders · ${money(f.spend)}` : `<span class="dim">—</span>`;
-  const set = picked[card.ad_group_id] || new Set();
+  const moved = String(s.reason || "").startsWith("Moved to") ? ` <span class="tag moved">yours</span>` : "";
   return `<div class="gr-row">
-    <span>${tickable ? `<input type="checkbox" data-pick="${esc(s.key)}" data-group="${esc(card.ad_group_id)}"${
-      set.has(s.key) ? " checked" : ""} aria-label="Add ${esc(s.term)}"/>` : ""}</span>
+    <span><input type="checkbox" data-pick="${esc(s.key)}" data-group="${esc(card.ad_group_id)}"
+      data-list="${s.keep ? "keep" : "left"}"${set.has(s.key) ? " checked" : ""} aria-label="Tick ${esc(s.term)}"/></span>
     <span class="${card.kind === "product" ? "mono" : ""}" title="${esc(s.term)}">${label}</span>
     <span>${sourceTags(s.sources)}</span>
     <span>${sold}</span>
     <span>${bid}</span>
-    <span class="why">${esc(s.reason)}</span>
+    <span class="why">${esc(s.reason)}${moved}</span>
   </div>`;
 }
-
-function cardHtml(card){
-  const kept = (card.suggestions || []).filter(s => s.keep);
-  const rejected = (card.suggestions || []).filter(s => !s.keep);
-  const set = picked[card.ad_group_id] || new Set();
-  const found = (card.suggestions || [])[0] ? istStamp(card.suggestions[0].found_at) : "";
+function groupHtml(card, open){
+  const sugg = card.suggestions || [];
+  const kept = sugg.filter(s => s.keep), left = sugg.filter(s => !s.keep);
+  const set = setOf(picked, card.ad_group_id), leftSet = setOf(pickedLeft, card.ad_group_id);
+  const bm = bidMode[card.ad_group_id] = bidMode[card.ad_group_id] || {mode: "low", custom: ""};
   const kindWord = card.kind === "product" ? "competitor products" : "keywords";
-  const head = `<div class="gr-head">
-      <div class="names"><div class="gr-camp">${esc(card.campaign_name)}</div>
-        <div class="gr-group">${esc(card.ad_group_name)}</div>
-        <div class="gr-asins">${(card.asins || []).map(esc).join(" · ") || "no product known yet"}</div></div>
-      <span class="tag">${esc(String(card.ad_product).toUpperCase())}</span>
+  const found = sugg[0] ? istStamp(sugg[0].found_at) : "";
+  const head = `<div class="gr-ghead" data-toggle-group="${esc(card.ad_group_id)}">
+      <span class="chev" aria-hidden="true">▸</span>
+      <div class="names"><div class="gname">${esc(card.ad_group_name)}</div>
+        <div class="asins">${(card.asins || []).map(esc).join(" · ") || "no product known yet"}</div></div>
       <span class="tag">${kindWord}</span>
-      ${found ? `<span class="dim" style="font-size:12px">found ${esc(found)}</span>` : ""}
+      <span class="dim" style="font-size:12px">${sugg.length ? `${kept.length} relevant · ${left.length} left out · ${esc(found)}`
+        : "not generated"}</span>
       <button class="btn-outline" data-find="${esc(card.ad_group_id)}"${busy.has(card.ad_group_id) || !(card.asins || []).length
-        ? " disabled" : ""}>${busy.has(card.ad_group_id) ? "Finding…" : found ? "Find again" : `Find ${kindWord}`}</button>
+        ? " disabled" : ""}>${busy.has(card.ad_group_id) ? "Generating…" : sugg.length ? "Generate again" : "Generate"}</button>
     </div>`;
-  if(!(card.suggestions || []).length){
-    return `<div class="gr-card" data-card="${esc(card.ad_group_id)}">${head}
-      <div class="gr-body">${notes[card.ad_group_id] || ""}</div></div>`;
-  }
+  if(!open) return `<div class="gr-group">${head}</div>`;
   const cols = `<div class="gr-row gr-cols"><span></span><span>${card.kind === "product" ? "Competitor ASIN" : "Keyword"}</span>
-    <span>Found by</span><span>Sold here</span><span>Amazon low / sugg.</span><span>Why it fits</span></div>`;
-  return `<div class="gr-card" data-card="${esc(card.ad_group_id)}">${head}
-    <div class="gr-body">
-      ${notes[card.ad_group_id] || ""}
-      ${kept.length ? cols + kept.map(s => rowHtml(card, s, true)).join("")
-        : `<div class="dim" style="padding:8px 0;font-size:12.5px">Nothing relevant enough was found.</div>`}
-      ${kept.length ? `<div class="gr-foot">
+    <span>Found by</span><span>Sold here</span><span>Amazon low / sugg.</span><span>Why</span></div>`;
+  const body = !sugg.length ? `<div class="dim" style="padding:8px 0;font-size:12.5px">Press Generate to find ${kindWord}
+      for this ad group — about a minute.</div>`
+    : `<div class="gr-sec">Relevant (${kept.length})</div>
+      ${kept.length ? cols + kept.map(s => rowHtml(card, s, set)).join("")
+        : `<div class="dim" style="padding:6px 0;font-size:12.5px">Nothing relevant enough — tick rows below to move them here.</div>`}
+      <div class="gr-foot">
+        <span class="dim">Add at</span>
+        <label><input type="radio" name="bid-${esc(card.ad_group_id)}" data-bid-mode="${esc(card.ad_group_id)}" value="low"${
+          bm.mode === "low" ? " checked" : ""}/> Amazon's low end</label>
+        <label><input type="radio" name="bid-${esc(card.ad_group_id)}" data-bid-mode="${esc(card.ad_group_id)}" value="custom"${
+          bm.mode === "custom" ? " checked" : ""}/> custom</label>
+        <label>₹ <input type="number" min="1" step="0.5" placeholder="e.g. 6" data-custom-bid="${esc(card.ad_group_id)}"
+          value="${esc(bm.custom)}"/></label>
         <button class="btn" data-add="${esc(card.ad_group_id)}"${set.size && !busy.has(card.ad_group_id) ? "" : " disabled"}>
-          Add ${set.size} ${card.kind === "product" ? "target(s)" : "keyword(s) as Exact + Phrase"}</button>
-        <button class="link-btn" data-all="${esc(card.ad_group_id)}">${set.size === kept.length ? "Clear" : "Select all"}</button>
-        <span class="dim" style="font-size:12px">${kept.length} relevant of ${(card.suggestions || []).length} found</span>
-      </div>` : ""}
-      ${rejected.length ? `<details><summary>Left out as not relevant (${rejected.length}) — and why</summary>
-        ${rejected.map(s => rowHtml(card, s, false)).join("")}</details>` : ""}
-    </div></div>`;
+          Add ${set.size} ${card.kind === "product" ? "target(s)" : "keyword(s) as Exact + Phrase"} to this ad group</button>
+        <button class="link-btn" data-all="${esc(card.ad_group_id)}">${set.size && set.size === kept.length ? "Clear" : "Select all"}</button>
+        <span class="dim" style="font-size:12px">${card.ad_product === "sb" ? "Sponsored Brands has no Amazon bid: the ₹ is used."
+          : "Rows with no Amazon bid use the ₹."}</span>
+      </div>
+      ${left.length ? `<div class="gr-sec left">Left out as not relevant (${left.length})</div>
+        ${cols}${left.map(s => rowHtml(card, s, leftSet)).join("")}
+        <div class="gr-foot"><button class="btn-outline" data-move="${esc(card.ad_group_id)}"${leftSet.size ? "" : " disabled"}>
+          Move ${leftSet.size} to relevant</button></div>` : ""}`;
+  return `<div class="gr-group open">${head}<div class="gr-body">${notes[card.ad_group_id] || ""}${body}</div></div>`;
+}
+function campaignHtml(openGroup){
+  const q = search.trim().toLowerCase();
+  const groups = (current.groups || []).filter(g => !q || `${g.ad_group_name} ${(g.asins || []).join(" ")}`.toLowerCase().includes(q));
+  return `<div class="gr-search"><input class="search-input" id="growth-search" placeholder="Search ad groups or ASINs…"
+      value="${esc(search)}"/><span class="dim">${(current.groups || []).length} ad group(s)</span></div>
+    <div class="gr-list">${groups.map(g => groupHtml(g, g.ad_group_id === openGroup)).join("")
+      || `<div class="empty-note">No ad group matches the search.</div>`}</div>`;
 }
 
-function render(){
-  if(!data) return;
-  const q = $("growth-search").value.trim().toLowerCase();
-  const cards = (data.cards || []).filter(c => !q || `${c.campaign_name} ${c.ad_group_name} ${(c.asins || []).join(" ")}`
-    .toLowerCase().includes(q));
-  $("growth-cards").innerHTML = cards.length ? `<div class="gr-list">${cards.map(cardHtml).join("")}</div>`
-    : `<div class="empty-note">${(data.cards || []).length ? "No ad group matches the search."
-      : "No keyword or product-target ad group is held yet. They appear after the nightly Ads refresh."}</div>`;
-}
-
-async function load(){
-  const response = await fetch("/ads/growth");
-  const body = await response.json();
-  if(!response.ok){
-    $("growth-status").innerHTML = `<div class="banner error">${esc(body.error || "Could not load.")}</div>`;
+async function render(){
+  const r = route();
+  if(!r.campaign){
+    current = null;
+    $("growth-crumbs").innerHTML = `<span class="here">All campaigns</span>`;
+    if(!campaigns){
+      const response = await fetch("/ads/growth/campaigns");
+      const body = await response.json();
+      if(!response.ok){ $("growth-view").innerHTML = `<div class="banner error">${esc(body.error || "Could not load.")}</div>`; return; }
+      campaigns = body.campaigns || [];
+    }
+    $("growth-view").innerHTML = campaignsHtml();
     return;
   }
-  data = body;
-  render();
+  if(!current || current.campaign.campaign_id !== r.campaign){
+    $("growth-view").innerHTML = `<div class="dim">Loading the ad groups…</div>`;
+    const response = await fetch(`/ads/growth/campaign/${encodeURIComponent(r.campaign)}`);
+    const body = await response.json();
+    if(!response.ok){ $("growth-view").innerHTML = `<div class="banner error">${esc(body.error || "Could not load.")}</div>`; return; }
+    current = body;
+    search = "";
+  }
+  $("growth-crumbs").innerHTML = `<button class="link-btn" data-back>← All campaigns</button>
+    <span class="dim">/</span><span class="here">${esc(current.campaign.campaign_name)}</span>
+    <span class="tag">${esc(String(current.campaign.ad_product).toUpperCase())}</span>`;
+  $("growth-view").innerHTML = campaignHtml(r.group);
 }
-
-function cardOf(groupId){ return (data.cards || []).find(c => c.ad_group_id === groupId); }
+function rerender(){ if(current) $("growth-view").innerHTML = campaignHtml(route().group); }
+function cardOf(id){ return ((current && current.groups) || []).find(c => c.ad_group_id === id); }
 
 async function find(groupId){
   busy.add(groupId);
   notes[groupId] = `<div class="dim" style="padding:8px 0;font-size:12.5px">Reading the product page, Amazon's
     suggestions, autocomplete and our search terms, then checking each against the page — about a minute.</div>`;
-  render();
+  if(route().group !== groupId) go(route().campaign, groupId); else rerender();
   try {
     const response = await fetch("/ads/growth/find", {method: "POST", headers: {"Content-Type": "application/json"},
                                                        body: JSON.stringify({ad_group_id: groupId})});
     const body = await response.json();
-    if(!response.ok){
-      notes[groupId] = `<div class="banner error">${esc(body.error || "The find failed.")}</div>`;
-      return;
-    }
-    const card = cardOf(groupId);
-    card.suggestions = body.suggestions || [];
-    picked[groupId] = new Set();
+    if(!response.ok){ notes[groupId] = `<div class="banner error">${esc(body.error || "Generate failed.")}</div>`; return; }
+    cardOf(groupId).suggestions = body.suggestions || [];
+    picked[groupId] = new Set(); pickedLeft[groupId] = new Set();
     const d = body.dropped || {};
-    notes[groupId] = (d.already || d.negative) ? `<div class="dim" style="font-size:12px;padding-top:6px">Left out
-      before checking: ${n(d.already)} already in this ad group (any state), ${n(d.negative)} negated here.</div>` : "";
+    notes[groupId] = (d.already || d.negative) ? `<div class="dim" style="font-size:12px;padding-top:4px">Left out before
+      checking: ${n(d.already)} already in this ad group (any state), ${n(d.negative)} negated here.</div>` : "";
+    campaigns = null;
   } finally {
     busy.delete(groupId);
-    render();
+    rerender();
   }
+}
+
+async function move(groupId){
+  const keys = [...setOf(pickedLeft, groupId)];
+  if(!keys.length) return;
+  const response = await fetch("/ads/growth/keep", {method: "POST", headers: {"Content-Type": "application/json"},
+                                                     body: JSON.stringify({ad_group_id: groupId, keys, keep: true})});
+  const body = await response.json();
+  if(!response.ok){ notes[groupId] = `<div class="banner error">${esc(body.error || "The move failed.")}</div>`; rerender(); return; }
+  cardOf(groupId).suggestions = body.suggestions || [];
+  pickedLeft[groupId] = new Set();
+  keys.forEach(k => setOf(picked, groupId).add(k));     // moved rows arrive ticked, ready to add
+  notes[groupId] = `<div class="banner good">${n(body.moved)} moved to relevant and ticked. Generate keeps them relevant.</div>`;
+  rerender();
 }
 
 /* The progress bar while Add runs, polled like Apply on Optimisation. */
@@ -252,7 +320,7 @@ function startApplyProgress(host){
   box.className = "apply-progress";
   box.innerHTML = `<div class="progress-bar-bg"><div class="progress-bar-fill" style="width:2%"></div></div>
     <div class="dim apply-progress-text">Starting…</div>`;
-  host.prepend(box);
+  if(host) host.prepend(box);
   const fill = box.querySelector(".progress-bar-fill");
   const text = box.querySelector(".apply-progress-text");
   let stopped = false;
@@ -274,17 +342,17 @@ function startApplyProgress(host){
 
 async function add(groupId){
   const card = cardOf(groupId);
-  const keys = [...(picked[groupId] || [])];
+  const keys = [...setOf(picked, groupId)];
   if(!keys.length) return;
-  const mode = document.querySelector('input[name="bid-mode"]:checked').value;
-  const custom = $("custom-bid").value;
+  const {mode, custom} = bidMode[groupId];
+  if(mode === "custom" && !custom){ alert("Type the custom ₹ bid first."); return; }
   const words = card.kind === "product" ? `${keys.length} competitor target(s)` : `${keys.length} keyword(s), each as Exact AND Phrase`;
   /* Plain text in a confirm(), built by concatenation so no server string sits in a ${} literal. */
   if(!confirm(`Add ${words} to "` + card.ad_group_name + `" at Amazon, at ${mode === "low" ? "Amazon's low-end bid" : "₹" + custom}`
               + `${custom ? ` (₹${custom} where Amazon has no suggestion)` : ""}?\n\nUndo pauses them again.`)) return;
   busy.add(groupId);
-  render();
-  const host = document.querySelector(`[data-card="${CSS.escape(groupId)}"] .gr-body`);
+  rerender();
+  const host = document.querySelector(`[data-toggle-group="${CSS.escape(groupId)}"]`)?.parentElement.querySelector(".gr-body");
   const bar = startApplyProgress(host);
   let response, body;
   try {
@@ -297,7 +365,7 @@ async function add(groupId){
   }
   if(!response.ok){
     notes[groupId] = `<div class="banner error">${esc(body.error || "The add failed.")}</div>`;
-    render();
+    rerender();
     return;
   }
   const parts = [`<strong>${n(body.applied)} added.</strong>`];
@@ -311,7 +379,11 @@ async function add(groupId){
       `<li>${esc(r.term)} ${esc(r.match_type)} — ${esc(r.error)}</li>`).join("")}</ul>` : ""}
     ${body.run_id ? ` <button class="btn-outline" data-undo="${esc(body.run_id)}" data-group="${esc(groupId)}">↩ Undo (pause them)</button>` : ""}</div>`;
   picked[groupId] = new Set();
-  await load();
+  // Stay inside the campaign: re-read its ad groups so added rows leave the list.
+  const again = await fetch(`/ads/growth/campaign/${encodeURIComponent(route().campaign)}`);
+  if(again.ok) current = await again.json();
+  campaigns = null;
+  rerender();
 }
 
 async function undoRun(runId, groupId){
@@ -319,35 +391,60 @@ async function undoRun(runId, groupId){
   const body = await response.json();
   notes[groupId] = response.ok ? `<div class="banner good">Undone: ${n(body.applied)} paused again.</div>`
     : `<div class="banner error">${esc(body.error || "The undo failed.")}</div>`;
-  render();
+  rerender();
 }
 
-$("growth-cards").addEventListener("click", e => {
+document.addEventListener("click", e => {
+  if(e.target.closest("[data-back]")){ go("", ""); return; }
+  const c = e.target.closest("[data-open-campaign]");
+  if(c){ search = ""; go(c.dataset.openCampaign, ""); return; }
   const f = e.target.closest("[data-find]");
-  if(f){ find(f.dataset.find); return; }
+  if(f){ e.stopPropagation(); find(f.dataset.find); return; }
   const a = e.target.closest("[data-add]");
   if(a){ add(a.dataset.add); return; }
+  const m = e.target.closest("[data-move]");
+  if(m){ move(m.dataset.move); return; }
   const all = e.target.closest("[data-all]");
   if(all){
     const card = cardOf(all.dataset.all);
     const kept = (card.suggestions || []).filter(s => s.keep).map(s => s.key);
-    const set = picked[card.ad_group_id] || new Set();
+    const set = setOf(picked, card.ad_group_id);
     picked[card.ad_group_id] = set.size === kept.length ? new Set() : new Set(kept);
-    render();
+    rerender();
     return;
   }
   const u = e.target.closest("[data-undo]");
-  if(u) undoRun(u.dataset.undo, u.dataset.group);
+  if(u){ undoRun(u.dataset.undo, u.dataset.group); return; }
+  const t = e.target.closest("[data-toggle-group]");
+  if(t && !e.target.closest("button,input,label")){
+    const id = t.dataset.toggleGroup;
+    go(route().campaign, route().group === id ? "" : id);
+  }
 });
-$("growth-cards").addEventListener("change", e => {
+document.addEventListener("change", e => {
   const box = e.target.closest("[data-pick]");
-  if(!box) return;
-  const set = picked[box.dataset.group] = picked[box.dataset.group] || new Set();
-  if(box.checked) set.add(box.dataset.pick); else set.delete(box.dataset.pick);
-  render();
+  if(box){
+    const set = setOf(box.dataset.list === "keep" ? picked : pickedLeft, box.dataset.group);
+    if(box.checked) set.add(box.dataset.pick); else set.delete(box.dataset.pick);
+    rerender();
+    return;
+  }
+  const mode = e.target.closest("[data-bid-mode]");
+  if(mode){ bidMode[mode.dataset.bidMode].mode = mode.value; return; }
 });
-$("growth-search").addEventListener("input", render);
-load();
+document.addEventListener("input", e => {
+  const bid = e.target.closest("[data-custom-bid]");
+  if(bid){ bidMode[bid.dataset.customBid].custom = bid.value; return; }
+  if(e.target.id === "growth-search"){
+    search = e.target.value;
+    const caret = e.target.selectionStart;
+    $("growth-view").innerHTML = current ? campaignHtml(route().group) : campaignsHtml();
+    const box = $("growth-search");
+    box.focus(); box.setSelectionRange(caret, caret);
+  }
+});
+window.addEventListener("hashchange", render);
+render();
 </script>
 </body>
 </html>

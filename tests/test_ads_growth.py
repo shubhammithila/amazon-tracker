@@ -394,8 +394,8 @@ async def test_add_sends_exact_and_phrase_for_ticked_kept_keys_only(auth_client,
     assert {(r["status"], r["action"]) for r in rows} == {("applied", "create")}
     undo = await repository.build_undo(db, body["run_id"])
     assert sorted((u["entity_id"], u["new_state"]) for u in undo) == [("N0", "PAUSED"), ("N1", "PAUSED")]
-    after = (await auth_client.get("/ads/growth")).json()
-    terms = {s["term"] for c in after["cards"] for s in c["suggestions"]}
+    after = (await auth_client.get("/ads/growth/campaign/c1")).json()
+    terms = {s["term"] for c in after["groups"] for s in c["suggestions"]}
     assert "chana sattu" not in terms, "an added keyword leaves the list"
 
 
@@ -423,7 +423,49 @@ async def test_a_failed_relevance_check_offers_nothing(auth_client, seeded, monk
     monkeypatch.setattr(bedrock, "converse", down)
     r = await auth_client.post("/ads/growth/find", json={"ad_group_id": "g1"})
     assert r.status_code == 502 and r.json()["judge_failed"]
-    assert all(not c["suggestions"] for c in (await auth_client.get("/ads/growth")).json()["cards"])
+    assert all(not c["suggestions"] for c in (await auth_client.get("/ads/growth/campaign/c1")).json()["groups"])
+
+
+async def test_the_campaign_list_reads_only_the_database_and_counts_its_groups(auth_client, seeded, monkeypatch):
+    from app.routers import ads_growth
+
+    async def no_sb(*a, **k):
+        raise AssertionError("the campaign list must not call Amazon")
+    monkeypatch.setattr(ads_growth, "_sb_ad_asins", no_sb)
+    before = (await auth_client.get("/ads/growth/campaigns")).json()["campaigns"]
+    assert [(c["campaign_id"], c["keyword_groups"], c["found_groups"]) for c in before] == [("c1", 1, 0)]
+    await auth_client.post("/ads/growth/find", json={"ad_group_id": "g1"})
+    after = (await auth_client.get("/ads/growth/campaigns")).json()["campaigns"][0]
+    assert after["found_groups"] == 1 and after["kept"] == 3 and after["last_found"]
+
+
+async def test_a_campaign_shows_its_own_ad_groups_and_an_unknown_one_is_404(auth_client, seeded):
+    body = (await auth_client.get("/ads/growth/campaign/c1")).json()
+    assert body["campaign"]["campaign_name"] == "MF_SP_keywords"
+    assert [g["ad_group_id"] for g in body["groups"]] == ["g1"]
+    assert (await auth_client.get("/ads/growth/campaign/nope")).status_code == 404
+
+
+async def test_a_left_out_row_moves_to_relevant_stays_there_and_can_be_added(auth_client, seeded, monkeypatch):
+    await auth_client.post("/ads/growth/find", json={"ad_group_id": "g1"})
+    atta = growth.key_of("sp", "g1", growth.KIND_KEYWORD, "atta")
+    bad = await auth_client.post("/ads/growth/keep", json={"ad_group_id": "g1", "keys": [atta, "nope"], "keep": True})
+    assert bad.status_code == 409
+    moved = (await auth_client.post("/ads/growth/keep", json={"ad_group_id": "g1", "keys": [atta], "keep": True})).json()
+    row = next(s for s in moved["suggestions"] if s["term"] == "atta")
+    assert row["keep"] is True and row["reason"] == growth.MOVED_KEEP
+    # The next Generate keeps the owner's choice instead of re-asking the check.
+    again = (await auth_client.post("/ads/growth/find", json={"ad_group_id": "g1"})).json()
+    assert next(s for s in again["suggestions"] if s["term"] == "atta")["keep"] is True
+    sent = []
+
+    async def create(client, rows, *, writer):
+        sent.extend(r["text"] for r in rows)
+        return [{"entity_id": r["entity_id"], "ok": True, "new_id": f"N{i}", "error": None} for i, r in enumerate(rows)]
+    monkeypatch.setattr(spapi_ads, "create_targeting", create)
+    body = (await auth_client.post("/ads/growth/add", json={"ad_group_id": "g1", "keys": [atta], "bid_mode": "low",
+                                                            "custom_bid": 5})).json()
+    assert body["applied"] == 2 and sent == ["atta", "atta"]
 
 
 # ─── The screen ──────────────────────────────────────────────────────────────
@@ -433,6 +475,7 @@ def test_the_screen_posts_keys_and_the_bid_choice_and_never_the_rows():
     body = PAGE[PAGE.index("async function add("):][:2600]
     assert '"/ads/growth/add"' in body
     assert "JSON.stringify({ad_group_id: groupId, keys, bid_mode: mode, custom_bid: custom, progress_id: bar.id})" in body
+    assert "const {mode, custom} = bidMode[groupId];" in body, "the bid choice is the ad group's own"
     assert "} finally {\n    bar.stop();" in body
     assert "Exact AND Phrase" in body, "the confirm says each keyword goes twice"
 
@@ -444,10 +487,27 @@ def test_every_server_string_is_escaped_on_the_screen():
             assert bad not in PAGE, f"{field} reaches innerHTML unescaped"
 
 
-def test_rejected_rows_are_shown_with_reasons_but_never_tickable():
-    body = PAGE[PAGE.index("function cardHtml("):][:3000]
-    assert "rejected.map(s => rowHtml(card, s, false))" in body
-    assert "kept.map(s => rowHtml(card, s, true))" in body
+def test_left_out_rows_are_tickable_only_to_MOVE_them_never_to_add():
+    body = PAGE[PAGE.index("function groupHtml("):][:6000]
+    assert "kept.map(s => rowHtml(card, s, set))" in body
+    assert "left.map(s => rowHtml(card, s, leftSet))" in body
+    assert 'data-list="${s.keep ? "keep" : "left"}"' in PAGE
+    assert 'setOf(box.dataset.list === "keep" ? picked : pickedLeft, box.dataset.group)' in PAGE
+    move = PAGE[PAGE.index("async function move("):][:600]
+    assert "setOf(pickedLeft, groupId)" in move and "keep: true" in move
+
+
+def test_the_bid_choice_sits_on_each_ad_group_not_at_the_top():
+    assert 'name="bid-mode"' not in PAGE and 'id="custom-bid"' not in PAGE
+    body = PAGE[PAGE.index("function groupHtml("):][:6000]
+    assert "data-bid-mode=" in body and "data-custom-bid=" in body
+
+
+def test_the_screen_opens_campaigns_first_and_back_works_through_the_address():
+    assert 'fetch("/ads/growth/campaigns")' in PAGE
+    assert "fetch(`/ads/growth/campaign/${encodeURIComponent(r.campaign)}`)" in PAGE
+    assert 'window.addEventListener("hashchange", render);' in PAGE
+    assert "data-back" in PAGE
 
 
 async def test_ideas_are_asked_for_once_even_when_every_candidate_is_already_judged(db, bedrock_key):

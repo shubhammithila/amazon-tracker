@@ -30,6 +30,9 @@ SOURCE_LABELS = {SRC_SOLD: "sold here", SRC_AMAZON: "Amazon suggests",
                  SRC_AUTOCOMPLETE: "shoppers type", SRC_PAGE: "from the page"}
 
 MATCHES = ("EXACT", "PHRASE")
+#: The reason a suggestion carries once the owner moves it by hand (`POST /ads/growth/keep`).
+MOVED_KEEP = "Moved to relevant by you"
+MOVED_DROP = "Moved to left out by you"
 BID_LOW = "low"
 BID_CUSTOM = "custom"
 

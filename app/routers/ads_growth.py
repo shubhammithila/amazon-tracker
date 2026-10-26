@@ -52,7 +52,9 @@ async def _sb_ad_asins() -> dict[str, list[str]]:
     return found
 
 
-async def _cards(db: AsyncSession) -> list[dict]:
+async def _cards(db: AsyncSession, *, with_sb_asins: bool = True) -> list[dict]:
+    """Every ad group card. ``with_sb_asins=False`` skips the live SB ad list, so the campaign list —
+    the page's first screen — reads only our database and answers at once."""
     ents = (await db.execute(select(
         AdsEntity.entity_type, AdsEntity.entity_id, AdsEntity.parent_id, AdsEntity.name, AdsEntity.state,
         AdsEntity.ad_product, AdsEntity.asin,
@@ -65,8 +67,9 @@ async def _cards(db: AsyncSession) -> list[dict]:
             groups[eid] = {"name": name, "state": state, "campaign_id": parent, "ad_product": product}
         elif asin and str(state or "").upper() != "ARCHIVED":
             asins.setdefault(str(parent), []).append(asin)
-    for group_id, sb_asins in (await _sb_ad_asins()).items():
-        asins.setdefault(str(group_id), []).extend(sb_asins)
+    if with_sb_asins:
+        for group_id, sb_asins in (await _sb_ad_asins()).items():
+            asins.setdefault(str(group_id), []).extend(sb_asins)
     kinds: dict[str, set] = {}
     for group_id, match in (await db.execute(
             select(AdsPerformanceDaily.ad_group_id, AdsPerformanceDaily.match_type).distinct())).all():
@@ -94,14 +97,100 @@ async def _stored(db: AsyncSession, group_ids=None) -> dict[str, list[dict]]:
     return out
 
 
-@router.get("")
-async def growth_view(db: AsyncSession = Depends(get_db), grant=Depends(require_area(permissions.ADS))):
-    cards = await _cards(db)
-    stored = await _stored(db)
+async def _counts(db: AsyncSession) -> dict[str, dict]:
+    """`{ad_group_id: {"kept", "found", "found_at"}}` from the stored suggestions, in one query."""
+    from sqlalchemy import Integer, cast, func
+    out = {}
+    for group, kept, found, at in (await db.execute(select(
+            GrowthSuggestion.ad_group_id, func.sum(cast(GrowthSuggestion.keep, Integer)), func.count(GrowthSuggestion.id),
+            func.max(GrowthSuggestion.found_at)).group_by(GrowthSuggestion.ad_group_id))).all():
+        out[group] = {"kept": int(kept or 0), "found": int(found or 0),
+                      "found_at": at.isoformat() if at else ""}
+    return out
+
+
+@router.get("/campaigns")
+async def campaigns_view(db: AsyncSession = Depends(get_db), grant=Depends(require_area(permissions.ADS))):
+    """The first screen: one row per campaign with its ad groups counted. Database only — no Amazon
+    call — so it answers at once."""
+    cards = await _cards(db, with_sb_asins=False)
+    counts = await _counts(db)
+    campaigns: dict[str, dict] = {}
+    for card in cards:
+        c = campaigns.setdefault(card["campaign_id"], {
+            "campaign_id": card["campaign_id"], "campaign_name": card["campaign_name"],
+            "ad_product": card["ad_product"], "keyword_groups": 0, "product_groups": 0,
+            "found_groups": 0, "kept": 0, "last_found": ""})
+        c["keyword_groups" if card["kind"] == growth.KIND_KEYWORD else "product_groups"] += 1
+        got = counts.get(card["ad_group_id"])
+        if got:
+            c["found_groups"] += 1
+            c["kept"] += got["kept"]
+            c["last_found"] = max(c["last_found"], got["found_at"])
+    return {"campaigns": sorted(campaigns.values(), key=lambda c: c["campaign_name"].lower())}
+
+
+@router.get("/campaign/{campaign_id}")
+async def campaign_view(campaign_id: str, db: AsyncSession = Depends(get_db),
+                        grant=Depends(require_area(permissions.ADS))):
+    """One campaign's ad groups, each with its stored suggestions. The live SB ad list (which ASINs
+    an SB ad group advertises) is read only for an SB campaign."""
+    product = (await db.execute(select(AdsEntity.ad_product).where(
+        AdsEntity.entity_type == "campaign", AdsEntity.entity_id == campaign_id))).scalar()
+    cards = [c for c in await _cards(db, with_sb_asins=(product or "sp") == "sb")
+             if c["campaign_id"] == campaign_id]
+    if not cards:
+        return JSONResponse({"error": "That campaign has no ad group offered here."}, status_code=404)
+    stored = await _stored(db, [c["ad_group_id"] for c in cards])
     for card in cards:
         card["suggestions"] = stored.get(card["ad_group_id"], [])
-    return {"cards": cards, "source_labels": growth.SOURCE_LABELS,
-            "guardrails": await repository.load_guardrails(db)}
+    return {"campaign": {"campaign_id": campaign_id, "campaign_name": cards[0]["campaign_name"],
+                         "ad_product": cards[0]["ad_product"]},
+            "groups": cards, "source_labels": growth.SOURCE_LABELS}
+
+
+@router.post("/keep")
+async def set_keep(request: Request, db: AsyncSession = Depends(get_db),
+                   grant=Depends(require_area(permissions.ADS))):
+    """Move suggestions between Relevant and Left out — the owner overruling the check. Stored on the
+    suggestion AND as the verdict for this ad group's products, so the next Generate keeps it."""
+    from app.models import GrowthVerdict
+
+    body = await request.json()
+    group_id = str(body.get("ad_group_id") or "")
+    keys = {str(k) for k in body.get("keys") or ()}
+    keep = bool(body.get("keep", True))
+    rows = (await db.execute(select(GrowthSuggestion).where(GrowthSuggestion.ad_group_id == group_id,
+                                                            GrowthSuggestion.key.in_(list(keys))))).scalars().all()
+    if not keys or len(rows) != len(keys):
+        return JSONResponse({"error": "Some of those rows are not current suggestions — generate again."},
+                            status_code=409)
+    reason = growth.MOVED_KEEP if keep else growth.MOVED_DROP
+    for row in rows:
+        row.keep, row.reason = keep, reason
+    product = (await db.execute(select(AdsEntity.ad_product).where(
+        AdsEntity.entity_type == "ad_group", AdsEntity.entity_id == group_id))).scalar()
+    card = next((c for c in await _cards(db, with_sb_asins=(product or "sp") == "sb")
+                 if c["ad_group_id"] == group_id), None)
+    if card and card["asins"]:
+        keys_by_asin, _catalogue = await _product_keys(db, card["asins"])
+        representatives: dict[str, str] = {}
+        for asin in card["asins"]:
+            representatives.setdefault(keys_by_asin[asin], asin)
+        pkey = growth_judge.product_key(list(representatives))
+        now = datetime.utcnow()
+        terms = [r.term for r in rows]
+        existing = {v.term: v for v in (await db.execute(select(GrowthVerdict).where(
+            GrowthVerdict.product_key == pkey, GrowthVerdict.kind == rows[0].kind,
+            GrowthVerdict.term.in_(terms)))).scalars().all()}
+        for row in rows:
+            verdict = existing.get(row.term) or GrowthVerdict(product_key=pkey, kind=row.kind, term=row.term)
+            verdict.keep, verdict.reason, verdict.judged_at = keep, reason, now
+            if row.term not in existing:
+                db.add(verdict)
+    await db.commit()
+    return {"ad_group_id": group_id, "moved": len(rows), "keep": keep,
+            "suggestions": (await _stored(db, [group_id])).get(group_id, [])}
 
 
 async def _product_keys(db, asins: list[str]) -> dict[str, str]:
@@ -121,7 +210,10 @@ async def find(request: Request, db: AsyncSession = Depends(get_db),
 
     body = await request.json()
     group_id = str(body.get("ad_group_id") or "")
-    card = next((c for c in await _cards(db) if c["ad_group_id"] == group_id), None)
+    product = (await db.execute(select(AdsEntity.ad_product).where(
+        AdsEntity.entity_type == "ad_group", AdsEntity.entity_id == group_id))).scalar()
+    card = next((c for c in await _cards(db, with_sb_asins=(product or "sp") == "sb")
+                 if c["ad_group_id"] == group_id), None)
     if card is None:
         return JSONResponse({"error": "That ad group is not offered here (paused, automated, or auto "
                                       "targeting)."}, status_code=404)

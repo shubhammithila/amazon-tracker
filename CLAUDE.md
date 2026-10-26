@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (3186 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (3194 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3822,9 +3822,20 @@ leave out the keywords which are in negative or archived or paused… exact and 
 Spec `docs/superpowers/specs/2026-10-26-ads-keyword-growth-design.md`; tabs now **Optimisation · SKU
 coverage** (`/ads-page/expansion`, was Expansion) **· Keyword growth** (`/ads-page/growth`).
 
-- **One card per enabled ad group we manage**, SP and SB. Its kind comes from what it targets
+- **Campaign → ad group → keywords** (redesigned 26 Oct 2026 after *"i dont like the UI one bit. page is
+  loading too slow"*). The first screen is the campaign list (`GET /ads/growth/campaigns`), read from our
+  database only. The old page loaded every card and every suggestion, and listed SB ads live, on each
+  open. A campaign (`GET /ads/growth/campaign/{id}`) lists its ad groups; the live SB ad list is read only
+  for an SB campaign. Opening a group shows **Generate**, its Relevant rows, and **its own bid choice
+  (Amazon's low end / custom ₹) and Add**: there is no page-wide bid bar. After Add the screen stays in
+  the campaign. The address carries `#c=…&g=…`, so browser Back works.
+- **Left-out rows can be moved to Relevant** (`POST /ads/growth/keep`): the reason becomes "Moved to
+  relevant by you", and the verdict is stored for the group's product key so the next Generate keeps it.
+  A moved row arrives ticked. `sum(keep)` is `cast` to an integer: SQLAlchemy types a sum of a Boolean as
+  a Boolean, so 3 read back as 1.
+- **Ad groups we manage**, SP and SB. Its kind comes from what it targets
   (`growth.group_kind` over its report match types): keyword groups get keywords, product/category groups
-  get competitor ASINs, auto groups get no card.
+  get competitor ASINs, auto groups are not offered.
 - **Find** (`POST /ads/growth/find`, ~1 min, writes nothing at Amazon) gathers four sources:
   - our search terms with orders in that group;
   - Amazon's suggestions (SP v5 / SB keyword, SP product targets);
@@ -3847,7 +3858,7 @@ coverage** (`/ads-page/expansion`, was Expansion) **· Keyword growth** (`/ads-p
 
   **Undo pauses** what was added, and added rows leave the list. `GROWTH_DAILY_LIMIT` (60) checks per IST
   day, logged in `assistant_log` (tab `growth`). Migration `a1c5e8f20b74`.
-- `tests/test_ads_growth.py`; `scripts/mutate_ads_growth.py` 20/20. Ideas from the page are asked for once per 30 days (`IDEAS_ASKED` row): the first production Find returned none because the prompt made them optional.
+- `tests/test_ads_growth.py`; `scripts/mutate_ads_growth.py` 26/26. Ideas from the page are asked for once per 30 days (`IDEAS_ASKED` row): the first production Find returned none because the prompt made them optional.
 
 ### Search-term negatives, and the Grow / Cut rule columns (25 Oct 2026)
 Asked for as *"negative targeting based on search terms not just targets added… in auto campaigns there
