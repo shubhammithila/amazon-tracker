@@ -151,6 +151,8 @@ class Settings(BaseSettings):
     assistant_model: str = Field("us.anthropic.claude-sonnet-5-5", validation_alias="ASSISTANT_MODEL")
     #: Questions per IST day across every login, so a loop or a stuck key cannot run up a bill.
     assistant_daily_limit: int = Field(200, validation_alias="ASSISTANT_DAILY_LIMIT")
+    #: Keyword growth relevance checks (one Claude call per Find) per IST day.
+    growth_daily_limit: int = Field(60, validation_alias="GROWTH_DAILY_LIMIT")
 
     @property
     def assistant_configured(self) -> bool:

@@ -400,6 +400,26 @@ def no_live_product_ads(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_live_growth(monkeypatch):
+    """**No test may reach Amazon from Keyword growth.** Its reads (suggestions, autocomplete, an ad
+    group's live targeting, the Catalog API) and its create writer refuse unless a test fakes them; the
+    real ones stay reachable as `<name>_live` for tests that drive them with a fake client."""
+    from app.ads import pages, spapi_ads
+
+    def refuse(name):
+        async def fake(*args, **kwargs):
+            raise AssertionError(f"a test reached Amazon through {name}; fake it")
+        return fake
+    for name in ("fetch_sp_keyword_suggestions", "fetch_sb_keyword_suggestions",
+                 "fetch_product_target_suggestions", "fetch_autocomplete", "fetch_group_targeting",
+                 "create_targeting"):
+        monkeypatch.setattr(spapi_ads, f"{name}_live", getattr(spapi_ads, name), raising=False)
+        monkeypatch.setattr(spapi_ads, name, refuse(name))
+    monkeypatch.setattr(pages, "fetch_catalog_live", pages.fetch_catalog, raising=False)
+    monkeypatch.setattr(pages, "fetch_catalog", refuse("fetch_catalog"))
+
+
+@pytest.fixture(autouse=True)
 def no_live_listings(monkeypatch):
     """**No test may request Amazon's listings report for real** (the developer .env is live, and the
     Ads refresh reads it). The real function is kept as `fetch_live` for a test with a fake client."""

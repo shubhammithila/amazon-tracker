@@ -1552,9 +1552,230 @@ async def delete_negatives(client, ids: Sequence[str], *, writer: str) -> list[d
     return results
 
 
+
+# ─── Keyword growth: candidate sources and an ad group's targeting in every state ─────────────────
+#
+# Measured 26 Oct 2026 on the live account, read-only:
+#   /sp/targets/keywords/recommendations  v5, KEYWORDS_FOR_ASINS -> 200, ranked keywords. The `bid` it
+#       carries is NOT rupees ("rice" EXACT 1372 where /sp/targets/bid/recommendations says Rs 7.66), so
+#       bids always come from `fetch_bid_recommendations` and this one's are ignored.
+#   /sb/recommendations/keyword           v3 -> 200, keywords with impression share, no bid.
+#   /sp/targets/products/recommendations  v3 -> 200, competitor ASINs with themes.
+#   https://www.amazon.in/suggestions     -> works from the EC2 box (completion.amazon.in is a 502).
+
+SP_KEYWORD_RECS = ("/sp/targets/keywords/recommendations", "application/vnd.spkeywordsrecommendation.v5+json")
+SB_KEYWORD_RECS = ("/sb/recommendations/keyword", "application/vnd.sbkeywordrecommendation.v3+json")
+SP_PRODUCT_RECS = ("/sp/targets/products/recommendations", "application/vnd.spproductrecommendation.v3+json")
+AUTOCOMPLETE_URL = "https://www.amazon.in/suggestions"
+AUTOCOMPLETE_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/126.0 Safari/537.36")
+ALL_STATES = ["ENABLED", "PAUSED", "ARCHIVED"]
+
+
+async def _post_vnd(client, path: str, vnd: str, body) -> httpx.Response:
+    settings = get_settings()
+    token = await _access_token(client)
+    return await client.post(settings.ads_endpoint + path, json=body,
+                             headers={**_headers(token), "Content-Type": vnd, "Accept": vnd})
+
+
+async def fetch_sp_keyword_suggestions(client, asins) -> list[dict]:
+    """`[{"term", "rank", "share"}]` — Amazon's suggested keywords for these ASINs (SP). Raises `AdsError`."""
+    asins = sorted({str(a).upper() for a in asins if a})
+    if not asins:
+        return []
+    response = await _post_vnd(client, *SP_KEYWORD_RECS, {
+        "recommendationType": "KEYWORDS_FOR_ASINS", "asins": asins[:50], "maxRecommendations": 200,
+        "sortDimension": "CLICKS", "locale": "en_IN", "biddingStrategy": "LEGACY_FOR_SALES",
+        "bidsEnabled": False})
+    if response.status_code >= 400:
+        raise AdsError(f"Amazon's keyword suggestions failed: {response.text[:200]}", status=response.status_code)
+    out = []
+    for index, row in enumerate((response.json() or {}).get("keywordTargetList") or []):
+        term = str(row.get("keyword") or "").strip()
+        if term:
+            out.append({"term": term, "rank": row.get("searchTermImpressionRank") or index + 1,
+                        "share": row.get("searchTermImpressionShare")})
+    return out
+
+
+async def fetch_sb_keyword_suggestions(client, asins) -> list[dict]:
+    """`[{"term", "rank", "share"}]` — Amazon's suggested keywords for these ASINs (SB). Raises `AdsError`."""
+    asins = sorted({str(a).upper() for a in asins if a})
+    if not asins:
+        return []
+    response = await _post_vnd(client, *SB_KEYWORD_RECS, {"asins": asins[:50], "maxNumSuggestions": 100})
+    if response.status_code >= 400:
+        raise AdsError(f"Amazon's Sponsored Brands keyword suggestions failed: {response.text[:200]}",
+                       status=response.status_code)
+    out = []
+    for index, row in enumerate(response.json() or []):
+        if str(row.get("type") or "") != "addKeyword":
+            continue
+        term = str(row.get("value") or "").strip()
+        if term:
+            out.append({"term": term, "rank": row.get("searchTermImpressionRank") or index + 1,
+                        "share": row.get("searchTermImpressionShare")})
+    return out
+
+
+async def fetch_product_target_suggestions(client, asins) -> list[dict]:
+    """`[{"asin", "themes"}]` — competitor ASINs Amazon suggests targeting for these ASINs (SP)."""
+    asins = sorted({str(a).upper() for a in asins if a})
+    if not asins:
+        return []
+    response = await _post_vnd(client, *SP_PRODUCT_RECS, {"adAsins": asins[:50], "count": 100, "locale": "en_IN"})
+    if response.status_code >= 400:
+        raise AdsError(f"Amazon's product-target suggestions failed: {response.text[:200]}",
+                       status=response.status_code)
+    out = []
+    for index, row in enumerate((response.json() or {}).get("recommendations") or []):
+        asin = str(row.get("recommendedAsin") or "").upper()
+        if asin:
+            out.append({"asin": asin, "themes": list(row.get("themes") or []), "rank": index + 1})
+    return out
+
+
+async def fetch_autocomplete(client, prefix: str) -> list[str]:
+    """What shoppers type on amazon.in after ``prefix``. **Never raises** — a missing source is not an
+    error, the other three still count."""
+    try:
+        response = await client.get(AUTOCOMPLETE_URL, params={
+            "limit": 11, "prefix": prefix, "suggestion-type": "KEYWORD", "mid": "A21TJRUUN4KGV",
+            "alias": "aps"}, headers={"user-agent": AUTOCOMPLETE_UA, "accept": "application/json"})
+        if response.status_code != 200:
+            return []
+        return [str(s.get("value") or "").strip() for s in (response.json() or {}).get("suggestions") or []
+                if str(s.get("value") or "").strip()]
+    except Exception as exc:  # noqa: BLE001 - optional source
+        logger.info("ads growth: autocomplete for %r failed: %s", prefix, exc)
+        return []
+
+
+def _expression_asin(expressions) -> str:
+    for e in expressions or ():
+        kind = str(e.get("type") or "").upper()
+        if kind in ("ASIN_SAME_AS", "ASINSAMEAS", "ASIN_EXPANDED_FROM"):
+            return str(e.get("value") or "").upper()
+    return ""
+
+
+async def fetch_group_targeting(client, ad_group_id: str, ad_product: str) -> dict:
+    """What one ad group targets, in EVERY state: `{"keywords": {(text, MATCH)}, "asins": {ASIN},
+    "states": {state: count}}`. Read live at Find and again at Add, because the report only lists rows
+    that had activity — a paused or archived keyword never appears there."""
+    group = str(ad_group_id)
+    keywords: set[tuple[str, str]] = set()
+    asins: set[str] = set()
+    states: dict[str, int] = {}
+
+    def count(state):
+        state = str(state or "").upper()
+        states[state] = states.get(state, 0) + 1
+
+    if (ad_product or "sp").lower() == "sb":
+        for row in await fetch_sb_keywords(client, states=()):
+            if row["parent_id"] == group:
+                keywords.add((str(row["name"]).strip().lower(), row["match_type"]))
+                count(row["state"])
+        raw = await _sb_list(client, (SB_TARGETS_PATH, SB_NO_MEDIA_TYPE, "targets"), {}, "targets")
+        for t in raw:
+            if str(t.get("adGroupId") or "") == group:
+                asin = _expression_asin(t.get("expressions") or t.get("resolvedExpressions"))
+                if asin:
+                    asins.add(asin)
+                count(t.get("state"))
+        return {"keywords": keywords, "asins": asins, "states": states}
+
+    flt = {"adGroupIdFilter": {"include": [group]}, "stateFilter": {"include": ALL_STATES}}
+    for row in await _list(client, KEYWORDS, filters=flt):
+        keywords.add((str(row.get("keywordText") or "").strip().lower(), str(row.get("matchType") or "").upper()))
+        count(row.get("state"))
+    for row in await _list(client, TARGETS, filters=flt):
+        asin = _expression_asin(row.get("expression") or row.get("resolvedExpression"))
+        if asin:
+            asins.add(asin)
+        count(row.get("state"))
+    return {"keywords": keywords, "asins": asins, "states": states}
+
+
+
+def _create_payload(row: Mapping, writer: str) -> dict:
+    """One CREATE row. Probed 26 Oct 2026 with an ad group that does not exist: all four shapes were
+    accepted and refused only for the missing ad group (SP 207 "adGroupId cannot be found", SB keywords a
+    bare 207 list, SB targets a 200 with the refusal inside)."""
+    from app.ads.logic import WRITER_KEYWORD, WRITER_SB_KEYWORD, WRITER_SB_TARGET
+
+    text, bid = str(row["text"]), round(float(row["new_bid"]), 2)
+    if writer == WRITER_KEYWORD:
+        return {"campaignId": str(row["campaign_id"]), "adGroupId": str(row["ad_group_id"]),
+                "keywordText": text, "matchType": str(row["match_type"]).upper(), "bid": bid, "state": "ENABLED"}
+    if writer == WRITER_SB_KEYWORD:
+        return {"campaignId": int(row["campaign_id"]), "adGroupId": int(row["ad_group_id"]),
+                "keywordText": text, "matchType": str(row["match_type"]).lower(), "bid": bid}
+    if writer == WRITER_SB_TARGET:
+        return {"campaignId": int(row["campaign_id"]), "adGroupId": int(row["ad_group_id"]),
+                "expressions": [{"type": "asinSameAs", "value": text.upper()}], "bid": bid}
+    return {"campaignId": str(row["campaign_id"]), "adGroupId": str(row["ad_group_id"]),
+            "expression": [{"type": "ASIN_SAME_AS", "value": text.upper()}], "expressionType": "MANUAL",
+            "bid": bid, "state": "ENABLED"}
+
+
+async def create_targeting(client, rows: Sequence[Mapping], *, writer: str, sleep=asyncio.sleep) -> list[dict]:
+    """Create keywords or product targets for one writer. Per-row `{entity_id, ok, new_id, error}`.
+
+    `rows` carry a provisional `entity_id`, `campaign_id`, `ad_group_id`, `text` (keyword or ASIN),
+    `match_type` (EXACT/PHRASE for a keyword) and `new_bid`. A row Amazon does not mention, or a success
+    without an id, is FAILED: without the id there is nothing to undo.
+    """
+    from app.ads.logic import WRITER_KEYWORD, WRITER_SB_KEYWORD, WRITER_SB_TARGET
+
+    if not rows:
+        return []
+    settings = get_settings()
+    token = await _access_token(client)
+    sb = writer in (WRITER_SB_KEYWORD, WRITER_SB_TARGET)
+    batch_size = SB_NEG_BATCH if sb else WRITE_BATCH
+    results: list[dict] = []
+    for batch_start in range(0, len(rows), batch_size):
+        batch = list(rows[batch_start:batch_start + batch_size])
+        order = [str(r["entity_id"]) for r in batch]
+        items = [_create_payload(r, writer) for r in batch]
+        if batch_start:
+            await sleep(WRITE_INTERVAL)
+        if writer == WRITER_KEYWORD:
+            path, head, payload = KEYWORDS[0], _media(KEYWORDS[1], token), {"keywords": items}
+        elif writer == WRITER_SB_KEYWORD:
+            path, head, payload = SB_KEYWORDS_PATH, _headers(token), items
+        elif writer == WRITER_SB_TARGET:
+            path, head, payload = SB_TARGETS_WRITE_PATH, _headers(token), {"targets": items}
+        else:
+            path, head, payload = TARGETS[0], _media(TARGETS[1], token), {"targetingClauses": items}
+        response = await client.post(settings.ads_endpoint + path, json=payload, headers=head)
+        if response.status_code >= 400 and response.status_code != 207:
+            message = f"Amazon refused the batch ({response.status_code}): {response.text[:200]}"
+            logger.warning("ads growth: create batch failed: %s", message)
+            results.extend({"entity_id": i, "ok": False, "new_id": None, "error": message} for i in order)
+            progress.tick(len(order))
+            continue
+        body = response.json()
+        progress.tick(len(order))
+        if writer == WRITER_KEYWORD:
+            results.extend(_sp_outcome(body, order, "keywords", ("keywordId",)))
+        elif writer == WRITER_SB_KEYWORD:
+            results.extend(_sb_keyword_outcome(body, order))
+        elif writer == WRITER_SB_TARGET:
+            results.extend(_sb_target_outcome(body, order))
+        else:
+            results.extend(_sp_outcome(body, order, "targetingClauses", ("targetId",)))
+    return results
+
+
 __all__ = [
     "AdsError", "AdsNotConfigured",
     "fetch_campaigns", "fetch_ad_groups", "fetch_keywords", "fetch_targets",
     "fetch_current_bids", "apply_changes", "create_product_ads",
     "fetch_negatives", "create_negatives", "delete_negatives",
+    "fetch_sp_keyword_suggestions", "fetch_sb_keyword_suggestions", "fetch_product_target_suggestions",
+    "fetch_autocomplete", "fetch_group_targeting", "create_targeting",
 ]
