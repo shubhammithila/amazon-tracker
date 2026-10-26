@@ -43,6 +43,8 @@ MUTATIONS = [
      'raise JudgeError(f"The relevance check failed: {exc}") from exc',
      'return {"verdicts": {c["term"]: (True, "") for c in candidates}, "ideas": [], "judged": 0, "cached": 0}',
      "failed"),
+    ("ideas are asked for on every Find", JUDGE, "and not ideas and not asked else None", "and not ideas else None",
+     "test_ideas_are_asked_for_once"),
     ("the daily cap is not checked", JUDGE, "if await used_today(db) >= cap:", "if False:",
      "test_a_failed_judge_raises_and_the_daily_cap_refuses"),
     ("a fresh page is read again", PAGES, "now - row.fetched_at < timedelta(days=max_age_days)", "False",

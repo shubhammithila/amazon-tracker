@@ -448,3 +448,31 @@ def test_rejected_rows_are_shown_with_reasons_but_never_tickable():
     body = PAGE[PAGE.index("function cardHtml("):][:3000]
     assert "rejected.map(s => rowHtml(card, s, false))" in body
     assert "kept.map(s => rowHtml(card, s, true))" in body
+
+
+async def test_ideas_are_asked_for_once_even_when_every_candidate_is_already_judged(db, bedrock_key):
+    from sqlalchemy import delete
+    from app.models import GrowthVerdict
+    calls = []
+
+    async def no_ideas(**kw):
+        calls.append(kw["messages"][0]["content"][0]["text"])
+        return _answer([{"term": "sattu drink", "keep": True, "reason": "ok"}])
+    cands = [{"term": "sattu drink"}]
+    await growth_judge.judge(db, key="P9", kind=growth.KIND_KEYWORD, page_text="x", candidates=cands, converse=no_ideas)
+    assert "In `ideas`, propose up to 15 NEW keywords" in calls[0]
+    await growth_judge.judge(db, key="P9", kind=growth.KIND_KEYWORD, page_text="x", candidates=cands, converse=no_ideas)
+    assert len(calls) == 1, "ideas were asked for and none came: not asked again on every Find"
+
+    # A product judged before ideas existed (no record that they were asked for) is asked once.
+    await db.execute(delete(GrowthVerdict).where(GrowthVerdict.term == growth_judge.IDEAS_ASKED))
+    await db.commit()
+
+    async def ideas(**kw):
+        calls.append(kw["messages"][0]["content"][0]["text"])
+        return _answer([], [{"term": "bihari sattu", "reason": "on the page"}])
+    out = await growth_judge.judge(db, key="P9", kind=growth.KIND_KEYWORD, page_text="x", candidates=cands,
+                                   converse=ideas)
+    assert len(calls) == 2 and "(none)" in calls[1], "nothing new to judge, so only ideas are asked for"
+    assert out["ideas"] == [{"term": "bihari sattu", "reason": "on the page"}]
+    assert out["verdicts"]["sattu drink"] == (True, "ok"), "the cached verdict still stands"

@@ -3847,7 +3847,7 @@ coverage** (`/ads-page/expansion`, was Expansion) **· Keyword growth** (`/ads-p
 
   **Undo pauses** what was added, and added rows leave the list. `GROWTH_DAILY_LIMIT` (60) checks per IST
   day, logged in `assistant_log` (tab `growth`). Migration `a1c5e8f20b74`.
-- `tests/test_ads_growth.py`; `scripts/mutate_ads_growth.py` 19/19.
+- `tests/test_ads_growth.py`; `scripts/mutate_ads_growth.py` 20/20. Ideas from the page are asked for once per 30 days (`IDEAS_ASKED` row): the first production Find returned none because the prompt made them optional.
 
 ### Search-term negatives, and the Grow / Cut rule columns (25 Oct 2026)
 Asked for as *"negative targeting based on search terms not just targets added… in auto campaigns there

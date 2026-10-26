@@ -32,6 +32,8 @@ from app.models import AssistantLog, GrowthVerdict
 logger = logging.getLogger(__name__)
 
 VERDICT_DAYS = 30
+#: A verdict row that only records "ideas were asked for", so a repeat Find does not ask every time.
+IDEAS_ASKED = "__ideas_asked__"
 CHUNK = 150
 MAX_IDEAS = 15
 LOG_TAB = "growth"
@@ -82,7 +84,9 @@ def _tool(kind: str) -> dict:
             "term": {"type": "string"}, "reason": {"type": "string"}}, "required": ["term", "reason"]}}
     return {"toolSpec": {"name": "record_verdicts", "description": "Record a keep/reject verdict for "
                          "every candidate.", "inputSchema": {"json": {"type": "object", "properties": props,
-                                                                     "required": ["verdicts"]}}}}
+                                                                     "required": (["verdicts", "ideas"]
+                                                                                  if kind == "keyword"
+                                                                                  else ["verdicts"])}}}}
 
 
 def parse_answer(response: Mapping) -> dict:
@@ -152,16 +156,16 @@ async def judge(db: AsyncSession, *, key: str, kind: str, page_text: str, candid
         for row in (await db.execute(select(GrowthVerdict).where(
                 GrowthVerdict.product_key == key, GrowthVerdict.kind == kind,
                 GrowthVerdict.keep.is_(True)))).scalars().all():
-            if row.term not in known and row.judged_at and now - row.judged_at < timedelta(days=VERDICT_DAYS):
+            if (row.term not in known and row.term != IDEAS_ASKED and row.judged_at
+                    and now - row.judged_at < timedelta(days=VERDICT_DAYS)):
                 ideas.append({"term": row.term, "reason": row.reason or ""})
                 out[row.term] = (True, row.reason or "")
-    if not todo:
+    asked = kind == growth.KIND_KEYWORD and bool(await load_verdicts(db, key, kind, [IDEAS_ASKED], now))
+    # Ideas are asked for once per VERDICT_DAYS: earlier ones are reused, and a Find that got none does
+    # not ask again on every press.
+    kind_for_ideas = growth.KIND_KEYWORD if kind == growth.KIND_KEYWORD and not ideas and not asked else None
+    if not todo and kind_for_ideas is None:
         return {"verdicts": out, "ideas": ideas, "judged": 0, "cached": len(cached)}
-    if ideas:
-        # Earlier ideas are reused; no new ones are asked for on top of them.
-        kind_for_ideas = None
-    else:
-        kind_for_ideas = growth.KIND_KEYWORD if kind == growth.KIND_KEYWORD else None
 
     settings = get_settings()
     cap = limit if limit is not None else int(getattr(settings, "growth_daily_limit", 60) or 60)
@@ -184,7 +188,9 @@ async def judge(db: AsyncSession, *, key: str, kind: str, page_text: str, candid
             want_ideas = kind_for_ideas is not None and index == 0
             prompt = (f"Ad group: {group_label}\n\nPRODUCT PAGE(S):\n{page_text}\n\n"
                       f"CANDIDATE {word.upper()}S ({len(chunk)}):\n" + ("\n".join(lines) or "(none)")
-                      + ("\n\nAlso give your ideas." if want_ideas else "\n\nNo ideas this time."))
+                      + (f"\n\nIn `ideas`, propose up to {MAX_IDEAS} NEW keywords taken from the page text "
+                         "that obey the KEEP rules and are NOT in the candidate list." if want_ideas
+                         else "\n\nLeave `ideas` empty."))
             try:
                 response = await converse(system=system, messages=[{"role": "user", "content": [{"text": prompt}]}],
                                           tools=[_tool(kind if want_ideas else "product")], max_tokens=6000)
@@ -200,6 +206,7 @@ async def judge(db: AsyncSession, *, key: str, kind: str, page_text: str, candid
             for c in chunk:
                 fresh[c["term"]] = said.get(c["term"], (False, "not judged"))
             if want_ideas:
+                fresh[IDEAS_ASKED] = (False, "ideas requested")
                 known = set(terms) | {i["term"] for i in ideas}
                 for idea in (answer.get("ideas") or [])[:MAX_IDEAS]:
                     term = growth.norm(idea.get("term"))
