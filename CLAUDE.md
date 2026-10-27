@@ -3827,7 +3827,8 @@ coverage** (`/ads-page/expansion`, was Expansion) **· Keyword growth** (`/ads-p
   database only. The old page loaded every card and every suggestion, and listed SB ads live, on each
   open. A campaign (`GET /ads/growth/campaign/{id}`) lists its ad groups; the live SB ad list is read only
   for an SB campaign. Each ad group's kind (a DISTINCT over the ~500k-row daily table, 5.5 s on production)
-  is cached until the next Ads refresh row (`_kinds_cache`). Opening a group shows **Generate**, its Relevant rows, and **its own bid choice
+  is cached until the next Ads refresh row (`_kinds_cache`) and kept warm by `portfolio_warm`: 15 s
+  cold on a fresh process, then 0.03 s. Opening a group shows **Generate**, its Relevant rows, and **its own bid choice
   (Amazon's low end / custom ₹) and Add**: there is no page-wide bid bar. After Add the screen stays in
   the campaign. The address carries `#c=…&g=…`, so browser Back works.
 - **Left-out rows can be moved to Relevant** (`POST /ads/growth/keep`): the reason becomes "Moved to

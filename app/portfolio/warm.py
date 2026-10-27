@@ -56,6 +56,9 @@ async def warm(db_factory=async_session) -> dict:
                lambda db: projections_service.build(db, include_inactive=True))
     await step("repeat", lambda db: repeat_service.build_payload(db, None, today))
     await step("customer value", lambda db: value_service.build_payload(db, None, today))
+    # Ads -> Keyword growth's campaign list: a DISTINCT over the daily ads table, cold for ~15 s.
+    from app.routers import ads_growth
+    await step("keyword growth kinds", lambda db: ads_growth._group_kinds(db))
     total = round(time.monotonic() - started, 2)
     if total > 2:
         logger.info("portfolio warm-up: %.1fs %s", total, done)

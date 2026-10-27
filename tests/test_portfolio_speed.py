@@ -134,7 +134,7 @@ async def test_the_warm_up_builds_every_sub_tab_and_never_raises(db_schema, monk
     from app.database import async_session
     from app.portfolio import warm
     done = await warm.warm(async_session)
-    assert {"profit 7d", "profit 30d", "projections", "repeat", "customer value"} <= set(done)
+    assert {"profit 7d", "profit 30d", "projections", "repeat", "customer value", "keyword growth kinds"} <= set(done)
 
     async def boom(*a, **k):
         raise RuntimeError("down")
