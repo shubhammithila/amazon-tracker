@@ -98,7 +98,10 @@ def _suggestion_out(row: GrowthSuggestion) -> dict:
     return {"key": row.key, "term": row.term, "kind": row.kind, "keep": bool(row.keep),
             "reason": row.reason or "", "sources": json.loads(row.sources_json or "[]"),
             "figures": json.loads(row.figures_json or "{}"), "bids": json.loads(row.bids_json or "{}"),
-            "found_at": row.found_at.isoformat() if row.found_at else ""}
+            "found_at": row.found_at.isoformat() if row.found_at else "",
+            "competitor": growth.is_competitor(row.reason),
+            # Found before the current relevance rules: the screen asks for Generate again.
+            "old_rules": bool(row.found_at and row.found_at < growth_judge.RULES_SINCE)}
 
 
 async def _stored(db: AsyncSession, group_ids=None) -> dict[str, list[dict]]:
@@ -210,13 +213,43 @@ async def set_keep(request: Request, db: AsyncSession = Depends(get_db),
             "suggestions": (await _stored(db, [group_id])).get(group_id, [])}
 
 
-async def _product_keys(db, asins: list[str]) -> dict[str, str]:
+async def _product_keys(db, asins: list[str], *, family: bool = False):
+    """({asin: product key}, catalogue). With ``family`` the map covers EVERY known ASIN, so the caller
+    can find all the sizes of the products an ad group advertises, not only the ones it holds."""
     from app.portfolio import repository as pf_repo
     from app.shipment import catalogue as catalogue_mod
     catalogue, _w, _s = await catalogue_mod.load_catalogue()
     flav = await pf_repo.flavour_keys(db, catalogue)
     parent = await pf_repo.parent_of_children(db)
-    return {a: flav.get(a) or parent.get(a) or a for a in asins}, catalogue
+    universe = set(asins) | (set(catalogue) | set(parent) if family else set())
+    return {a: flav.get(a) or parent.get(a) or a for a in universe}, catalogue
+
+
+def _size_word(kg) -> str:
+    try:
+        kg = float(kg)
+    except (TypeError, ValueError):
+        return ""
+    if kg <= 0:
+        return ""
+    return f"{kg * 1000:g} g" if kg < 1 else f"{kg:g} kg"
+
+
+def pack_sizes_text(group_asins, keys: dict, catalogue: dict) -> str:
+    """Every ACTIVE size of each product the ad group advertises, from the MRP sheet, as one line per
+    product. The judge read one page per product and so believed the group sold only that page's size."""
+    wanted = {keys.get(a, a) for a in group_asins}
+    by_name: dict[str, set] = {}
+    for asin, key in keys.items():
+        entry = catalogue.get(asin) or {}
+        if key not in wanted or entry.get("active") is False:
+            continue
+        size = _size_word(entry.get("weight"))
+        name = str(entry.get("name") or "").strip()
+        if name and size:
+            by_name.setdefault(name, set()).add((float(entry.get("weight")), size))
+    lines = [f"- {name}: " + ", ".join(s for _w, s in sorted(sizes)) for name, sizes in sorted(by_name.items())]
+    return ("PACK SIZES SOLD (shoppers may also buy several packs):\n" + "\n".join(lines)) if lines else ""
 
 
 @router.post("/find")
@@ -246,7 +279,7 @@ async def find(request: Request, db: AsyncSession = Depends(get_db),
         return JSONResponse({"error": "Advertising credentials are not configured."}, status_code=400)
 
     kind = card["kind"]
-    keys, catalogue = await _product_keys(db, card["asins"])
+    keys, catalogue = await _product_keys(db, card["asins"], family=True)
     representatives: dict[str, str] = {}
     for asin in card["asins"]:
         representatives.setdefault(keys[asin], asin)
@@ -254,7 +287,9 @@ async def find(request: Request, db: AsyncSession = Depends(get_db),
     if not our_pages:
         return JSONResponse({"error": "The product page could not be read from Amazon; try again later."},
                             status_code=502)
-    page_text = "\n\n".join(pages.page_text(p) for p in our_pages.values())[:9000]
+    sizes = pack_sizes_text(card["asins"], keys, catalogue)
+    page_text = ((sizes + "\n\n") if sizes else "") + "\n\n".join(
+        pages.page_text(p) for p in our_pages.values())[:9000]
 
     sold_rows = await search_store.sum_search_terms(db, start, end, ad_group_ids=[group_id])
     sold = [{"term": r["search_term"], "orders": r["orders"], "clicks": r["clicks"], "spend": r["spend"],

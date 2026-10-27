@@ -503,6 +503,96 @@ async def test_a_left_out_row_moves_to_relevant_stays_there_and_can_be_added(aut
     assert body["applied"] == 2 and sent == ["atta", "atta"]
 
 
+# ─── Pack sizes, competitors, misspellings, attributes (27 Oct 2026) ─────────
+
+
+def test_pack_sizes_name_every_active_size_of_the_product_not_only_the_group_s():
+    from app.routers.ads_growth import pack_sizes_text
+    keys = {"B0A": "P1", "B0B": "P1", "B0C": "P1", "B0Z": "P9"}
+    catalogue = {"B0A": {"name": "Chana Sattu", "weight": 0.5, "active": True},
+                 "B0B": {"name": "Chana Sattu", "weight": 1.0},
+                 "B0C": {"name": "Chana Sattu", "weight": 5.0, "active": False},
+                 "B0Z": {"name": "Jau Sattu", "weight": 1.0}}
+    text = pack_sizes_text(["B0A"], keys, catalogue)
+    assert "- Chana Sattu: 500 g, 1 kg" in text, text
+    assert "5 kg" not in text, "a size marked N is not offered"
+    assert "Jau Sattu" not in text, "another product's sizes are not this group's"
+    assert "several packs" in text
+
+
+def test_the_rules_never_reject_for_a_pack_size_and_keep_competitors_and_misspellings():
+    prompt = growth_judge.SYSTEM_PROMPT
+    assert "PACK SIZES NEVER DECIDE A VERDICT" in prompt
+    assert "a pack size or weight the ad group does not sell" not in prompt
+    assert "Never give a pack size as a reason" in prompt
+    assert "set competitor=true" in prompt
+    assert "clear misspelling" in prompt
+    assert "CONTRADICTS the page" in prompt and "does not mention is not a contradiction" in prompt
+    assert "competitor" in growth_judge._tool("keyword")["toolSpec"]["inputSchema"]["json"]["properties"][
+        "verdicts"]["items"]["properties"]
+
+
+def test_a_kept_competitor_is_tagged_and_a_rejected_one_is_not():
+    assert growth_judge._verdict({"term": "x", "keep": True, "reason": "rival's sattu", "competitor": True}) == (
+        True, growth.COMPETITOR_PREFIX + "rival's sattu")
+    assert growth_judge._verdict({"term": "x", "keep": False, "reason": "rival, other product",
+                                  "competitor": True}) == (False, "rival, other product")
+    assert growth.is_competitor(growth.COMPETITOR_PREFIX + "x") and not growth.is_competitor("x")
+
+
+async def test_verdicts_from_the_old_rules_are_judged_again_but_a_hand_move_stands(db, bedrock_key):
+    from app.models import GrowthVerdict
+    old = growth_judge.RULES_SINCE - timedelta(hours=1)
+    db.add(GrowthVerdict(product_key="P7", kind=growth.KIND_KEYWORD, term="sattu 1 kg", keep=False,
+                         reason="1 kg not sold", judged_at=old))
+    db.add(GrowthVerdict(product_key="P7", kind=growth.KIND_KEYWORD, term="patanjali sattu", keep=False,
+                         reason=growth.MOVED_DROP, judged_at=old))
+    await db.commit()
+    asked = []
+
+    async def converse(**kw):
+        asked.append(kw["messages"][0]["content"][0]["text"])
+        return _answer([{"term": "sattu 1 kg", "keep": True, "reason": "product name"}], [])
+    out = await growth_judge.judge(db, key="P7", kind=growth.KIND_KEYWORD, page_text="Title: Chana Sattu",
+                                   candidates=[{"term": "sattu 1 kg"}, {"term": "patanjali sattu"}],
+                                   converse=converse)
+    assert out["verdicts"]["sattu 1 kg"] == (True, "product name"), "the old-rules rejection is re-judged"
+    assert "- sattu 1 kg" in asked[0] and "- patanjali sattu" not in asked[0]
+    assert out["verdicts"]["patanjali sattu"] == (False, growth.MOVED_DROP), "the owner's move stands"
+
+
+async def test_find_tells_the_judge_every_size_and_stores_the_competitor_tag(auth_client, seeded, monkeypatch, db):
+    from app.assistant import bedrock
+    from app.models import EconomicsDaily
+    from app.shipment import catalogue as catalogue_mod
+    for child in ("B0AAAAAAAA", "B0AAAAAAAB"):
+        db.add(EconomicsDaily(day="2026-10-20", child_asin=child, parent_asin="B0PARENT01", seller_sku=""))
+    await db.commit()
+
+    async def catalogue(**_):
+        return {"B0AAAAAAAA": {"name": "Chana Sattu", "weight": 0.5, "active": True},
+                "B0AAAAAAAB": {"name": "Chana Sattu", "weight": 1.0, "active": True}}, None, "sheet"
+    monkeypatch.setattr(catalogue_mod, "load_catalogue", catalogue)
+    prompts = []
+
+    async def converse(**kw):
+        prompts.append(kw["messages"][0]["content"][0]["text"])
+        return _answer([{"term": "chana sattu", "keep": True, "reason": "rival's chana sattu", "competitor": True},
+                        {"term": "chana sattu 1kg", "keep": True, "reason": "product name"}])
+    monkeypatch.setattr(bedrock, "converse", converse)
+    body = (await auth_client.post("/ads/growth/find", json={"ad_group_id": "g1"})).json()
+    assert "- Chana Sattu: 500 g, 1 kg" in prompts[0], "the 1 kg size reaches the judge though the group holds 500 g"
+    by = {s["term"]: s for s in body["suggestions"]}
+    assert by["chana sattu"]["competitor"] is True and by["chana sattu 1kg"]["competitor"] is False
+    assert by["chana sattu 1kg"]["old_rules"] is False
+
+
+def test_the_screen_tags_competitors_and_asks_for_generate_again_under_old_rules():
+    assert "s.competitor ?" in PAGE and 'class="tag competitor"' in PAGE
+    assert "const oldRules = sugg.some(s => s.old_rules);" in PAGE
+    assert "${oldRules ? `<div class=\"banner warn\">" in PAGE or '${oldRules ? `<div class="banner warn">' in PAGE
+
+
 # ─── The screen ──────────────────────────────────────────────────────────────
 
 

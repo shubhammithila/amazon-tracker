@@ -83,6 +83,7 @@ a.seg-btn{text-decoration:none;display:inline-block}
 .tag.src-autocomplete{background:var(--yellow-soft);color:var(--yellow)}
 .tag.src-page{background:var(--accent-soft);color:var(--accent)}
 .tag.moved{background:var(--accent-soft);color:var(--accent)}
+.tag.competitor{background:var(--yellow-soft);color:var(--yellow)}
 .gr-foot{display:flex;gap:10px;align-items:center;padding:10px 0 2px;flex-wrap:wrap;border-top:1px solid var(--border);margin-top:8px}
 .gr-foot label{font-size:12.5px;display:inline-flex;gap:5px;align-items:center}
 .gr-foot input[type=number]{width:80px;background:var(--bg);border:1px solid var(--border-strong);border-radius:6px;
@@ -183,6 +184,7 @@ function rowHtml(card, s, set){
     : `<span class="dim" title="${esc(b.unavailable || "no suggestion")}">custom ₹</span>`;
   const sold = n(f.orders) ? `${n(f.orders)} orders · ${money(f.spend)}` : `<span class="dim">—</span>`;
   const moved = String(s.reason || "").startsWith("Moved to") ? ` <span class="tag moved">yours</span>` : "";
+  const rival = s.competitor ? `<span class="tag competitor" title="Names another brand: shoppers looking for them">competitor</span> ` : "";
   return `<div class="gr-row">
     <span><input type="checkbox" data-pick="${esc(s.key)}" data-group="${esc(card.ad_group_id)}"
       data-list="${s.keep ? "keep" : "left"}"${set.has(s.key) ? " checked" : ""} aria-label="Tick ${esc(s.term)}"/></span>
@@ -190,7 +192,7 @@ function rowHtml(card, s, set){
     <span>${sourceTags(s.sources)}</span>
     <span>${sold}</span>
     <span>${bid}</span>
-    <span class="why">${esc(s.reason)}${moved}</span>
+    <span class="why">${rival}${esc(s.competitor ? String(s.reason).replace("Competitor brand: ", "") : s.reason)}${moved}</span>
   </div>`;
 }
 /* What the chosen bid means for THIS ad group. Custom applies to every row, suggestion or not. */
@@ -206,6 +208,7 @@ function groupHtml(card, open){
   const bm = bidMode[card.ad_group_id] = bidMode[card.ad_group_id] || {mode: "low", custom: ""};
   const kindWord = card.kind === "product" ? "competitor products" : "keywords";
   const found = sugg[0] ? istStamp(sugg[0].found_at) : "";
+  const oldRules = sugg.some(s => s.old_rules);
   const head = `<div class="gr-ghead" data-toggle-group="${esc(card.ad_group_id)}">
       <span class="chev" aria-hidden="true">▸</span>
       <div class="names"><div class="gname">${esc(card.ad_group_name)}</div>
@@ -222,6 +225,8 @@ function groupHtml(card, open){
   const body = !sugg.length ? `<div class="dim" style="padding:8px 0;font-size:12.5px">Press Generate to find ${kindWord}
       for this ad group — about a minute.</div>`
     : `<div class="gr-sec">Relevant (${kept.length})</div>
+      ${oldRules ? `<div class="banner warn">Found under the old relevance check, which left keywords out for a
+        pack size. Press <strong>Generate again</strong> for the current rules; rows you moved by hand stay.</div>` : ""}
       ${kept.length ? cols + kept.map(s => rowHtml(card, s, set)).join("")
         : `<div class="dim" style="padding:6px 0;font-size:12.5px">Nothing relevant enough — tick rows below to move them here.</div>`}
       <div class="gr-foot">

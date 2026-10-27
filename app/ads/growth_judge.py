@@ -32,6 +32,10 @@ from app.models import AssistantLog, GrowthVerdict
 logger = logging.getLogger(__name__)
 
 VERDICT_DAYS = 30
+#: Verdicts judged before this (UTC) were made under the old rules, which left keywords out for a pack
+#: size the one page read did not show ("1 kg not sold" while 1 kg sells). They are judged again; a row
+#: the owner moved by hand ("Moved to ...") is his decision and stands.
+RULES_SINCE = datetime(2026, 10, 27, 11, 40)
 #: A verdict row that only records "ideas were asked for", so a repeat Find does not ask every time.
 IDEAS_ASKED = "__ideas_asked__"
 CHUNK = 150
@@ -42,25 +46,45 @@ SYSTEM_PROMPT = """You judge advertising targets for an Amazon India seller of t
 (sattu, roasted chana, flours, rice, seeds, makhana and similar). You are given the product page(s) an ad
 group advertises and a list of candidate {kind}s. Decide for EACH candidate whether to KEEP it.
 
-For keywords, KEEP only a phrase a shopper would type when looking for THIS product:
+For keywords, KEEP a phrase a shopper would type when looking for THIS product:
 - its name and close variants (e.g. "sattu", "chana sattu", "bihari sattu", "sattu powder", "sattu drink");
-- its form, use or benefit when the product word is in the phrase ("sattu for weight loss");
-- a pack size or weight the ad group actually sells.
+- its form, use or benefit when the product word is in the phrase ("sattu for weight loss", "high protein
+  sattu", "desi", "crunchy", "healthy");
+- a clear misspelling or transliteration of the product name ("satty", "chana satu", "bhuna chna");
+- another brand's name next to the product word ("patanjali chana sattu"): KEEP it and set competitor=true.
+  Our own brands (MITHILA FOODS, Howrah Foods) are not competitors.
+
+PACK SIZES NEVER DECIDE A VERDICT. Judge the phrase as if any weight or count in it were not there. The
+product is sold in the pack sizes listed, and a shopper wanting 5 kg buys several packs, so "chana sattu
+5kg", "sattu 1 kg" and "roasted chana 250g" are judged exactly like "chana sattu" and "roasted chana".
+
 REJECT:
-- a single generic category word or phrase without the product ("atta", "flour", "healthy snacks");
-- a different product, even a related one ("besan" for sattu, "roasted peanuts" for roasted chana);
-- any competitor or other brand name ("tata", "rajdhani", "24 mantra"), even next to the product word;
-- a pack size or weight the ad group does not sell; gibberish; another language's script the page lacks.
+- a single generic category word or phrase without the product ("atta", "flour", "chana", "healthy snacks");
+- a different product, even a related one ("besan" for sattu, "roasted peanuts" for roasted chana,
+  "kala chana" or "chana dal" for roasted chana), or a different flavour than the page;
+- an attribute that CONTRADICTS the page: "without skin" when ours has skin, "organic" when ours is not
+  organic, "salted" when ours is unsalted. A word the page simply does not mention is not a contradiction;
+- another brand's name next to a DIFFERENT product; a phrase whose meaning is unclear; another language's
+  script the page lacks.
 
 For competitor products (ASINs, given with their titles), KEEP only another brand's listing of the SAME
-kind of product (another brand's chana sattu for a chana sattu ad); REJECT different products, bundles of
-unrelated items, and our own brand (MITHILA FOODS, Howrah Foods).
+kind of product (another brand's chana sattu for a chana sattu ad), at any pack size; REJECT different
+products, bundles of unrelated items, and our own brand (MITHILA FOODS, Howrah Foods).
 
-Give every candidate a reason of at most 12 words. {ideas_rule}
+Never give a pack size as a reason. Give every candidate a reason of at most 12 words. {ideas_rule}
 Answer ONLY by calling the record_verdicts tool once, with every candidate."""
 
 IDEAS_RULE = (f"Also propose up to {MAX_IDEAS} NEW keywords taken from the page itself that obey the KEEP "
               "rules and are not already in the candidate list, each with a reason.")
+
+
+def _verdict(v: Mapping) -> tuple[bool, str]:
+    """(keep, reason) from one answered verdict; a KEPT competitor's reason carries the tag prefix."""
+    from app.ads import growth
+    keep, reason = bool(v.get("keep")), str(v.get("reason") or "").strip()
+    if keep and v.get("competitor") and not growth.is_competitor(reason):
+        reason = growth.COMPETITOR_PREFIX + (reason or "another brand")
+    return keep, reason[:300]
 
 
 class JudgeError(RuntimeError):
@@ -77,7 +101,8 @@ def product_key(keys: Sequence[str]) -> str:
 
 def _tool(kind: str) -> dict:
     props = {"verdicts": {"type": "array", "items": {"type": "object", "properties": {
-        "term": {"type": "string"}, "keep": {"type": "boolean"}, "reason": {"type": "string"}},
+        "term": {"type": "string"}, "keep": {"type": "boolean"}, "reason": {"type": "string"},
+        "competitor": {"type": "boolean", "description": "True when the phrase names another brand."}},
         "required": ["term", "keep", "reason"]}}}
     if kind == "keyword":
         props["ideas"] = {"type": "array", "items": {"type": "object", "properties": {
@@ -113,8 +138,14 @@ async def load_verdicts(db: AsyncSession, key: str, kind: str, terms: Sequence[s
     rows = (await db.execute(select(GrowthVerdict).where(
         GrowthVerdict.product_key == key, GrowthVerdict.kind == kind,
         GrowthVerdict.term.in_(list(terms))))).scalars().all()
-    return {r.term: (bool(r.keep), r.reason or "") for r in rows
-            if r.judged_at and now - r.judged_at < timedelta(days=VERDICT_DAYS)}
+    return {r.term: (bool(r.keep), r.reason or "") for r in rows if _current(r, now)}
+
+
+def _current(row, now: datetime) -> bool:
+    """Still usable: judged within VERDICT_DAYS under the current rules, or moved by the owner."""
+    if not row.judged_at or now - row.judged_at >= timedelta(days=VERDICT_DAYS):
+        return False
+    return row.judged_at >= RULES_SINCE or str(row.reason or "").startswith("Moved to")
 
 
 async def _store(db: AsyncSession, key: str, kind: str, verdicts: Mapping[str, tuple[bool, str]],
@@ -156,8 +187,7 @@ async def judge(db: AsyncSession, *, key: str, kind: str, page_text: str, candid
         for row in (await db.execute(select(GrowthVerdict).where(
                 GrowthVerdict.product_key == key, GrowthVerdict.kind == kind,
                 GrowthVerdict.keep.is_(True)))).scalars().all():
-            if (row.term not in known and row.term != IDEAS_ASKED and row.judged_at
-                    and now - row.judged_at < timedelta(days=VERDICT_DAYS)):
+            if row.term not in known and row.term != IDEAS_ASKED and _current(row, now):
                 ideas.append({"term": row.term, "reason": row.reason or ""})
                 out[row.term] = (True, row.reason or "")
     asked = kind == growth.KIND_KEYWORD and bool(await load_verdicts(db, key, kind, [IDEAS_ASKED], now))
@@ -201,8 +231,7 @@ async def judge(db: AsyncSession, *, key: str, kind: str, page_text: str, candid
             usage["output"] += int(u.get("outputTokens") or 0)
             usage["cache_read"] += int(u.get("cacheReadInputTokens") or 0)
             answer = parse_answer(response)
-            said = {growth.norm(v.get("term")): (bool(v.get("keep")), str(v.get("reason") or "")[:300])
-                    for v in answer.get("verdicts") or [] if v.get("term")}
+            said = {growth.norm(v.get("term")): _verdict(v) for v in answer.get("verdicts") or [] if v.get("term")}
             for c in chunk:
                 fresh[c["term"]] = said.get(c["term"], (False, "not judged"))
             if want_ideas:

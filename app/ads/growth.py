@@ -33,6 +33,13 @@ MATCHES = ("EXACT", "PHRASE")
 #: The reason a suggestion carries once the owner moves it by hand (`POST /ads/growth/keep`).
 MOVED_KEEP = "Moved to relevant by you"
 MOVED_DROP = "Moved to left out by you"
+#: A KEPT verdict on another brand's name carries this prefix, and the screen tags it "competitor".
+#: Kept in the reason rather than a column, so the stored verdicts and suggestions need no migration.
+COMPETITOR_PREFIX = "Competitor brand: "
+
+
+def is_competitor(reason) -> bool:
+    return str(reason or "").startswith(COMPETITOR_PREFIX)
 BID_LOW = "low"
 BID_CUSTOM = "custom"
 
