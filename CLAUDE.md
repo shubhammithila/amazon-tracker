@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (3194 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (3195 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3826,7 +3826,8 @@ coverage** (`/ads-page/expansion`, was Expansion) **· Keyword growth** (`/ads-p
   loading too slow"*). The first screen is the campaign list (`GET /ads/growth/campaigns`), read from our
   database only. The old page loaded every card and every suggestion, and listed SB ads live, on each
   open. A campaign (`GET /ads/growth/campaign/{id}`) lists its ad groups; the live SB ad list is read only
-  for an SB campaign. Opening a group shows **Generate**, its Relevant rows, and **its own bid choice
+  for an SB campaign. Each ad group's kind (a DISTINCT over the ~500k-row daily table, 5.5 s on production)
+  is cached until the next Ads refresh row (`_kinds_cache`). Opening a group shows **Generate**, its Relevant rows, and **its own bid choice
   (Amazon's low end / custom ₹) and Add**: there is no page-wide bid bar. After Add the screen stays in
   the campaign. The address carries `#c=…&g=…`, so browser Back works.
 - **Left-out rows can be moved to Relevant** (`POST /ads/growth/keep`): the reason becomes "Moved to
@@ -3858,7 +3859,7 @@ coverage** (`/ads-page/expansion`, was Expansion) **· Keyword growth** (`/ads-p
 
   **Undo pauses** what was added, and added rows leave the list. `GROWTH_DAILY_LIMIT` (60) checks per IST
   day, logged in `assistant_log` (tab `growth`). Migration `a1c5e8f20b74`.
-- `tests/test_ads_growth.py`; `scripts/mutate_ads_growth.py` 26/26. Ideas from the page are asked for once per 30 days (`IDEAS_ASKED` row): the first production Find returned none because the prompt made them optional.
+- `tests/test_ads_growth.py`; `scripts/mutate_ads_growth.py` 27/27. Ideas from the page are asked for once per 30 days (`IDEAS_ASKED` row): the first production Find returned none because the prompt made them optional.
 
 ### Search-term negatives, and the Grow / Cut rule columns (25 Oct 2026)
 Asked for as *"negative targeting based on search terms not just targets added… in auto campaigns there

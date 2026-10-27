@@ -34,6 +34,10 @@ MAX_KEYWORD_CANDIDATES = 300
 MAX_PRODUCT_CANDIDATES = 60
 SB_ASINS_CACHE_SECONDS = 600
 _sb_asins_cache: dict = {"at": 0.0, "map": None}
+#: Each ad group's report match types, keyed on the latest Ads refresh. A DISTINCT over the ~500k-row
+#: daily table took 5.5 s on production on every campaign list; the answer only changes when a refresh
+#: stores new rows.
+_kinds_cache: dict = {"version": None, "map": None}
 
 
 async def _sb_ad_asins() -> dict[str, list[str]]:
@@ -70,11 +74,24 @@ async def _cards(db: AsyncSession, *, with_sb_asins: bool = True) -> list[dict]:
     if with_sb_asins:
         for group_id, sb_asins in (await _sb_ad_asins()).items():
             asins.setdefault(str(group_id), []).extend(sb_asins)
+    return growth.cards(groups, campaigns, await _group_kinds(db), asins)
+
+
+async def _group_kinds(db: AsyncSession) -> dict[str, str]:
+    from sqlalchemy import func
+    from app.models import AdsRefresh
+
+    version = (await db.execute(select(func.max(AdsRefresh.id), func.count(AdsRefresh.id)))).one()
+    version = tuple(version)
+    if _kinds_cache["map"] is not None and _kinds_cache["version"] == version:
+        return _kinds_cache["map"]
     kinds: dict[str, set] = {}
     for group_id, match in (await db.execute(
             select(AdsPerformanceDaily.ad_group_id, AdsPerformanceDaily.match_type).distinct())).all():
         kinds.setdefault(str(group_id), set()).add(match)
-    return growth.cards(groups, campaigns, {g: growth.group_kind(m) for g, m in kinds.items()}, asins)
+    out = {g: growth.group_kind(m) for g, m in kinds.items()}
+    _kinds_cache.update(version=version, map=out)
+    return out
 
 
 def _suggestion_out(row: GrowthSuggestion) -> dict:

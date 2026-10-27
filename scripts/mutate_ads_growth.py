@@ -73,6 +73,9 @@ MUTATIONS = [
      "test_a_left_out_row_moves_to_relevant"),
     ("the campaign list calls Amazon", ROUTE, "cards = await _cards(db, with_sb_asins=False)",
      "cards = await _cards(db)", "test_the_campaign_list_reads_only_the_database"),
+    ("the kinds cache ignores a new refresh", ROUTE,
+     'if _kinds_cache["map"] is not None and _kinds_cache["version"] == version:',
+     'if _kinds_cache["map"] is not None:', "test_group_kinds_are_cached"),
     ("a campaign shows every ad group", ROUTE, '             if c["campaign_id"] == campaign_id]',
      '             if True]', "test_a_campaign_shows_its_own_ad_groups"),
 ]

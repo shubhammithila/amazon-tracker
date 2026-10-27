@@ -379,6 +379,8 @@ def fresh_payload_caches():
     repeat_service._CACHE.clear()
     value_service._CACHE.clear()
     projections_service._CACHE.clear()
+    from app.routers import ads_growth
+    ads_growth._kinds_cache.update(version=None, map=None)
     yield
 
 

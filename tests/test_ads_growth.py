@@ -439,6 +439,20 @@ async def test_the_campaign_list_reads_only_the_database_and_counts_its_groups(a
     assert after["found_groups"] == 1 and after["kept"] == 3 and after["last_found"]
 
 
+async def test_group_kinds_are_cached_until_the_next_ads_refresh(auth_client, seeded, db):
+    from app.models import AdsPerformanceDaily, AdsRefresh
+    from app.routers import ads_growth
+    first = await ads_growth._group_kinds(db)
+    assert first["g1"] == growth.KIND_KEYWORD
+    db.add(AdsPerformanceDaily(day="2026-10-21", ad_product="sp", entity_id="t9", entity_type="target",
+                               campaign_id="c1", ad_group_id="g9", text="x", match_type="TARGETING_EXPRESSION"))
+    await db.commit()
+    assert "g9" not in await ads_growth._group_kinds(db), "served from the cache"
+    db.add(AdsRefresh(window_start="2026-10-21", window_end="2026-10-21", status="done"))
+    await db.commit()
+    assert (await ads_growth._group_kinds(db))["g9"] == growth.KIND_PRODUCT, "a new refresh re-reads"
+
+
 async def test_a_campaign_shows_its_own_ad_groups_and_an_unknown_one_is_404(auth_client, seeded):
     body = (await auth_client.get("/ads/growth/campaign/c1")).json()
     assert body["campaign"]["campaign_name"] == "MF_SP_keywords"
