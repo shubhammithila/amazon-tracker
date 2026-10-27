@@ -7,7 +7,7 @@ Complete rebuild of Amazon product tracker + FBA invoice generator. FastAPI + ht
 - Double-click `C:\Users\LENOVO\Desktop\Start Amazon Tracker.bat`
 - Or manually: `cd` to project dir, `.\venv\Scripts\activate`, `uvicorn app.main:app --reload --port 8000`
 - URL: http://localhost:8000
-- Tests: `venv/Scripts/python -m pytest -q` (3195 tests; random order by default)
+- Tests: `venv/Scripts/python -m pytest -q` (3197 tests; random order by default)
 
 ### Logins: named accounts, plus two shared passwords
 Three ways in, checked in this order:
@@ -3854,13 +3854,14 @@ coverage** (`/ads-page/expansion`, was Expansion) **· Keyword growth** (`/ads-p
   `fetch_bid_recommendations`. SB has no suggested bid, so it takes the custom ₹.
 - **Add** (`POST /ads/growth/add`, a WRITE) takes only stored KEPT rows by key, then:
   - every keyword goes as **EXACT and PHRASE** (only the missing one if the group holds the other);
-  - bid = Amazon's low end, else the custom ₹; `max_bid` and `max_rows` hold;
+  - bid: **Amazon's low end** (the custom ₹ only where Amazon has none), or **custom**, which puts the ₹
+    on EVERY row, suggestion or not; the note under the buttons says which. `max_bid` and `max_rows` hold;
   - live re-read, then the ledger first (`action=create`, `new-` ids), then `create_targeting`
     (four shapes, probed with an invalid ad group), with the progress bar.
 
   **Undo pauses** what was added, and added rows leave the list. `GROWTH_DAILY_LIMIT` (60) checks per IST
   day, logged in `assistant_log` (tab `growth`). Migration `a1c5e8f20b74`.
-- `tests/test_ads_growth.py`; `scripts/mutate_ads_growth.py` 27/27. Ideas from the page are asked for once per 30 days (`IDEAS_ASKED` row): the first production Find returned none because the prompt made them optional.
+- `tests/test_ads_growth.py`; `scripts/mutate_ads_growth.py` 29/29. Ideas from the page are asked for once per 30 days (`IDEAS_ASKED` row): the first production Find returned none because the prompt made them optional.
 
 ### Search-term negatives, and the Grow / Cut rule columns (25 Oct 2026)
 Asked for as *"negative targeting based on search terms not just targets added… in auto campaigns there

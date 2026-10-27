@@ -399,6 +399,27 @@ async def test_add_sends_exact_and_phrase_for_ticked_kept_keys_only(auth_client,
     assert "chana sattu" not in terms, "an added keyword leaves the list"
 
 
+async def test_a_custom_bid_goes_on_EVERY_row_even_where_amazon_suggests_one(auth_client, seeded, monkeypatch):
+    await auth_client.post("/ads/growth/find", json={"ad_group_id": "g1"})
+    sent = []
+
+    async def create(client, rows, *, writer):
+        sent.extend((r["text"], r["new_bid"]) for r in rows)
+        return [{"entity_id": r["entity_id"], "ok": True, "new_id": f"N{i}", "error": None} for i, r in enumerate(rows)]
+    monkeypatch.setattr(spapi_ads, "create_targeting", create)
+    key = growth.key_of("sp", "g1", growth.KIND_KEYWORD, "chana sattu")       # Amazon suggests 3.5 here
+    body = (await auth_client.post("/ads/growth/add", json={"ad_group_id": "g1", "keys": [key],
+                                                            "bid_mode": "custom", "custom_bid": 7})).json()
+    assert body["applied"] == 2 and sent == [("chana sattu", 7.0), ("chana sattu", 7.0)]
+
+
+def test_the_bid_note_follows_the_choice():
+    note = PAGE[PAGE.index("function bidNote("):][:500]
+    assert 'if(bm.mode === "custom") return "Every row is added at the custom ₹' in note
+    assert "Rows with no Amazon bid use the ₹." not in PAGE
+    assert 'mode === "custom" ? `₹${custom} each, for every row`' in PAGE
+
+
 async def test_add_drops_a_match_amazon_already_holds_by_the_time_it_is_sent(auth_client, seeded, monkeypatch):
     await auth_client.post("/ads/growth/find", json={"ad_group_id": "g1"})
     seeded["keywords"].add(("chana sattu", "EXACT"))        # added in Seller Central since the Find

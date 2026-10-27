@@ -193,6 +193,12 @@ function rowHtml(card, s, set){
     <span class="why">${esc(s.reason)}${moved}</span>
   </div>`;
 }
+/* What the chosen bid means for THIS ad group. Custom applies to every row, suggestion or not. */
+function bidNote(card, bm){
+  if(bm.mode === "custom") return "Every row is added at the custom ₹, even where Amazon suggests a bid.";
+  if(card.ad_product === "sb") return "Sponsored Brands has no Amazon bid, so the custom ₹ is used.";
+  return "Amazon's low end where it suggests one; the custom ₹ for rows with none.";
+}
 function groupHtml(card, open){
   const sugg = card.suggestions || [];
   const kept = sugg.filter(s => s.keep), left = sugg.filter(s => !s.keep);
@@ -229,8 +235,7 @@ function groupHtml(card, open){
         <button class="btn" data-add="${esc(card.ad_group_id)}"${set.size && !busy.has(card.ad_group_id) ? "" : " disabled"}>
           Add ${set.size} ${card.kind === "product" ? "target(s)" : "keyword(s) as Exact + Phrase"} to this ad group</button>
         <button class="link-btn" data-all="${esc(card.ad_group_id)}">${set.size && set.size === kept.length ? "Clear" : "Select all"}</button>
-        <span class="dim" style="font-size:12px">${card.ad_product === "sb" ? "Sponsored Brands has no Amazon bid: the ₹ is used."
-          : "Rows with no Amazon bid use the ₹."}</span>
+        <span class="dim" style="font-size:12px" data-bid-note="${esc(card.ad_group_id)}">${bidNote(card, bm)}</span>
       </div>
       ${left.length ? `<div class="gr-sec left">Left out as not relevant (${left.length})</div>
         ${cols}${left.map(s => rowHtml(card, s, leftSet)).join("")}
@@ -348,8 +353,9 @@ async function add(groupId){
   if(mode === "custom" && !custom){ alert("Type the custom ₹ bid first."); return; }
   const words = card.kind === "product" ? `${keys.length} competitor target(s)` : `${keys.length} keyword(s), each as Exact AND Phrase`;
   /* Plain text in a confirm(), built by concatenation so no server string sits in a ${} literal. */
-  if(!confirm(`Add ${words} to "` + card.ad_group_name + `" at Amazon, at ${mode === "low" ? "Amazon's low-end bid" : "₹" + custom}`
-              + `${custom ? ` (₹${custom} where Amazon has no suggestion)` : ""}?\n\nUndo pauses them again.`)) return;
+  const at = mode === "custom" ? `₹${custom} each, for every row`
+    : `Amazon's low-end bid${custom ? ` (₹${custom} where Amazon has no suggestion)` : ""}`;
+  if(!confirm(`Add ${words} to "` + card.ad_group_name + `" at Amazon, at ${at}?\n\nUndo pauses them again.`)) return;
   busy.add(groupId);
   rerender();
   const host = document.querySelector(`[data-toggle-group="${CSS.escape(groupId)}"]`)?.parentElement.querySelector(".gr-body");
@@ -430,7 +436,13 @@ document.addEventListener("change", e => {
     return;
   }
   const mode = e.target.closest("[data-bid-mode]");
-  if(mode){ bidMode[mode.dataset.bidMode].mode = mode.value; return; }
+  if(mode){
+    const id = mode.dataset.bidMode;
+    bidMode[id].mode = mode.value;
+    const note = document.querySelector(`[data-bid-note="${CSS.escape(id)}"]`);
+    if(note) note.textContent = bidNote(cardOf(id), bidMode[id]);
+    return;
+  }
 });
 document.addEventListener("input", e => {
   const bid = e.target.closest("[data-custom-bid]");
